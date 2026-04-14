@@ -52,8 +52,15 @@ EOF
     echo -e "${GREEN}  Audio permissions configured (re-login may be needed)${NC}"
 fi
 
-# ── Step 3: Python dependencies ──
-echo -e "${ORANGE}[3/5]${NC} Installing Python dependencies..."
+# ── Step 3: Build C audio bridge ──
+echo -e "${ORANGE}[3/6]${NC} Building JACK audio bridge..."
+cd "$SCRIPT_DIR/stave_synth"
+gcc -shared -fPIC -O2 -o jack_bridge.so jack_bridge.c -ljack -lpthread
+cd "$SCRIPT_DIR"
+echo -e "${GREEN}  Built jack_bridge.so${NC}"
+
+# ── Step 4: Python dependencies ──
+echo -e "${ORANGE}[4/6]${NC} Installing Python dependencies..."
 cd "$SCRIPT_DIR"
 
 # Create venv if it doesn't exist
@@ -65,8 +72,8 @@ source venv/bin/activate
 pip install --upgrade pip -q
 pip install -r requirements.txt -q
 
-# ── Step 4: Download soundfont ──
-echo -e "${ORANGE}[4/5]${NC} Setting up soundfonts..."
+# ── Step 5: Download soundfont ──
+echo -e "${ORANGE}[5/6]${NC} Setting up soundfonts..."
 mkdir -p "$SOUNDFONT_DIR"
 mkdir -p "$CONFIG_DIR/presets"
 
@@ -94,8 +101,8 @@ if [ ! -f "$SOUNDFONT_DIR/TimGM6mb.sf2" ]; then
     echo -e "${ORANGE}  Could not auto-download soundfont. Place a .sf2 file in: $SOUNDFONT_DIR${NC}"
 fi
 
-# ── Step 5: Install systemd service ──
-echo -e "${ORANGE}[5/5]${NC} Installing systemd service..."
+# ── Step 6: Install systemd service ──
+echo -e "${ORANGE}[6/6]${NC} Installing systemd service..."
 mkdir -p "$HOME/.config/systemd/user"
 
 # Generate service file with correct paths
