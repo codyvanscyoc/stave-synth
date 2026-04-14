@@ -1,0 +1,24 @@
+from setuptools import setup, find_packages
+
+setup(
+    name="stave-synth",
+    version="0.1.0",
+    description="Live MIDI synthesizer for Raspberry Pi 5 with touchscreen control",
+    author="Cody Van Scyoc",
+    packages=find_packages(),
+    include_package_data=True,
+    package_data={"": ["ui/*"]},
+    install_requires=[
+        "JACK-Client>=0.5.4",
+        "numpy>=1.24.0",
+        "websockets>=11.0",
+        "pyfluidsynth>=1.3.0",
+        "pywebview>=4.0",
+    ],
+    entry_points={
+        "console_scripts": [
+            "stave-synth=stave_synth.main:main",
+        ],
+    },
+    python_requires=">=3.11",
+)

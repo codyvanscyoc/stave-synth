@@ -1,0 +1,303 @@
+"""FluidSynth player: manages FluidSynth for piano/e-piano soundfont playback."""
+
+import ctypes
+import logging
+import math
+import threading
+
+try:
+    import fluidsynth
+except ImportError:
+    fluidsynth = None
+
+import numpy as np
+
+from .config import SOUNDFONT_DIR, SAMPLE_RATE
+
+# FluidSynth generator IDs for direct filter control
+GEN_FILTERFC = 8   # Filter cutoff in cents (from 8.176 Hz)
+GEN_FILTERQ = 9    # Filter Q (centibels of attenuation)
+
+# Load libfluidsynth for set_gen (not exposed by pyfluidsynth)
+try:
+    _fluidlib = ctypes.CDLL("libfluidsynth.so.3")
+    _fluidlib.fluid_synth_set_gen.argtypes = [
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_float
+    ]
+    _fluidlib.fluid_synth_set_gen.restype = ctypes.c_int
+    _HAS_SET_GEN = True
+except (OSError, AttributeError):
+    _HAS_SET_GEN = False
+
+logger = logging.getLogger(__name__)
+
+# General MIDI program numbers
+SOUNDS = {
+    "acoustic_grand_piano": 0,
+    "bright_acoustic_piano": 1,
+    "electric_grand_piano": 2,
+    "honky_tonk_piano": 3,
+    "electric_piano_1": 4,   # Rhodes
+    "electric_piano_2": 5,   # DX7-style
+}
+
+
+class FluidSynthPlayer:
+    """Manages a FluidSynth instance for piano/e-piano playback."""
+
+    def __init__(self, sample_rate: int = SAMPLE_RATE):
+        if fluidsynth is None:
+            raise RuntimeError(
+                "pyfluidsynth not installed. Run: pip install pyfluidsynth"
+            )
+
+        self.sample_rate = sample_rate
+        self.fs = None
+        self.sfid = None
+        self.enabled = True
+        self.volume = 0.5
+        self.current_sound = "acoustic_grand_piano"
+        self._lock = threading.Lock()
+
+        # Our own DSP chain — gentle 6dB/oct for transparent piano EQ
+        from .synth_engine import OnePole6dBLowpass, OnePole6dBHighpass
+        self.highcut_filter = OnePole6dBLowpass(20000.0, sample_rate)
+        self.highcut_hz = 20000.0
+        self.lowcut_filter = OnePole6dBHighpass(20.0, sample_rate)
+        self.lowcut_hz = 20.0
+
+        # Compressor state
+        self.comp_threshold_db = -12.0
+        self.comp_ratio = 3.0
+        self.comp_attack_ms = 30.0
+        self.comp_release_ms = 200.0
+        self.comp_makeup_db = 0.0
+        self.comp_enabled = False
+        self._comp_envelope = 0.0  # current envelope level (linear)
+
+    def start(self, soundfont_name: str = "Arachno"):
+        """Initialize FluidSynth and load soundfont.
+        Audio is rendered via render_block() — no JACK driver needed."""
+        self.fs = fluidsynth.Synth(samplerate=float(self.sample_rate))
+
+        # Configure — gain at 1.0 since our pipeline handles volume
+        self.fs.setting("synth.polyphony", 64)
+        self.fs.setting("synth.gain", 1.0)
+        self.fs.setting("synth.reverb.active", 1)
+        self.fs.setting("synth.chorus.active", 0)
+
+        # Find soundfont file
+        sf_path = self._find_soundfont(soundfont_name)
+        if sf_path:
+            self.sfid = self.fs.sfload(str(sf_path))
+            if self.sfid >= 0:
+                self.set_sound(self.current_sound)
+                logger.info("Loaded soundfont: %s (id=%d)", sf_path, self.sfid)
+            else:
+                logger.error("Failed to load soundfont: %s", sf_path)
+                self.sfid = None
+        else:
+            logger.warning("No soundfont found for: %s", soundfont_name)
+
+        logger.info("FluidSynth started (rendered in Python pipeline)")
+
+    def _find_soundfont(self, name: str):
+        """Search for a soundfont file by name."""
+        for ext in (".sf2", ".sf3", ".SF2", ".SF3"):
+            path = SOUNDFONT_DIR / f"{name}{ext}"
+            if path.exists():
+                return path
+
+        # Try common system locations
+        import os
+        system_dirs = [
+            "/usr/share/sounds/sf2",
+            "/usr/share/soundfonts",
+            "/usr/local/share/soundfonts",
+        ]
+        for d in system_dirs:
+            for ext in (".sf2", ".sf3"):
+                path = os.path.join(d, f"{name}{ext}")
+                if os.path.exists(path):
+                    return path
+
+        # Fallback chain
+        fallbacks = ["FluidR3_GM", "TimGM6mb", "default-GM"]
+        for fb in fallbacks:
+            if fb != name:
+                logger.info("Trying fallback soundfont: %s", fb)
+                result = self._find_soundfont(fb)
+                if result:
+                    return result
+
+        return None
+
+    def set_sound(self, sound_name: str):
+        """Set the piano sound (General MIDI program)."""
+        if self.fs is None or self.sfid is None:
+            return
+
+        program = SOUNDS.get(sound_name, 0)
+        with self._lock:
+            self.fs.program_select(0, self.sfid, 0, program)
+            self.current_sound = sound_name
+            logger.info("Piano sound set to: %s (program %d)", sound_name, program)
+
+    def note_on(self, note: int, velocity: float):
+        """Play a note."""
+        if not self.enabled or self.fs is None:
+            return
+        vel_midi = max(1, min(127, int(velocity * 127)))
+        with self._lock:
+            self.fs.noteon(0, note, vel_midi)
+
+    def note_off(self, note: int):
+        """Release a note."""
+        if self.fs is None:
+            return
+        with self._lock:
+            self.fs.noteoff(0, note)
+
+    def all_notes_off(self):
+        """Silence all notes."""
+        if self.fs is None:
+            return
+        with self._lock:
+            for note in range(128):
+                self.fs.noteoff(0, note)
+
+    def midi_callback(self, event_type: str, note: int, velocity: float):
+        """Callback to be registered with JackEngine for MIDI forwarding."""
+        if event_type == "note_on":
+            self.note_on(note, velocity)
+        elif event_type == "note_off":
+            self.note_off(note)
+        elif event_type == "all_notes_off":
+            self.all_notes_off()
+
+    def set_volume(self, volume: float):
+        """Set piano volume (0.0-1.0). Applied in render_block()."""
+        self.volume = max(0.0, min(1.0, volume))
+
+    def set_highcut(self, freq_hz: float):
+        """Set piano high-cut filter frequency (applied in our DSP pipeline)."""
+        self.highcut_hz = max(200.0, min(20000.0, freq_hz))
+        self.highcut_filter.set_params(self.highcut_hz)
+        logger.debug("Piano tone: highcut=%dHz", int(self.highcut_hz))
+
+    def set_lowcut(self, freq_hz: float):
+        """Set piano low-cut filter frequency (removes rumble/mud)."""
+        self.lowcut_hz = max(20.0, min(2000.0, freq_hz))
+        self.lowcut_filter.set_params(self.lowcut_hz)
+        logger.debug("Piano tone: lowcut=%dHz", int(self.lowcut_hz))
+
+    def render_block(self, n_samples: int) -> np.ndarray:
+        """Render FluidSynth audio and apply our DSP chain.
+        Returns mono float64 array, ready to mix with synth pad."""
+        if self.fs is None or not self.enabled:
+            return np.zeros(n_samples, dtype=np.float64)
+
+        with self._lock:
+            # get_samples returns interleaved stereo int16, length = 2 * n_samples
+            raw = self.fs.get_samples(n_samples)
+
+        # Convert int16 stereo to mono float64
+        stereo = raw.astype(np.float64) / 32768.0
+        mono = stereo[0::2] + stereo[1::2]  # sum L+R (correlated signal, no halving)
+
+        # Apply volume (dB curve for musical fader response)
+        if self.volume <= 0.0:
+            mono[:] = 0.0
+        else:
+            mono *= 10.0 ** ((self.volume - 1.0) * 40.0 / 20.0)  # -40dB to 0dB
+
+        # Apply low-cut filter (remove rumble)
+        if self.lowcut_hz > 25.0:
+            mono = self.lowcut_filter.process(mono)
+
+        # Apply high-cut filter
+        if self.highcut_hz < 19000.0:
+            mono = self.highcut_filter.process(mono)
+
+        # Apply compressor
+        if self.comp_enabled:
+            mono = self._compress(mono)
+
+        return mono
+
+    def _compress(self, samples: np.ndarray) -> np.ndarray:
+        """Simple feed-forward compressor — vectorized envelope, per-block gain."""
+        threshold = 10.0 ** (self.comp_threshold_db / 20.0)
+        ratio = self.comp_ratio
+        makeup = 10.0 ** (self.comp_makeup_db / 20.0)
+
+        # Block-level RMS envelope (fast, no per-sample loop)
+        rms = np.sqrt(np.mean(samples ** 2))
+        # Smooth envelope
+        attack_coeff = 1.0 - math.exp(-len(samples) / (self.comp_attack_ms * 0.001 * self.sample_rate))
+        release_coeff = 1.0 - math.exp(-len(samples) / (self.comp_release_ms * 0.001 * self.sample_rate))
+        if rms > self._comp_envelope:
+            self._comp_envelope += attack_coeff * (rms - self._comp_envelope)
+        else:
+            self._comp_envelope += release_coeff * (rms - self._comp_envelope)
+
+        env = max(self._comp_envelope, 1e-10)
+        if env > threshold:
+            over_db = 20.0 * math.log10(env / threshold)
+            gain_reduction_db = over_db * (1.0 - 1.0 / ratio)
+            gain = 10.0 ** (-gain_reduction_db / 20.0) * makeup
+        else:
+            gain = makeup
+
+        return samples * gain
+
+    def update_params(self, params: dict):
+        """Update piano parameters from dict."""
+        if "volume" in params:
+            self.set_volume(float(params["volume"]))
+        if "enabled" in params:
+            self.enabled = bool(params["enabled"])
+        if "sound" in params:
+            self.set_sound(params["sound"])
+        if "filter_highcut_hz" in params:
+            self.set_highcut(float(params["filter_highcut_hz"]))
+        if "filter_lowcut_hz" in params:
+            self.set_lowcut(float(params["filter_lowcut_hz"]))
+        if "reverb_dry_wet" in params:
+            if self.fs:
+                level = float(params["reverb_dry_wet"])
+                self.fs.setting("synth.reverb.level", level)
+        if "comp_enabled" in params:
+            self.comp_enabled = bool(params["comp_enabled"])
+        if "comp_threshold_db" in params:
+            self.comp_threshold_db = float(params["comp_threshold_db"])
+        if "comp_ratio" in params:
+            self.comp_ratio = max(1.0, float(params["comp_ratio"]))
+        if "comp_makeup_db" in params:
+            self.comp_makeup_db = float(params["comp_makeup_db"])
+
+    def get_params(self) -> dict:
+        return {
+            "enabled": self.enabled,
+            "soundfont": "FluidR3_GM",
+            "sound": self.current_sound,
+            "filter_highcut_hz": self.highcut_hz,
+            "filter_lowcut_hz": self.lowcut_hz,
+            "volume": self.volume,
+            "reverb_dry_wet": 0.4,
+            "comp_enabled": self.comp_enabled,
+            "comp_threshold_db": self.comp_threshold_db,
+            "comp_ratio": self.comp_ratio,
+            "comp_makeup_db": self.comp_makeup_db,
+        }
+
+    def stop(self):
+        """Shut down FluidSynth."""
+        self.all_notes_off()
+        if self.fs:
+            try:
+                self.fs.delete()
+            except Exception as e:
+                logger.warning("Error stopping FluidSynth: %s", e)
+            self.fs = None
+        logger.info("FluidSynth stopped")

@@ -1,0 +1,16 @@
+[Unit]
+Description=Stave Synth — Live MIDI Synthesizer
+After=pipewire.service pipewire-pulse.service wireplumber.service
+Wants=pipewire.service wireplumber.service
+
+[Service]
+Type=simple
+ExecStartPre=/bin/sleep 3
+ExecStart=/usr/bin/pw-jack %h/stave-synth/venv/bin/python -m stave_synth.main --no-gui
+WorkingDirectory=%h/stave-synth
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
