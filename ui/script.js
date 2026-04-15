@@ -9,13 +9,11 @@
     // ═══ State ═══
     let ws = null;
     let state = null;
-    let altModes = [false, false, false, false];
+    let altModes = [false, false, false, false, false];
     let fader1AltState = 0;  // 0=Volume, 1=Tone, 2=Compressor (cycles on alt click)
-    let fader2AltState = 0;  // 0=Filter, 1=Reverb Mix, 2=Shimmer Vol (cycles on alt click)
-    let faderValues = [0.6, 0.5, 1.0, 0.85]; // osc1, piano, filter, master
-    let altFaderValues = [0.4, 1.0, 0.65, 0];  // osc2, piano tone, reverb mix, -
+    let faderValues = [0.6, 0.5, 1.0, 0.65, 0.85]; // osc1, piano, filter, fx(reverb), master
+    let altFaderValues = [0.4, 1.0, 0, 0.5, 0];  // osc2, piano tone, -, fx(shimmer), -
     let fader1CompValue = 0.5;  // compressor amount (maps to threshold)
-    let fader2ShimmerValue = 0.5;  // shimmer volume
     let transposeValue = 0;
     let shimmerEnabled = false;
     let freezeEnabled = false;
@@ -33,8 +31,9 @@
     const FADER_LABELS = [
         ["OSC 1", "OSC 2"],
         ["PIANO", "TONE", "COMP"],
-        ["FILTER", "REVERB MIX", "SHIMMER"],
-        ["MASTER", "MASTER"],
+        ["FILTER"],
+        ["FX", "SHIMMER"],
+        ["MASTER"],
     ];
 
     // ═══ DOM References ═══
@@ -64,6 +63,7 @@
     let midiFlashTimeout = null;
     let clipTimeout = null;
     const clipIndicator = document.getElementById("clip-indicator");
+    const levelDots = document.querySelectorAll(".level-dot");
     let midiLearnActive = false;
     let midiLearnWaiting = false;  // true after fader selected, waiting for CC
     let ccMap = {};  // { "cc_number": { id, alt } }
@@ -122,15 +122,31 @@
             markPresetSaved(msg.slot);
         } else if (msg.type === "preset_loaded") {
             markPresetLoaded(msg.slot);
+        } else if (msg.type === "preset_deleted") {
+            markPresetDeleted(msg.slot);
         } else if (msg.type === "midi_activity") {
             flashMidiIndicator();
         } else if (msg.type === "peak_level") {
-            if (msg.peak > 1.0) {
-                clipIndicator.classList.add("clipping");
+            updateLevelDots(msg.peak);
+            clipIndicator.classList.remove("limiting", "limiting-hard", "limiting-crush");
+            if (msg.peak > 2.5) {
+                clipIndicator.classList.add("limiting-crush");
                 if (clipTimeout) clearTimeout(clipTimeout);
                 clipTimeout = setTimeout(function () {
-                    clipIndicator.classList.remove("clipping");
+                    clipIndicator.classList.remove("limiting-crush");
                 }, 500);
+            } else if (msg.peak > 1.5) {
+                clipIndicator.classList.add("limiting-hard");
+                if (clipTimeout) clearTimeout(clipTimeout);
+                clipTimeout = setTimeout(function () {
+                    clipIndicator.classList.remove("limiting-hard");
+                }, 500);
+            } else if (msg.peak > 1.0) {
+                clipIndicator.classList.add("limiting");
+                if (clipTimeout) clearTimeout(clipTimeout);
+                clipTimeout = setTimeout(function () {
+                    clipIndicator.classList.remove("limiting");
+                }, 400);
             }
         } else if (msg.type === "midi_learn_active") {
             midiLearnActive = msg.active;
@@ -165,10 +181,6 @@
                 if (alt === 0) faderValues[1] = val;
                 else if (alt === 1) altFaderValues[1] = val;
                 else fader1CompValue = val;
-            } else if (id === 2) {
-                if (alt === 0) faderValues[2] = val;
-                else if (alt === 1) altFaderValues[2] = val;
-                else fader2ShimmerValue = val;
             } else if (alt) {
                 altFaderValues[id] = val;
             } else {
@@ -182,16 +194,22 @@
         state = s;
 
         if (s.synth_pad) {
-            faderValues[0] = s.synth_pad.osc1_blend ?? 0.6;
-            altFaderValues[0] = s.synth_pad.osc2_blend ?? 0.4;
+            // Fader shows position within trim range (blend / max)
+            var osc1Max = s.synth_pad.osc1_max ?? 1.0;
+            var osc2Max = s.synth_pad.osc2_max ?? 1.0;
+            faderValues[0] = osc1Max > 0 ? (s.synth_pad.osc1_blend ?? 0.6) / osc1Max : 0;
+            altFaderValues[0] = osc2Max > 0 ? (s.synth_pad.osc2_blend ?? 0.4) / osc2Max : 0;
+            faderValues[0] = Math.min(1, faderValues[0]);
+            altFaderValues[0] = Math.min(1, altFaderValues[0]);
             // Map filter cutoff back to 0-1 using configured range
             var fMin = s.synth_pad.filter_range_min ?? 150;
             var fMax = s.synth_pad.filter_range_max ?? 20000;
             var freq = s.synth_pad.filter_cutoff_hz ?? s.synth_pad.filter_highpass_hz ?? 8000;
             faderValues[2] = Math.log(freq / fMin) / Math.log(fMax / fMin);
             faderValues[2] = Math.max(0, Math.min(1, faderValues[2]));
-            altFaderValues[2] = s.synth_pad.reverb_dry_wet ?? 0.65;
-            fader2ShimmerValue = s.synth_pad.shimmer_mix ?? 0.5;
+            // FX fader: reverb mix (default) / shimmer vol (alt)
+            faderValues[3] = s.synth_pad.reverb_dry_wet ?? 0.65;
+            altFaderValues[3] = s.synth_pad.shimmer_mix ?? 0.5;
             shimmerEnabled = s.synth_pad.shimmer_enabled ?? false;
             freezeEnabled = s.synth_pad.freeze_enabled ?? false;
             updateFreezeDisplay();
@@ -216,7 +234,7 @@
             pianoBtn.classList.toggle("off", !pianoEnabled);
         }
         if (s.master) {
-            faderValues[3] = s.master.volume ?? 0.85;
+            faderValues[4] = s.master.volume ?? 0.85;
             transposeValue = s.master.transpose_semitones ?? 0;
         }
         if (s.ui) {
@@ -236,11 +254,6 @@
             if (fader1AltState === 1) return altFaderValues[1];
             return fader1CompValue;
         }
-        if (id === 2) {
-            if (fader2AltState === 0) return faderValues[2];
-            if (fader2AltState === 1) return altFaderValues[2];
-            return fader2ShimmerValue;
-        }
         return altModes[id] ? altFaderValues[id] : faderValues[id];
     }
 
@@ -254,13 +267,11 @@
 
         if (id === 1) {
             label.textContent = FADER_LABELS[1][fader1AltState];
-        } else if (id === 2) {
-            label.textContent = FADER_LABELS[2][fader2AltState];
         } else {
             label.textContent = FADER_LABELS[id][altModes[id] ? 1 : 0];
         }
 
-        if ((id === 2 && fader2AltState === 0) || (id === 1 && fader1AltState === 1)) {
+        if (id === 2 || (id === 1 && fader1AltState === 1)) {
             // Frequency display: filter cutoff or piano tone
             var minF, maxF;
             if (id === 1) {
@@ -282,7 +293,7 @@
     }
 
     function updateAllFaders() {
-        for (let i = 0; i < 4; i++) {
+        for (let i = 0; i < 5; i++) {
             updateFader(i);
         }
     }
@@ -296,11 +307,6 @@
             else if (fader1AltState === 1) altFaderValues[1] = normalizedValue;
             else fader1CompValue = normalizedValue;
             altVal = fader1AltState;
-        } else if (id === 2) {
-            if (fader2AltState === 0) faderValues[2] = normalizedValue;
-            else if (fader2AltState === 1) altFaderValues[2] = normalizedValue;
-            else fader2ShimmerValue = normalizedValue;
-            altVal = fader2AltState;
         } else if (altModes[id]) {
             altFaderValues[id] = normalizedValue;
             altVal = 1;
@@ -362,20 +368,14 @@
         btn.addEventListener("click", function () {
             const id = parseInt(btn.dataset.id);
             if (id === 1) {
-                // Fader 1 cycles: Volume(0) → Tone(1) → Comp(2) → Volume(0)
+                // Piano fader cycles: Volume(0) → Tone(1) → Comp(2) → Volume(0)
                 fader1AltState = (fader1AltState + 1) % 3;
                 altModes[id] = fader1AltState > 0;
                 btn.classList.toggle("active", altModes[id]);
                 faderColumns[id].classList.toggle("alt-mode", altModes[id]);
                 updateFader(id);
-            } else if (id === 2) {
-                // Fader 2 cycles: Filter(0) → Reverb Mix(1) → Shimmer(2) → Filter(0)
-                fader2AltState = (fader2AltState + 1) % 3;
-                altModes[id] = fader2AltState > 0;
-                btn.classList.toggle("active", altModes[id]);
-                faderColumns[id].classList.toggle("alt-mode", altModes[id]);
-                updateFader(id);
             } else {
+                // Simple toggle (OSC1/2, FX reverb/shimmer)
                 altModes[id] = !altModes[id];
                 btn.classList.toggle("active", altModes[id]);
                 faderColumns[id].classList.toggle("alt-mode", altModes[id]);
@@ -432,18 +432,109 @@
         send({ type: "setting", section: "piano", param: "enabled", value: pianoEnabled });
     });
 
-    // ═══ Presets — tap empty to save, tap filled to load ═══
+    // ═══ Presets — tap empty=save, tap filled=load, long-press filled=overwrite, double-tap filled=delete confirm ═══
+    var presetLastTap = {};
+    var presetLongTimer = {};
+    var presetDeleteSlot = -1; // which slot is showing delete X
+
+    function cancelDeleteConfirm() {
+        if (presetDeleteSlot >= 0) {
+            var old = presetBtns[presetDeleteSlot];
+            if (old) {
+                var x = old.querySelector(".preset-delete-x");
+                if (x) x.remove();
+                old.classList.remove("delete-confirm");
+            }
+        }
+        presetDeleteSlot = -1;
+    }
+
     presetBtns.forEach(function (btn) {
-        btn.addEventListener("click", function () {
-            var slot = parseInt(btn.dataset.slot);
-            if (btn.classList.contains("empty")) {
-                // Save current state to this slot
-                send({ type: "preset_save", slot: slot });
-            } else {
-                // Load this preset
-                send({ type: "preset_load", slot: slot });
+        var slot = parseInt(btn.dataset.slot);
+
+        btn.addEventListener("pointerdown", function (e) {
+            // Start long-press timer for overwrite
+            if (btn.classList.contains("filled")) {
+                presetLongTimer[slot] = setTimeout(function () {
+                    presetLongTimer[slot] = null;
+                    cancelDeleteConfirm();
+                    send({ type: "preset_save", slot: slot });
+                }, 600);
             }
         });
+
+        btn.addEventListener("pointerup", function () {
+            if (presetLongTimer[slot]) {
+                clearTimeout(presetLongTimer[slot]);
+                presetLongTimer[slot] = null;
+            }
+        });
+
+        btn.addEventListener("pointerleave", function () {
+            if (presetLongTimer[slot]) {
+                clearTimeout(presetLongTimer[slot]);
+                presetLongTimer[slot] = null;
+            }
+        });
+
+        btn.addEventListener("click", function (e) {
+            // If long-press already fired (timer was set to null), skip
+            if (presetLongTimer[slot] === null) return;
+
+            // If clicking the delete X
+            if (e.target.classList && e.target.classList.contains("preset-delete-x")) {
+                send({ type: "preset_delete", slot: slot });
+                cancelDeleteConfirm();
+                return;
+            }
+
+            // If another slot is in delete-confirm mode, cancel it
+            if (presetDeleteSlot >= 0 && presetDeleteSlot !== slot) {
+                cancelDeleteConfirm();
+            }
+
+            if (btn.classList.contains("empty")) {
+                send({ type: "preset_save", slot: slot });
+                return;
+            }
+
+            // Double-tap detection on filled slots
+            var now = Date.now();
+            var last = presetLastTap[slot] || 0;
+            presetLastTap[slot] = now;
+
+            if (now - last < 400) {
+                // Double-tap — show delete X
+                presetLastTap[slot] = 0;
+                cancelDeleteConfirm();
+                presetDeleteSlot = slot;
+                btn.classList.add("delete-confirm");
+                var x = document.createElement("span");
+                x.className = "preset-delete-x";
+                x.textContent = "X";
+                btn.appendChild(x);
+                return;
+            }
+
+            // Single tap — load (with small delay to rule out double-tap)
+            // But if we're in delete-confirm on THIS slot, cancel instead
+            if (presetDeleteSlot === slot) {
+                cancelDeleteConfirm();
+                return;
+            }
+
+            send({ type: "preset_load", slot: slot });
+        });
+    });
+
+    // Cancel delete confirm when tapping elsewhere
+    document.addEventListener("click", function (e) {
+        if (presetDeleteSlot >= 0) {
+            var btn = presetBtns[presetDeleteSlot];
+            if (btn && !btn.contains(e.target)) {
+                cancelDeleteConfirm();
+            }
+        }
     });
 
     function markPresetSaved(slot) {
@@ -465,6 +556,14 @@
         loadedPreset = slot;
     }
 
+    function markPresetDeleted(slot) {
+        var btn = presetBtns[slot];
+        if (!btn) return;
+        btn.classList.remove("filled", "loaded", "delete-confirm");
+        btn.classList.add("empty");
+        if (loadedPreset === slot) loadedPreset = -1;
+    }
+
     function syncPresetSlots(presetSaved) {
         if (!presetSaved) return;
         presetBtns.forEach(function (btn, i) {
@@ -476,6 +575,19 @@
                 btn.classList.add("empty");
             }
         });
+    }
+
+    function updateLevelDots(peak) {
+        // 8 dots, analog console style: bottom = quiet, top = clip
+        var thresholds = [0.05, 0.12, 0.22, 0.35, 0.50, 0.68, 0.85, 0.97];
+        for (var i = 0; i < levelDots.length; i++) {
+            var dotIdx = parseInt(levelDots[i].dataset.dot);
+            if (peak >= thresholds[dotIdx]) {
+                levelDots[i].classList.add("lit");
+            } else {
+                levelDots[i].classList.remove("lit");
+            }
+        }
     }
 
     function flashMidiIndicator() {
@@ -596,6 +708,28 @@
         });
     });
 
+    // Frequency params that need log-scale sliders
+    var FREQ_PARAMS = {
+        "filter_highcut_hz": true, "filter_lowcut_hz": true,
+        "filter_range_min": true, "filter_range_max": true,
+        "tone_range_min": true, "tone_range_max": true,
+        "reverb_low_cut": true, "reverb_high_cut": true,
+        "osc1_indep_cutoff": true, "osc2_indep_cutoff": true,
+    };
+
+    function sliderToHz(slider01, minHz, maxHz) {
+        return minHz * Math.pow(maxHz / minHz, slider01);
+    }
+
+    function hzToSlider(hz, minHz, maxHz) {
+        return Math.log(hz / minHz) / Math.log(maxHz / minHz);
+    }
+
+    function formatHz(value) {
+        if (value >= 1000) return (value / 1000).toFixed(1) + "kHz";
+        return Math.round(value) + "Hz";
+    }
+
     // Settings sliders
     document.querySelectorAll(".setting-slider").forEach(function (slider) {
         slider.addEventListener("input", function () {
@@ -607,10 +741,19 @@
             let displayValue;
             let sendValue;
 
-            if (param === "reverb_dry_wet" || param === "shimmer_mix" ||
-                param === "osc1_blend" || param === "osc2_blend") {
+            if (param === "osc1_pan" || param === "osc2_pan") {
                 sendValue = value / 100;
-                displayValue = sendValue.toFixed(2);
+                if (sendValue < -0.05) displayValue = "L" + Math.round(Math.abs(sendValue) * 100);
+                else if (sendValue > 0.05) displayValue = "R" + Math.round(sendValue * 100);
+                else displayValue = "C";
+            } else if (param === "reverb_dry_wet" || param === "shimmer_mix" ||
+                param === "reverb_space" || param === "unison_spread" ||
+                param === "osc1_max" || param === "osc2_max") {
+                sendValue = value / 100;
+                displayValue = Math.round(sendValue * 100) + "%";
+            } else if (param === "reverb_predelay_ms") {
+                sendValue = value;
+                displayValue = Math.round(value) + "ms";
             } else if (param === "reverb_wet_gain") {
                 sendValue = value / 100;
                 displayValue = sendValue.toFixed(1) + "x";
@@ -620,18 +763,13 @@
             } else if (param === "reverb_decay_seconds") {
                 sendValue = value / 10;
                 displayValue = sendValue.toFixed(1);
-            } else if (param === "filter_highcut_hz" || param === "filter_lowcut_hz" ||
-                       param === "filter_range_min" ||
-                       param === "filter_range_max" || param === "tone_range_min" ||
-                       param === "tone_range_max" || param === "reverb_low_cut" ||
-                       param === "reverb_high_cut" || param === "osc1_indep_cutoff" ||
-                       param === "osc2_indep_cutoff") {
-                sendValue = value;
-                if (value >= 1000) {
-                    displayValue = (value / 1000).toFixed(1) + "kHz";
-                } else {
-                    displayValue = Math.round(value) + "Hz";
-                }
+            } else if (FREQ_PARAMS[param]) {
+                // Log-scale: slider 0-1000 maps to minHz..maxHz exponentially
+                var minHz = parseFloat(slider.dataset.hzMin || slider.min);
+                var maxHz = parseFloat(slider.dataset.hzMax || slider.max);
+                var t = value / 1000;
+                sendValue = Math.round(sliderToHz(t, minHz, maxHz));
+                displayValue = formatHz(sendValue);
             } else {
                 sendValue = value;
                 displayValue = Math.round(value).toString();
@@ -641,27 +779,8 @@
                 valueEl.textContent = displayValue;
             }
 
-            // Sync OSC blend sliders with faders
-            if (param === "osc1_blend") {
-                faderValues[0] = sendValue;
-                if (sendValue > 0) { osc1Enabled = true; osc1PreMute = sendValue; }
-                else { osc1Enabled = false; }
-                updateOscButtons();
-                if (!altModes[0]) updateFader(0);
-                // Send as fader message for consistency
-                send({ type: "fader", id: 0, value: sendValue, alt: false });
-                return;
-            }
-            if (param === "osc2_blend") {
-                altFaderValues[0] = sendValue;
-                if (sendValue > 0) { osc2Enabled = true; osc2PreMute = sendValue; }
-                else { osc2Enabled = false; }
-                updateOscButtons();
-                if (altModes[0]) updateFader(0);
-                // Send as fader message for consistency
-                send({ type: "fader", id: 0, value: sendValue, alt: true });
-                return;
-            }
+            // Trim sliders don't drive fader position — they set the ceiling
+            // The fader's full throw maps to 0..trim value
 
             send({
                 type: "setting",
@@ -727,41 +846,49 @@
             if (value === undefined) return;
 
             // Reverse the normalization
-            if (param === "reverb_dry_wet" || param === "shimmer_mix" ||
-                param === "osc1_blend" || param === "osc2_blend") {
+            if (param === "osc1_pan" || param === "osc2_pan") {
                 slider.value = value * 100;
+            } else if (param === "reverb_dry_wet" || param === "shimmer_mix" ||
+                param === "reverb_space" || param === "unison_spread" ||
+                param === "osc1_max" || param === "osc2_max") {
+                slider.value = value * 100;
+            } else if (param === "reverb_predelay_ms") {
+                slider.value = value;
             } else if (param === "reverb_wet_gain") {
                 slider.value = value * 100;
             } else if (param === "unison_detune") {
                 slider.value = value * 1000;
             } else if (param === "reverb_decay_seconds") {
                 slider.value = value * 10;
+            } else if (FREQ_PARAMS[param]) {
+                // Log-scale: Hz value → 0-1000 slider position
+                var minHz = parseFloat(slider.dataset.hzMin || slider.min);
+                var maxHz = parseFloat(slider.dataset.hzMax || slider.max);
+                slider.value = Math.round(hzToSlider(value, minHz, maxHz) * 1000);
             } else {
                 slider.value = value;
             }
 
             const valueEl = slider.parentElement.querySelector(".setting-value");
             if (valueEl) {
-                if (param === "reverb_dry_wet" || param === "shimmer_mix" ||
-                    param === "osc1_blend" || param === "osc2_blend") {
-                    valueEl.textContent = value.toFixed(2);
+                if (param === "osc1_pan" || param === "osc2_pan") {
+                    if (value < -0.05) valueEl.textContent = "L" + Math.round(Math.abs(value) * 100);
+                    else if (value > 0.05) valueEl.textContent = "R" + Math.round(value * 100);
+                    else valueEl.textContent = "C";
+                } else if (param === "reverb_dry_wet" || param === "shimmer_mix" ||
+                    param === "reverb_space" || param === "unison_spread" ||
+                    param === "osc1_max" || param === "osc2_max") {
+                    valueEl.textContent = Math.round(value * 100) + "%";
+                } else if (param === "reverb_predelay_ms") {
+                    valueEl.textContent = Math.round(value) + "ms";
                 } else if (param === "reverb_wet_gain") {
                     valueEl.textContent = value.toFixed(1) + "x";
                 } else if (param === "unison_detune") {
                     valueEl.textContent = value.toFixed(3);
                 } else if (param === "reverb_decay_seconds") {
                     valueEl.textContent = value.toFixed(1);
-                } else if (param === "filter_highcut_hz" || param === "filter_lowcut_hz" ||
-                           param === "filter_range_min" ||
-                           param === "filter_range_max" || param === "tone_range_min" ||
-                           param === "tone_range_max" || param === "reverb_low_cut" ||
-                           param === "reverb_high_cut" || param === "osc1_indep_cutoff" ||
-                           param === "osc2_indep_cutoff") {
-                    if (value >= 1000) {
-                        valueEl.textContent = (value / 1000).toFixed(1) + "kHz";
-                    } else {
-                        valueEl.textContent = Math.round(value) + "Hz";
-                    }
+                } else if (FREQ_PARAMS[param]) {
+                    valueEl.textContent = formatHz(value);
                 } else {
                     valueEl.textContent = Math.round(value).toString();
                 }
@@ -861,7 +988,6 @@
     // (use the X button on a CC label to delete a mapping)
     function getFaderAlt(id) {
         if (id === 1) return fader1AltState;
-        if (id === 2) return fader2AltState;
         return altModes[id] ? 1 : 0;
     }
 

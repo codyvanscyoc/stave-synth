@@ -124,6 +124,8 @@ class StaveSynth:
             return self._handle_preset_load(msg)
         elif msg_type == "preset_save":
             return self._handle_preset_save(msg)
+        elif msg_type == "preset_delete":
+            return self._handle_preset_delete(msg)
         elif msg_type == "transpose":
             return self._handle_transpose(msg)
         elif msg_type == "panic":
@@ -137,6 +139,29 @@ class StaveSynth:
         elif msg_type == "get_state":
             return {"type": "state", "state": self.state}
         elif msg_type == "debug":
+            # Piano diagnostics
+            piano_info = {}
+            if self.piano:
+                import numpy as np
+                piano_info["exists"] = True
+                piano_info["enabled"] = self.piano.enabled
+                piano_info["volume"] = self.piano.volume
+                piano_info["fs_alive"] = self.piano.fs is not None
+                piano_info["sfid"] = self.piano.sfid
+                # Quick render test — does FluidSynth produce any audio?
+                try:
+                    test_block = self.piano.fs.get_samples(64) if self.piano.fs else None
+                    if test_block is not None:
+                        piano_info["test_peak"] = float(np.abs(test_block.astype(np.float64)).max())
+                    else:
+                        piano_info["test_peak"] = -1
+                    piano_info["note_on_count"] = self.piano._note_on_count
+                    piano_info["render_count"] = self.piano._render_count
+                    piano_info["last_raw_peak"] = self.piano._last_raw_peak
+                except Exception as e:
+                    piano_info["test_error"] = str(e)
+            else:
+                piano_info["exists"] = False
             return {
                 "type": "debug",
                 "jack_error": getattr(self.jack, '_last_error', None),
@@ -149,7 +174,17 @@ class StaveSynth:
                 "synth_osc2": self.synth.osc2_blend,
                 "synth_vol": self.synth.volume,
                 "peak_output": getattr(self.jack, '_peak_output', 0),
+                "piano_render_peak": getattr(self.jack, '_piano_peak', 0),
+                "piano_renders": getattr(self.jack, '_piano_renders', 0),
+                "bridge_callbacks": self.jack._bridge.bridge_get_callback_count() if self.jack else 0,
+                "bridge_peak": float(self.jack._bridge.bridge_get_peak_output()) if self.jack else 0,
+                "bridge_underruns": self.jack._bridge.bridge_get_underrun_count() if self.jack else 0,
+                "bridge_xruns": self.jack._bridge.bridge_get_xrun_count() if self.jack else 0,
+                "bridge_ring_fill": self.jack._bridge.bridge_get_ring_fill() if self.jack else 0,
+                "piano": piano_info,
             }
+        elif msg_type == "test_piano":
+            return self._handle_test_piano()
         elif msg_type == "setting":
             return self._handle_setting(msg)
         elif msg_type == "midi_learn_start":
@@ -177,11 +212,15 @@ class StaveSynth:
 
         if fader_id == 0:  # OSC 1 volume / OSC 2 volume (alt)
             if not alt:
-                self.state["synth_pad"]["osc1_blend"] = value
-                self.synth.osc1_blend = value
+                osc_max = self.state["synth_pad"].get("osc1_max", 1.0)
+                scaled = value * osc_max
+                self.state["synth_pad"]["osc1_blend"] = scaled
+                self.synth.osc1_blend = scaled
             else:
-                self.state["synth_pad"]["osc2_blend"] = value
-                self.synth.osc2_blend = value
+                osc_max = self.state["synth_pad"].get("osc2_max", 1.0)
+                scaled = value * osc_max
+                self.state["synth_pad"]["osc2_blend"] = scaled
+                self.synth.osc2_blend = scaled
 
         elif fader_id == 1:  # Piano: Volume(0) / Tone(1) / Compressor(2)
             alt_state = int(alt) if isinstance(alt, (int, float)) else (1 if alt else 0)
@@ -211,25 +250,23 @@ class StaveSynth:
                     self.piano.comp_threshold_db = self.state["piano"].get("comp_threshold_db", -12)
                     self.piano.comp_makeup_db = self.state["piano"].get("comp_makeup_db", 0)
 
-        elif fader_id == 2:  # Filter(0) / Reverb Mix(1) / Shimmer Vol(2)
+        elif fader_id == 2:  # Filter (standalone, no alt)
+            f_min = self.state["synth_pad"].get("filter_range_min", 150)
+            f_max = self.state["synth_pad"].get("filter_range_max", 20000)
+            freq = f_min * ((f_max / f_min) ** value)
+            self.state["synth_pad"]["filter_cutoff_hz"] = freq
+            self.synth.filter_cutoff = freq
+
+        elif fader_id == 3:  # FX: Reverb Mix(0) / Shimmer Vol(1)
             alt_state = int(alt) if isinstance(alt, (int, float)) else (1 if alt else 0)
             if alt_state == 0:
-                # Map 0-1 within the configured range
-                f_min = self.state["synth_pad"].get("filter_range_min", 150)
-                f_max = self.state["synth_pad"].get("filter_range_max", 20000)
-                freq = f_min * ((f_max / f_min) ** value)
-                self.state["synth_pad"]["filter_cutoff_hz"] = freq
-                self.synth.filter_cutoff = freq
-            elif alt_state == 1:
-                # Reverb dry/wet
                 self.state["synth_pad"]["reverb_dry_wet"] = value
                 self.synth.reverb.dry_wet = value
-            elif alt_state == 2:
-                # Shimmer volume
+            elif alt_state == 1:
                 self.state["synth_pad"]["shimmer_mix"] = value
                 self.synth.shimmer_mix = value
 
-        elif fader_id == 3:  # Master Volume
+        elif fader_id == 4:  # Master Volume
             if not alt:
                 self.state["master"]["volume"] = value
                 if self.jack:
@@ -242,11 +279,26 @@ class StaveSynth:
         alt = msg.get("alt", False)
         return {"type": "alt_ack", "id": fader_id, "alt": alt}
 
+    def _rebuild_preset_saved(self):
+        """Rebuild ui.preset_saved from which files actually exist on disk."""
+        saved = []
+        for i in range(self.presets.num_slots):
+            saved.append(self.presets._slot_path(i).exists())
+        if "ui" not in self.state:
+            self.state["ui"] = {}
+        self.state["ui"]["preset_saved"] = saved
+
     def _handle_preset_load(self, msg: dict) -> dict:
         slot = msg.get("slot", 0)
         state = self.presets.load(slot)
         if state:
-            self.state = state
+            # Merge with defaults so new params added since preset was saved exist
+            from .config import DEFAULT_STATE, _deep_merge
+            import json
+            defaults = json.loads(json.dumps(DEFAULT_STATE))
+            self.state = _deep_merge(defaults, state)
+            # Rebuild preset_saved from disk — never trust the snapshot
+            self._rebuild_preset_saved()
             self.synth.update_params(state.get("synth_pad", {}))
             if self.piano:
                 self.piano.update_params(state.get("piano", {}))
@@ -265,13 +317,19 @@ class StaveSynth:
     def _handle_preset_save(self, msg: dict) -> dict:
         slot = msg.get("slot", 0)
         if self.presets.save(slot, self.state):
-            # Mark slot as saved in state
-            if "preset_saved" not in self.state.get("ui", {}):
-                self.state["ui"]["preset_saved"] = [False, False, False, False, False]
-            self.state["ui"]["preset_saved"][slot] = True
+            # Rebuild from disk so it's always accurate
+            self._rebuild_preset_saved()
             save_state(self.state)
             return {"type": "preset_saved", "slot": slot}
         return {"type": "error", "message": f"Failed to save preset {slot}"}
+
+    def _handle_preset_delete(self, msg: dict) -> dict:
+        slot = msg.get("slot", 0)
+        if self.presets.delete(slot):
+            self._rebuild_preset_saved()
+            save_state(self.state)
+            return {"type": "preset_deleted", "slot": slot}
+        return {"type": "error", "message": f"Failed to delete preset {slot}"}
 
     def _handle_transpose(self, msg: dict) -> dict:
         semitones = msg.get("semitones", 0)
@@ -280,6 +338,29 @@ class StaveSynth:
         if self.jack:
             self.jack.transpose = new_val
         return {"type": "transpose_ack", "semitones": new_val}
+
+    def _handle_test_piano(self) -> dict:
+        """Diagnostic: trigger a piano note and measure render output."""
+        import numpy as np
+        if not self.piano:
+            return {"type": "test_piano", "error": "no piano object"}
+        if not self.piano.fs:
+            return {"type": "test_piano", "error": "FluidSynth is None"}
+
+        # Trigger a test note
+        self.piano.note_on(60, 0.8)
+        # Render a few blocks to let FluidSynth produce audio
+        peaks = []
+        for i in range(5):
+            block = self.piano.render_block(256)
+            peaks.append(float(np.abs(block).max()))
+        self.piano.note_off(60)
+        return {
+            "type": "test_piano",
+            "peaks": peaks,
+            "max_peak": max(peaks),
+            "has_audio": max(peaks) > 0.001,
+        }
 
     def _handle_shimmer_toggle(self, msg: dict) -> dict:
         enabled = msg.get("enabled")
@@ -406,7 +487,10 @@ class StaveSynth:
         value = msg.get("value")
 
         if section == "synth_pad":
-            if param in self.state["synth_pad"]:
+            if param in ("osc1_max", "osc2_max"):
+                self.state["synth_pad"][param] = value
+                # No synth param to update — max is applied when fader moves
+            elif param in self.state["synth_pad"]:
                 self.state["synth_pad"][param] = value
                 self.synth.update_params({param: value})
             elif param.startswith("adsr."):
@@ -528,15 +612,21 @@ class StaveSynth:
     def _autosave_loop(self):
         """Periodically save state and broadcast peak levels."""
         peak_counter = 0
+        silence_ticks = 0  # how many 200ms ticks we've been silent
         while self._running:
             time.sleep(0.2)  # Check peaks every 200ms
             peak_counter += 1
 
-            # Broadcast peak level for clip indicator
+            # Broadcast peak level for meters
             if self.jack and self.ws_server:
                 peak = self.jack.get_and_reset_peak()
-                if peak > 0.7:  # Only send when there's meaningful signal
+                if peak > 0.01:
                     self.ws_server.broadcast_sync({"type": "peak_level", "peak": peak})
+                    silence_ticks = 0
+                elif silence_ticks < 5:
+                    # Send zeros for ~1 second after signal stops to clear meters
+                    self.ws_server.broadcast_sync({"type": "peak_level", "peak": 0.0})
+                    silence_ticks += 1
 
             # Autosave every AUTOSAVE_INTERVAL
             if peak_counter >= int(AUTOSAVE_INTERVAL / 0.2):
@@ -581,7 +671,6 @@ class StaveSynth:
             )
             self.jack.master_volume = self.state.get("master", {}).get("volume", 0.85)
             self.jack.transpose = self.state.get("master", {}).get("transpose_semitones", 0)
-            self.jack.pad_octave = self.state.get("master", {}).get("pad_octave", 0)
             self.jack.piano_octave = self.state.get("master", {}).get("piano_octave", 0)
             self.jack.start()
         except Exception as e:

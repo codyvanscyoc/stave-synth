@@ -29,18 +29,15 @@ sudo apt-get install -y \
     fluidsynth \
     libfluidsynth-dev \
     alsa-utils \
+    a2jmidid \
     libgirepository1.0-dev \
     gir1.2-webkit2-4.1 \
     python3-gi \
     python3-gi-cairo
 
-# ── Step 2: Stop PipeWire JACK bridge (use real JACK) ──
-echo -e "${ORANGE}[2/5]${NC} Configuring audio (JACK2)..."
-# Disable PipeWire's JACK replacement if present
-systemctl --user disable --now pipewire-jack.socket 2>/dev/null || true
-systemctl --user disable --now pipewire-jack.service 2>/dev/null || true
-
-# Configure JACK limits for real-time audio
+# ── Step 2: Audio permissions ──
+echo -e "${ORANGE}[2/5]${NC} Configuring audio permissions..."
+# Configure real-time audio limits
 if ! grep -q "audio.*rtprio" /etc/security/limits.d/audio.conf 2>/dev/null; then
     echo -e "${ORANGE}Setting up real-time audio permissions...${NC}"
     sudo tee /etc/security/limits.d/audio.conf > /dev/null << 'EOF'
@@ -53,14 +50,14 @@ EOF
 fi
 
 # ── Step 3: Build C audio bridge ──
-echo -e "${ORANGE}[3/6]${NC} Building JACK audio bridge..."
+echo -e "${ORANGE}[3/5]${NC} Building JACK audio bridge..."
 cd "$SCRIPT_DIR/stave_synth"
 gcc -shared -fPIC -O2 -o jack_bridge.so jack_bridge.c -ljack -lpthread
 cd "$SCRIPT_DIR"
 echo -e "${GREEN}  Built jack_bridge.so${NC}"
 
 # ── Step 4: Python dependencies ──
-echo -e "${ORANGE}[4/6]${NC} Installing Python dependencies..."
+echo -e "${ORANGE}[4/5]${NC} Installing Python dependencies..."
 cd "$SCRIPT_DIR"
 
 # Create venv if it doesn't exist
@@ -72,8 +69,8 @@ source venv/bin/activate
 pip install --upgrade pip -q
 pip install -r requirements.txt -q
 
-# ── Step 5: Download soundfont ──
-echo -e "${ORANGE}[5/6]${NC} Setting up soundfonts..."
+# ── Step 5: Soundfonts & service ──
+echo -e "${ORANGE}[5/5]${NC} Setting up soundfonts & service..."
 mkdir -p "$SOUNDFONT_DIR"
 mkdir -p "$CONFIG_DIR/presets"
 
@@ -101,8 +98,8 @@ if [ ! -f "$SOUNDFONT_DIR/TimGM6mb.sf2" ]; then
     echo -e "${ORANGE}  Could not auto-download soundfont. Place a .sf2 file in: $SOUNDFONT_DIR${NC}"
 fi
 
-# ── Step 6: Install systemd service ──
-echo -e "${ORANGE}[6/6]${NC} Installing systemd service..."
+# ── Install systemd service ──
+echo "  Installing systemd service..."
 mkdir -p "$HOME/.config/systemd/user"
 
 # Generate service file with correct paths
@@ -115,7 +112,7 @@ Wants=pipewire.service wireplumber.service
 [Service]
 Type=simple
 ExecStartPre=/bin/sleep 3
-ExecStart=/usr/bin/pw-jack ${SCRIPT_DIR}/venv/bin/python -m stave_synth.main --no-gui
+ExecStart=/usr/bin/pw-jack ${SCRIPT_DIR}/venv/bin/python -m stave_synth.main
 WorkingDirectory=${SCRIPT_DIR}
 Environment=XDG_RUNTIME_DIR=/run/user/$(id -u)
 Restart=on-failure

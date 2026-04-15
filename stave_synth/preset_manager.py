@@ -55,6 +55,25 @@ class PresetManager:
             logger.error("Failed to load preset %d: %s", slot, e)
             return None
 
+    def delete(self, slot: int) -> bool:
+        """Delete a preset from a slot."""
+        if slot < 0 or slot >= self.num_slots:
+            logger.warning("Invalid preset slot: %d", slot)
+            return False
+
+        path = self._slot_path(slot)
+        if not path.exists():
+            logger.info("Preset slot %d already empty", slot)
+            return True
+
+        try:
+            path.unlink()
+            logger.info("Deleted preset from slot %d", slot)
+            return True
+        except OSError as e:
+            logger.error("Failed to delete preset %d: %s", slot, e)
+            return False
+
     def list_presets(self) -> list[dict]:
         """List all preset slots with their existence status."""
         presets = []

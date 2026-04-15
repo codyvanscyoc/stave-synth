@@ -12,6 +12,8 @@ except ImportError:
 
 import numpy as np
 
+from pathlib import Path
+
 from .config import SOUNDFONT_DIR, SAMPLE_RATE
 
 # FluidSynth generator IDs for direct filter control
@@ -57,14 +59,24 @@ class FluidSynthPlayer:
         self.enabled = True
         self.volume = 0.5
         self.current_sound = "acoustic_grand_piano"
+        self.current_soundfont = "Arachno"
+        self.reverb_dry_wet = 0.4
         self._lock = threading.Lock()
 
-        # Our own DSP chain — gentle 6dB/oct for transparent piano EQ
+        # Our own DSP chain — gentle 6dB/oct for transparent piano EQ (stereo pairs)
         from .synth_engine import OnePole6dBLowpass, OnePole6dBHighpass
-        self.highcut_filter = OnePole6dBLowpass(20000.0, sample_rate)
+        self.highcut_filter_l = OnePole6dBLowpass(20000.0, sample_rate)
+        self.highcut_filter_r = OnePole6dBLowpass(20000.0, sample_rate)
         self.highcut_hz = 20000.0
-        self.lowcut_filter = OnePole6dBHighpass(20.0, sample_rate)
+        self.lowcut_filter_l = OnePole6dBHighpass(20.0, sample_rate)
+        self.lowcut_filter_r = OnePole6dBHighpass(20.0, sample_rate)
         self.lowcut_hz = 20.0
+
+        # Debug counters
+        self._note_on_count = 0
+        self._render_count = 0
+        self._last_render_peak = 0.0
+        self._last_raw_peak = 0
 
         # Compressor state
         self.comp_threshold_db = -12.0
@@ -87,19 +99,26 @@ class FluidSynthPlayer:
         self.fs.setting("synth.chorus.active", 0)
 
         # Find soundfont file
+        self.current_soundfont = soundfont_name
         sf_path = self._find_soundfont(soundfont_name)
         if sf_path:
             self.sfid = self.fs.sfload(str(sf_path))
             if self.sfid >= 0:
+                self.current_soundfont = Path(sf_path).stem
                 self.set_sound(self.current_sound)
                 logger.info("Loaded soundfont: %s (id=%d)", sf_path, self.sfid)
             else:
-                logger.error("Failed to load soundfont: %s", sf_path)
+                logger.error("Failed to load soundfont: %s — piano disabled", sf_path)
                 self.sfid = None
+                self.enabled = False
         else:
-            logger.warning("No soundfont found for: %s", soundfont_name)
+            logger.error("No soundfont found (tried %s + fallbacks) — piano disabled", soundfont_name)
+            self.enabled = False
 
-        logger.info("FluidSynth started (rendered in Python pipeline)")
+        if self.sfid is not None:
+            logger.info("FluidSynth started (rendered in Python pipeline)")
+        else:
+            logger.warning("FluidSynth started but no soundfont loaded — piano will be silent")
 
     def _find_soundfont(self, name: str):
         """Search for a soundfont file by name."""
@@ -146,8 +165,11 @@ class FluidSynthPlayer:
     def note_on(self, note: int, velocity: float):
         """Play a note."""
         if not self.enabled or self.fs is None:
+            logger.warning("note_on BLOCKED: enabled=%s, fs=%s", self.enabled, self.fs is not None)
             return
         vel_midi = max(1, min(127, int(velocity * 127)))
+        self._note_on_count += 1
+        logger.debug("PIANO note_on: note=%d vel=%d (count=%d)", note, vel_midi, self._note_on_count)
         with self._lock:
             self.fs.noteon(0, note, vel_midi)
 
@@ -182,48 +204,63 @@ class FluidSynthPlayer:
     def set_highcut(self, freq_hz: float):
         """Set piano high-cut filter frequency (applied in our DSP pipeline)."""
         self.highcut_hz = max(200.0, min(20000.0, freq_hz))
-        self.highcut_filter.set_params(self.highcut_hz)
+        self.highcut_filter_l.set_params(self.highcut_hz)
+        self.highcut_filter_r.set_params(self.highcut_hz)
         logger.debug("Piano tone: highcut=%dHz", int(self.highcut_hz))
 
     def set_lowcut(self, freq_hz: float):
         """Set piano low-cut filter frequency (removes rumble/mud)."""
         self.lowcut_hz = max(20.0, min(2000.0, freq_hz))
-        self.lowcut_filter.set_params(self.lowcut_hz)
+        self.lowcut_filter_l.set_params(self.lowcut_hz)
+        self.lowcut_filter_r.set_params(self.lowcut_hz)
         logger.debug("Piano tone: lowcut=%dHz", int(self.lowcut_hz))
 
     def render_block(self, n_samples: int) -> np.ndarray:
         """Render FluidSynth audio and apply our DSP chain.
-        Returns mono float64 array, ready to mix with synth pad."""
+        Returns stereo (2, n) float64 array, ready to mix with synth pad."""
         if self.fs is None or not self.enabled:
-            return np.zeros(n_samples, dtype=np.float64)
+            return np.zeros((2, n_samples), dtype=np.float64)
 
         with self._lock:
             # get_samples returns interleaved stereo int16, length = 2 * n_samples
             raw = self.fs.get_samples(n_samples)
 
-        # Convert int16 stereo to mono float64
-        stereo = raw.astype(np.float64) / 32768.0
-        mono = stereo[0::2] + stereo[1::2]  # sum L+R (correlated signal, no halving)
+        self._last_raw_peak = int(np.abs(raw).max())
+        self._render_count += 1
+
+        # Convert interleaved int16 stereo to (2, n) float64
+        interleaved = raw.astype(np.float64) / 32768.0
+        left = interleaved[0::2]
+        right = interleaved[1::2]
 
         # Apply volume (dB curve for musical fader response)
         if self.volume <= 0.0:
-            mono[:] = 0.0
+            left = np.zeros_like(left)
+            right = np.zeros_like(right)
         else:
-            mono *= 10.0 ** ((self.volume - 1.0) * 40.0 / 20.0)  # -40dB to 0dB
+            gain = 10.0 ** ((self.volume - 1.0) * 40.0 / 20.0)  # -40dB to 0dB
+            left = left * gain
+            right = right * gain
 
-        # Apply low-cut filter (remove rumble)
+        # Apply low-cut filter (independent L/R)
         if self.lowcut_hz > 25.0:
-            mono = self.lowcut_filter.process(mono)
+            left = self.lowcut_filter_l.process(left)
+            right = self.lowcut_filter_r.process(right)
 
-        # Apply high-cut filter
+        # Apply high-cut filter (independent L/R)
         if self.highcut_hz < 19000.0:
-            mono = self.highcut_filter.process(mono)
+            left = self.highcut_filter_l.process(left)
+            right = self.highcut_filter_r.process(right)
 
-        # Apply compressor
+        # Apply compressor (mono sidechain, stereo gain)
         if self.comp_enabled:
-            mono = self._compress(mono)
+            mono = (left + right) * 0.5
+            compressed = self._compress(mono)
+            ratio = np.where(np.abs(mono) > 1e-10, compressed / mono, 1.0)
+            left = left * ratio
+            right = right * ratio
 
-        return mono
+        return np.array([left, right])
 
     def _compress(self, samples: np.ndarray) -> np.ndarray:
         """Simple feed-forward compressor — vectorized envelope, per-block gain."""
@@ -264,9 +301,9 @@ class FluidSynthPlayer:
         if "filter_lowcut_hz" in params:
             self.set_lowcut(float(params["filter_lowcut_hz"]))
         if "reverb_dry_wet" in params:
+            self.reverb_dry_wet = float(params["reverb_dry_wet"])
             if self.fs:
-                level = float(params["reverb_dry_wet"])
-                self.fs.setting("synth.reverb.level", level)
+                self.fs.setting("synth.reverb.level", self.reverb_dry_wet)
         if "comp_enabled" in params:
             self.comp_enabled = bool(params["comp_enabled"])
         if "comp_threshold_db" in params:
@@ -279,12 +316,12 @@ class FluidSynthPlayer:
     def get_params(self) -> dict:
         return {
             "enabled": self.enabled,
-            "soundfont": "FluidR3_GM",
+            "soundfont": self.current_soundfont,
             "sound": self.current_sound,
             "filter_highcut_hz": self.highcut_hz,
             "filter_lowcut_hz": self.lowcut_hz,
             "volume": self.volume,
-            "reverb_dry_wet": 0.4,
+            "reverb_dry_wet": self.reverb_dry_wet,
             "comp_enabled": self.comp_enabled,
             "comp_threshold_db": self.comp_threshold_db,
             "comp_ratio": self.comp_ratio,

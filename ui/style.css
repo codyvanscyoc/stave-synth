@@ -57,6 +57,13 @@ html, body {
     flex-shrink: 0;
 }
 
+#logo-btn {
+    background-image: url('logo.png');
+    background-size: contain;
+    background-position: center;
+    background-repeat: no-repeat;
+}
+
 #transpose-controls {
     display: flex;
     align-items: center;
@@ -164,9 +171,22 @@ html, body {
     padding: 0.3vh 0.8vw;
     border: 1px solid var(--text-muted);
     color: var(--text-muted);
+    transition: none;
 }
 
-#clip-indicator.clipping {
+#clip-indicator.limiting {
+    border-color: #FFB020;
+    color: var(--bg);
+    background: #FFB020;
+}
+
+#clip-indicator.limiting-hard {
+    border-color: #FF6B35;
+    color: var(--bg);
+    background: #FF6B35;
+}
+
+#clip-indicator.limiting-crush {
     border-color: #cc2222;
     color: var(--bg);
     background: #cc2222;
@@ -348,15 +368,58 @@ html, body {
     border-color: var(--border-orange);
 }
 
-.fader-column[data-id="2"] .alt-btn {
+.fader-column[data-id="3"] .alt-btn {
     border-color: var(--border-orange);
     color: var(--text-orange-dim);
 }
 
-.fader-column[data-id="2"] .alt-btn.active {
+.fader-column[data-id="3"] .alt-btn.active {
     background: var(--border-orange);
     color: var(--bg);
 }
+
+/* ═══ LEVEL DOTS ═══ */
+.fader-row {
+    display: flex;
+    flex: 1;
+    gap: clamp(3px, 0.5vw, 6px);
+    min-height: 0;
+    width: 100%;
+}
+
+.fader-row .fader-track {
+    flex: 1;
+    min-width: 0;
+}
+
+.level-dots {
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    align-items: center;
+    gap: clamp(2px, 0.4vh, 4px);
+    padding: 6% 0;
+    width: clamp(6px, 1.2vw, 10px);
+    flex-shrink: 0;
+}
+
+.level-dot {
+    width: clamp(4px, 0.9vw, 6px);
+    height: clamp(4px, 0.9vw, 6px);
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.08);
+    transition: background 60ms linear, box-shadow 60ms linear;
+}
+
+/* Dot colors when lit — bottom (0) = teal, top (7) = clip red */
+.level-dot.lit[data-dot="0"] { background: #00D4AA; box-shadow: 0 0 3px #00D4AA; }
+.level-dot.lit[data-dot="1"] { background: #00D4AA; box-shadow: 0 0 3px #00D4AA; }
+.level-dot.lit[data-dot="2"] { background: #00BF63; box-shadow: 0 0 3px #00BF63; }
+.level-dot.lit[data-dot="3"] { background: #00BF63; box-shadow: 0 0 3px #00BF63; }
+.level-dot.lit[data-dot="4"] { background: #88CC00; box-shadow: 0 0 3px #88CC00; }
+.level-dot.lit[data-dot="5"] { background: #FFB020; box-shadow: 0 0 3px #FFB020; }
+.level-dot.lit[data-dot="6"] { background: #FF6B35; box-shadow: 0 0 4px #FF6B35; }
+.level-dot.lit[data-dot="7"] { background: #FF4D6A; box-shadow: 0 0 5px #FF4D6A; }
 
 /* ═══ PRESET AREA ═══ */
 #preset-area {
@@ -409,6 +472,29 @@ html, body {
 .preset-btn.loaded {
     opacity: 1.0;
     box-shadow: 0 0 8px var(--preset-color);
+}
+
+/* Delete confirm X */
+.preset-btn.delete-confirm {
+    opacity: 1.0;
+    border-style: dashed;
+    border-color: #cc2222;
+    background: transparent;
+}
+
+.preset-delete-x {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font);
+    font-size: clamp(14px, 3vw, 22px);
+    color: #cc2222;
+    cursor: pointer;
 }
 
 /* Save flash animation */
@@ -572,6 +658,18 @@ html, body {
 
 .setting-select option {
     background: var(--bg);
+    color: var(--text-green);
+}
+
+/* Help text in Global tab */
+.help-text {
+    font-size: clamp(9px, 1.5vw, 11px);
+    color: var(--text-green-dim);
+    line-height: 1.8;
+    padding: 0.5vh 0 1vh 0;
+}
+
+.help-text b {
     color: var(--text-green);
 }
 

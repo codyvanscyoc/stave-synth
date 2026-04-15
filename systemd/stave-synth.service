@@ -6,7 +6,7 @@ Wants=pipewire.service wireplumber.service
 [Service]
 Type=simple
 ExecStartPre=/bin/sleep 3
-ExecStart=/usr/bin/pw-jack %h/stave-synth/venv/bin/python -m stave_synth.main --no-gui
+ExecStart=/usr/bin/pw-jack %h/stave-synth/venv/bin/python -m stave_synth.main
 WorkingDirectory=%h/stave-synth
 Environment=XDG_RUNTIME_DIR=/run/user/%U
 Restart=on-failure

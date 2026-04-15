@@ -48,7 +48,7 @@ static jack_port_t   *port_out_r = NULL;
 static jack_port_t   *port_midi  = NULL;
 
 static volatile float master_volume = 0.85f;
-static volatile int   btl_mode      = 1;     /* 1 = invert R for BTL adapter */
+static volatile int   btl_mode      = 0;     /* 0 = normal stereo, 1 = invert R */
 
 /* ── Stats ── */
 static volatile uint32_t stat_callbacks   = 0;
@@ -56,6 +56,9 @@ static volatile uint32_t stat_underruns   = 0;
 static volatile uint32_t stat_xruns       = 0;
 static volatile uint32_t stat_midi_events = 0;
 static volatile float    stat_peak        = 0.0f;
+
+/* ── JACK shutdown flag ── */
+static volatile int jack_shutdown_flag = 0;
 
 /* ── Helpers ── */
 
@@ -147,6 +150,11 @@ static int xrun_callback(void *arg) {
     return 0;
 }
 
+static void shutdown_callback(void *arg) {
+    (void)arg;
+    jack_shutdown_flag = 1;
+}
+
 /* ── Public API ── */
 
 int bridge_start(void) {
@@ -168,6 +176,7 @@ int bridge_start(void) {
 
     jack_set_process_callback(client, process_callback, NULL);
     jack_set_xrun_callback(client, xrun_callback, NULL);
+    jack_on_shutdown(client, shutdown_callback, NULL);
 
     if (jack_activate(client) != 0) return -3;
 
@@ -246,3 +255,5 @@ int   bridge_get_xrun_count(void)     { return (int)stat_xruns; }
 int   bridge_get_underrun_count(void) { return (int)stat_underruns; }
 int   bridge_get_midi_event_count(void) { return (int)stat_midi_events; }
 int   bridge_get_ring_fill(void)      { return (int)ring_readable(); }
+int   bridge_get_btl_mode(void)       { return btl_mode; }
+int   bridge_is_shutdown(void)        { return jack_shutdown_flag; }

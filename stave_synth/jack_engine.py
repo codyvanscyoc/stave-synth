@@ -36,8 +36,8 @@ class JackEngine:
 
         # Master volume and transpose (set from outside)
         self._master_volume = 0.85
+        self.pre_gain = 1.5  # pre-gain into limiter — mild boost before tanh
         self.transpose = 0
-        self.pad_octave = 0    # -3 to +3 octaves for synth pad
         self.piano_octave = 0  # -3 to +3 octaves for piano
 
         # MIDI filtering
@@ -51,6 +51,8 @@ class JackEngine:
         # Debug counters
         self._callback_count = 0
         self._peak_output = 0.0
+        self._piano_peak = 0.0
+        self._piano_renders = 0
         self._last_error = None
         self._last_traceback = None
         self._midi_events_seen = 0
@@ -99,6 +101,7 @@ class JackEngine:
         b.bridge_get_ring_fill.restype = ctypes.c_int
         b.bridge_set_btl_mode.argtypes = [ctypes.c_int]
         b.bridge_set_btl_mode.restype = None
+        b.bridge_is_shutdown.restype = ctypes.c_int
 
     def start(self):
         """Start the C bridge JACK client."""
@@ -112,6 +115,10 @@ class JackEngine:
 
         self._bridge.bridge_set_master_volume(ctypes.c_float(fader_to_amplitude(self.master_volume)))
         self._bridge.bridge_set_btl_mode(1 if BTL_MODE else 0)
+        # Verify BTL mode was set correctly
+        self._bridge.bridge_get_btl_mode.restype = ctypes.c_int
+        btl_actual = self._bridge.bridge_get_btl_mode()
+        logger.info("BTL mode: config=%s, bridge=%d (0=stereo, 1=mono-invert)", BTL_MODE, btl_actual)
         self.running = True
 
         # Start render thread — pushes audio blocks to the C bridge
@@ -130,6 +137,11 @@ class JackEngine:
 
         while self.running:
             try:
+                # Exit if JACK server disappeared — systemd will restart us
+                if self._bridge.bridge_is_shutdown():
+                    logger.critical("JACK server shut down — exiting for systemd restart")
+                    os._exit(1)
+
                 # Check ring buffer fill level
                 fill = self._bridge.bridge_get_ring_fill()
 
@@ -137,13 +149,20 @@ class JackEngine:
                     # Ring is getting low — render and push a block
                     stereo = self.synth.render(bs)  # (2, n) stereo
 
-                    # Mix in piano audio (mono, centered — same signal both channels)
+                    # Mix in piano audio (stereo)
                     if self.piano_player:
                         piano = self.piano_player.render_block(bs)
-                        stereo[0] += piano
-                        stereo[1] += piano
+                        piano_peak = float(np.abs(piano).max())
+                        if piano_peak > self._piano_peak:
+                            self._piano_peak = piano_peak
+                        self._piano_renders += 1
+                        stereo[0] += piano[0]
+                        stereo[1] += piano[1]
 
-                    # Track pre-limiter peak for clipping detection
+                    # Pre-gain: boost into limiter for more headroom
+                    stereo *= self.pre_gain
+
+                    # Track pre-limiter peak for metering (shows how hard limiter is hit)
                     pre_peak = float(np.abs(stereo).max())
                     if pre_peak > self._peak_output:
                         self._peak_output = pre_peak
@@ -193,7 +212,7 @@ class JackEngine:
                     if status == 0x90 and velocity > 0:
                         if velocity < self.min_velocity:
                             continue
-                        vel_float = velocity / 127.0
+                        vel_float = min(1.0, velocity / 127.0)
 
                         # Piano octave shift (pad oscs handle their own octave internally)
                         piano_note = max(0, min(127, transposed + self.piano_octave * 12))
@@ -228,11 +247,11 @@ class JackEngine:
                         else:
                             self._sustain_on = False
                             # Release all sustained notes
-                            for n in self._sustained_pad_notes:
-                                self.synth.note_off(n)
-                            for n in self._sustained_piano_notes:
+                            for held in self._sustained_pad_notes:
+                                self.synth.note_off(held)
+                            for held in self._sustained_piano_notes:
                                 if self.piano_callback:
-                                    self.piano_callback("note_off", n, 0)
+                                    self.piano_callback("note_off", held, 0)
                             self._sustained_pad_notes.clear()
                             self._sustained_piano_notes.clear()
 
@@ -256,7 +275,7 @@ class JackEngine:
             time.sleep(0.002)  # 2ms polling
 
     def get_and_reset_peak(self) -> float:
-        """Return pre-limiter peak level and reset. >1.0 means clipping."""
+        """Return post-limiter peak level. Reflects actual output after tanh + master volume."""
         peak = self._peak_output
         self._peak_output = 0.0
         return peak
