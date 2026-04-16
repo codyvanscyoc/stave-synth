@@ -244,6 +244,8 @@ class FluidSynthPlayer:
                 return np.zeros((2, n_samples), dtype=np.float64)
 
         with self._lock:
+            if self.fs is None:
+                return np.zeros((2, n_samples), dtype=np.float64)
             # get_samples returns interleaved stereo int16, length = 2 * n_samples
             raw = self.fs.get_samples(n_samples)
 
@@ -300,9 +302,11 @@ class FluidSynthPlayer:
 
         # Block-level RMS envelope (fast, no per-sample loop)
         rms = np.sqrt(np.mean(samples ** 2))
-        # Smooth envelope
-        attack_coeff = 1.0 - math.exp(-len(samples) / (self.comp_attack_ms * 0.001 * self.sample_rate))
-        release_coeff = 1.0 - math.exp(-len(samples) / (self.comp_release_ms * 0.001 * self.sample_rate))
+        # Smooth envelope — clamp times so exp() can't blow up or NaN out.
+        attack_ms = max(1.0, self.comp_attack_ms)
+        release_ms = max(1.0, self.comp_release_ms)
+        attack_coeff = 1.0 - math.exp(-len(samples) / (attack_ms * 0.001 * self.sample_rate))
+        release_coeff = 1.0 - math.exp(-len(samples) / (release_ms * 0.001 * self.sample_rate))
         if rms > self._comp_envelope:
             self._comp_envelope += attack_coeff * (rms - self._comp_envelope)
         else:
@@ -361,10 +365,11 @@ class FluidSynthPlayer:
     def stop(self):
         """Shut down FluidSynth."""
         self.all_notes_off()
-        if self.fs:
-            try:
-                self.fs.delete()
-            except Exception as e:
-                logger.warning("Error stopping FluidSynth: %s", e)
-            self.fs = None
+        with self._lock:
+            if self.fs:
+                try:
+                    self.fs.delete()
+                except Exception as e:
+                    logger.warning("Error stopping FluidSynth: %s", e)
+                self.fs = None
         logger.info("FluidSynth stopped")

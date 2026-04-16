@@ -171,7 +171,16 @@ def load_state():
 
 
 def save_state(state):
-    """Save current state to disk."""
+    """Save current state to disk atomically (temp + fsync + rename)."""
     ensure_dirs()
-    with open(STATE_FILE, "w") as f:
+    tmp = STATE_FILE.with_suffix(STATE_FILE.suffix + ".tmp")
+    # Best-effort cleanup of any orphan .tmp left by a prior mid-write crash.
+    try:
+        tmp.unlink()
+    except FileNotFoundError:
+        pass
+    with open(tmp, "w") as f:
         json.dump(state, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, STATE_FILE)

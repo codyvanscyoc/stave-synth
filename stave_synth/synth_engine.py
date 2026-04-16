@@ -719,6 +719,18 @@ class FeedbackDelayReverb:
         self.feedback += a_f * (self._feedback_target - self.feedback)
         self.damp_coeff += a_f * (self._damp_target - self.damp_coeff)
         self._freeze_input_gain += a_f * (self._freeze_input_target - self._freeze_input_gain)
+        # Safety: scrub NaN/Inf and clamp to stable ranges. Extreme parameter
+        # changes (negative values, huge cutoffs) during live use must never
+        # corrupt the recursive reverb state.
+        if not np.isfinite(self.feedback):
+            self.feedback = self._normal_feedback
+        if not np.isfinite(self.damp_coeff):
+            self.damp_coeff = self._normal_damp
+        if not np.isfinite(self._freeze_input_gain):
+            self._freeze_input_gain = 1.0
+        self.feedback = min(max(self.feedback, 0.0), 0.9995)
+        self.damp_coeff = min(max(self.damp_coeff, 0.0), 0.99)
+        self._freeze_input_gain = min(max(self._freeze_input_gain, 0.0), 1.0)
 
         fb = self.feedback
         damp = self.damp_coeff
@@ -1483,8 +1495,6 @@ class SynthEngine:
 
         if "filter_cutoff_hz" in params:
             self.filter_cutoff = float(params["filter_cutoff_hz"])
-        if "filter_highpass_hz" in params:
-            self.filter_cutoff = float(params["filter_highpass_hz"])
         if "filter_resonance" in params:
             self.filter_resonance = float(params["filter_resonance"])
         if "filter_range_min" in params:

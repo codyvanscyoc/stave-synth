@@ -71,10 +71,14 @@ class WebSocketServer:
 
     def broadcast_sync(self, msg: dict):
         """Thread-safe broadcast from non-async code."""
-        if self._loop and self._loop.is_running():
-            asyncio.run_coroutine_threadsafe(
-                self._broadcast(msg), self._loop
-            )
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(self._broadcast(msg), loop)
+        except RuntimeError:
+            # Loop was shut down between the is_running() check and scheduling.
+            pass
 
     async def _run_ws(self):
         """Start the WebSocket server."""
