@@ -13,7 +13,9 @@ import time
 
 import numpy as np
 
-from .synth_engine import SynthEngine, fader_to_amplitude, blend_to_amplitude
+from .synth_engine import (SynthEngine, BiquadLowpass, BiquadHighpass,
+                           BiquadPeakingEQ, OnePole6dBHighpass,
+                           fader_to_amplitude, blend_to_amplitude)
 from .config import SAMPLE_RATE, BUFFER_SIZE, BTL_MODE
 
 logger = logging.getLogger(__name__)
@@ -43,10 +45,48 @@ class JackEngine:
         # MIDI filtering
         self.min_velocity = 10
 
-        # Sustain pedal state
+        # Active note tracking for sympathetic resonance + drone
+        self._piano_notes_active = set()  # piano note numbers currently sounding
+        self._pad_notes_active = set()    # pad note numbers currently sounding
+
+        # Sustain pedal state — tracks by raw MIDI note so transpose changes
+        # between note-on and note-off can't cause hung notes
         self._sustain_on = False
-        self._sustained_pad_notes = set()    # pad notes held by pedal
-        self._sustained_piano_notes = set()  # piano notes held by pedal
+        self._physically_held = set()    # raw MIDI notes with finger on key
+        self._sustained_notes = set()    # raw MIDI notes held by sustain pedal
+        self._note_map = {}              # raw_note → (pad_note, piano_note)
+
+        # Organ/piano shared filter (tracks synth's main filter when enabled)
+        self.organ_filter_enabled = False
+        self._organ_filter_l = BiquadLowpass(8000.0, 0.707, SAMPLE_RATE)
+        self._organ_filter_r = BiquadLowpass(8000.0, 0.707, SAMPLE_RATE)
+        self._organ_filter2_l = BiquadLowpass(8000.0, 0.707, SAMPLE_RATE)
+        self._organ_filter2_r = BiquadLowpass(8000.0, 0.707, SAMPLE_RATE)
+
+        # Master parametric EQ (3 configurable bands, applied after pad+piano mix)
+        self._master_eq_l = [
+            BiquadPeakingEQ(200.0, 0.0, 1.5, SAMPLE_RATE),
+            BiquadPeakingEQ(1000.0, 0.0, 1.5, SAMPLE_RATE),
+            BiquadPeakingEQ(5000.0, 0.0, 1.5, SAMPLE_RATE),
+        ]
+        self._master_eq_r = [
+            BiquadPeakingEQ(200.0, 0.0, 1.5, SAMPLE_RATE),
+            BiquadPeakingEQ(1000.0, 0.0, 1.5, SAMPLE_RATE),
+            BiquadPeakingEQ(5000.0, 0.0, 1.5, SAMPLE_RATE),
+        ]
+        self._master_eq_active = False  # skip processing when all bands flat
+
+        # Master low cut (highpass) — optional, pre-limiter
+        self._master_hp_enabled = False
+        self._master_hp_slope = 12
+        self._master_hp6_l = OnePole6dBHighpass(80.0, SAMPLE_RATE)
+        self._master_hp6_r = OnePole6dBHighpass(80.0, SAMPLE_RATE)
+        self._master_hp12_l = BiquadHighpass(80.0, 0.707, SAMPLE_RATE)
+        self._master_hp12_r = BiquadHighpass(80.0, 0.707, SAMPLE_RATE)
+        self._master_hp24_l = [BiquadHighpass(80.0, 0.707, SAMPLE_RATE),
+                               BiquadHighpass(80.0, 0.707, SAMPLE_RATE)]
+        self._master_hp24_r = [BiquadHighpass(80.0, 0.707, SAMPLE_RATE),
+                               BiquadHighpass(80.0, 0.707, SAMPLE_RATE)]
 
         # Debug counters
         self._callback_count = 0
@@ -146,18 +186,57 @@ class JackEngine:
                 fill = self._bridge.bridge_get_ring_fill()
 
                 if fill < 4:
+                    # Update sympathetic resonance notes from piano
+                    if self.synth.sympathetic_enabled:
+                        self.synth.set_sympathetic_notes(self._piano_notes_active)
+                    # Update drone chord from held pad notes
+                    if self.synth.drone_enabled and self._pad_notes_active:
+                        self.synth.set_drone_chord(list(self._pad_notes_active))
+
                     # Ring is getting low — render and push a block
                     stereo = self.synth.render(bs)  # (2, n) stereo
 
-                    # Mix in piano audio (stereo)
+                    # Mix in piano/organ audio (stereo)
                     if self.piano_player:
                         piano = self.piano_player.render_block(bs)
-                        piano_peak = float(np.abs(piano).max())
-                        if piano_peak > self._piano_peak:
-                            self._piano_peak = piano_peak
                         self._piano_renders += 1
+
+                        # Optionally route through main filter
+                        if self.organ_filter_enabled:
+                            cutoff = self.synth._filter_cutoff_cur
+                            res = self.synth.filter_resonance
+                            self._organ_filter_l.set_params(cutoff, res)
+                            self._organ_filter_r.set_params(cutoff, res)
+                            piano[0] = self._organ_filter_l.process(piano[0])
+                            piano[1] = self._organ_filter_r.process(piano[1])
+                            if self.synth.filter_slope == 24:
+                                self._organ_filter2_l.set_params(cutoff, res)
+                                self._organ_filter2_r.set_params(cutoff, res)
+                                piano[0] = self._organ_filter2_l.process(piano[0])
+                                piano[1] = self._organ_filter2_r.process(piano[1])
+
                         stereo[0] += piano[0]
                         stereo[1] += piano[1]
+
+                    # Master EQ (configurable 3-band parametric)
+                    if self._master_eq_active:
+                        for eq_l, eq_r in zip(self._master_eq_l, self._master_eq_r):
+                            stereo[0] = eq_l.process(stereo[0])
+                            stereo[1] = eq_r.process(stereo[1])
+
+                    # Master low cut
+                    if self._master_hp_enabled:
+                        if self._master_hp_slope == 6:
+                            stereo[0] = self._master_hp6_l.process(stereo[0])
+                            stereo[1] = self._master_hp6_r.process(stereo[1])
+                        elif self._master_hp_slope == 24:
+                            for f in self._master_hp24_l:
+                                stereo[0] = f.process(stereo[0])
+                            for f in self._master_hp24_r:
+                                stereo[1] = f.process(stereo[1])
+                        else:
+                            stereo[0] = self._master_hp12_l.process(stereo[0])
+                            stereo[1] = self._master_hp12_r.process(stereo[1])
 
                     # Pre-gain: boost into limiter for more headroom
                     stereo *= self.pre_gain
@@ -190,7 +269,9 @@ class JackEngine:
                 logger.error("Render error: %s", e)
 
     def _midi_loop(self):
-        """Read MIDI events from the C bridge and dispatch."""
+        """Read MIDI events from the C bridge and dispatch.
+        Note tracking uses raw MIDI note numbers so transpose/octave changes
+        between note-on and note-off can't cause hung notes."""
         midi_buf = (ctypes.c_uint8 * 4)()
 
         while self.running:
@@ -203,62 +284,82 @@ class JackEngine:
 
                 if n >= 3:
                     status = midi_buf[0] & 0xF0
-                    note = midi_buf[1]
+                    raw_note = midi_buf[1]
                     velocity = midi_buf[2]
-
-                    transposed = note + self.transpose
-                    transposed = max(0, min(127, transposed))
 
                     if status == 0x90 and velocity > 0:
                         if velocity < self.min_velocity:
                             continue
                         vel_float = min(1.0, velocity / 127.0)
 
-                        # Piano octave shift (pad oscs handle their own octave internally)
+                        transposed = max(0, min(127, raw_note + self.transpose))
                         piano_note = max(0, min(127, transposed + self.piano_octave * 12))
+
+                        # If re-triggering with different transpose, release old note first
+                        if raw_note in self._note_map:
+                            old_pad, old_piano = self._note_map[raw_note]
+                            if old_pad != transposed:
+                                self.synth.note_off(old_pad)
+                                if self.piano_callback:
+                                    self.piano_callback("note_off", old_piano, 0)
+
+                        self._physically_held.add(raw_note)
+                        self._note_map[raw_note] = (transposed, piano_note)
 
                         self.synth.note_on(transposed, vel_float)
                         self._midi_notes_triggered += 1
+                        self._pad_notes_active.add(transposed)
 
                         if self.piano_callback:
                             self.piano_callback("note_on", piano_note, vel_float)
+                            self._piano_notes_active.add(piano_note)
                         if self.midi_callback:
                             self.midi_callback("note_on", transposed, vel_float)
 
                     elif status == 0x80 or (status == 0x90 and velocity == 0):
-                        piano_note = max(0, min(127, transposed + self.piano_octave * 12))
+                        self._physically_held.discard(raw_note)
+
+                        if raw_note not in self._note_map:
+                            continue
+
+                        pad_note, piano_note = self._note_map[raw_note]
 
                         if self._sustain_on:
-                            # Pedal held — defer note-off
-                            self._sustained_pad_notes.add(transposed)
-                            self._sustained_piano_notes.add(piano_note)
+                            self._sustained_notes.add(raw_note)
                         else:
-                            self.synth.note_off(transposed)
-
+                            self._note_map.pop(raw_note)
+                            self.synth.note_off(pad_note)
+                            self._pad_notes_active.discard(pad_note)
                             if self.piano_callback:
                                 self.piano_callback("note_off", piano_note, 0)
-                        if self.midi_callback:
-                            self.midi_callback("note_off", transposed, 0)
+                                self._piano_notes_active.discard(piano_note)
 
-                    elif status == 0xB0 and midi_buf[1] == 64:
+                        if self.midi_callback:
+                            self.midi_callback("note_off", pad_note, 0)
+
+                    elif status == 0xB0 and raw_note == 64:
                         # Sustain pedal
-                        if midi_buf[2] >= 64:
+                        if velocity >= 64:
                             self._sustain_on = True
                         else:
                             self._sustain_on = False
-                            # Release all sustained notes
-                            for held in self._sustained_pad_notes:
-                                self.synth.note_off(held)
-                            for held in self._sustained_piano_notes:
-                                if self.piano_callback:
-                                    self.piano_callback("note_off", held, 0)
-                            self._sustained_pad_notes.clear()
-                            self._sustained_piano_notes.clear()
+                            for raw in list(self._sustained_notes):
+                                if raw not in self._physically_held and raw in self._note_map:
+                                    pad_n, piano_n = self._note_map.pop(raw)
+                                    self.synth.note_off(pad_n)
+                                    self._pad_notes_active.discard(pad_n)
+                                    if self.piano_callback:
+                                        self.piano_callback("note_off", piano_n, 0)
+                                        self._piano_notes_active.discard(piano_n)
+                            self._sustained_notes.clear()
 
-                    elif status == 0xB0 and midi_buf[1] == 123:
+                    elif status == 0xB0 and raw_note == 123:
                         self._sustain_on = False
-                        self._sustained_pad_notes.clear()
-                        self._sustained_piano_notes.clear()
+                        self._sustained_notes.clear()
+                        self._physically_held.clear()
+                        self._note_map.clear()
+                        self._pad_notes_active.clear()
+                        self._piano_notes_active.clear()
                         self.synth.all_notes_off()
                         if self.piano_callback:
                             self.piano_callback("all_notes_off", 0, 0)
@@ -266,13 +367,38 @@ class JackEngine:
                             self.midi_callback("all_notes_off", 0, 0)
 
                     elif status == 0xB0:
-                        # CC message — forward to cc_callback
-                        cc_num = midi_buf[1]
-                        cc_val = midi_buf[2]
+                        cc_num = raw_note
+                        cc_val = velocity
                         if self.cc_callback:
                             self.cc_callback(cc_num, cc_val)
 
-            time.sleep(0.002)  # 2ms polling
+            time.sleep(0.0005)  # 0.5ms polling
+
+    def set_master_hp(self, freq_hz: float, slope: int = 12, enabled: bool = True):
+        """Update master low cut filter."""
+        self._master_hp_enabled = enabled
+        self._master_hp_slope = slope
+        self._master_hp6_l.set_params(freq_hz)
+        self._master_hp6_r.set_params(freq_hz)
+        self._master_hp12_l.set_params(freq_hz, 0.707)
+        self._master_hp12_r.set_params(freq_hz, 0.707)
+        for f in self._master_hp24_l:
+            f.set_params(freq_hz, 0.707)
+        for f in self._master_hp24_r:
+            f.set_params(freq_hz, 0.707)
+
+    def set_master_eq(self, bands: list):
+        """Update master EQ bands. Each band: {freq_hz, gain_db, q}"""
+        for i, band in enumerate(bands):
+            if i < len(self._master_eq_l):
+                freq = float(band.get("freq_hz", 1000))
+                gain = float(band.get("gain_db", 0.0))
+                q = float(band.get("q", 1.5))
+                self._master_eq_l[i].set_params(freq, gain, q)
+                self._master_eq_r[i].set_params(freq, gain, q)
+        self._master_eq_active = any(
+            abs(float(b.get("gain_db", 0.0))) > 0.01 for b in bands
+        )
 
     def get_and_reset_peak(self) -> float:
         """Return post-limiter peak level. Reflects actual output after tanh + master volume."""

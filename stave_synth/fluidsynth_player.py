@@ -58,23 +58,30 @@ class FluidSynthPlayer:
         self.sfid = None
         self.enabled = True
         self.volume = 0.5
+        self._volume_cur = 0.5  # smoothed volume for zipper-free changes
         self.current_sound = "acoustic_grand_piano"
         self.current_soundfont = "Arachno"
         self.reverb_dry_wet = 0.4
         self._lock = threading.Lock()
 
-        # Our own DSP chain — gentle 6dB/oct for transparent piano EQ (stereo pairs)
-        from .synth_engine import OnePole6dBLowpass, OnePole6dBHighpass
-        self.highcut_filter_l = OnePole6dBLowpass(20000.0, sample_rate)
-        self.highcut_filter_r = OnePole6dBLowpass(20000.0, sample_rate)
+        # Our own DSP chain — 24dB/oct (cascaded biquads) for audible piano EQ
+        from .synth_engine import BiquadLowpass, BiquadHighpass
+        self.highcut_filter_l = [BiquadLowpass(20000.0, 0.707, sample_rate),
+                                 BiquadLowpass(20000.0, 0.707, sample_rate)]
+        self.highcut_filter_r = [BiquadLowpass(20000.0, 0.707, sample_rate),
+                                 BiquadLowpass(20000.0, 0.707, sample_rate)]
         self.highcut_hz = 20000.0
-        self.lowcut_filter_l = OnePole6dBHighpass(20.0, sample_rate)
-        self.lowcut_filter_r = OnePole6dBHighpass(20.0, sample_rate)
+        self.lowcut_filter_l = [BiquadHighpass(20.0, 0.707, sample_rate),
+                                BiquadHighpass(20.0, 0.707, sample_rate)]
+        self.lowcut_filter_r = [BiquadHighpass(20.0, 0.707, sample_rate),
+                                BiquadHighpass(20.0, 0.707, sample_rate)]
         self.lowcut_hz = 20.0
 
         # Debug counters
         self._note_on_count = 0
         self._render_count = 0
+        self._active_notes = 0  # tracks held notes for render skip optimization
+        self._silent_blocks = 0  # count consecutive silent blocks after last note-off
         self._last_render_peak = 0.0
         self._last_raw_peak = 0
 
@@ -95,7 +102,7 @@ class FluidSynthPlayer:
         # Configure — gain at 1.0 since our pipeline handles volume
         self.fs.setting("synth.polyphony", 64)
         self.fs.setting("synth.gain", 1.0)
-        self.fs.setting("synth.reverb.active", 1)
+        self.fs.setting("synth.reverb.active", 0)
         self.fs.setting("synth.chorus.active", 0)
 
         # Find soundfont file
@@ -169,6 +176,8 @@ class FluidSynthPlayer:
             return
         vel_midi = max(1, min(127, int(velocity * 127)))
         self._note_on_count += 1
+        self._active_notes += 1
+        self._silent_blocks = 0
         logger.debug("PIANO note_on: note=%d vel=%d (count=%d)", note, vel_midi, self._note_on_count)
         with self._lock:
             self.fs.noteon(0, note, vel_midi)
@@ -177,6 +186,7 @@ class FluidSynthPlayer:
         """Release a note."""
         if self.fs is None:
             return
+        self._active_notes = max(0, self._active_notes - 1)
         with self._lock:
             self.fs.noteoff(0, note)
 
@@ -184,6 +194,7 @@ class FluidSynthPlayer:
         """Silence all notes."""
         if self.fs is None:
             return
+        self._active_notes = 0
         with self._lock:
             for note in range(128):
                 self.fs.noteoff(0, note)
@@ -204,15 +215,19 @@ class FluidSynthPlayer:
     def set_highcut(self, freq_hz: float):
         """Set piano high-cut filter frequency (applied in our DSP pipeline)."""
         self.highcut_hz = max(200.0, min(20000.0, freq_hz))
-        self.highcut_filter_l.set_params(self.highcut_hz)
-        self.highcut_filter_r.set_params(self.highcut_hz)
+        for f in self.highcut_filter_l:
+            f.set_params(self.highcut_hz, 0.707)
+        for f in self.highcut_filter_r:
+            f.set_params(self.highcut_hz, 0.707)
         logger.debug("Piano tone: highcut=%dHz", int(self.highcut_hz))
 
     def set_lowcut(self, freq_hz: float):
         """Set piano low-cut filter frequency (removes rumble/mud)."""
         self.lowcut_hz = max(20.0, min(2000.0, freq_hz))
-        self.lowcut_filter_l.set_params(self.lowcut_hz)
-        self.lowcut_filter_r.set_params(self.lowcut_hz)
+        for f in self.lowcut_filter_l:
+            f.set_params(self.lowcut_hz, 0.707)
+        for f in self.lowcut_filter_r:
+            f.set_params(self.lowcut_hz, 0.707)
         logger.debug("Piano tone: lowcut=%dHz", int(self.lowcut_hz))
 
     def render_block(self, n_samples: int) -> np.ndarray:
@@ -221,42 +236,57 @@ class FluidSynthPlayer:
         if self.fs is None or not self.enabled:
             return np.zeros((2, n_samples), dtype=np.float64)
 
+        # Skip rendering when piano is silent (no active notes + release tail finished)
+        # ~2s of blocks at 48kHz/256 = ~375 blocks for release tails to decay
+        if self._active_notes == 0:
+            self._silent_blocks += 1
+            if self._silent_blocks > 400:
+                return np.zeros((2, n_samples), dtype=np.float64)
+
         with self._lock:
             # get_samples returns interleaved stereo int16, length = 2 * n_samples
             raw = self.fs.get_samples(n_samples)
 
-        self._last_raw_peak = int(np.abs(raw).max())
         self._render_count += 1
 
-        # Convert interleaved int16 stereo to (2, n) float64
-        interleaved = raw.astype(np.float64) / 32768.0
-        left = interleaved[0::2]
-        right = interleaved[1::2]
+        # Convert interleaved int16 stereo to separate L/R float64
+        inv_scale = 1.0 / 32768.0
+        left = raw[0::2].astype(np.float64) * inv_scale
+        right = raw[1::2].astype(np.float64) * inv_scale
+
+        # Smooth volume changes (~10ms time constant at 48kHz/128 block)
+        smooth_alpha = 1.0 - np.exp(-n_samples / (0.01 * self.sample_rate))
+        self._volume_cur += smooth_alpha * (self.volume - self._volume_cur)
 
         # Apply volume (dB curve for musical fader response)
-        if self.volume <= 0.0:
+        if self._volume_cur <= 0.001:
             left = np.zeros_like(left)
             right = np.zeros_like(right)
         else:
-            gain = 10.0 ** ((self.volume - 1.0) * 40.0 / 20.0)  # -40dB to 0dB
+            gain = 10.0 ** ((self._volume_cur - 1.0) * 40.0 / 20.0)  # -40dB to 0dB
             left = left * gain
             right = right * gain
 
-        # Apply low-cut filter (independent L/R)
+        # Apply low-cut filter — 24dB/oct (cascaded biquads)
         if self.lowcut_hz > 25.0:
-            left = self.lowcut_filter_l.process(left)
-            right = self.lowcut_filter_r.process(right)
+            for f in self.lowcut_filter_l:
+                left = f.process(left)
+            for f in self.lowcut_filter_r:
+                right = f.process(right)
 
-        # Apply high-cut filter (independent L/R)
+        # Apply high-cut filter — 24dB/oct (cascaded biquads)
         if self.highcut_hz < 19000.0:
-            left = self.highcut_filter_l.process(left)
-            right = self.highcut_filter_r.process(right)
+            for f in self.highcut_filter_l:
+                left = f.process(left)
+            for f in self.highcut_filter_r:
+                right = f.process(right)
 
         # Apply compressor (mono sidechain, stereo gain)
         if self.comp_enabled:
             mono = (left + right) * 0.5
             compressed = self._compress(mono)
-            ratio = np.where(np.abs(mono) > 1e-10, compressed / mono, 1.0)
+            safe_mono = np.where(np.abs(mono) > 1e-10, mono, 1.0)
+            ratio = compressed / safe_mono
             left = left * ratio
             right = right * ratio
 

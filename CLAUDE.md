@@ -5,10 +5,10 @@ Live MIDI synthesizer for Raspberry Pi 5 — worship ambient pad with piano laye
 ## Hardware
 
 - Pi 5 (8GB), Pi OS Trixie (Debian 13)
-- TTGK USB-C audio adapter (**BTL amplifier** — must invert R channel for mono, see below)
+- Behringer USB audio interface (PCM2902/Burr-Brown, 16-bit/48kHz)
+- TTGK USB-C audio adapter (backup — NOT a BTL amplifier, confirmed proper stereo)
 - Akai MPKmini2 USB MIDI keyboard
 - 5" capacitive DSI touchscreen (800x480, not yet arrived)
-- USB audio interface on order — will replace BTL adapter
 
 ## Architecture
 
@@ -18,14 +18,9 @@ Live MIDI synthesizer for Raspberry Pi 5 — worship ambient pad with piano laye
 - **FluidSynth rendered in Python pipeline** (not JACK driver): enables our own DSP (EQ, compressor) on piano audio
 - **WebSocket + HTTP**: UI served to browser/pywebview
 
-## Critical: BTL USB Audio Adapter
+## BTL Mode (legacy)
 
-The TTGK USB-C adapter uses Bridge-Tied Load output. Headphones hear L - R (difference).
-**Identical L/R = silence.** Fix: BTL_MODE sums to mono and inverts R in `jack_bridge.c`.
-
-`BTL_MODE = True` in `config.py`. Set `False` for normal audio interfaces / mixer.
-
-**Any mono signal (piano, click track) will be SILENT on BTL headphones with BTL_MODE=False.**
+`BTL_MODE = False` in `config.py` — correct for both the Behringer interface and the TTGK adapter (confirmed proper stereo, not BTL). Only set `True` if using a genuine Bridge-Tied Load adapter where headphones hear L - R.
 
 ## Build the C bridge
 
@@ -41,9 +36,11 @@ gcc -shared -fPIC -O2 -o jack_bridge.so jack_bridge.c -ljack -lpthread
 pw-jack ./venv/bin/python -m stave_synth.main --no-gui
 ```
 
-## Current state (2026-04-14)
+## Current state (2026-04-15)
 
-Working: synth pad (OSC1 + OSC2 with 5 waveforms), MIDI input, FluidSynth piano, lowpass filter (12/24dB selectable) with smooth log-space sweep, per-oscillator independent filters, per-oscillator octave shift, master volume (single gain stage in C bridge, dB curve), voice stealing (16 voices), unison with detune, piano EQ (6dB/oct one-pole hi/lo cut), piano compressor, FDN reverb (8 lines, Hadamard, stereo, modulated, hi/lo cut on feedback), shimmer (synthesized octave-up sines into reverb), sustain pedal (CC64), true stereo pipeline, presets (5 slots), MIDI auto-connect, MIDI CC learn, audio output selector, WebSocket UI with settings modal.
+Working: synth pad (OSC1 + OSC2 with 5 waveforms), MIDI input, FluidSynth piano, B3 organ engine (tonewheel + split Leslie), lowpass filter (12/24dB) with smooth log-space sweep + highpass low cut (filter fader ALT), per-oscillator independent filters, per-oscillator octave shift, master volume (single gain stage in C bridge, dB curve), voice stealing (16 voices), unison with detune (3 voices, 0.07st default), piano EQ (24dB/oct biquad hi/lo cut), piano compressor, FDN reverb (8 lines, Hadamard, stereo, modulated, hi/lo cut on feedback), shimmer (synthesized octave-up sines into reverb), sympathetic resonance (piano notes reinforce pad via reverb, stereo detuned, fade envelopes), chord drone (root+fifth one octave below with portamento), freeze with 2s capture window, sustain pedal (CC64) with transpose-safe note tracking, true stereo pipeline, presets (5 slots), MIDI auto-connect, MIDI CC learn, audio output selector, master 3-band parametric EQ + optional low cut (6/12/24dB), WebSocket UI with settings modal.
+
+Tested live in worship service 2026-04-15. CPU optimized: snap-to-zero muted oscs, ADSR sustain fast path, in-place numpy ops. 50% utilization on full worship load (8 voices + piano + shimmer + unison 3).
 
 ## Design principles
 

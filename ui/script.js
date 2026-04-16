@@ -17,6 +17,8 @@
     let transposeValue = 0;
     let shimmerEnabled = false;
     let freezeEnabled = false;
+    let droneEnabled = false;
+    let instrumentMode = "piano"; // "piano", "organ", "off"
     let osc1Octave = 0;  // -3 to +3
     let osc2Octave = 0;  // -3 to +3
     let pianoOctave = 0; // -3 to +3
@@ -28,10 +30,12 @@
     let osc1PreMute = 0.6;  // saved fader value before mute
     let osc2PreMute = 0.4;
 
+    const FADER_LABELS_PIANO = ["PIANO", "TONE", "COMP"];
+    const FADER_LABELS_ORGAN = ["ORGAN", "TONE", "LESLIE"];
     const FADER_LABELS = [
         ["OSC 1", "OSC 2"],
-        ["PIANO", "TONE", "COMP"],
-        ["FILTER"],
+        FADER_LABELS_PIANO,  // updated dynamically
+        ["FILTER", "LOW CUT"],
         ["FX", "SHIMMER"],
         ["MASTER"],
     ];
@@ -50,6 +54,7 @@
     const transposeDisplay = document.getElementById("transpose-display");
     const shimmerBtn = document.getElementById("shimmer-btn");
     const freezeBtn = document.getElementById("freeze-btn");
+    const droneBtn = document.getElementById("drone-btn");
     const menuBtn = document.getElementById("menu-btn");
     const settingsModal = document.getElementById("settings-modal");
     const settingsClose = document.getElementById("settings-close");
@@ -118,12 +123,26 @@
             freezeEnabled = msg.enabled;
             updateFreezeDisplay();
             updateShimmerDisplay();
+        } else if (msg.type === "drone_ack") {
+            droneEnabled = msg.enabled;
+            updateDroneDisplay();
         } else if (msg.type === "preset_saved") {
             markPresetSaved(msg.slot);
         } else if (msg.type === "preset_loaded") {
             markPresetLoaded(msg.slot);
         } else if (msg.type === "preset_deleted") {
             markPresetDeleted(msg.slot);
+        } else if (msg.type === "instrument_mode") {
+            instrumentMode = msg.mode;
+            updateInstrumentButton();
+            fader1AltState = 0;
+            altModes[1] = false;
+            var altBtn1 = document.querySelector('.alt-btn[data-id="1"]');
+            if (altBtn1) {
+                altBtn1.classList.remove("active");
+                faderColumns[1].classList.remove("alt-mode");
+            }
+            updateFader(1);
         } else if (msg.type === "midi_activity") {
             flashMidiIndicator();
         } else if (msg.type === "peak_level") {
@@ -148,6 +167,15 @@
                     clipIndicator.classList.remove("limiting");
                 }, 400);
             }
+        } else if (msg.type === "system_stats") {
+            var cpuEl = document.getElementById("cpu-val");
+            var ramEl = document.getElementById("ram-val");
+            var cpu = msg.cpu_percent;
+            var ram = msg.ram_mb;
+            cpuEl.textContent = cpu.toFixed(1) + "%";
+            ramEl.textContent = Math.round(ram) + "M";
+            cpuEl.className = cpu > 80 ? "crit" : cpu > 60 ? "warn" : "";
+            ramEl.className = ram > 500 ? "crit" : ram > 400 ? "warn" : "";
         } else if (msg.type === "midi_learn_active") {
             midiLearnActive = msg.active;
             midiLearnWaiting = false;
@@ -212,7 +240,17 @@
             altFaderValues[3] = s.synth_pad.shimmer_mix ?? 0.5;
             shimmerEnabled = s.synth_pad.shimmer_enabled ?? false;
             freezeEnabled = s.synth_pad.freeze_enabled ?? false;
+            droneEnabled = s.synth_pad.drone_enabled ?? false;
+            // Sync filter lowcut (ALT value)
+            if (s.synth_pad.filter_highpass_hz) {
+                altFaderValues[2] = Math.log(s.synth_pad.filter_highpass_hz / 20) / Math.log(2000 / 20);
+                altFaderValues[2] = Math.max(0, Math.min(1, altFaderValues[2]));
+            }
+            // Sync resonance button
+            resEnabled = s.synth_pad.sympathetic_enabled ?? false;
+            if (resBtn) resBtn.classList.toggle("active", resEnabled);
             updateFreezeDisplay();
+            updateDroneDisplay();
 
             // Sync mute state with actual blend values
             osc1Enabled = faderValues[0] > 0;
@@ -236,6 +274,15 @@
         if (s.master) {
             faderValues[4] = s.master.volume ?? 0.85;
             transposeValue = s.master.transpose_semitones ?? 0;
+            instrumentMode = s.master.instrument_mode ?? "piano";
+            updateInstrumentButton();
+            // Flatten eq_bands into master section for slider sync
+            var bands = s.master.eq_bands;
+            if (bands) {
+                if (bands[0]) { s.master.eq_low_freq = bands[0].freq_hz; s.master.eq_low_gain = bands[0].gain_db; }
+                if (bands[1]) { s.master.eq_mid_freq = bands[1].freq_hz; s.master.eq_mid_gain = bands[1].gain_db; }
+                if (bands[2]) { s.master.eq_high_freq = bands[2].freq_hz; s.master.eq_high_gain = bands[2].gain_db; }
+            }
         }
         if (s.ui) {
             syncPresetSlots(s.ui.preset_saved);
@@ -266,17 +313,20 @@
         fill.style.height = (value * 100) + "%";
 
         if (id === 1) {
-            label.textContent = FADER_LABELS[1][fader1AltState];
+            var labels1 = instrumentMode === "organ" ? FADER_LABELS_ORGAN : FADER_LABELS_PIANO;
+            label.textContent = labels1[fader1AltState];
         } else {
             label.textContent = FADER_LABELS[id][altModes[id] ? 1 : 0];
         }
 
         if (id === 2 || (id === 1 && fader1AltState === 1)) {
-            // Frequency display: filter cutoff or piano tone
+            // Frequency display: filter cutoff, lowcut, or piano tone
             var minF, maxF;
             if (id === 1) {
                 minF = (state && state.piano && state.piano.tone_range_min) ?? 200;
                 maxF = (state && state.piano && state.piano.tone_range_max) ?? 20000;
+            } else if (altModes[2]) {
+                minF = 20; maxF = 2000;
             } else {
                 minF = (state && state.synth_pad && state.synth_pad.filter_range_min) ?? 150;
                 maxF = (state && state.synth_pad && state.synth_pad.filter_range_max) ?? 20000;
@@ -298,6 +348,11 @@
         }
     }
 
+    // Fader send throttle: max ~33 messages/sec per fader to avoid zipper noise
+    var faderLastSendTime = [0, 0, 0, 0, 0];
+    var faderPendingSend = [null, null, null, null, null];
+    var FADER_THROTTLE_MS = 30;
+
     function setFaderValue(id, normalizedValue) {
         normalizedValue = Math.max(0, Math.min(1, normalizedValue));
 
@@ -317,12 +372,26 @@
 
         updateFader(id);
 
-        send({
-            type: "fader",
-            id: id,
-            value: normalizedValue,
-            alt: altVal,
-        });
+        var msg = { type: "fader", id: id, value: normalizedValue, alt: altVal };
+        var now = performance.now();
+        var elapsed = now - faderLastSendTime[id];
+
+        if (elapsed >= FADER_THROTTLE_MS) {
+            send(msg);
+            faderLastSendTime[id] = now;
+            if (faderPendingSend[id] !== null) {
+                clearTimeout(faderPendingSend[id]);
+                faderPendingSend[id] = null;
+            }
+        } else {
+            // Schedule a trailing send so final position always arrives
+            if (faderPendingSend[id] !== null) clearTimeout(faderPendingSend[id]);
+            faderPendingSend[id] = setTimeout(function () {
+                send(msg);
+                faderLastSendTime[id] = performance.now();
+                faderPendingSend[id] = null;
+            }, FADER_THROTTLE_MS - elapsed);
+        }
     }
 
     // ═══ Touch / Mouse Fader Interaction ═══
@@ -426,11 +495,27 @@
     });
 
     pianoBtn.addEventListener("click", function () {
-        pianoEnabled = !pianoEnabled;
-        pianoBtn.classList.toggle("active", pianoEnabled);
-        pianoBtn.classList.toggle("off", !pianoEnabled);
-        send({ type: "setting", section: "piano", param: "enabled", value: pianoEnabled });
+        send({ type: "instrument_cycle" });
     });
+
+    function updateInstrumentButton() {
+        if (instrumentMode === "piano") {
+            pianoBtn.textContent = "PIANO";
+            pianoBtn.classList.add("active");
+            pianoBtn.classList.remove("off");
+            pianoEnabled = true;
+        } else if (instrumentMode === "organ") {
+            pianoBtn.textContent = "ORGAN";
+            pianoBtn.classList.add("active");
+            pianoBtn.classList.remove("off");
+            pianoEnabled = true;
+        } else {
+            pianoBtn.textContent = "KEYS";
+            pianoBtn.classList.remove("active");
+            pianoBtn.classList.add("off");
+            pianoEnabled = false;
+        }
+    }
 
     // ═══ Presets — tap empty=save, tap filled=load, long-press filled=overwrite, double-tap filled=delete confirm ═══
     var presetLastTap = {};
@@ -452,8 +537,12 @@
     presetBtns.forEach(function (btn) {
         var slot = parseInt(btn.dataset.slot);
 
+        btn.addEventListener("contextmenu", function (e) { e.preventDefault(); });
+
         btn.addEventListener("pointerdown", function (e) {
-            // Start long-press timer for overwrite
+            e.preventDefault();  // prevent touch selection/highlight
+            presetLongTimer[slot] = "armed";
+            // Start long-press timer for overwrite (filled slots only)
             if (btn.classList.contains("filled")) {
                 presetLongTimer[slot] = setTimeout(function () {
                     presetLongTimer[slot] = null;
@@ -463,23 +552,19 @@
             }
         });
 
-        btn.addEventListener("pointerup", function () {
-            if (presetLongTimer[slot]) {
+        btn.addEventListener("pointerup", function (e) {
+            var wasLong = (presetLongTimer[slot] === null);  // long-press fired
+            if (typeof presetLongTimer[slot] === "number") {
                 clearTimeout(presetLongTimer[slot]);
-                presetLongTimer[slot] = null;
             }
-        });
 
-        btn.addEventListener("pointerleave", function () {
-            if (presetLongTimer[slot]) {
-                clearTimeout(presetLongTimer[slot]);
-                presetLongTimer[slot] = null;
+            if (wasLong) {
+                presetLongTimer[slot] = undefined;
+                return;  // long-press already handled save
             }
-        });
+            presetLongTimer[slot] = undefined;
 
-        btn.addEventListener("click", function (e) {
-            // If long-press already fired (timer was set to null), skip
-            if (presetLongTimer[slot] === null) return;
+            // Handle tap (replaces click handler since we preventDefault on pointerdown)
 
             // If clicking the delete X
             if (e.target.classList && e.target.classList.contains("preset-delete-x")) {
@@ -516,14 +601,20 @@
                 return;
             }
 
-            // Single tap — load (with small delay to rule out double-tap)
-            // But if we're in delete-confirm on THIS slot, cancel instead
+            // Single tap on filled — load
             if (presetDeleteSlot === slot) {
                 cancelDeleteConfirm();
                 return;
             }
 
             send({ type: "preset_load", slot: slot });
+        });
+
+        btn.addEventListener("pointerleave", function () {
+            if (typeof presetLongTimer[slot] === "number") {
+                clearTimeout(presetLongTimer[slot]);
+            }
+            presetLongTimer[slot] = undefined;
         });
     });
 
@@ -619,6 +710,8 @@
     function updateTransposeDisplay() {
         const prefix = transposeValue > 0 ? "+" : "";
         transposeDisplay.textContent = "T: " + prefix + transposeValue;
+        transposeUp.classList.toggle("shifted", transposeValue > 0);
+        transposeDown.classList.toggle("shifted", transposeValue < 0);
     }
 
     // ═══ Panic / Stop ═══
@@ -655,6 +748,27 @@
         freezeBtn.textContent = "FRZ";
         freezeBtn.classList.toggle("active", freezeEnabled);
     }
+
+    // ═══ Drone ═══
+    droneBtn.addEventListener("click", function () {
+        droneEnabled = !droneEnabled;
+        updateDroneDisplay();
+        send({ type: "drone_toggle", enabled: droneEnabled });
+    });
+
+    function updateDroneDisplay() {
+        droneBtn.classList.toggle("active", droneEnabled);
+    }
+
+    // ═══ Sympathetic Resonance (RES button) ═══
+    var resBtn = document.getElementById("res-btn");
+    var resEnabled = false;
+
+    resBtn.addEventListener("click", function () {
+        resEnabled = !resEnabled;
+        resBtn.classList.toggle("active", resEnabled);
+        send({ type: "setting", section: "synth_pad", param: "sympathetic_enabled", value: resEnabled });
+    });
 
     // ═══ Octave Controls ═══
     // Pad octave buttons: ALT-off = OSC1, ALT-on = OSC2
@@ -715,6 +829,12 @@
         "tone_range_min": true, "tone_range_max": true,
         "reverb_low_cut": true, "reverb_high_cut": true,
         "osc1_indep_cutoff": true, "osc2_indep_cutoff": true,
+        "eq_low_freq": true, "eq_mid_freq": true, "eq_high_freq": true,
+        "eq_lowcut_hz": true,
+    };
+
+    var EQ_GAIN_PARAMS = {
+        "eq_low_gain": true, "eq_mid_gain": true, "eq_high_gain": true,
     };
 
     function sliderToHz(slider01, minHz, maxHz) {
@@ -748,7 +868,9 @@
                 else displayValue = "C";
             } else if (param === "reverb_dry_wet" || param === "shimmer_mix" ||
                 param === "reverb_space" || param === "unison_spread" ||
-                param === "osc1_max" || param === "osc2_max") {
+                param === "osc1_max" || param === "osc2_max" ||
+                param === "leslie_depth" || param === "click_level" ||
+                param === "drive") {
                 sendValue = value / 100;
                 displayValue = Math.round(sendValue * 100) + "%";
             } else if (param === "reverb_predelay_ms") {
@@ -763,6 +885,10 @@
             } else if (param === "reverb_decay_seconds") {
                 sendValue = value / 10;
                 displayValue = sendValue.toFixed(1);
+            } else if (EQ_GAIN_PARAMS[param]) {
+                sendValue = value / 10;
+                var sign = sendValue > 0.05 ? "+" : "";
+                displayValue = sign + sendValue.toFixed(1) + "dB";
             } else if (FREQ_PARAMS[param]) {
                 // Log-scale: slider 0-1000 maps to minHz..maxHz exponentially
                 var minHz = parseFloat(slider.dataset.hzMin || slider.min);
@@ -799,6 +925,12 @@
         var osc2row = document.getElementById("osc2-indep-filter");
         if (osc1cb && osc1row) osc1row.style.display = osc1cb.checked ? "none" : "";
         if (osc2cb && osc2row) osc2row.style.display = osc2cb.checked ? "none" : "";
+        // Organ: hide independent filter sliders when shared filter is on
+        var organCb = document.querySelector('[data-param="shared_filter_enabled"]');
+        var organLow = document.getElementById("organ-lowcut-row");
+        var organHigh = document.getElementById("organ-highcut-row");
+        if (organCb && organLow) organLow.style.display = organCb.checked ? "none" : "";
+        if (organCb && organHigh) organHigh.style.display = organCb.checked ? "none" : "";
     }
     document.querySelectorAll(".setting-checkbox").forEach(function (checkbox) {
         checkbox.addEventListener("change", function () {
@@ -850,7 +982,9 @@
                 slider.value = value * 100;
             } else if (param === "reverb_dry_wet" || param === "shimmer_mix" ||
                 param === "reverb_space" || param === "unison_spread" ||
-                param === "osc1_max" || param === "osc2_max") {
+                param === "osc1_max" || param === "osc2_max" ||
+                param === "leslie_depth" || param === "click_level" ||
+                param === "drive") {
                 slider.value = value * 100;
             } else if (param === "reverb_predelay_ms") {
                 slider.value = value;
@@ -859,6 +993,8 @@
             } else if (param === "unison_detune") {
                 slider.value = value * 1000;
             } else if (param === "reverb_decay_seconds") {
+                slider.value = value * 10;
+            } else if (EQ_GAIN_PARAMS[param]) {
                 slider.value = value * 10;
             } else if (FREQ_PARAMS[param]) {
                 // Log-scale: Hz value → 0-1000 slider position
@@ -877,7 +1013,9 @@
                     else valueEl.textContent = "C";
                 } else if (param === "reverb_dry_wet" || param === "shimmer_mix" ||
                     param === "reverb_space" || param === "unison_spread" ||
-                    param === "osc1_max" || param === "osc2_max") {
+                    param === "osc1_max" || param === "osc2_max" ||
+                    param === "leslie_depth" || param === "click_level" ||
+                param === "drive") {
                     valueEl.textContent = Math.round(value * 100) + "%";
                 } else if (param === "reverb_predelay_ms") {
                     valueEl.textContent = Math.round(value) + "ms";
@@ -887,6 +1025,9 @@
                     valueEl.textContent = value.toFixed(3);
                 } else if (param === "reverb_decay_seconds") {
                     valueEl.textContent = value.toFixed(1);
+                } else if (EQ_GAIN_PARAMS[param]) {
+                    var sign = value > 0.05 ? "+" : "";
+                    valueEl.textContent = sign + value.toFixed(1) + "dB";
                 } else if (FREQ_PARAMS[param]) {
                     valueEl.textContent = formatHz(value);
                 } else {

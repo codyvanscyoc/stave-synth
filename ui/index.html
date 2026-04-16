@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>Stave Synth</title>
     <link rel="icon" type="image/png" href="logo.png">
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v=2">
 </head>
 <body>
     <div id="app">
@@ -22,9 +22,11 @@
             <button id="piano-btn" class="ctrl-btn toggle-btn active">PIANO</button>
             <button id="shimmer-btn" class="ctrl-btn ctrl-btn-sm">SHIM</button>
             <button id="freeze-btn" class="ctrl-btn ctrl-btn-sm hidden">FRZ</button>
+            <button id="drone-btn" class="ctrl-btn ctrl-btn-sm">DRONE</button>
             <button id="panic-btn" class="ctrl-btn panic-btn">STOP</button>
             <button id="menu-btn" class="ctrl-btn">MENU</button>
             <div id="midi-indicator">MIDI</div>
+            <div id="sys-monitor"><span id="cpu-val">--</span> <span id="ram-val">--</span></div>
             <div id="clip-indicator">LIMIT</div>
             <div id="status-indicator" class="disconnected">DISC</div>
             <div id="output-menu" class="hidden"></div>
@@ -70,6 +72,7 @@
                     <div class="fader-fill"></div>
                     <div class="fader-value">20kHz</div>
                 </div>
+                <button class="alt-btn" data-id="2">ALT</button>
             </div>
 
             <div class="fader-column" data-id="3">
@@ -78,7 +81,10 @@
                     <div class="fader-fill"></div>
                     <div class="fader-value">65%</div>
                 </div>
-                <button class="alt-btn" data-id="3">ALT</button>
+                <div class="fader-bottom-row">
+                    <button class="alt-btn" data-id="3">ALT</button>
+                    <button id="res-btn" class="ctrl-btn ctrl-btn-sm">RES</button>
+                </div>
             </div>
 
             <div class="fader-column" data-id="4">
@@ -120,6 +126,7 @@
                     <button class="settings-tab active" data-tab="synth">SYNTH PAD</button>
                     <button class="settings-tab" data-tab="piano">PIANO</button>
                     <button class="settings-tab" data-tab="reverb">REVERB</button>
+                    <button class="settings-tab" data-tab="organ">ORGAN</button>
                     <button class="settings-tab" data-tab="global">GLOBAL</button>
                     <button id="settings-close" class="ctrl-btn">X</button>
                 </div>
@@ -188,11 +195,6 @@
                             <span class="setting-label">Unison Detune</span>
                             <input type="range" class="setting-slider" data-section="synth_pad" data-param="unison_detune" min="0" max="100" value="50">
                             <span class="setting-value">0.05</span>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">Unison Spread</span>
-                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="unison_spread" min="0" max="100" value="70">
-                            <span class="setting-value">70%</span>
                         </div>
 
                         <div class="setting-section">STEREO PAN</div>
@@ -354,6 +356,13 @@
                             <span class="setting-value">7000</span>
                         </div>
 
+                        <div class="setting-row setting-row-checkbox">
+                            <label class="setting-checkbox-label">
+                                <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="reverb_filter_enabled">
+                                <span>Route reverb through main filter</span>
+                            </label>
+                        </div>
+
                         <div class="setting-section">SHIMMER</div>
                         <div class="setting-row">
                             <span class="setting-label">Shimmer Mix</span>
@@ -362,26 +371,127 @@
                         </div>
                     </div>
 
+                    <!-- Organ Tab -->
+                    <div class="settings-panel" data-panel="organ">
+                        <div class="setting-section">FILTER</div>
+                        <div class="setting-row setting-row-checkbox">
+                            <label class="setting-checkbox-label">
+                                <input type="checkbox" class="setting-checkbox" data-section="organ" data-param="shared_filter_enabled">
+                                <span>Route through main filter</span>
+                            </label>
+                        </div>
+                        <div class="setting-row" id="organ-lowcut-row">
+                            <span class="setting-label">Low Cut (Hz)</span>
+                            <input type="range" class="setting-slider" data-section="organ" data-param="filter_lowcut_hz" min="0" max="1000" value="500" data-hz-min="20" data-hz-max="500">
+                            <span class="setting-value">40Hz</span>
+                        </div>
+                        <div class="setting-row" id="organ-highcut-row">
+                            <span class="setting-label">High Cut (Hz)</span>
+                            <input type="range" class="setting-slider" data-section="organ" data-param="filter_highcut_hz" min="0" max="1000" value="800" data-hz-min="200" data-hz-max="12000">
+                            <span class="setting-value">8kHz</span>
+                        </div>
+                        <div class="setting-section">DRIVE</div>
+                        <div class="setting-row">
+                            <span class="setting-label">Overdrive</span>
+                            <input type="range" class="setting-slider" data-section="organ" data-param="drive" min="0" max="100" value="15">
+                            <span class="setting-value">15%</span>
+                        </div>
+                        <div class="setting-section">REGISTRATION</div>
+                        <div class="setting-row">
+                            <span class="setting-label">Preset</span>
+                            <select class="setting-select" data-section="organ" data-param="preset">
+                                <option value="mellow">Mellow (Fix You)</option>
+                                <option value="full">Full</option>
+                                <option value="gospel">Gospel</option>
+                                <option value="jazz">Jazz</option>
+                            </select>
+                        </div>
+                        <div class="setting-section">LESLIE</div>
+                        <div class="setting-row">
+                            <span class="setting-label">Leslie Speed</span>
+                            <select class="setting-select" data-section="organ" data-param="leslie_speed">
+                                <option value="slow">Slow (Chorale)</option>
+                                <option value="fast">Fast</option>
+                            </select>
+                        </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Leslie Depth</span>
+                            <input type="range" class="setting-slider" data-section="organ" data-param="leslie_depth" min="0" max="100" value="30">
+                            <span class="setting-value">30%</span>
+                        </div>
+                        <div class="setting-section">KEY CLICK</div>
+                        <div class="setting-row setting-row-checkbox">
+                            <label class="setting-checkbox-label">
+                                <input type="checkbox" class="setting-checkbox" data-section="organ" data-param="click_enabled" checked>
+                                <span>Key Click</span>
+                            </label>
+                        </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Click Level</span>
+                            <input type="range" class="setting-slider" data-section="organ" data-param="click_level" min="0" max="100" value="30">
+                            <span class="setting-value">30%</span>
+                        </div>
+                    </div>
+
                     <!-- Global Tab -->
                     <div class="settings-panel" data-panel="global">
-                        <div class="setting-section">STATUS</div>
-                        <div class="setting-row">
-                            <span class="setting-label">Audio Status</span>
-                            <span class="setting-value" id="audio-status">--</span>
+                        <div class="setting-section">LOW CUT</div>
+                        <div class="setting-row setting-row-checkbox">
+                            <label class="setting-checkbox-label">
+                                <input type="checkbox" class="setting-checkbox" data-section="master" data-param="eq_lowcut_enabled">
+                                <span>Low Cut Enabled</span>
+                            </label>
                         </div>
                         <div class="setting-row">
-                            <span class="setting-label">MIDI Status</span>
-                            <span class="setting-value" id="midi-status">--</span>
+                            <span class="setting-label">Frequency</span>
+                            <input type="range" class="setting-slider" data-section="master" data-param="eq_lowcut_hz" min="0" max="1000" value="500" data-hz-min="20" data-hz-max="500">
+                            <span class="setting-value">80Hz</span>
                         </div>
                         <div class="setting-row">
-                            <span class="setting-label">WebSocket</span>
-                            <span class="setting-value" id="ws-status">--</span>
+                            <span class="setting-label">Slope</span>
+                            <select class="setting-select" data-section="master" data-param="eq_lowcut_slope">
+                                <option value="6">6 dB/oct</option>
+                                <option value="12" selected>12 dB/oct</option>
+                                <option value="24">24 dB/oct</option>
+                            </select>
+                        </div>
+
+                        <div class="setting-section">MASTER EQ</div>
+                        <div class="setting-row">
+                            <span class="setting-label">Low Freq</span>
+                            <input type="range" class="setting-slider" data-section="master" data-param="eq_low_freq" min="0" max="1000" value="500" data-hz-min="60" data-hz-max="500">
+                            <span class="setting-value">200Hz</span>
+                        </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Low Gain</span>
+                            <input type="range" class="setting-slider" data-section="master" data-param="eq_low_gain" min="-120" max="120" value="0">
+                            <span class="setting-value">0dB</span>
+                        </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Mid Freq</span>
+                            <input type="range" class="setting-slider" data-section="master" data-param="eq_mid_freq" min="0" max="1000" value="500" data-hz-min="300" data-hz-max="5000">
+                            <span class="setting-value">1.0kHz</span>
+                        </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Mid Gain</span>
+                            <input type="range" class="setting-slider" data-section="master" data-param="eq_mid_gain" min="-120" max="120" value="0">
+                            <span class="setting-value">0dB</span>
+                        </div>
+                        <div class="setting-row">
+                            <span class="setting-label">High Freq</span>
+                            <input type="range" class="setting-slider" data-section="master" data-param="eq_high_freq" min="0" max="1000" value="500" data-hz-min="2000" data-hz-max="16000">
+                            <span class="setting-value">5.0kHz</span>
+                        </div>
+                        <div class="setting-row">
+                            <span class="setting-label">High Gain</span>
+                            <input type="range" class="setting-slider" data-section="master" data-param="eq_high_gain" min="-120" max="120" value="0">
+                            <span class="setting-value">0dB</span>
                         </div>
 
                         <div class="setting-section">FADERS</div>
                         <div class="help-text">
                             <b>OSC 1</b> — Pad volume. ALT: OSC 2 volume.<br>
-                            <b>PIANO</b> — Piano volume. ALT cycles: Tone (high cut) → Compressor.<br>
+                            <b>PIANO/ORGAN</b> — Volume. ALT cycles: Tone (high cut) → Compressor/Leslie.<br>
                             <b>FILTER</b> — Lowpass cutoff (standalone, no ALT).<br>
                             <b>FX</b> — Reverb dry/wet. ALT: Shimmer volume.<br>
                             <b>MASTER</b> — Master output volume.
@@ -405,7 +515,8 @@
 
                         <div class="setting-section">TOP BAR</div>
                         <div class="help-text">
-                            <b>OSC1 / OSC2 / PIANO</b> — Tap to mute/unmute.<br>
+                            <b>OSC1 / OSC2</b> — Tap to mute/unmute.<br>
+                            <b>PIANO/ORGAN</b> — Tap to cycle: Piano → Organ → Off.<br>
                             <b>SHIM</b> — Toggle shimmer (octave-up shine on pad).<br>
                             <b>FRZ</b> — Freeze reverb tail (appears when shimmer is on).<br>
                             <b>T: +/-</b> — Transpose all MIDI input in semitones.<br>
@@ -424,6 +535,6 @@
 
     </div>
 
-    <script src="script.js"></script>
+    <script src="script.js?v=4"></script>
 </body>
 </html>

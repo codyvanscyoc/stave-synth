@@ -97,6 +97,12 @@ html, body {
     color: var(--bg);
 }
 
+#transpose-up.shifted, #transpose-down.shifted {
+    background: #B06EFF;
+    border-color: #B06EFF;
+    color: var(--bg);
+}
+
 .ctrl-btn.toggle-btn {
     border-color: var(--border-green);
     color: var(--text-green-dim);
@@ -129,6 +135,28 @@ html, body {
 #freeze-btn.active {
     background: #4D9EFF;
     border-color: #4D9EFF;
+    color: var(--bg);
+}
+
+#drone-btn {
+    border-color: #B06EFF;
+    color: #6B3FA0;
+}
+
+#drone-btn.active {
+    background: #B06EFF;
+    border-color: #B06EFF;
+    color: var(--bg);
+}
+
+#res-btn {
+    border-color: #D4A030;
+    color: #8A6A20;
+}
+
+#res-btn.active {
+    background: linear-gradient(135deg, #D4A030, #E8C060);
+    border-color: #D4A030;
     color: var(--bg);
 }
 
@@ -165,6 +193,19 @@ html, body {
     color: var(--bg);
     background: var(--text-green);
 }
+
+#sys-monitor {
+    font-size: clamp(8px, 1.5vw, 11px);
+    padding: 0.3vh 0.8vw;
+    border: 1px solid var(--bg);
+    color: var(--text-muted);
+    font-family: var(--font);
+    white-space: nowrap;
+    min-width: 8ch;
+    text-align: center;
+}
+#sys-monitor .warn { color: #FFB020; }
+#sys-monitor .crit { color: #FF4D6A; }
 
 #clip-indicator {
     font-size: clamp(8px, 1.5vw, 11px);
@@ -276,14 +317,29 @@ html, body {
     min-height: 0;
 }
 
-/* Orange fader: filter column + any column in alt mode */
-.fader-column[data-id="2"] .fader-label,
-.fader-column[data-id="2"] .fader-track,
-.fader-column.alt-mode .fader-label,
-.fader-column.alt-mode .fader-track {
+/* Orange fader: filter column (normal) + other columns in alt mode */
+.fader-column[data-id="2"]:not(.alt-mode) .fader-label,
+.fader-column[data-id="2"]:not(.alt-mode) .fader-track,
+.fader-column.alt-mode:not([data-id="2"]) .fader-label,
+.fader-column.alt-mode:not([data-id="2"]) .fader-track {
     --fader-color: var(--border-orange);
     --fader-fill: var(--fill-orange);
     --fader-text: var(--text-orange);
+}
+
+/* Purple fader: filter column in ALT (low cut) mode */
+.fader-column[data-id="2"].alt-mode .fader-label,
+.fader-column[data-id="2"].alt-mode .fader-track,
+.fader-column[data-id="2"].alt-mode .alt-btn {
+    --fader-color: #B06EFF;
+    --fader-fill: #B06EFF;
+    --fader-text: #B06EFF;
+    border-color: #B06EFF;
+    color: #B06EFF;
+}
+.fader-column[data-id="2"].alt-mode .alt-btn.active {
+    background: #B06EFF;
+    color: var(--bg);
 }
 
 .fader-fill {
@@ -322,17 +378,18 @@ html, body {
     border: 1px solid var(--border-green);
     color: var(--text-green-dim);
     font-family: var(--font);
-    font-size: clamp(9px, 1.5vw, 12px);
-    padding: 0.3vh 1vw;
+    font-size: clamp(11px, 2vw, 15px);
+    padding: 0.8vh 2vw;
     cursor: pointer;
-    min-height: 2.5vh;
+    min-height: 4vh;
+    min-width: 3.5em;
     flex-shrink: 0;
 }
 
 .octave-controls {
     display: flex;
     align-items: center;
-    gap: 0.2vw;
+    gap: 0.4vw;
 }
 
 .oct-btn {
@@ -340,11 +397,11 @@ html, body {
     border: 1px solid var(--border-green);
     color: var(--text-green-dim);
     font-family: var(--font);
-    font-size: clamp(8px, 1.3vw, 10px);
-    padding: 0.2vh 0.5vw;
+    font-size: clamp(11px, 2vw, 15px);
+    padding: 0.6vh 1.2vw;
     cursor: pointer;
-    min-width: 1.5em;
-    min-height: 2vh;
+    min-width: 2.5em;
+    min-height: 4vh;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -356,7 +413,7 @@ html, body {
 }
 
 .oct-display {
-    font-size: clamp(8px, 1.3vw, 10px);
+    font-size: clamp(10px, 1.8vw, 14px);
     color: var(--text-green);
     min-width: 1.5em;
     text-align: center;
@@ -444,6 +501,9 @@ html, body {
     cursor: pointer;
     position: relative;
     transition: background 0.2s, border-color 0.2s;
+    touch-action: none;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
 }
 
 /* Empty slot: dim dashed border */

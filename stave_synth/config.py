@@ -13,7 +13,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 
 # Audio
 SAMPLE_RATE = 48000
-BUFFER_SIZE = 256
+BUFFER_SIZE = 128
 BIT_DEPTH = 24
 
 # Network
@@ -45,7 +45,7 @@ DEFAULT_STATE = {
         "osc1_waveform": "sine",
         "osc2_waveform": "square",
         "unison_voices": 1,
-        "unison_detune": 0.20,
+        "unison_detune": 0.07,
         "unison_spread": 0.85,
         "osc1_pan": 0.0,
         "osc2_pan": 0.0,
@@ -59,6 +59,7 @@ DEFAULT_STATE = {
         "filter_cutoff_hz": 8000,
         "filter_resonance": 0.707,
         "filter_slope": 12,
+        "filter_highpass_hz": 20,
         "filter_range_min": 150,
         "filter_range_max": 20000,
         "osc1_filter_enabled": True,
@@ -72,9 +73,12 @@ DEFAULT_STATE = {
         "reverb_high_cut": 7000,
         "reverb_space": 0.0,
         "reverb_predelay_ms": 25.0,
+        "reverb_filter_enabled": False,
         "shimmer_enabled": False,
         "shimmer_mix": 0.5,
         "freeze_enabled": False,
+        "sympathetic_enabled": False,
+        "drone_enabled": False,
         "volume": 0.8,
         "osc1_octave": 0,
         "osc2_octave": 0,
@@ -94,10 +98,33 @@ DEFAULT_STATE = {
         "comp_ratio": 3.0,
         "comp_makeup_db": 0,
     },
+    "organ": {
+        "enabled": False,
+        "preset": "mellow",
+        "drawbars": [8, 0, 6, 4, 0, 0, 0, 0, 0],
+        "leslie_speed": "slow",
+        "leslie_depth": 0.3,
+        "click_enabled": True,
+        "click_level": 0.3,
+        "drive": 0.05,
+        "filter_highcut_hz": 8000,
+        "filter_lowcut_hz": 40,
+        "volume": 0.5,
+        "shared_filter_enabled": False,
+    },
     "master": {
         "volume": 0.85,
         "transpose_semitones": 0,
         "piano_octave": 0,
+        "instrument_mode": "piano",
+        "eq_bands": [
+            {"freq_hz": 200, "gain_db": 0.0, "q": 1.5},
+            {"freq_hz": 1000, "gain_db": 0.0, "q": 1.5},
+            {"freq_hz": 5000, "gain_db": 0.0, "q": 1.5},
+        ],
+        "eq_lowcut_enabled": False,
+        "eq_lowcut_hz": 80,
+        "eq_lowcut_slope": 12,
     },
     "midi_cc_map": {},
     "ui": {

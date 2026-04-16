@@ -18,6 +18,7 @@ from .synth_engine import SynthEngine
 from .jack_engine import JackEngine
 from .midi_handler import MidiHandler
 from .fluidsynth_player import FluidSynthPlayer
+from .organ_engine import OrganEngine
 from .preset_manager import PresetManager
 from .websocket_server import WebSocketServer
 
@@ -67,7 +68,7 @@ def ensure_jack_running():
                 break
         subprocess.Popen(
             ["jackd", "-R", "-d", "alsa", "-d", f"hw:{card}",
-             "-r", "48000", "-p", "256", "-n", "2", "-S"],
+             "-r", "48000", "-p", "128", "-n", "2", "-S"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -92,6 +93,8 @@ class StaveSynth:
         self.midi = MidiHandler()
         self.presets = PresetManager()
         self.piano = None
+        self.organ = None
+        self.instrument_mode = "piano"  # "piano", "organ", "off"
         self.jack = None
         self.ws_server = None
 
@@ -136,6 +139,8 @@ class StaveSynth:
             return self._handle_freeze_toggle(msg)
         elif msg_type == "octave":
             return self._handle_octave(msg)
+        elif msg_type == "drone_toggle":
+            return self._handle_drone_toggle(msg)
         elif msg_type == "get_state":
             return {"type": "state", "state": self.state}
         elif msg_type == "debug":
@@ -185,6 +190,8 @@ class StaveSynth:
             }
         elif msg_type == "test_piano":
             return self._handle_test_piano()
+        elif msg_type == "instrument_cycle":
+            return self._handle_instrument_cycle()
         elif msg_type == "setting":
             return self._handle_setting(msg)
         elif msg_type == "midi_learn_start":
@@ -222,40 +229,61 @@ class StaveSynth:
                 self.state["synth_pad"]["osc2_blend"] = scaled
                 self.synth.osc2_blend = scaled
 
-        elif fader_id == 1:  # Piano: Volume(0) / Tone(1) / Compressor(2)
+        elif fader_id == 1:  # Piano/Organ: Volume(0) / Tone(1) / Comp or Leslie(2)
+            alt_state = int(alt) if isinstance(alt, (int, float)) else (1 if alt else 0)
+            if self.instrument_mode == "organ" and self.organ:
+                if alt_state == 0:
+                    self.state["organ"]["volume"] = value
+                    self.organ.set_volume(value)
+                elif alt_state == 1:
+                    # Organ tone: map to highcut (200Hz - 8kHz range)
+                    freq = 200.0 * ((8000.0 / 200.0) ** value)
+                    self.state["organ"]["filter_highcut_hz"] = freq
+                    self.organ.set_highcut(freq)
+                elif alt_state == 2:
+                    # Leslie depth: 0=none, 1=full
+                    self.state["organ"]["leslie_depth"] = value
+                    self.organ.leslie_depth = value
+            else:
+                # Piano mode (original behavior)
+                if alt_state == 0:
+                    self.state["piano"]["volume"] = value
+                    if self.piano:
+                        self.piano.set_volume(value)
+                elif alt_state == 1:
+                    # Map 0-1 within the configured tone range
+                    t_min = self.state["piano"].get("tone_range_min", 200)
+                    t_max = self.state["piano"].get("tone_range_max", 20000)
+                    freq = t_min * ((t_max / t_min) ** value)
+                    self.state["piano"]["filter_highcut_hz"] = freq
+                    if self.piano:
+                        self.piano.set_highcut(freq)
+                elif alt_state == 2:
+                    # Compressor amount: 0=off, 1=heavy compression
+                    if value > 0.01:
+                        self.state["piano"]["comp_enabled"] = True
+                        self.state["piano"]["comp_threshold_db"] = -30.0 * value
+                        self.state["piano"]["comp_makeup_db"] = 6.0 * value
+                    else:
+                        self.state["piano"]["comp_enabled"] = False
+                    if self.piano:
+                        self.piano.comp_enabled = self.state["piano"]["comp_enabled"]
+                        self.piano.comp_threshold_db = self.state["piano"].get("comp_threshold_db", -12)
+                        self.piano.comp_makeup_db = self.state["piano"].get("comp_makeup_db", 0)
+
+        elif fader_id == 2:  # Filter: normal = highcut, ALT = lowcut
             alt_state = int(alt) if isinstance(alt, (int, float)) else (1 if alt else 0)
             if alt_state == 0:
-                self.state["piano"]["volume"] = value
-                if self.piano:
-                    self.piano.set_volume(value)
-            elif alt_state == 1:
-                # Map 0-1 within the configured tone range
-                t_min = self.state["piano"].get("tone_range_min", 200)
-                t_max = self.state["piano"].get("tone_range_max", 20000)
-                freq = t_min * ((t_max / t_min) ** value)
-                self.state["piano"]["filter_highcut_hz"] = freq
-                if self.piano:
-                    self.piano.set_highcut(freq)
-            elif alt_state == 2:
-                # Compressor amount: 0=off, 1=heavy compression
-                # Maps to threshold: 0dB (off) down to -30dB (heavy)
-                if value > 0.01:
-                    self.state["piano"]["comp_enabled"] = True
-                    self.state["piano"]["comp_threshold_db"] = -30.0 * value
-                    self.state["piano"]["comp_makeup_db"] = 6.0 * value
-                else:
-                    self.state["piano"]["comp_enabled"] = False
-                if self.piano:
-                    self.piano.comp_enabled = self.state["piano"]["comp_enabled"]
-                    self.piano.comp_threshold_db = self.state["piano"].get("comp_threshold_db", -12)
-                    self.piano.comp_makeup_db = self.state["piano"].get("comp_makeup_db", 0)
-
-        elif fader_id == 2:  # Filter (standalone, no alt)
-            f_min = self.state["synth_pad"].get("filter_range_min", 150)
-            f_max = self.state["synth_pad"].get("filter_range_max", 20000)
-            freq = f_min * ((f_max / f_min) ** value)
-            self.state["synth_pad"]["filter_cutoff_hz"] = freq
-            self.synth.filter_cutoff = freq
+                f_min = self.state["synth_pad"].get("filter_range_min", 150)
+                f_max = self.state["synth_pad"].get("filter_range_max", 20000)
+                freq = f_min * ((f_max / f_min) ** value)
+                self.state["synth_pad"]["filter_cutoff_hz"] = freq
+                self.synth.filter_cutoff = freq
+            else:
+                hp_min, hp_max = 20.0, 2000.0
+                freq = hp_min * ((hp_max / hp_min) ** value)
+                self.state["synth_pad"]["filter_highpass_hz"] = freq
+                self.synth.filter_highpass_hz = freq
 
         elif fader_id == 3:  # FX: Reverb Mix(0) / Shimmer Vol(1)
             alt_state = int(alt) if isinstance(alt, (int, float)) else (1 if alt else 0)
@@ -302,7 +330,11 @@ class StaveSynth:
             self.synth.update_params(state.get("synth_pad", {}))
             if self.piano:
                 self.piano.update_params(state.get("piano", {}))
+            if self.organ:
+                self.organ.update_params(state.get("organ", {}))
             master = state.get("master", {})
+            self.instrument_mode = master.get("instrument_mode", "piano")
+            self._apply_instrument_mode()
             if self.jack:
                 self.jack.master_volume = master.get("volume", 0.85)
                 self.jack.transpose = master.get("transpose_semitones", 0)
@@ -379,11 +411,67 @@ class StaveSynth:
         self.state["synth_pad"]["freeze_enabled"] = enabled
         return {"type": "freeze_ack", "enabled": enabled}
 
+    def _handle_drone_toggle(self, msg: dict) -> dict:
+        enabled = msg.get("enabled")
+        if enabled is None:
+            enabled = not self.synth.drone_enabled
+        self.synth.drone_enabled = enabled
+        if not enabled:
+            self.synth.drone_off()
+        self.state["synth_pad"]["drone_enabled"] = enabled
+        return {"type": "drone_ack", "enabled": enabled}
+
+    def _handle_instrument_cycle(self) -> dict:
+        """Cycle keyboard instrument: piano → organ → off → piano."""
+        modes = ["piano", "organ", "off"]
+        idx = modes.index(self.instrument_mode) if self.instrument_mode in modes else 0
+        self.instrument_mode = modes[(idx + 1) % len(modes)]
+        self._apply_instrument_mode()
+        logger.info("Instrument mode: %s", self.instrument_mode)
+        return {"type": "instrument_mode", "mode": self.instrument_mode}
+
+    def _apply_instrument_mode(self):
+        """Enable/disable piano and organ based on current instrument mode."""
+        if self.instrument_mode == "piano":
+            if self.piano:
+                self.piano.enabled = True
+            if self.organ:
+                self.organ.enabled = False
+                self.organ.all_notes_off()
+            if self.jack:
+                self.jack.piano_player = self.piano
+                self.jack.piano_callback = self.piano.midi_callback if self.piano else None
+        elif self.instrument_mode == "organ":
+            if self.piano:
+                self.piano.enabled = False
+                self.piano.all_notes_off()
+            if self.organ:
+                self.organ.enabled = True
+            if self.jack:
+                self.jack.piano_player = self.organ
+                self.jack.piano_callback = self.organ.midi_callback
+        else:  # "off"
+            if self.piano:
+                self.piano.enabled = False
+                self.piano.all_notes_off()
+            if self.organ:
+                self.organ.enabled = False
+                self.organ.all_notes_off()
+            if self.jack:
+                self.jack.piano_player = None
+                self.jack.piano_callback = None
+        self.state["master"]["instrument_mode"] = self.instrument_mode
+        # Sync organ shared filter setting
+        if self.jack:
+            self.jack.organ_filter_enabled = self.state.get("organ", {}).get("shared_filter_enabled", False)
+
     def _handle_panic(self) -> dict:
         """All notes off on every instrument."""
         self.synth.all_notes_off()
         if self.piano:
             self.piano.all_notes_off()
+        if self.organ:
+            self.organ.all_notes_off()
         logger.info("PANIC — all notes off")
         return {"type": "panic_ack"}
 
@@ -412,7 +500,6 @@ class StaveSynth:
 
     def _handle_get_audio_outputs(self) -> dict:
         """List available audio sinks via pw-jack."""
-        import subprocess
         outputs = []
         current = None
         try:
@@ -447,7 +534,6 @@ class StaveSynth:
 
     def _handle_set_audio_output(self, msg: dict) -> dict:
         """Route StaveSynth JACK output to the selected sink."""
-        import subprocess
         target = msg.get("name", "")
         try:
             # Disconnect all current output connections
@@ -504,6 +590,45 @@ class StaveSynth:
                     self.piano.update_params({param: value})
                     if param == "enabled" and not value:
                         self.piano.all_notes_off()
+        elif section == "organ":
+            if param in self.state["organ"]:
+                self.state["organ"][param] = value
+                if param == "shared_filter_enabled":
+                    if self.jack:
+                        self.jack.organ_filter_enabled = bool(value)
+                elif self.organ:
+                    self.organ.update_params({param: value})
+        elif section == "master":
+            _EQ_MAP = {
+                "eq_low_gain": (0, "gain_db"), "eq_mid_gain": (1, "gain_db"), "eq_high_gain": (2, "gain_db"),
+                "eq_low_freq": (0, "freq_hz"), "eq_mid_freq": (1, "freq_hz"), "eq_high_freq": (2, "freq_hz"),
+            }
+            if param in ("eq_lowcut_enabled", "eq_lowcut_hz", "eq_lowcut_slope"):
+                self.state["master"][param] = value
+                if self.jack:
+                    self.jack.set_master_hp(
+                        float(self.state["master"].get("eq_lowcut_hz", 80)),
+                        int(self.state["master"].get("eq_lowcut_slope", 12)),
+                        bool(self.state["master"].get("eq_lowcut_enabled", False)),
+                    )
+            elif param in _EQ_MAP:
+                idx, field = _EQ_MAP[param]
+                bands = self.state["master"].get("eq_bands", [])
+                if idx < len(bands):
+                    bands[idx][field] = float(value)
+                    if self.jack:
+                        self.jack.set_master_eq(bands)
+            elif param == "eq_bands":
+                self.state["master"]["eq_bands"] = value
+                if self.jack:
+                    self.jack.set_master_eq(value)
+            elif param.startswith("eq_band_"):
+                idx = int(param.split("_")[-1])
+                bands = self.state["master"].get("eq_bands", [])
+                if idx < len(bands):
+                    bands[idx] = value
+                    if self.jack:
+                        self.jack.set_master_eq(bands)
 
         return {"type": "setting_ack", "section": section, "param": param, "value": value}
 
@@ -611,11 +736,15 @@ class StaveSynth:
 
     def _autosave_loop(self):
         """Periodically save state and broadcast peak levels."""
+        import psutil
+        self._proc = psutil.Process()
         peak_counter = 0
+        stats_counter = 0
         silence_ticks = 0  # how many 200ms ticks we've been silent
         while self._running:
             time.sleep(0.2)  # Check peaks every 200ms
             peak_counter += 1
+            stats_counter += 1
 
             # Broadcast peak level for meters
             if self.jack and self.ws_server:
@@ -627,6 +756,20 @@ class StaveSynth:
                     # Send zeros for ~1 second after signal stops to clear meters
                     self.ws_server.broadcast_sync({"type": "peak_level", "peak": 0.0})
                     silence_ticks += 1
+
+            # Broadcast CPU/RAM stats every ~1 second (every 5th tick)
+            if stats_counter >= 5 and self.ws_server:
+                stats_counter = 0
+                try:
+                    cpu = self._proc.cpu_percent(interval=None)
+                    mem = self._proc.memory_info()
+                    self.ws_server.broadcast_sync({
+                        "type": "system_stats",
+                        "cpu_percent": round(cpu, 1),
+                        "ram_mb": round(mem.rss / 1048576, 1),
+                    })
+                except Exception:
+                    pass
 
             # Autosave every AUTOSAVE_INTERVAL
             if peak_counter >= int(AUTOSAVE_INTERVAL / 0.2):
@@ -659,7 +802,12 @@ class StaveSynth:
             logger.warning("FluidSynth not available: %s (piano disabled)", e)
             self.piano = None
 
-        # Start JACK engine (piano audio rendered through our pipeline)
+        # Start organ engine (lightweight, no external deps)
+        self.organ = OrganEngine()
+        self.organ.update_params(self.state.get("organ", {}))
+        self.instrument_mode = self.state.get("master", {}).get("instrument_mode", "piano")
+
+        # Start JACK engine (piano/organ audio rendered through our pipeline)
         try:
             piano_cb = self.piano.midi_callback if self.piano else None
             self.jack = JackEngine(
@@ -672,11 +820,24 @@ class StaveSynth:
             self.jack.master_volume = self.state.get("master", {}).get("volume", 0.85)
             self.jack.transpose = self.state.get("master", {}).get("transpose_semitones", 0)
             self.jack.piano_octave = self.state.get("master", {}).get("piano_octave", 0)
+            eq_bands = self.state.get("master", {}).get("eq_bands", [])
+            if eq_bands:
+                self.jack.set_master_eq(eq_bands)
+            master = self.state.get("master", {})
+            if master.get("eq_lowcut_enabled"):
+                self.jack.set_master_hp(
+                    float(master.get("eq_lowcut_hz", 80)),
+                    int(master.get("eq_lowcut_slope", 12)),
+                    True,
+                )
             self.jack.start()
         except Exception as e:
             logger.error("Failed to start JACK engine: %s", e)
             logger.info("Make sure JACK is running: jackd -d alsa -r 48000 -p 256")
             sys.exit(1)
+
+        # Apply instrument mode (swaps piano_player/callback if organ is active)
+        self._apply_instrument_mode()
 
         # Start WebSocket + HTTP server
         self.ws_server = WebSocketServer(message_handler=self._handle_ws_message)
@@ -786,6 +947,8 @@ class StaveSynth:
             self.jack.stop()
         if self.piano:
             self.piano.stop()
+        if self.organ:
+            self.organ.all_notes_off()
         if self.ws_server:
             self.ws_server.stop()
 

@@ -48,6 +48,7 @@ static jack_port_t   *port_out_r = NULL;
 static jack_port_t   *port_midi  = NULL;
 
 static volatile float master_volume = 0.85f;
+static float          master_volume_smooth = 0.85f; /* smoothed value for zipper-free changes */
 static volatile int   btl_mode      = 0;     /* 0 = normal stereo, 1 = invert R */
 
 /* ── Stats ── */
@@ -83,12 +84,15 @@ static int process_callback(jack_nframes_t nframes, void *arg) {
         uint32_t slot = ring_read % RING_SLOTS;
         const float *src_l = ring_l[slot];
         const float *src_r = ring_r[slot];
-        float vol = master_volume;
+        float vol_target = master_volume;
+        /* Per-sample one-pole smoother: ~5ms at 48kHz (alpha ≈ 0.004) */
+        float alpha = 1.0f - 0.99584f; /* exp(-1/(0.005*48000)) ≈ 0.99584 */
         float peak = 0.0f;
 
         for (jack_nframes_t i = 0; i < nframes; i++) {
-            float l = src_l[i] * vol;
-            float r = src_r[i] * vol;
+            master_volume_smooth += alpha * (vol_target - master_volume_smooth);
+            float l = src_l[i] * master_volume_smooth;
+            float r = src_r[i] * master_volume_smooth;
             if (l >  1.0f) l =  1.0f;
             if (l < -1.0f) l = -1.0f;
             if (r >  1.0f) r =  1.0f;

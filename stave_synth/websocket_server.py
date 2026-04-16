@@ -5,6 +5,7 @@ import json
 import logging
 import threading
 from http.server import HTTPServer, SimpleHTTPRequestHandler
+from socketserver import ThreadingMixIn
 from pathlib import Path
 
 import websockets
@@ -95,7 +96,10 @@ class WebSocketServer:
             def log_message(self, format, *args):
                 logger.debug("HTTP: " + format, *args)
 
-        server = HTTPServer(("0.0.0.0", HTTP_PORT), Handler)
+        class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+            daemon_threads = True
+
+        server = ThreadingHTTPServer(("0.0.0.0", HTTP_PORT), Handler)
         logger.info("HTTP server serving UI on http://0.0.0.0:%d", HTTP_PORT)
         server.serve_forever()
 

@@ -6,6 +6,7 @@ Wants=pipewire.service wireplumber.service
 [Service]
 Type=simple
 ExecStartPre=/bin/sleep 3
+ExecStartPre=/bin/bash -c 'for c in /proc/asound/card*/id; do n=$$(dirname $$c | grep -o "[0-9]*"); if grep -qi usb "$$c" 2>/dev/null; then amixer -c $$n set PCM 100%% 2>/dev/null; fi; done; true'
 ExecStart=/usr/bin/pw-jack %h/stave-synth/venv/bin/python -m stave_synth.main
 WorkingDirectory=%h/stave-synth
 Environment=XDG_RUNTIME_DIR=/run/user/%U
