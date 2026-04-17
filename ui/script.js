@@ -153,6 +153,17 @@
             markPresetSaved(msg.slot);
         } else if (msg.type === "preset_loaded") {
             markPresetLoaded(msg.slot);
+            // Reset ephemeral UI: FX fader alt-state back to reverb (state 0),
+            // and clear BPM tap history so the old taps don't skew the next tap-average.
+            fader3AltState = 0;
+            altModes[3] = false;
+            var altBtn3 = document.querySelector('.alt-btn[data-id="3"]');
+            if (altBtn3) {
+                altBtn3.classList.remove("active");
+                faderColumns[3].classList.remove("alt-mode");
+                faderColumns[3].classList.remove("motion-mode");
+            }
+            tapTimes = [];
         } else if (msg.type === "preset_deleted") {
             markPresetDeleted(msg.slot);
             setPresetLabel(msg.slot, "");
@@ -202,6 +213,18 @@
                 else if (cpu > 75) panicBtn.classList.add("cpu-hot");
                 else if (cpu > 50) panicBtn.classList.add("cpu-warn");
             }
+            // Numeric readout on Global tab
+            var sysCpu = document.getElementById("sys-cpu");
+            var sysRam = document.getElementById("sys-ram");
+            if (sysCpu && typeof msg.cpu_percent === "number") {
+                sysCpu.textContent = msg.cpu_percent.toFixed(1);
+                sysCpu.classList.remove("warn", "crit");
+                if (msg.cpu_percent > 90) sysCpu.classList.add("crit");
+                else if (msg.cpu_percent > 70) sysCpu.classList.add("warn");
+            }
+            if (sysRam && typeof msg.ram_mb === "number") {
+                sysRam.textContent = msg.ram_mb.toFixed(0);
+            }
         } else if (msg.type === "bus_comp_gr") {
             // Beat-rate GR push (20 Hz) for the LED flash
             if (typeof msg.gr_db === "number") updateBusCompGr(msg.gr_db);
@@ -213,6 +236,26 @@
                 }
             }
             updateSettingsSliders();
+            // Belt-and-suspenders: directly set the enable checkbox + source dropdown
+            // from the preset payload so there's no chance updateSettingsSliders misses them.
+            if (msg.values) {
+                if (typeof msg.values.bus_comp_enabled === "boolean") {
+                    var enCb = document.querySelector('.setting-checkbox[data-param="bus_comp_enabled"]');
+                    if (enCb) enCb.checked = msg.values.bus_comp_enabled;
+                }
+                if (typeof msg.values.bus_comp_source === "string") {
+                    var srcSel = document.querySelector('.setting-select[data-param="bus_comp_source"]');
+                    if (srcSel) srcSel.value = msg.values.bus_comp_source;
+                }
+                if (typeof msg.values.bus_comp_fx_bypass === "boolean") {
+                    var bypCb = document.querySelector('.setting-checkbox[data-param="bus_comp_fx_bypass"]');
+                    if (bypCb) bypCb.checked = msg.values.bus_comp_fx_bypass;
+                }
+                if (typeof msg.values.bus_comp_release_auto === "boolean") {
+                    var arCb = document.querySelector('.setting-checkbox[data-param="bus_comp_release_auto"]');
+                    if (arCb) arCb.checked = msg.values.bus_comp_release_auto;
+                }
+            }
             // Pin the preset dropdown to the active preset name
             if (busCompPresetSelect) busCompPresetSelect.value = msg.name;
         } else if (msg.type === "midi_learn_active") {

@@ -34,6 +34,9 @@ sudo apt-get update -qq
 sudo apt-get install -y \
     jackd2 \
     libjack-jackd2-dev \
+    pipewire \
+    pipewire-jack \
+    wireplumber \
     python3-dev \
     python3-pip \
     python3-venv \
@@ -197,7 +200,7 @@ Wants=pipewire.service wireplumber.service
 Type=simple
 ExecStartPre=/bin/sleep 3
 ExecStartPre=-/bin/bash -c 'for c in /proc/asound/card*/id; do n=\$\$(dirname \$\$c | grep -o "[0-9]*"); if grep -qi usb "\$\$c" 2>/dev/null; then if amixer -c \$\$n sget PCM >/dev/null 2>&1; then amixer -c \$\$n set PCM 100%% >/dev/null 2>&1; elif amixer -c \$\$n sget Master >/dev/null 2>&1; then amixer -c \$\$n set Master 100%% >/dev/null 2>&1; fi; fi; done; true'
-ExecStart=/usr/bin/pw-jack ${SCRIPT_DIR}/venv/bin/python -m stave_synth.main
+ExecStart=/usr/bin/pw-jack ${SCRIPT_DIR}/venv/bin/python -m stave_synth.main --no-gui
 WorkingDirectory=${SCRIPT_DIR}
 Environment=XDG_RUNTIME_DIR=/run/user/$(id -u)
 Restart=on-failure

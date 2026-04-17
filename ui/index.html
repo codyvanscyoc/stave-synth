@@ -6,7 +6,7 @@
     <title>Stave Synth</title>
     <link rel="icon" type="image/png" href="logo.png">
     <!-- Keep style.css and script.js cache-bust versions in sync -->
-    <link rel="stylesheet" href="style.css?v=44">
+    <link rel="stylesheet" href="style.css?v=48">
 </head>
 <body>
     <div id="app">
@@ -22,9 +22,10 @@
             <button id="osc2-btn" class="ctrl-btn toggle-btn active">OSC2</button>
             <button id="piano-btn" class="ctrl-btn toggle-btn active">PIANO</button>
             <button id="shimmer-btn" class="ctrl-btn ctrl-btn-sm">SHIM</button>
-            <button id="freeze-btn" class="ctrl-btn ctrl-btn-sm hidden">FRZ</button>
-            <button id="drone-btn" class="ctrl-btn ctrl-btn-sm">DRONE</button>
-            <button id="sat-btn" class="ctrl-btn ctrl-btn-sm">SAT</button>
+            <div id="drone-freeze-stack">
+                <button id="drone-btn" class="ctrl-btn ctrl-btn-sm">DRONE</button>
+                <button id="freeze-btn" class="ctrl-btn ctrl-btn-sm hidden">FRZ</button>
+            </div>
             <button id="panic-btn" class="ctrl-btn panic-btn">STOP</button>
             <button id="menu-btn" class="ctrl-btn">MENU</button>
             <div id="tempo-box">
@@ -95,6 +96,7 @@
                 </div>
                 <div class="fader-bottom-row">
                     <button class="alt-btn" data-id="3">ALT</button>
+                    <button id="sat-btn" class="ctrl-btn ctrl-btn-sm">SAT</button>
                 </div>
             </div>
 
@@ -910,6 +912,12 @@
                             <b>OSC 1 fader +/-</b> — Shift OSC1 octave (ALT mode shifts OSC2).<br>
                             <b>PIANO fader +/-</b> — Shift piano octave independently.
                         </div>
+
+                        <div class="setting-section">SYSTEM</div>
+                        <div id="sys-readout" class="sys-readout">
+                            <span>CPU <span id="sys-cpu" class="sys-val">--</span>%</span>
+                            <span>RAM <span id="sys-ram" class="sys-val">--</span> MB</span>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -917,6 +925,6 @@
 
     </div>
 
-    <script src="script.js?v=42"></script>
+    <script src="script.js?v=48"></script>
 </body>
 </html>

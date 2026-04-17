@@ -301,7 +301,7 @@ class OrganEngine:
                 total = voice.attack_total
                 done = total - voice.attack_remaining
                 end_idx = min(voice.attack_remaining, n_samples)
-                ramp = np.linspace((done + 1) / total,
+                ramp = np.linspace(done / total,
                                    (done + end_idx) / total,
                                    end_idx, dtype=np.float64)
                 np.clip(ramp, 0.0, 1.0, out=ramp)

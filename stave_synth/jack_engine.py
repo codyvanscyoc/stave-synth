@@ -200,33 +200,112 @@ class JackEngine:
         if self.synth:
             self.synth.update_params({"bpm": float(bpm)})
 
+    def _warm_dsp_state(self, n_blocks: int = 16):
+        """Push ~85ms of low-level noise through every stateful filter so the
+        first real keystroke doesn't excite a cold filter/compressor from DC
+        and produce an audible transient. Runs in the main thread before the
+        render thread starts — the bridge is not written to."""
+        try:
+            bs = 256
+            rng = np.random.default_rng(42)
+            s = self.synth
+            for _ in range(n_blocks):
+                nl = rng.uniform(-0.01, 0.01, bs).astype(np.float64)
+                nr = rng.uniform(-0.01, 0.01, bs).astype(np.float64)
+                # SynthEngine filters (probe by name; structure varies with version)
+                for name in ("_filter_l", "_filter_r", "_filter2_l", "_filter2_r",
+                             "_shimmer_hp"):
+                    f = getattr(s, name, None)
+                    if f is not None and hasattr(f, "process"):
+                        f.process(nr if name.endswith("_r") else nl)
+                # Reverb internal biquads (names may vary; probe gracefully)
+                rv = getattr(s, "reverb", None)
+                if rv is not None:
+                    for name in ("_hp_l", "_hp_r", "_lp_l", "_lp_r",
+                                 "_fb_hp_l", "_fb_hp_r", "_fb_lp_l", "_fb_lp_r"):
+                        f = getattr(rv, name, None)
+                        if f is not None and hasattr(f, "process"):
+                            f.process(nl if name.endswith("_l") else nr)
+                # JackEngine master-chain filters
+                self._shuffler_shelf.process((nl - nr) * 0.5)
+                for eq_l, eq_r in zip(self._master_eq_l, self._master_eq_r):
+                    eq_l.process(nl)
+                    eq_r.process(nr)
+                self._master_hp6_l.process(nl)
+                self._master_hp6_r.process(nr)
+                self._master_hp12_l.process(nl)
+                self._master_hp12_r.process(nr)
+                for f in self._master_hp24_l:
+                    f.process(nl)
+                for f in self._master_hp24_r:
+                    f.process(nr)
+                self._organ_filter_l.process(nl)
+                self._organ_filter_r.process(nr)
+                self._organ_filter2_l.process(nl)
+                self._organ_filter2_r.process(nr)
+                # Bus comp — enable briefly to warm its scipy lfilter RMS state + HPF.
+                was_enabled = self.bus_comp.enabled
+                self.bus_comp.enabled = True
+                self.bus_comp.process(nl.copy(), nr.copy())
+                self.bus_comp.enabled = was_enabled
+            # Reset bus comp metering so first real audio starts at 0 GR.
+            self.bus_comp._env_gr_db = 0.0
+            self.bus_comp._gr_db = 0.0
+            logger.info("DSP state warmed (%d blocks)", n_blocks)
+        except Exception as e:
+            # Warmup is best-effort — never block startup on it.
+            logger.warning("DSP warmup skipped: %s", e)
+
     def _generate_bpm_sidechain(self, n: int) -> np.ndarray:
         """Synthesize a pulse train at the current BPM. Each beat fires a ~50ms
-        exp-decay pulse. Returns mono sidechain signal (mono — bus comp takes it
-        as sc_l only)."""
+        exp-decay pulse. Vectorized: beat crossings found via numpy diff, not a
+        per-sample Python loop."""
         sr = SAMPLE_RATE
         bpm = max(40.0, float(getattr(self.synth, "bpm", 120.0)))
         beat_samples = (60.0 / bpm) * sr
         pulse_len = int(0.05 * sr)  # 50ms
-        decay_rate = 4.0 / pulse_len  # decay factor
-        buf = self._sc_scratch[:n] if n <= self._sc_scratch.shape[0] else np.empty(n, dtype=np.float64)
+        decay_rate = 4.0 / pulse_len
         if n > self._sc_scratch.shape[0]:
             self._sc_scratch = np.empty(max(n, 1024), dtype=np.float64)
-            buf = self._sc_scratch[:n]
+        buf = self._sc_scratch[:n]
         buf[:] = 0.0
-        phase = self._bpm_beat_phase
-        pulse_rem = self._bpm_pulse_remaining
-        for i in range(n):
-            phase += 1.0 / beat_samples
-            if phase >= 1.0:
-                phase -= 1.0
-                pulse_rem = pulse_len
-            if pulse_rem > 0:
-                age = pulse_len - pulse_rem
-                buf[i] = float(np.exp(-age * decay_rate))
-                pulse_rem -= 1
-        self._bpm_beat_phase = phase
-        self._bpm_pulse_remaining = pulse_rem
+
+        phase_start = self._bpm_beat_phase
+        pulse_rem_start = self._bpm_pulse_remaining
+        phase_step = 1.0 / beat_samples
+
+        # Finish any pulse from the previous block
+        if pulse_rem_start > 0:
+            tail = min(pulse_rem_start, n)
+            age0 = pulse_len - pulse_rem_start
+            buf[:tail] = np.exp(-np.arange(age0, age0 + tail, dtype=np.float64) * decay_rate)
+
+        # Find beat-wrap sample indices: floor(phase) increments when a beat fires.
+        # Phase after sample i (0-indexed advance) = phase_start + (i+1) * phase_step.
+        phases = phase_start + (np.arange(n, dtype=np.float64) + 1.0) * phase_step
+        int_phases = np.floor(phases).astype(np.int64)
+        prev_int = int(np.floor(phase_start))
+        # first wrap sample where int_phases[i] > int at start
+        # vectorized: diff along a prefixed array
+        wrap_mask = np.empty(n, dtype=bool)
+        wrap_mask[0] = int_phases[0] > prev_int
+        wrap_mask[1:] = int_phases[1:] > int_phases[:-1]
+        wrap_positions = np.where(wrap_mask)[0]
+
+        last_wrap = -1
+        for wp in wrap_positions:
+            pulse_tail = min(pulse_len, n - wp)
+            buf[wp:wp + pulse_tail] = np.exp(
+                -np.arange(pulse_tail, dtype=np.float64) * decay_rate
+            )
+            last_wrap = int(wp)
+
+        # Update state. Keep phase in [0, 1) between blocks so int_phases stays bounded.
+        self._bpm_beat_phase = phases[-1] % 1.0
+        if last_wrap >= 0:
+            self._bpm_pulse_remaining = max(0, pulse_len - (n - last_wrap))
+        else:
+            self._bpm_pulse_remaining = max(0, pulse_rem_start - n)
         return buf
 
     def _get_sidechain(self, source: str, n: int, piano_buf: np.ndarray = None):
@@ -240,10 +319,9 @@ class JackEngine:
             if self.synth.lfo_enabled:
                 # Advance_lfo already ran this block; use the last computed mod value
                 amp = abs(self.synth._lfo_mod_a_last) * 0.7
-                buf = self._sc_scratch[:n] if n <= self._sc_scratch.shape[0] else np.empty(n, dtype=np.float64)
                 if n > self._sc_scratch.shape[0]:
                     self._sc_scratch = np.empty(max(n, 1024), dtype=np.float64)
-                    buf = self._sc_scratch[:n]
+                buf = self._sc_scratch[:n]
                 buf[:] = amp
                 return buf, None
             return None, None
@@ -295,6 +373,10 @@ class JackEngine:
         logger.info("BTL mode: config=%s, bridge=%d (0=stereo, 1=mono-invert)", BTL_MODE, btl_actual)
         self.running = True
 
+        # Warm DSP state with a brief noise burst so the first keystroke
+        # doesn't kick a cold filter/envelope into a click transient.
+        self._warm_dsp_state()
+
         # Start render thread — pushes audio blocks to the C bridge
         self._render_thread = threading.Thread(target=self._render_loop, daemon=True)
         self._render_thread.start()
@@ -328,7 +410,7 @@ class JackEngine:
                     if self.synth.sympathetic_enabled and not self.synth._sympathetic_suppress:
                         self.synth.set_sympathetic_notes(self._piano_notes_active.copy())
                     if self.synth.drone_enabled and self._pad_notes_active:
-                        self.synth.set_drone_chord(list(self._pad_notes_active))
+                        self.synth.set_drone_chord(list(self._pad_notes_active.copy()))
 
                     # Ring is getting low — render and push a block.
                     # If bus comp's FX-bypass mode is on, ask synth for dry + fx
@@ -401,7 +483,10 @@ class JackEngine:
                     # ═══ Bus compressor (SSL G-style) — pre-saturation, pre-limiter ═══
                     if self.bus_comp.enabled:
                         sc_l, sc_r = self._get_sidechain(self.bus_comp_source, bs, piano_for_sc)
-                        self.bus_comp.process(stereo[0], stereo[1], sc_l, sc_r)
+                        self.bus_comp.process(
+                            stereo[0], stereo[1], sc_l, sc_r,
+                            skip_hpf=(self.bus_comp_source == "bpm"),
+                        )
 
                     # FX-bypass routing: sum the untouched FX bus back in post-comp
                     # so the reverb/delay tail isn't ducked by the sidechain pump.

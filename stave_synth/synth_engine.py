@@ -914,10 +914,12 @@ class BusCompressor:
         return x * x * knee * (1.0 - 1.0 / ratio)
 
     def process(self, out_l: np.ndarray, out_r: np.ndarray,
-                sc_l: np.ndarray = None, sc_r: np.ndarray = None):
+                sc_l: np.ndarray = None, sc_r: np.ndarray = None,
+                skip_hpf: bool = False):
         """Process stereo in-place. sc_l/sc_r: external sidechain; if None, uses
         bus signal (feedback-ish approximation using current input as detection
-        source). No-ops if disabled or mix is effectively zero."""
+        source). skip_hpf: bypass sidechain HPF (for synthetic sources like BPM
+        pulse train that are already clean). No-ops if disabled."""
         if not self.enabled:
             self._gr_db = 0.0
             return
@@ -935,7 +937,10 @@ class BusCompressor:
             sc = (out_l + out_r) * 0.5
 
         # ── Highpass the detection signal so bass doesn't trigger ──
-        sc = self._hpf_l.process(sc)
+        # Skipped for BPM sidechain: synthetic pulse train has all energy below
+        # ~50 Hz and the HPF would strip most of it, weakening the pump.
+        if not skip_hpf:
+            sc = self._hpf_l.process(sc)
 
         # ── RMS envelope (one-pole on squared signal) ──
         sq = sc * sc
@@ -1702,8 +1707,8 @@ class SynthEngine:
             # Read delayed
             rd_start = (pos - delay) % bs
             if rd_start + n_samples <= bs:
-                osc2_accum_l = self._haas_buf_l[rd_start:rd_start + n_samples].copy()
-                osc2_accum_r = self._haas_buf_r[rd_start:rd_start + n_samples].copy()
+                osc2_accum_l = self._haas_buf_l[rd_start:rd_start + n_samples]
+                osc2_accum_r = self._haas_buf_r[rd_start:rd_start + n_samples]
             else:
                 first = bs - rd_start
                 osc2_accum_l = np.concatenate([
@@ -1873,8 +1878,17 @@ class SynthEngine:
 
         # Snapshot dry pad (post-LFO, pre-FX) so callers asking for FX-bypass
         # routing can subtract and extract a clean dry bus for the bus comp.
-        _pre_fx_dry_l = output_l.copy() if separate_fx else None
-        _pre_fx_dry_r = output_r.copy() if separate_fx else None
+        if separate_fx:
+            if not hasattr(self, "_dry_snap_l") or self._dry_snap_l.shape[0] < n_samples:
+                self._dry_snap_l = np.empty(max(n_samples, self._buf_size), dtype=np.float64)
+                self._dry_snap_r = np.empty(max(n_samples, self._buf_size), dtype=np.float64)
+            _pre_fx_dry_l = self._dry_snap_l[:n_samples]
+            _pre_fx_dry_r = self._dry_snap_r[:n_samples]
+            np.copyto(_pre_fx_dry_l, output_l)
+            np.copyto(_pre_fx_dry_r, output_r)
+        else:
+            _pre_fx_dry_l = None
+            _pre_fx_dry_r = None
 
         # ─── Ping-pong delay (pre-reverb so taps get cathedral treatment) ───
         self._process_ping_pong(output_l, output_r)

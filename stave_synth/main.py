@@ -599,6 +599,7 @@ class StaveSynth:
 
     _BUS_COMP_PRESETS = {
         "glue": {
+            "bus_comp_enabled": True,
             "bus_comp_threshold_db": -4.0, "bus_comp_ratio": 2.0,
             "bus_comp_attack_ms": 10.0, "bus_comp_release_ms": 300.0,
             "bus_comp_release_auto": True, "bus_comp_makeup_db": 0.0,
@@ -606,6 +607,7 @@ class StaveSynth:
             "bus_comp_fx_bypass": False,
         },
         "punch": {
+            "bus_comp_enabled": True,
             "bus_comp_threshold_db": -10.0, "bus_comp_ratio": 4.0,
             "bus_comp_attack_ms": 3.0, "bus_comp_release_ms": 300.0,
             "bus_comp_release_auto": False, "bus_comp_makeup_db": 2.0,
@@ -613,6 +615,7 @@ class StaveSynth:
             "bus_comp_fx_bypass": False,
         },
         "pump": {
+            "bus_comp_enabled": True,
             "bus_comp_threshold_db": -18.0, "bus_comp_ratio": 10.0,
             "bus_comp_attack_ms": 0.3, "bus_comp_release_ms": 300.0,
             "bus_comp_release_auto": True, "bus_comp_makeup_db": 0.0,
