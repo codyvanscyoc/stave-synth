@@ -208,12 +208,18 @@ body.retro-amber {
 .panic-btn {
     border-color: #cc2222 !important;
     color: #cc2222 !important;
+    transition: box-shadow 300ms ease;
 }
 
 .panic-btn:active {
     background: #cc2222 !important;
     color: var(--bg) !important;
 }
+
+/* CPU load ring on STOP button — subtle amber/orange/red as load climbs */
+.panic-btn.cpu-warn { box-shadow: 0 0 6px rgba(224, 192, 96, 0.5); }
+.panic-btn.cpu-hot  { box-shadow: 0 0 10px rgba(232, 144, 64, 0.65); }
+.panic-btn.cpu-crit { box-shadow: 0 0 14px rgba(216, 80, 48, 0.80); }
 
 #shimmer-btn {
     border-color: var(--border-orange);
@@ -248,6 +254,35 @@ body.retro-amber {
     border-color: var(--border-green);
     color: var(--bg);
     background: var(--text-green);
+}
+
+#tempo-box {
+    display: flex;
+    align-items: center;
+    gap: 0.6vw;
+    padding: 0.3vh 0.6vw;
+    border: 1px solid var(--border-green);
+    background: var(--bg);
+}
+#tempo-box #bpm-val {
+    font-family: var(--font);
+    color: var(--text-green);
+    font-size: clamp(14px, 2.4vw, 22px);
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    cursor: ns-resize;
+    min-width: 2.2em;
+    text-align: center;
+    user-select: none;
+}
+#tempo-box .tempo-unit {
+    font-size: clamp(9px, 1.2vw, 11px);
+    color: var(--text-green-dim);
+    letter-spacing: 0.1em;
+}
+#tap-btn.pulse {
+    background: var(--text-green);
+    color: var(--bg);
 }
 
 #sys-monitor {
@@ -414,6 +449,22 @@ body.retro-amber {
     color: var(--bg);
 }
 
+/* FX fader in MOTION state (3rd ALT cycle) — purple for the motion bus */
+.fader-column[data-id="3"].motion-mode .fader-label,
+.fader-column[data-id="3"].motion-mode .fader-track,
+.fader-column[data-id="3"].motion-mode .alt-btn {
+    --fader-color: #B06EFF;
+    --fader-fill: #B06EFF;
+    --fader-text: #B06EFF;
+    border-color: #B06EFF;
+    color: #B06EFF;
+}
+.fader-column[data-id="3"].motion-mode .alt-btn.active {
+    background: #B06EFF;
+    border-color: #B06EFF;
+    color: var(--bg);
+}
+
 .fader-fill {
     position: absolute;
     bottom: 0;
@@ -497,13 +548,9 @@ body.retro-amber {
     border-color: var(--border-orange);
 }
 
-.fader-column[data-id="3"] .alt-btn {
-    border-color: var(--border-orange);
-    color: var(--text-orange-dim);
-}
-
 .fader-column[data-id="3"] .alt-btn.active {
     background: var(--border-orange);
+    border-color: var(--border-orange);
     color: var(--bg);
 }
 
@@ -866,11 +913,13 @@ body.retro-amber {
 #settings-content {
     flex: 1;
     overflow-y: auto;
+    overflow-x: hidden;
     padding: 1.5vh 2vw;
 }
 
 .settings-panel {
     display: none;
+    overflow-x: hidden;
 }
 
 .settings-panel.active {
@@ -1145,4 +1194,346 @@ body.retro-amber {
 
 #settings-content::-webkit-scrollbar-thumb {
     background: var(--text-green-dim);
+}
+
+/* ═══ Low Cut — single row: [ON] [Freq label + slider + Hz] [Slope] ═══ */
+.lowcut-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1.5vw;
+    padding: 0.4vh 0 0.4vh 1vw;
+}
+.lowcut-enable {
+    flex: 0 0 auto;
+    padding-left: 1vw;
+}
+.lowcut-freq {
+    flex: 0 1 40%;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2vh;
+    min-width: 0;
+}
+.lowcut-freq-label {
+    font-size: clamp(9px, 1.3vw, 11px);
+    color: var(--text-green-dim);
+    letter-spacing: 0.1em;
+}
+.lowcut-freq-row {
+    display: flex;
+    align-items: center;
+    gap: 0.8vw;
+}
+.lowcut-freq-row .setting-slider { flex: 1; min-width: 0; }
+.lowcut-freq-row .setting-value {
+    flex: 0 0 auto;
+    min-width: 3em;
+}
+.lowcut-slope {
+    display: flex;
+    align-items: center;
+    gap: 0.5vw;
+    flex: 0 0 auto;
+}
+.lowcut-slope .setting-label {
+    flex: 0 0 auto;
+    font-size: clamp(9px, 1.3vw, 11px);
+    color: var(--text-green-dim);
+}
+.lowcut-slope .compact-select {
+    min-width: 0;
+    width: auto;
+    padding: 0.4vh 0.6vw;
+}
+
+/* ═══ Compact Synth Pad layout ═══ */
+.osc-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5vw;
+    padding: 0.5vh 0;
+}
+
+.osc-col {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3vh;
+    border-left: 1px solid rgba(0, 191, 99, 0.15);
+    padding-left: 1vw;
+    min-width: 0;
+}
+
+.osc-col:first-child {
+    border-left: none;
+    padding-left: 0;
+}
+
+/* Within OSC columns, labels/values shrink to content so sliders get max room */
+.osc-col .setting-row {
+    gap: 0.6vw;
+    padding: 0.3vh 0;
+}
+.osc-col .setting-label {
+    flex: 0 0 auto;
+    min-width: 2.5em;
+}
+.osc-col .setting-value {
+    flex: 0 0 auto;
+    min-width: 2.5em;
+    text-align: right;
+}
+.osc-col .setting-slider {
+    min-width: 0;
+}
+.osc-col .setting-select {
+    flex: 1;
+    min-width: 0;
+}
+
+.osc-title {
+    font-size: clamp(10px, 1.6vw, 13px);
+    color: var(--text-green);
+    letter-spacing: 0.1em;
+    padding-bottom: 0.4vh;
+    border-bottom: 1px solid rgba(0, 191, 99, 0.2);
+    margin-bottom: 0.3vh;
+}
+
+.two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1vw 1.5vw;
+}
+
+.two-col > .setting-row {
+    margin: 0;
+}
+
+/* ═══ ADSR block: SVG curve + knobs ═══ */
+.adsr-block {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4vh;
+    padding: 0.5vh 0;
+    max-width: 78%;
+    margin: 0 auto;
+}
+
+.adsr-curve {
+    width: 100%;
+    height: clamp(60px, 11vh, 100px);
+    display: block;
+    background: rgba(0, 191, 99, 0.03);
+    border: 1px solid rgba(0, 191, 99, 0.15);
+    border-radius: 2px;
+}
+
+.adsr-curve polyline {
+    fill: none;
+    stroke: var(--text-green);
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    vector-effect: non-scaling-stroke;
+    filter: drop-shadow(0 0 2px rgba(0, 191, 99, 0.5));
+}
+
+.knob-row-tight {
+    padding: 0.6vh 0;
+    gap: 1.2vw;
+}
+.knob-row-tight .knob {
+    min-width: 0;
+}
+.knob-row-tight .knob-dial {
+    width: clamp(42px, 8vw, 56px);
+    height: clamp(42px, 8vw, 56px);
+}
+
+/* ═══ Master EQ bands ═══ */
+.eq-band-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 0.8vw;
+    padding: 0.4vh 0;
+}
+.eq-band {
+    border: 1px solid rgba(0, 191, 99, 0.15);
+    border-radius: 3px;
+    padding: 0.3vh 0.3vw;
+    background: rgba(0, 191, 99, 0.02);
+}
+.eq-band-title {
+    font-size: clamp(9px, 1.3vw, 11px);
+    color: var(--text-green-dim);
+    letter-spacing: 0.15em;
+    text-align: center;
+    padding-bottom: 0.2vh;
+}
+/* Smaller knobs inside EQ bands to reclaim vertical space */
+.eq-band .knob-row { padding: 0.3vh 0; gap: 0.6vw; }
+.eq-band .knob-label { font-size: clamp(8px, 1.1vw, 10px); }
+.eq-band .knob-dial {
+    width: clamp(28px, 5vw, 40px);
+    height: clamp(28px, 5vw, 40px);
+}
+.eq-band .setting-value { font-size: clamp(8px, 1.2vw, 10px); }
+
+/* ═══ Compact select + inline rows ═══ */
+.compact-select {
+    flex: 0 0 auto;
+    min-width: 0;
+    width: auto;
+    padding: 0.4vh 0.6vw;
+}
+
+.filter-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2vh;
+    padding: 0.3vh 0;
+}
+.filter-row > .setting-row {
+    margin: 0;
+    padding: 0.3vh 0;
+}
+.filter-row > .setting-row:first-child {
+    /* Slope select row: narrow the select, don't let it stretch */
+    gap: 0.8vw;
+}
+.filter-row > .setting-row .setting-label {
+    flex: 0 0 4em;
+}
+
+.stereo-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-around;
+    gap: 2vw;
+    padding: 0.4vh 2vw;
+    flex-wrap: nowrap;
+}
+.stereo-checks {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 1.5vw;
+}
+.stereo-haas {
+    flex: 0 0 auto;
+    margin: 0 !important;
+    gap: 0.8vw;
+}
+
+.organ-tone-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 2vw;
+    padding: 0.4vh 1.5vw;
+    flex-wrap: wrap;
+}
+.organ-tone-row > .setting-row {
+    flex: 0 0 auto;
+    min-width: 0;
+    margin: 0;
+    gap: 1vw;
+}
+.organ-tone-row .compact-select {
+    padding: 0.5vh 1vw;
+    min-width: 7em;
+}
+.organ-tone-row > .knob-small {
+    flex: 0 0 auto;
+}
+
+.knob.knob-small {
+    min-width: 0;
+    gap: 0.3vh;
+}
+.knob.knob-small .knob-label {
+    font-size: clamp(8px, 1.3vw, 10px);
+}
+.knob.knob-small .knob-dial {
+    width: clamp(36px, 6.5vw, 48px);
+    height: clamp(36px, 6.5vw, 48px);
+}
+.knob.knob-small .setting-value {
+    font-size: clamp(8px, 1.3vw, 10px);
+}
+
+/* ═══ Pre-limiter DRIVE knob (warmth glow) ═══ */
+/* Knob ring glows amber → orange → red as drive rises.
+   The warm-N class is toggled on the knob by JS. */
+.drive-row {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 1.5vw;
+    padding: 0.8vh 0 1vh;
+}
+.drive-help {
+    margin: 0;
+    max-width: 18ch;
+    line-height: 1.4;
+    font-size: clamp(9px, 1.4vw, 11px);
+    color: var(--text-green-dim);
+    border: none;
+    padding: 0;
+    background: transparent;
+}
+/* ═══ Bus Compressor GR indicator — LED dot inline between knobs ═══ */
+.bus-comp-knob-row {
+    gap: 0.6vw !important;
+}
+.bus-comp-sc-hpf {
+    padding: 0.3vh 1vw !important;
+    gap: 1vw;
+}
+.bus-comp-sc-hpf .setting-label { flex: 0 0 4em; }
+.bus-comp-sc-hpf .setting-value { flex: 0 0 auto; min-width: 3em; }
+.gr-led-slot {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.6vh;
+    min-width: 0;
+}
+.gr-led {
+    width: clamp(18px, 3vw, 28px);
+    height: clamp(18px, 3vw, 28px);
+    border-radius: 50%;
+    background: rgba(0, 191, 99, 0.08);
+    border: 1px solid rgba(0, 191, 99, 0.25);
+    box-shadow: none;
+    transition: background 30ms linear, box-shadow 80ms ease-out, border-color 80ms ease-out;
+}
+#bus-comp-gr-label {
+    display: inline-block;
+    font-family: var(--font);
+    font-size: clamp(7px, 1.1vw, 9px);
+    color: var(--text-green-dim);
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    /* Tiny peak-hold readout. Fixed width prevents layout shift. */
+    width: 3.2em;
+    min-width: 3.2em;
+    padding: 0.1vh 0.2vw;
+    box-sizing: border-box;
+}
+
+/* Smooth warmth transitions for drive knob + master fader (inline styles set by JS) */
+.warmth-knob .knob-dial {
+    transition: border-color 120ms linear, box-shadow 120ms linear;
+}
+.warmth-knob .knob-indicator::before {
+    background: var(--warm-color, var(--text-green));
+    transition: background 120ms linear;
+}
+.fader-column[data-id="4"] .fader-fill,
+.fader-column[data-id="4"] .fader-track,
+.fader-column[data-id="4"] .fader-label {
+    transition: background 120ms linear, border-color 120ms linear,
+                color 120ms linear, box-shadow 120ms linear;
 }

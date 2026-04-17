@@ -151,6 +151,8 @@ class StaveSynth:
             return self._handle_drone_toggle(msg)
         elif msg_type == "fade_toggle":
             return self._handle_fade_toggle(msg)
+        elif msg_type == "bus_comp_preset":
+            return self._handle_bus_comp_preset(msg)
         elif msg_type == "get_state":
             return {"type": "state", "state": self.state}
         elif msg_type == "debug":
@@ -306,7 +308,7 @@ class StaveSynth:
                 self.state["synth_pad"]["filter_highpass_hz"] = freq
                 self.synth.filter_highpass_hz = freq
 
-        elif fader_id == 3:  # FX: Reverb Mix(0) / Shimmer Vol(1)
+        elif fader_id == 3:  # FX: Reverb Mix(0) / Shimmer Vol(1) / Motion Bus(2)
             alt_state = int(alt) if isinstance(alt, (int, float)) else (1 if alt else 0)
             if alt_state == 0:
                 self.state["synth_pad"]["reverb_dry_wet"] = value
@@ -314,12 +316,21 @@ class StaveSynth:
             elif alt_state == 1:
                 self.state["synth_pad"]["shimmer_mix"] = value
                 self.synth.shimmer_mix = value
+            elif alt_state == 2:
+                self.state["synth_pad"]["motion_mix"] = value
+                self.synth.motion_mix = value
 
         elif fader_id == 4:  # Master Volume
             if not alt:
                 self.state["master"]["volume"] = value
                 if self.jack:
                     self.jack.master_volume = value
+            else:
+                # ALT: drive into pre-limiter. Fader 0..1 → trim 0.5..3.0.
+                trim = 0.5 + value * 2.5
+                self.state["master"]["pre_limiter_trim"] = trim
+                if self.jack:
+                    self.jack.pre_gain = max(0.5, min(3.0, trim))
 
         return {"type": "fader_ack", "id": fader_id, "value": value, "alt": alt}
 
@@ -586,6 +597,40 @@ class StaveSynth:
         self.state["synth_pad"]["drone_enabled"] = enabled
         return {"type": "drone_ack", "enabled": enabled}
 
+    _BUS_COMP_PRESETS = {
+        "glue": {
+            "bus_comp_threshold_db": -4.0, "bus_comp_ratio": 2.0,
+            "bus_comp_attack_ms": 10.0, "bus_comp_release_ms": 300.0,
+            "bus_comp_release_auto": True, "bus_comp_makeup_db": 0.0,
+            "bus_comp_mix": 0.30, "bus_comp_source": "self",
+            "bus_comp_fx_bypass": False,
+        },
+        "punch": {
+            "bus_comp_threshold_db": -10.0, "bus_comp_ratio": 4.0,
+            "bus_comp_attack_ms": 3.0, "bus_comp_release_ms": 300.0,
+            "bus_comp_release_auto": False, "bus_comp_makeup_db": 2.0,
+            "bus_comp_mix": 0.70, "bus_comp_source": "self",
+            "bus_comp_fx_bypass": False,
+        },
+        "pump": {
+            "bus_comp_threshold_db": -18.0, "bus_comp_ratio": 10.0,
+            "bus_comp_attack_ms": 0.3, "bus_comp_release_ms": 300.0,
+            "bus_comp_release_auto": True, "bus_comp_makeup_db": 0.0,
+            "bus_comp_mix": 1.0, "bus_comp_source": "bpm",
+            "bus_comp_fx_bypass": True,
+        },
+    }
+
+    def _handle_bus_comp_preset(self, msg: dict) -> dict:
+        name = str(msg.get("name", "")).lower()
+        preset = self._BUS_COMP_PRESETS.get(name)
+        if not preset:
+            return {"type": "error", "message": f"Unknown bus_comp preset: {name}"}
+        for p, v in preset.items():
+            self.state["master"][p] = v
+            self._handle_setting({"section": "master", "param": p, "value": v})
+        return {"type": "bus_comp_preset_ack", "name": name, "values": preset}
+
     def _handle_fade_toggle(self, msg: dict) -> dict:
         """Toggle master fade: down to 0 then back up to 1 (current master fader
         position still governs the full-gain endpoint via fader_to_amplitude).
@@ -825,6 +870,45 @@ class StaveSynth:
                 self.state["master"][param] = bool(value)
                 if self.jack:
                     self.jack.saturation_enabled = bool(value)
+            elif param == "bpm":
+                self.state["master"]["bpm"] = max(40, min(300, int(float(value))))
+                # Delay engine will query this when present
+                if self.jack and hasattr(self.jack, "set_bpm"):
+                    self.jack.set_bpm(self.state["master"]["bpm"])
+            elif param.startswith("bus_comp_"):
+                self.state["master"][param] = value
+                if self.jack and hasattr(self.jack, "bus_comp"):
+                    bc = self.jack.bus_comp
+                    if param == "bus_comp_enabled":
+                        bc.enabled = bool(value)
+                    elif param == "bus_comp_source":
+                        src = str(value)
+                        if src in ("self", "piano", "lfo", "bpm"):
+                            self.jack.bus_comp_source = src
+                    elif param == "bus_comp_threshold_db":
+                        bc.threshold_db = max(-40.0, min(0.0, float(value)))
+                    elif param == "bus_comp_ratio":
+                        # Cap at 1000 for effective brick-wall (infinity) limiting
+                        bc.ratio = max(1.0, min(1000.0, float(value)))
+                    elif param == "bus_comp_attack_ms":
+                        bc.attack_ms = max(0.1, min(30.0, float(value)))
+                    elif param == "bus_comp_release_ms":
+                        bc.release_ms = max(50.0, min(1200.0, float(value)))
+                    elif param == "bus_comp_release_auto":
+                        bc.release_auto = bool(value)
+                    elif param == "bus_comp_makeup_db":
+                        bc.makeup_db = max(0.0, min(20.0, float(value)))
+                    elif param == "bus_comp_mix":
+                        bc.mix = max(0.0, min(1.0, float(value)))
+                    elif param == "bus_comp_fx_bypass":
+                        self.jack.bus_comp_fx_bypass = bool(value)
+                    elif param == "bus_comp_retrigger":
+                        self.jack.bus_comp_retrigger = bool(value)
+                    elif param == "bus_comp_sc_hpf_hz":
+                        hz = max(20.0, min(500.0, float(value)))
+                        bc.sidechain_hpf_hz = hz
+                        bc._hpf_l.set_params(hz, 0.707)
+                        bc._hpf_r.set_params(hz, 0.707)
             elif param in _EQ_MAP:
                 idx, field = _EQ_MAP[param]
                 bands = self.state["master"].get("eq_bands", [])
@@ -955,30 +1039,50 @@ class StaveSynth:
             self.midi.all_notes_off()
 
     def _autosave_loop(self):
-        """Periodically save state and broadcast peak levels."""
+        """Periodically save state and broadcast peak levels.
+        Runs at 20 Hz so the bus compressor GR LED can track beat-rate pumping.
+        Heavier broadcasts (peak_level, system_stats with CPU) are throttled to 5 Hz
+        and 1 Hz respectively."""
         import psutil
         self._proc = psutil.Process()
-        peak_counter = 0
+        tick_counter = 0
         stats_counter = 0
-        silence_ticks = 0  # how many 200ms ticks we've been silent
+        silence_ticks = 0
+        TICK_HZ = 20
+        TICK_SEC = 1.0 / TICK_HZ
+        # Subrate dividers
+        PEAK_EVERY = 4     # 5 Hz peak_level broadcasts
+        STATS_EVERY = 20   # 1 Hz CPU/RAM
+        AUTOSAVE_TICKS = max(1, int(AUTOSAVE_INTERVAL * TICK_HZ))
+
         while self._running:
-            time.sleep(0.2)  # Check peaks every 200ms
-            peak_counter += 1
+            time.sleep(TICK_SEC)
+            tick_counter += 1
             stats_counter += 1
 
-            # Broadcast peak level for meters
             if self.jack and self.ws_server:
-                peak = self.jack.get_and_reset_peak()
-                if peak > 0.01:
-                    self.ws_server.broadcast_sync({"type": "peak_level", "peak": peak})
-                    silence_ticks = 0
-                elif silence_ticks < 5:
-                    # Send zeros for ~1 second after signal stops to clear meters
-                    self.ws_server.broadcast_sync({"type": "peak_level", "peak": 0.0})
-                    silence_ticks += 1
+                # GR reading — broadcast every tick (20 Hz) for beat-accurate LED
+                try:
+                    gr_db = float(self.jack.bus_comp.current_gr_db) if hasattr(self.jack, "bus_comp") else 0.0
+                    self.ws_server.broadcast_sync({
+                        "type": "bus_comp_gr",
+                        "gr_db": round(gr_db, 2),
+                    })
+                except Exception:
+                    pass
 
-            # Broadcast CPU/RAM stats every ~1 second (every 5th tick)
-            if stats_counter >= 5 and self.ws_server:
+                # Peak level for output meter — 5 Hz is plenty
+                if tick_counter % PEAK_EVERY == 0:
+                    peak = self.jack.get_and_reset_peak()
+                    if peak > 0.01:
+                        self.ws_server.broadcast_sync({"type": "peak_level", "peak": peak})
+                        silence_ticks = 0
+                    elif silence_ticks < 5:
+                        self.ws_server.broadcast_sync({"type": "peak_level", "peak": 0.0})
+                        silence_ticks += 1
+
+            # Broadcast CPU/RAM stats every ~1 second
+            if stats_counter >= STATS_EVERY and self.ws_server:
                 stats_counter = 0
                 try:
                     cpu = self._proc.cpu_percent(interval=None)
@@ -992,8 +1096,8 @@ class StaveSynth:
                     pass
 
             # Autosave every AUTOSAVE_INTERVAL
-            if peak_counter >= int(AUTOSAVE_INTERVAL / 0.2):
-                peak_counter = 0
+            if tick_counter >= AUTOSAVE_TICKS:
+                tick_counter = 0
                 if self._running:
                     try:
                         save_state(self.state)
@@ -1042,6 +1146,15 @@ class StaveSynth:
             self.jack.piano_octave = self.state.get("master", {}).get("piano_octave", 0)
             self.jack.pre_gain = float(self.state.get("master", {}).get("pre_limiter_trim", 2.0))
             self.jack.saturation_enabled = bool(self.state.get("master", {}).get("saturation_enabled", False))
+            self.jack.set_bpm(float(self.state.get("master", {}).get("bpm", 120)))
+            # Push all bus_comp_* keys at startup so the compressor matches saved state
+            m = self.state.get("master", {})
+            for p in ("bus_comp_enabled", "bus_comp_source", "bus_comp_threshold_db",
+                      "bus_comp_ratio", "bus_comp_attack_ms", "bus_comp_release_ms",
+                      "bus_comp_release_auto", "bus_comp_makeup_db", "bus_comp_mix",
+                      "bus_comp_fx_bypass", "bus_comp_retrigger", "bus_comp_sc_hpf_hz"):
+                if p in m:
+                    self._handle_setting({"section": "master", "param": p, "value": m[p]})
             eq_bands = self.state.get("master", {}).get("eq_bands", [])
             if eq_bands:
                 self.jack.set_master_eq(eq_bands)

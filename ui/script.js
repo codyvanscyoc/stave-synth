@@ -11,8 +11,10 @@
     let state = null;
     let altModes = [false, false, false, false, false];
     let fader1AltState = 0;  // 0=Volume, 1=Tone, 2=Compressor (cycles on alt click)
+    let fader3AltState = 0;  // 0=Reverb, 1=Shimmer, 2=Motion-bus (cycles on alt click)
     let faderValues = [0.6, 0.5, 1.0, 0.65, 0.85]; // osc1, piano, filter, fx(reverb), master
     let altFaderValues = [0.4, 1.0, 0, 0.5, 0];  // osc2, piano tone, -, fx(shimmer), -
+    let fader3MotionValue = 1.0;  // motion bus mix (fader3 alt state 2)
     let fader1CompValue = 0.5;  // compressor amount (maps to threshold)
     let transposeValue = 0;
     let shimmerEnabled = false;
@@ -38,8 +40,8 @@
         ["OSC 1", "OSC 2"],
         FADER_LABELS_PIANO,  // updated dynamically
         ["FILTER", "LOW CUT"],
-        ["FX", "SHIMMER"],
-        ["MASTER"],
+        ["FX", "SHIMMER", "MOTION"],
+        ["MASTER", "DRIVE"],
     ];
 
     // ═══ DOM References ═══
@@ -74,6 +76,11 @@
     let linkOscLevels = false;
     const clipIndicator = document.getElementById("clip-indicator");
     const levelDots = document.querySelectorAll(".level-dot");
+    const bpmVal = document.getElementById("bpm-val");
+    const tapBtn = document.getElementById("tap-btn");
+    const panicBtn = document.getElementById("panic-btn");
+    let bpm = 120;
+    let tapTimes = [];
     let midiLearnActive = false;
     let midiLearnWaiting = false;  // true after fader selected, waiting for CC
     let ccMap = {};  // { "cc_number": { id, alt } }
@@ -187,14 +194,27 @@
                 }, 400);
             }
         } else if (msg.type === "system_stats") {
-            var cpuEl = document.getElementById("cpu-val");
-            var ramEl = document.getElementById("ram-val");
-            var cpu = msg.cpu_percent;
-            var ram = msg.ram_mb;
-            cpuEl.textContent = cpu.toFixed(1) + "%";
-            ramEl.textContent = Math.round(ram) + "M";
-            cpuEl.className = cpu > 80 ? "crit" : cpu > 60 ? "warn" : "";
-            ramEl.className = ram > 500 ? "crit" : ram > 400 ? "warn" : "";
+            // CPU ring on STOP button — only update when cpu_percent is in the message
+            if (panicBtn && typeof msg.cpu_percent === "number") {
+                panicBtn.classList.remove("cpu-warn", "cpu-hot", "cpu-crit");
+                var cpu = msg.cpu_percent;
+                if (cpu > 90) panicBtn.classList.add("cpu-crit");
+                else if (cpu > 75) panicBtn.classList.add("cpu-hot");
+                else if (cpu > 50) panicBtn.classList.add("cpu-warn");
+            }
+        } else if (msg.type === "bus_comp_gr") {
+            // Beat-rate GR push (20 Hz) for the LED flash
+            if (typeof msg.gr_db === "number") updateBusCompGr(msg.gr_db);
+        } else if (msg.type === "bus_comp_preset_ack") {
+            // Refresh all bus_comp sliders/knobs from state after preset load
+            if (state) {
+                for (var k in msg.values) {
+                    state.master[k] = msg.values[k];
+                }
+            }
+            updateSettingsSliders();
+            // Pin the preset dropdown to the active preset name
+            if (busCompPresetSelect) busCompPresetSelect.value = msg.name;
         } else if (msg.type === "midi_learn_active") {
             midiLearnActive = msg.active;
             midiLearnWaiting = false;
@@ -253,9 +273,10 @@
             var freq = s.synth_pad.filter_cutoff_hz ?? s.synth_pad.filter_highpass_hz ?? 8000;
             faderValues[2] = Math.log(freq / fMin) / Math.log(fMax / fMin);
             faderValues[2] = Math.max(0, Math.min(1, faderValues[2]));
-            // FX fader: reverb mix (default) / shimmer vol (alt)
+            // FX fader: reverb mix (default) / shimmer vol (alt 1) / motion bus (alt 2)
             faderValues[3] = s.synth_pad.reverb_dry_wet ?? 0.65;
             altFaderValues[3] = s.synth_pad.shimmer_mix ?? 0.5;
+            fader3MotionValue = s.synth_pad.motion_mix ?? 1.0;
             shimmerEnabled = s.synth_pad.shimmer_enabled ?? false;
             shimmerHigh = s.synth_pad.shimmer_high ?? false;
             freezeEnabled = s.synth_pad.freeze_enabled ?? false;
@@ -299,6 +320,12 @@
         }
         if (s.master) {
             faderValues[4] = s.master.volume ?? 0.85;
+            // Master ALT → DRIVE: map pre_limiter_trim (0.5-3.0) back to 0-1
+            var trim = s.master.pre_limiter_trim ?? 2.0;
+            altFaderValues[4] = Math.max(0, Math.min(1, (trim - 0.5) / 2.5));
+            // BPM
+            bpm = Math.round(s.master.bpm ?? 120);
+            if (bpmVal) bpmVal.textContent = bpm;
             transposeValue = s.master.transpose_semitones ?? 0;
             instrumentMode = s.master.instrument_mode ?? "piano";
             updateInstrumentButton();
@@ -328,6 +355,11 @@
             if (fader1AltState === 1) return altFaderValues[1];
             return fader1CompValue;
         }
+        if (id === 3) {
+            if (fader3AltState === 0) return faderValues[3];
+            if (fader3AltState === 1) return altFaderValues[3];
+            return fader3MotionValue;
+        }
         return altModes[id] ? altFaderValues[id] : faderValues[id];
     }
 
@@ -342,6 +374,8 @@
         if (id === 1) {
             var labels1 = instrumentMode === "organ" ? FADER_LABELS_ORGAN : FADER_LABELS_PIANO;
             label.textContent = labels1[fader1AltState];
+        } else if (id === 3) {
+            label.textContent = FADER_LABELS[3][fader3AltState];
         } else {
             label.textContent = FADER_LABELS[id][altModes[id] ? 1 : 0];
         }
@@ -364,8 +398,21 @@
             } else {
                 valueEl.textContent = Math.round(freq) + "Hz";
             }
+        } else if (id === 4 && altModes[4]) {
+            // Master ALT: DRIVE (pre-limiter trim), fader 0..1 → 0.5..3.0x
+            var trim = 0.5 + value * 2.5;
+            valueEl.textContent = trim.toFixed(2) + "x";
         } else {
             valueEl.textContent = Math.round(value * 100) + "%";
+        }
+
+        // Warmth glow on master fader when DRIVE (ALT) is engaged
+        if (id === 4) {
+            if (altModes[4]) {
+                applyWarmthToMasterFader(0.5 + value * 2.5);
+            } else {
+                clearMasterFaderWarmth();
+            }
         }
     }
 
@@ -389,6 +436,11 @@
             else if (fader1AltState === 1) altFaderValues[1] = normalizedValue;
             else fader1CompValue = normalizedValue;
             altVal = fader1AltState;
+        } else if (id === 3) {
+            if (fader3AltState === 0) faderValues[3] = normalizedValue;
+            else if (fader3AltState === 1) altFaderValues[3] = normalizedValue;
+            else fader3MotionValue = normalizedValue;
+            altVal = fader3AltState;
         } else if (altModes[id]) {
             altFaderValues[id] = normalizedValue;
             altVal = 1;
@@ -419,6 +471,22 @@
         }
 
         updateFader(id);
+
+        // Mirror master-ALT (DRIVE) back into the menu knob + slider
+        if (id === 4 && altModes[4]) {
+            var trim = 0.5 + normalizedValue * 2.5;
+            var driveSlider = document.querySelector('[data-param="pre_limiter_trim"]');
+            if (driveSlider) {
+                driveSlider.value = trim * 100;  // slider range is 50..300
+                var valEl = driveSlider.parentElement.querySelector(".setting-value");
+                if (valEl) valEl.textContent = trim.toFixed(2) + "x";
+                var knob = driveSlider.closest(".knob");
+                if (knob) {
+                    updateKnobRotation(knob);
+                    applyWarmthToKnob(knob, trim);
+                }
+            }
+        }
 
         var msg = { type: "fader", id: id, value: normalizedValue, alt: altVal };
         var now = performance.now();
@@ -491,8 +559,16 @@
                 btn.classList.toggle("active", altModes[id]);
                 faderColumns[id].classList.toggle("alt-mode", altModes[id]);
                 updateFader(id);
+            } else if (id === 3) {
+                // FX fader cycles: Reverb(0) → Shimmer(1) → Motion(2) → Reverb(0)
+                fader3AltState = (fader3AltState + 1) % 3;
+                altModes[id] = fader3AltState > 0;
+                btn.classList.toggle("active", altModes[id]);
+                faderColumns[id].classList.toggle("alt-mode", altModes[id]);
+                faderColumns[id].classList.toggle("motion-mode", fader3AltState === 2);
+                updateFader(id);
             } else {
-                // Simple toggle (OSC1/2, FX reverb/shimmer)
+                // Simple toggle (OSC1/2, master)
                 altModes[id] = !altModes[id];
                 btn.classList.toggle("active", altModes[id]);
                 faderColumns[id].classList.toggle("alt-mode", altModes[id]);
@@ -1014,6 +1090,128 @@
     }
 
     // ═══ Drone ═══
+    // ═══ Bus compressor preset + GR LED ═══
+    var busCompPresetSelect = document.getElementById("bus-comp-preset-select");
+    var busCompGrLed = document.getElementById("bus-comp-gr-led");
+    var busCompGrLabel = document.getElementById("bus-comp-gr-label");
+    var grLedPeakDb = 0.0;  // peak-hold value (fast attack, slow decay)
+    if (busCompPresetSelect) {
+        busCompPresetSelect.addEventListener("change", function () {
+            var name = busCompPresetSelect.value;
+            if (name && name !== "custom") {
+                send({ type: "bus_comp_preset", name: name });
+            }
+        });
+    }
+    // Flip preset dropdown to "custom" when the user tweaks any bus_comp control
+    function markBusCompCustom() {
+        if (busCompPresetSelect && busCompPresetSelect.value !== "custom") {
+            busCompPresetSelect.value = "custom";
+        }
+    }
+    // LED color stops by dB of reduction: dim green → bright green → amber → orange → red
+    function grLedColor(db) {
+        var stops = [
+            { t: 0.0,  c: [0, 48, 24],    g: 0  },   // dim (no GR)
+            { t: 1.0,  c: [0, 191, 99],   g: 4  },   // green just lighting up
+            { t: 4.0,  c: [160, 224, 96], g: 8  },   // green/yellow — glue territory
+            { t: 8.0,  c: [232, 180, 80], g: 12 },   // amber — working
+            { t: 14.0, c: [232, 144, 64], g: 16 },   // orange — heavy
+            { t: 20.0, c: [216, 80, 48],  g: 22 },   // red — pumping hard
+        ];
+        if (db <= stops[0].t) return { color: "rgb(" + stops[0].c.join(",") + ")", glow: 0 };
+        for (var i = 1; i < stops.length; i++) {
+            if (db <= stops[i].t) {
+                var a = stops[i - 1], b = stops[i];
+                var f = (db - a.t) / (b.t - a.t);
+                var r = Math.round(a.c[0] + (b.c[0] - a.c[0]) * f);
+                var g = Math.round(a.c[1] + (b.c[1] - a.c[1]) * f);
+                var bch = Math.round(a.c[2] + (b.c[2] - a.c[2]) * f);
+                var glow = a.g + (b.g - a.g) * f;
+                return { color: "rgb(" + r + "," + g + "," + bch + ")", glow: glow };
+            }
+        }
+        var last = stops[stops.length - 1];
+        return { color: "rgb(" + last.c.join(",") + ")", glow: last.g };
+    }
+
+    // Separate peak-hold for the numeric readout so digits don't flicker.
+    // LED uses fast-attack/slow-decay; number uses ~1s peak hold before bleed-off.
+    var grLabelPeakDb = 0.0;
+    var grLabelHoldTicks = 0;
+    function updateBusCompGr(grDb) {
+        if (!busCompGrLed) return;
+        // LED: fast-attack / gentle decay for beat-pulse readability
+        if (grDb > grLedPeakDb) grLedPeakDb = grDb;
+        else grLedPeakDb = Math.max(grDb, grLedPeakDb - 0.6);
+        var w = grLedColor(grLedPeakDb);
+        busCompGrLed.style.background = w.color;
+        busCompGrLed.style.boxShadow = w.glow > 0 ? "0 0 " + w.glow + "px " + w.color : "none";
+        busCompGrLed.style.borderColor = w.color;
+        // Label peak-hold: only grows on a new peak, hold ~1s, then decay
+        if (grDb > grLabelPeakDb) {
+            grLabelPeakDb = grDb;
+            grLabelHoldTicks = 20;  // 20 ticks × 50ms = 1s hold
+        } else if (grLabelHoldTicks > 0) {
+            grLabelHoldTicks--;
+        } else {
+            grLabelPeakDb = Math.max(grDb, grLabelPeakDb - 0.3);
+        }
+        if (busCompGrLabel) busCompGrLabel.textContent = grLabelPeakDb >= 0.05
+            ? "-" + grLabelPeakDb.toFixed(1)
+            : "0.0";
+    }
+
+    // ═══ Tempo (BPM + TAP) ═══
+    function setBpm(newBpm, sendUpdate) {
+        bpm = Math.max(40, Math.min(300, Math.round(newBpm)));
+        if (bpmVal) bpmVal.textContent = bpm;
+        if (sendUpdate !== false) {
+            send({ type: "setting", section: "master", param: "bpm", value: bpm });
+        }
+    }
+
+    tapBtn.addEventListener("click", function () {
+        var now = performance.now();
+        // Drop taps older than 2s — treat as a new tap sequence
+        if (tapTimes.length && (now - tapTimes[tapTimes.length - 1]) > 2000) {
+            tapTimes = [];
+        }
+        tapTimes.push(now);
+        // Keep only the last 6 taps for rolling average
+        if (tapTimes.length > 6) tapTimes.shift();
+        if (tapTimes.length >= 2) {
+            var avgInterval = (tapTimes[tapTimes.length - 1] - tapTimes[0]) / (tapTimes.length - 1);
+            setBpm(60000 / avgInterval);
+        }
+        tapBtn.classList.add("pulse");
+        setTimeout(function () { tapBtn.classList.remove("pulse"); }, 100);
+    });
+
+    // Drag the BPM number up/down to change (pointer-based, works on touch)
+    if (bpmVal) {
+        var bpmDragStartY = 0, bpmDragStartVal = 120, bpmDragging = false;
+        bpmVal.addEventListener("pointerdown", function (e) {
+            e.preventDefault();
+            bpmDragging = true;
+            bpmDragStartY = e.clientY;
+            bpmDragStartVal = bpm;
+            try { bpmVal.setPointerCapture(e.pointerId); } catch (err) {}
+        });
+        bpmVal.addEventListener("pointermove", function (e) {
+            if (!bpmDragging) return;
+            var dy = bpmDragStartY - e.clientY;
+            setBpm(bpmDragStartVal + Math.round(dy / 3));
+        });
+        function bpmEndDrag(e) {
+            if (!bpmDragging) return;
+            bpmDragging = false;
+            try { bpmVal.releasePointerCapture(e.pointerId); } catch (err) {}
+        }
+        bpmVal.addEventListener("pointerup", bpmEndDrag);
+        bpmVal.addEventListener("pointercancel", bpmEndDrag);
+    }
+
     droneBtn.addEventListener("click", function () {
         droneEnabled = !droneEnabled;
         updateDroneDisplay();
@@ -1105,6 +1303,7 @@
         "osc1_indep_cutoff": true, "osc2_indep_cutoff": true,
         "eq_low_freq": true, "eq_mid_freq": true, "eq_high_freq": true,
         "eq_lowcut_hz": true,
+        "bus_comp_sc_hpf_hz": true,
     };
 
     var EQ_GAIN_PARAMS = {
@@ -1147,15 +1346,63 @@
                 param === "drive") {
                 sendValue = value / 100;
                 displayValue = Math.round(sendValue * 100) + "%";
-            } else if (param === "reverb_predelay_ms" || param === "haas_delay_ms") {
+            } else if (param === "reverb_predelay_ms" || param === "haas_delay_ms" ||
+                param === "attack_ms" || param === "release_ms") {
                 sendValue = value;
                 displayValue = Math.round(value) + "ms";
+            } else if (param === "comp_threshold_db" || param === "comp_makeup_db") {
+                sendValue = value;
+                var sign = value > 0 ? "+" : "";
+                displayValue = sign + Math.round(value) + "dB";
+            } else if (param === "comp_ratio") {
+                sendValue = value;
+                displayValue = value.toFixed(1) + ":1";
+            } else if (param === "bus_comp_threshold_db" || param === "bus_comp_makeup_db") {
+                sendValue = value;
+                var bsgn = value > 0 ? "+" : "";
+                displayValue = bsgn + value.toFixed(1) + "dB";
+            } else if (param === "bus_comp_ratio") {
+                // At the top of the slider (>= 25), lock to infinity (brick-wall limiter)
+                if (value >= 25) {
+                    sendValue = 1000;
+                    displayValue = "∞";
+                } else if (value >= 20) {
+                    sendValue = value;
+                    displayValue = Math.round(value) + ":1";
+                } else {
+                    sendValue = value;
+                    displayValue = value.toFixed(1) + ":1";
+                }
+            } else if (param === "bus_comp_attack_ms") {
+                sendValue = value;
+                displayValue = value.toFixed(1) + "ms";
+            } else if (param === "bus_comp_release_ms") {
+                sendValue = value;
+                displayValue = Math.round(value) + "ms";
+            } else if (param === "bus_comp_mix") {
+                sendValue = value / 100;
+                displayValue = Math.round(value) + "%";
             } else if (param === "reverb_wet_gain") {
                 sendValue = value / 100;
                 displayValue = sendValue.toFixed(1) + "x";
             } else if (param === "pre_limiter_trim" || param === "shimmer_send") {
                 sendValue = value / 100;
                 displayValue = sendValue.toFixed(2) + "x";
+            } else if (param === "lfo_rate_hz") {
+                // slider 5..2000 → 0.05..20 Hz (log-ish via linear /100)
+                sendValue = value / 100;
+                displayValue = sendValue.toFixed(2) + "Hz";
+            } else if (param === "lfo_depth" || param === "lfo_spread" ||
+                param === "delay_wet" || param === "delay_feedback") {
+                sendValue = value / 100;
+                displayValue = Math.round(value) + "%";
+            } else if (param === "delay_time_ms") {
+                sendValue = value;
+                displayValue = Math.round(value) + "ms";
+            } else if (param === "delay_offset_ms") {
+                sendValue = value;
+                var s2 = value > 0 ? "+" : "";
+                displayValue = s2 + Math.round(value) + "ms";
             } else if (param === "sympathetic_level") {
                 var t = value / 1000;
                 sendValue = t * t * t * 0.15;
@@ -1195,8 +1442,99 @@
                 param: param,
                 value: sendValue,
             });
+
+            if (param && param.indexOf && param.indexOf("adsr.") === 0) {
+                updateAdsrCurve();
+            }
+            if (param && param.indexOf && param.indexOf("bus_comp_") === 0) {
+                markBusCompCustom();
+            }
+            if (param === "pre_limiter_trim") {
+                updateWarmthClass(slider, sendValue);
+                // Mirror to master-ALT fader so both controls stay in sync
+                altFaderValues[4] = Math.max(0, Math.min(1, (sendValue - 0.5) / 2.5));
+                updateFader(4);
+            }
         });
     });
+
+    // Continuous color interpolation for drive/warmth.
+    // Input: trim value 0.5..3.0. Output: {color: "rgb(r,g,b)", glow: px}.
+    // Stops: green until 1.0, then blend through amber → orange → red.
+    function warmFromTrim(trim) {
+        var stops = [
+            { t: 1.0, c: [0, 191, 99],  g: 0 },
+            { t: 1.4, c: [224, 192, 96], g: 8 },
+            { t: 1.8, c: [232, 144, 64], g: 14 },
+            { t: 2.4, c: [216, 80, 48],  g: 18 },
+            { t: 3.0, c: [216, 64, 48],  g: 22 },
+        ];
+        if (trim <= stops[0].t) return { color: "rgb(" + stops[0].c.join(",") + ")", glow: 0 };
+        for (var i = 1; i < stops.length; i++) {
+            if (trim <= stops[i].t) {
+                var a = stops[i - 1], b = stops[i];
+                var f = (trim - a.t) / (b.t - a.t);
+                var r = Math.round(a.c[0] + (b.c[0] - a.c[0]) * f);
+                var g = Math.round(a.c[1] + (b.c[1] - a.c[1]) * f);
+                var bch = Math.round(a.c[2] + (b.c[2] - a.c[2]) * f);
+                var glow = a.g + (b.g - a.g) * f;
+                return { color: "rgb(" + r + "," + g + "," + bch + ")", glow: glow };
+            }
+        }
+        var last = stops[stops.length - 1];
+        return { color: "rgb(" + last.c.join(",") + ")", glow: last.g };
+    }
+
+    function applyWarmthToKnob(knob, trim) {
+        if (!knob) return;
+        var w = warmFromTrim(trim);
+        var dial = knob.querySelector(".knob-dial");
+        var indicatorBar = knob.querySelector(".knob-indicator");
+        if (dial) {
+            dial.style.borderColor = w.color;
+            dial.style.boxShadow = w.glow > 0 ? "0 0 " + w.glow + "px " + w.color : "none";
+        }
+        if (indicatorBar) {
+            // The indicator's ::before is the visible bar; tint via CSS custom prop
+            indicatorBar.style.setProperty("--warm-color", w.color);
+        }
+    }
+
+    function applyWarmthToMasterFader(trim) {
+        var col = faderColumns[4];
+        if (!col) return;
+        var fill = col.querySelector(".fader-fill");
+        var track = col.querySelector(".fader-track");
+        var label = col.querySelector(".fader-label");
+        var w = warmFromTrim(trim);
+        if (fill) {
+            fill.style.background = w.color;
+            fill.style.boxShadow = w.glow > 0 ? "0 0 " + w.glow + "px " + w.color : "none";
+        }
+        if (track) {
+            track.style.borderColor = w.color;
+        }
+        if (label) {
+            label.style.color = w.color;
+        }
+    }
+
+    function clearMasterFaderWarmth() {
+        var col = faderColumns[4];
+        if (!col) return;
+        var fill = col.querySelector(".fader-fill");
+        var track = col.querySelector(".fader-track");
+        var label = col.querySelector(".fader-label");
+        if (fill) { fill.style.background = ""; fill.style.boxShadow = ""; }
+        if (track) { track.style.borderColor = ""; }
+        if (label) { label.style.color = ""; }
+    }
+
+    function updateWarmthClass(slider, value) {
+        if (!slider) return;
+        var knob = slider.closest(".knob");
+        if (knob) applyWarmthToKnob(knob, value);
+    }
 
     // Settings checkboxes
     function updateIndepFilterVisibility() {
@@ -1215,25 +1553,29 @@
     }
     document.querySelectorAll(".setting-checkbox").forEach(function (checkbox) {
         checkbox.addEventListener("change", function () {
+            var p = checkbox.dataset.param;
             send({
                 type: "setting",
                 section: checkbox.dataset.section,
-                param: checkbox.dataset.param,
+                param: p,
                 value: checkbox.checked,
             });
             updateIndepFilterVisibility();
+            if (p && p.indexOf("bus_comp_") === 0) markBusCompCustom();
         });
     });
 
     // Settings selects
     document.querySelectorAll(".setting-select").forEach(function (select) {
         select.addEventListener("change", function () {
+            var p = select.dataset.param;
             send({
                 type: "setting",
                 section: select.dataset.section,
-                param: select.dataset.param,
+                param: p,
                 value: select.value,
             });
+            if (p && p.indexOf("bus_comp_") === 0) markBusCompCustom();
         });
     });
 
@@ -1267,12 +1609,27 @@
                 param === "leslie_depth" || param === "click_level" ||
                 param === "drive") {
                 slider.value = value * 100;
-            } else if (param === "reverb_predelay_ms" || param === "haas_delay_ms") {
+            } else if (param === "reverb_predelay_ms" || param === "haas_delay_ms" ||
+                param === "attack_ms" || param === "release_ms" ||
+                param === "comp_threshold_db" || param === "comp_makeup_db" ||
+                param === "comp_ratio") {
                 slider.value = value;
             } else if (param === "reverb_wet_gain") {
                 slider.value = value * 100;
             } else if (param === "pre_limiter_trim" || param === "shimmer_send") {
                 slider.value = value * 100;
+            } else if (param === "lfo_rate_hz" || param === "lfo_depth" ||
+                param === "lfo_spread" || param === "delay_wet" ||
+                param === "delay_feedback") {
+                slider.value = value * 100;
+            } else if (param === "delay_time_ms" || param === "delay_offset_ms") {
+                slider.value = value;
+            } else if (param === "bus_comp_mix") {
+                slider.value = value * 100;
+            } else if (param === "bus_comp_threshold_db" || param === "bus_comp_makeup_db" ||
+                param === "bus_comp_ratio" || param === "bus_comp_attack_ms" ||
+                param === "bus_comp_release_ms") {
+                slider.value = value;
             } else if (param === "sympathetic_level") {
                 slider.value = Math.round(Math.cbrt(Math.max(0, value) / 0.15) * 1000);
             } else if (param === "unison_detune") {
@@ -1302,12 +1659,41 @@
                     param === "leslie_depth" || param === "click_level" ||
                 param === "drive") {
                     valueEl.textContent = Math.round(value * 100) + "%";
-                } else if (param === "reverb_predelay_ms" || param === "haas_delay_ms") {
+                } else if (param === "reverb_predelay_ms" || param === "haas_delay_ms" ||
+                    param === "attack_ms" || param === "release_ms") {
                     valueEl.textContent = Math.round(value) + "ms";
+                } else if (param === "comp_threshold_db" || param === "comp_makeup_db") {
+                    var sign2 = value > 0 ? "+" : "";
+                    valueEl.textContent = sign2 + Math.round(value) + "dB";
+                } else if (param === "comp_ratio") {
+                    valueEl.textContent = value.toFixed(1) + ":1";
+                } else if (param === "bus_comp_threshold_db" || param === "bus_comp_makeup_db") {
+                    var s4 = value > 0 ? "+" : "";
+                    valueEl.textContent = s4 + value.toFixed(1) + "dB";
+                } else if (param === "bus_comp_ratio") {
+                    if (value >= 100) valueEl.textContent = "∞";
+                    else if (value >= 20) valueEl.textContent = Math.round(value) + ":1";
+                    else valueEl.textContent = value.toFixed(1) + ":1";
+                } else if (param === "bus_comp_attack_ms") {
+                    valueEl.textContent = value.toFixed(1) + "ms";
+                } else if (param === "bus_comp_release_ms") {
+                    valueEl.textContent = Math.round(value) + "ms";
+                } else if (param === "bus_comp_mix") {
+                    valueEl.textContent = Math.round(value * 100) + "%";
                 } else if (param === "reverb_wet_gain") {
                     valueEl.textContent = value.toFixed(1) + "x";
                 } else if (param === "pre_limiter_trim" || param === "shimmer_send") {
                     valueEl.textContent = value.toFixed(2) + "x";
+                } else if (param === "lfo_rate_hz") {
+                    valueEl.textContent = value.toFixed(2) + "Hz";
+                } else if (param === "lfo_depth" || param === "lfo_spread" ||
+                    param === "delay_wet" || param === "delay_feedback") {
+                    valueEl.textContent = Math.round(value * 100) + "%";
+                } else if (param === "delay_time_ms") {
+                    valueEl.textContent = Math.round(value) + "ms";
+                } else if (param === "delay_offset_ms") {
+                    var s3 = value > 0 ? "+" : "";
+                    valueEl.textContent = s3 + Math.round(value) + "ms";
                 } else if (param === "sympathetic_level") {
                     valueEl.textContent = (value * 100).toFixed(3) + "%";
                 } else if (param === "unison_detune") {
@@ -1346,6 +1732,12 @@
             }
         });
 
+        // Refresh pre-limiter warmth class from current value
+        var warmSlider = document.querySelector('[data-param="pre_limiter_trim"]');
+        if (warmSlider) {
+            updateWarmthClass(warmSlider, parseFloat(warmSlider.value) / 100);
+        }
+
         syncKnobRotations();
     }
 
@@ -1367,6 +1759,31 @@
 
     function syncKnobRotations() {
         document.querySelectorAll(".knob").forEach(updateKnobRotation);
+        updateAdsrCurve();
+    }
+
+    // ═══ ADSR envelope curve ═══
+    function getAdsrSliderVal(param) {
+        var el = document.querySelector('[data-param="adsr.' + param + '"]');
+        return el ? parseFloat(el.value) : 0;
+    }
+
+    function updateAdsrCurve() {
+        var poly = document.getElementById("adsr-path");
+        if (!poly) return;
+        var a = Math.min(1, getAdsrSliderVal("attack_ms") / 1000);
+        var d = Math.min(1, getAdsrSliderVal("decay_ms") / 2000);
+        var s = Math.max(0, Math.min(1, getAdsrSliderVal("sustain_percent") / 100));
+        var r = Math.min(1, getAdsrSliderVal("release_ms") / 3000);
+        var ax = 5 + a * 45;
+        var dx = ax + 10 + d * 35;
+        var sx = 140;
+        var rx = sx + 15 + r * 40;
+        var sustainY = 5 + (1 - s) * 50;
+        poly.setAttribute(
+            "points",
+            "0,58 " + ax + ",5 " + dx + "," + sustainY + " " + sx + "," + sustainY + " " + rx + ",58"
+        );
     }
 
     document.querySelectorAll(".knob").forEach(function (knob) {

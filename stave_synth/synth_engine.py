@@ -850,6 +850,145 @@ class FeedbackDelayReverb:
         return np.array([out_l, out_r])
 
 
+class BusCompressor:
+    """SSL G-style stereo bus compressor.
+
+    Block-level detection with per-sample linear ramp for ballistic smoothness —
+    good enough for a bus comp where attack/release times are always slow relative
+    to block size (~10ms). Fast percussive comps would need per-sample loops; bus
+    comp doesn't.
+
+    Detection signal can come from the bus itself (feedback-style SELF), the
+    piano mix, the LFO, or a BPM pulse train. HPF on the sidechain at 100 Hz
+    (SSL-style) so bass doesn't trigger ducking.
+
+    Parallel MIX knob blends dry + compressed for New York-style parallel comp.
+    """
+
+    def __init__(self, sample_rate: int = SAMPLE_RATE):
+        self.sample_rate = sample_rate
+        self.enabled = False
+        self.threshold_db = -10.0
+        self.ratio = 4.0
+        self.attack_ms = 3.0
+        self.release_ms = 300.0
+        self.release_auto = True
+        self.makeup_db = 0.0
+        self.mix = 1.0              # 0=dry, 1=full comp
+        self.knee_db = 2.0
+        self.sidechain_hpf_hz = 100.0
+
+        self._hpf_l = BiquadHighpass(self.sidechain_hpf_hz, 0.707, sample_rate)
+        self._hpf_r = BiquadHighpass(self.sidechain_hpf_hz, 0.707, sample_rate)
+
+        # RMS envelope integrator state
+        self._rms_alpha = 1.0 - np.exp(-1.0 / (0.005 * sample_rate))  # 5ms window
+        self._rms_state = np.zeros(1, dtype=np.float64)
+
+        # GR envelope (in dB, positive = reduction)
+        self._env_gr_db = 0.0
+        self._gr_db = 0.0  # exposed for metering
+
+    def reset(self):
+        self._hpf_l.reset()
+        self._hpf_r.reset()
+        self._rms_state[:] = 0.0
+        self._env_gr_db = 0.0
+        self._gr_db = 0.0
+
+    @property
+    def current_gr_db(self) -> float:
+        """Current gain reduction in dB (positive = reduced)."""
+        return float(self._gr_db)
+
+    def _target_gr_db(self, env_db: float) -> float:
+        over = env_db - self.threshold_db
+        knee = self.knee_db
+        ratio = max(1.0, self.ratio)
+        if over < -knee * 0.5:
+            return 0.0
+        if over > knee * 0.5:
+            return over * (1.0 - 1.0 / ratio)
+        # Soft knee quadratic
+        x = (over + knee * 0.5) / knee  # 0..1
+        return x * x * knee * (1.0 - 1.0 / ratio)
+
+    def process(self, out_l: np.ndarray, out_r: np.ndarray,
+                sc_l: np.ndarray = None, sc_r: np.ndarray = None):
+        """Process stereo in-place. sc_l/sc_r: external sidechain; if None, uses
+        bus signal (feedback-ish approximation using current input as detection
+        source). No-ops if disabled or mix is effectively zero."""
+        if not self.enabled:
+            self._gr_db = 0.0
+            return
+        n = out_l.shape[0]
+
+        # ── Sidechain source ──
+        if sc_l is not None and sc_r is not None:
+            sc = (sc_l + sc_r) * 0.5
+        elif sc_l is not None:
+            sc = sc_l.copy()
+        elif sc_r is not None:
+            sc = sc_r.copy()
+        else:
+            # SELF (feedback approximation — uses input pre-compression)
+            sc = (out_l + out_r) * 0.5
+
+        # ── Highpass the detection signal so bass doesn't trigger ──
+        sc = self._hpf_l.process(sc)
+
+        # ── RMS envelope (one-pole on squared signal) ──
+        sq = sc * sc
+        if HAS_SCIPY:
+            a = self._rms_alpha
+            rms, self._rms_state = lfilter([a], [1.0, -(1.0 - a)], sq, zi=self._rms_state)
+        else:
+            rms = sq  # fallback: no smoothing
+        rms = np.maximum(rms, 1e-12)
+        env_db = 10.0 * np.log10(rms)
+
+        # Use block average as the detection level (mean RMS across block)
+        # This is the SSL-style slow-ish detection for bus work.
+        target_env_db = float(np.mean(env_db))
+        target_gr = self._target_gr_db(target_env_db)
+
+        # ── Ballistic smoothing with per-block time constant + linear ramp ──
+        block_sec = n / self.sample_rate
+        delta = target_gr - self._env_gr_db
+        if delta > 0:  # attack
+            tau = max(self.attack_ms * 0.001, 0.0001)
+        else:
+            if self.release_auto:
+                # Dual-stage: faster for big peaks, slower for sustained compression.
+                # Approximated by scaling with current GR — low GR releases quickly.
+                tau = 0.1 + 0.5 * min(1.0, self._env_gr_db / 8.0)
+            else:
+                tau = max(self.release_ms * 0.001, 0.0001)
+        coef = 1.0 - np.exp(-block_sec / tau)
+        new_gr = self._env_gr_db + coef * delta
+        gr_ramp = np.linspace(self._env_gr_db, new_gr, n, dtype=np.float64)
+        self._env_gr_db = new_gr
+        self._gr_db = new_gr
+
+        # ── Apply gain reduction + makeup + parallel mix ──
+        gain_db = -gr_ramp + self.makeup_db
+        gain = np.power(10.0, gain_db / 20.0)
+
+        if self.mix >= 0.999:
+            out_l *= gain
+            out_r *= gain
+        elif self.mix < 0.001:
+            # Dry pass — detector still runs (GR meter moves) but audio untouched
+            return
+        else:
+            m = self.mix
+            inv = 1.0 - m
+            comp_l = out_l * gain
+            comp_r = out_r * gain
+            out_l[:] = out_l * inv + comp_l * m
+            out_r[:] = out_r * inv + comp_r * m
+
+
 @dataclass
 class Voice:
     note: int = 0
@@ -992,6 +1131,44 @@ class SynthEngine:
 
         self.volume = 0.8
 
+        # ═══ Motion bus mix — scales all MOTION effects together ═══
+        # Set by the FX fader's 3rd ALT state ("MOTION"). Multiplies into LFO
+        # depth and ping-pong wet so one fader can bring all motion in/out live.
+        self.motion_mix = 1.0
+
+        # ═══ Ping-pong delay (Motion tab) ═══
+        # Stereo delay with cross-feedback: L feeds R's buffer, R feeds L's.
+        # Time either in ms (FREE) or derived from BPM × subdivision.
+        self.delay_enabled = False
+        self.delay_time_mode = "1/4"   # "FREE" or subdivision string
+        self.delay_time_ms = 375.0     # used when mode = FREE
+        self.delay_offset_ms = 0.0     # L/R offset in ms
+        self.delay_feedback = 0.35     # 0..0.85
+        self.delay_wet = 0.0           # 0..1 (dry always passes through)
+        self.bpm = 120.0
+        _delay_max_ms = 1000.0          # generous headroom; will clamp read offset
+        _delay_buf_len = int((_delay_max_ms / 1000.0) * sample_rate)
+        self._delay_buf_l = np.zeros(_delay_buf_len, dtype=np.float64)
+        self._delay_buf_r = np.zeros(_delay_buf_len, dtype=np.float64)
+        self._delay_buf_len = _delay_buf_len
+        self._delay_write_pos = 0
+
+        # ═══ LFO (Motion tab) ═══
+        # Single control-rate LFO. Cheap because it updates once per block, not per sample.
+        # Targets: filter / amp / pan. (Pitch target deferred — needs voice-level wiring.)
+        self.lfo_enabled = False
+        self.lfo_rate_hz = 1.0         # 0.05-20 Hz
+        self.lfo_depth = 0.0           # 0..1
+        self.lfo_shape = "sine"        # sine, triangle, square, sh
+        self.lfo_target = "filter"     # filter, amp, pan
+        self.lfo_spread = 0.0          # 0..1, 180° R/L offset at max
+        self._lfo_phase = 0.0
+        self._lfo_sh_value = 0.0       # current sample&hold held value
+        self._lfo_sh_value_r = 0.0
+        self._lfo_prev_phase = 0.0     # to detect wraps for S&H
+        self._lfo_mod_a_last = 0.0     # previous block's end mod value (for per-sample ramp)
+        self._lfo_mod_b_last = 0.0
+
         self.voices: list[Voice] = []
         self._age_counter = 0
 
@@ -1124,6 +1301,115 @@ class SynthEngine:
         self._shimmer_hp.reset()
         self._shimmer_delay_l[:] = 0.0
         self._shimmer_delay_r[:] = 0.0
+        self._delay_buf_l[:] = 0.0
+        self._delay_buf_r[:] = 0.0
+
+    # Subdivision → beat multiplier (fraction of a quarter note)
+    _DELAY_DIVISIONS = {
+        "1/2":   2.0,
+        "1/4.":  1.5,
+        "1/4":   1.0,
+        "1/4T":  2.0 / 3.0,
+        "1/8.":  0.75,
+        "1/8":   0.5,
+        "1/8T":  1.0 / 3.0,
+        "1/16":  0.25,
+    }
+
+    def _delay_time_samples(self) -> int:
+        """Current delay time in samples, from either free ms or BPM × subdivision."""
+        if self.delay_time_mode == "FREE":
+            ms = max(1.0, min(1000.0, self.delay_time_ms))
+        else:
+            mult = self._DELAY_DIVISIONS.get(self.delay_time_mode, 1.0)
+            beat_sec = 60.0 / max(40.0, self.bpm)  # quarter note length in seconds
+            ms = beat_sec * mult * 1000.0
+            ms = max(1.0, min(1000.0, ms))
+        return int(ms * 0.001 * self.sample_rate)
+
+    def _process_ping_pong(self, out_l: np.ndarray, out_r: np.ndarray):
+        """Stereo cross-feedback delay applied in place on out_l/out_r.
+        Dry signal passes through unchanged; wet taps mix in at self.delay_wet × motion_mix.
+        Read happens before write so we never self-read within a block."""
+        effective_wet = self.delay_wet * self.motion_mix
+        if not self.delay_enabled or effective_wet < 0.001:
+            return
+        n = out_l.shape[0]
+        buf_l = self._delay_buf_l
+        buf_r = self._delay_buf_r
+        blen = self._delay_buf_len
+        pos = self._delay_write_pos
+        delay_samps = max(1, self._delay_time_samples())
+        off_samps = int(self.delay_offset_ms * 0.001 * self.sample_rate)
+        read_l_len = max(1, delay_samps)
+        read_r_len = max(1, delay_samps + off_samps)
+        read_l_len = min(read_l_len, blen - 1)
+        read_r_len = min(read_r_len, blen - 1)
+
+        # Read the two tap blocks (with wrap)
+        def read_block(buf, delay_len):
+            start = (pos - delay_len) % blen
+            end = start + n
+            if end <= blen:
+                return buf[start:end].copy()
+            first = blen - start
+            out = np.empty(n, dtype=np.float64)
+            out[:first] = buf[start:]
+            out[first:] = buf[:end - blen]
+            return out
+
+        tap_l = read_block(buf_r, read_l_len)  # L tap reads R buffer (ping-pong)
+        tap_r = read_block(buf_l, read_r_len)  # R tap reads L buffer
+
+        # Write current input + feedback from opposite tap into each buffer
+        fb = max(0.0, min(0.85, self.delay_feedback))
+        write_l = out_l + tap_l * fb
+        write_r = out_r + tap_r * fb
+
+        end = pos + n
+        if end <= blen:
+            buf_l[pos:end] = write_l
+            buf_r[pos:end] = write_r
+        else:
+            first = blen - pos
+            buf_l[pos:] = write_l[:first]
+            buf_l[:end - blen] = write_l[first:]
+            buf_r[pos:] = write_r[:first]
+            buf_r[:end - blen] = write_r[first:]
+        self._delay_write_pos = end % blen
+
+        # Mix wet taps into output (scaled by the motion bus)
+        out_l += tap_l * effective_wet
+        out_r += tap_r * effective_wet
+
+    def _advance_lfo(self, n_samples: int):
+        """Advance LFO phase by one block; return (mod_a, mod_b) bipolar, pre-scaled by
+        effective depth (user depth × motion_mix bus). mod_b is phase-offset by spread.
+        Control rate — cheap because it runs once per block, not per sample."""
+        effective_depth = self.lfo_depth * self.motion_mix
+        if not self.lfo_enabled or effective_depth < 0.001:
+            return 0.0, 0.0
+        block_sec = n_samples / self.sample_rate
+        prev_phase = self._lfo_phase
+        self._lfo_phase = (self._lfo_phase + self.lfo_rate_hz * block_sec) % 1.0
+        # Sample & Hold regenerates on every phase wrap
+        if self.lfo_shape == "sh" and self._lfo_phase < prev_phase:
+            self._lfo_sh_value = float(np.random.uniform(-1.0, 1.0))
+            self._lfo_sh_value_r = float(np.random.uniform(-1.0, 1.0))
+        phase_a = self._lfo_phase
+        phase_b = (self._lfo_phase + 0.5 * self.lfo_spread) % 1.0
+
+        def _eval(phase, is_b):
+            if self.lfo_shape == "triangle":
+                return 4.0 * abs(phase - 0.5) - 1.0
+            if self.lfo_shape == "square":
+                return 1.0 if phase < 0.5 else -1.0
+            if self.lfo_shape == "sh":
+                return self._lfo_sh_value_r if is_b else self._lfo_sh_value
+            # default: sine
+            return float(np.sin(phase * TWO_PI))
+
+        return _eval(phase_a, False) * effective_depth, _eval(phase_b, True) * effective_depth
 
     def _process_shimmer_cloud(self, shimmer_sig: np.ndarray, out_l: np.ndarray, out_r: np.ndarray):
         """Multi-tap pre-reverb cloud: writes shimmer_sig into a ring buffer and
@@ -1217,7 +1503,7 @@ class SynthEngine:
         self._drone_root_freq_cur = 0.0
         self._drone_fifth_freq_cur = 0.0
 
-    def render(self, n_samples: int) -> np.ndarray:
+    def render(self, n_samples: int, separate_fx: bool = False):
         if n_samples == 0:
             return np.zeros((2, 0), dtype=np.float64)
 
@@ -1449,23 +1735,32 @@ class SynthEngine:
         log_tgt = np.log(max(self.filter_cutoff, 20.0))
         log_cur += alpha_s * (log_tgt - log_cur)
         self._filter_cutoff_cur = np.exp(log_cur)
+
+        # ─── LFO compute (once per block) + filter modulation ───
+        lfo_a, lfo_b = self._advance_lfo(n_samples)
+        effective_cutoff = self._filter_cutoff_cur
+        if self.lfo_enabled and self.lfo_target == "filter" and self.lfo_depth > 0.001:
+            # ±2 octaves at depth=1 (lfo_a is already scaled by depth)
+            effective_cutoff = self._filter_cutoff_cur * (2.0 ** (lfo_a * 2.0))
+            effective_cutoff = max(20.0, min(20000.0, effective_cutoff))
+
         # Only recalculate filter coefficients if cutoff or resonance actually changed
-        cutoff_changed = (abs(self._filter_cutoff_cur - self._filter_cutoff_last_set) > 0.1
+        cutoff_changed = (abs(effective_cutoff - self._filter_cutoff_last_set) > 0.1
                           or self.filter_resonance != self._filter_res_last_set)
         if cutoff_changed:
-            self._filter_cutoff_last_set = self._filter_cutoff_cur
+            self._filter_cutoff_last_set = effective_cutoff
             self._filter_res_last_set = self.filter_resonance
-            self.filter_l.set_params(self._filter_cutoff_cur, self.filter_resonance)
-            self.filter_r.set_params(self._filter_cutoff_cur, self.filter_resonance)
+            self.filter_l.set_params(effective_cutoff, self.filter_resonance)
+            self.filter_r.set_params(effective_cutoff, self.filter_resonance)
             if self.filter_slope == 24:
-                self.filter2_l.set_params(self._filter_cutoff_cur, self.filter_resonance)
-                self.filter2_r.set_params(self._filter_cutoff_cur, self.filter_resonance)
+                self.filter2_l.set_params(effective_cutoff, self.filter_resonance)
+                self.filter2_r.set_params(effective_cutoff, self.filter_resonance)
             if self.reverb_filter_enabled:
-                self.reverb_filter_l.set_params(self._filter_cutoff_cur, self.filter_resonance)
-                self.reverb_filter_r.set_params(self._filter_cutoff_cur, self.filter_resonance)
+                self.reverb_filter_l.set_params(effective_cutoff, self.filter_resonance)
+                self.reverb_filter_r.set_params(effective_cutoff, self.filter_resonance)
                 if self.filter_slope == 24:
-                    self.reverb_filter2_l.set_params(self._filter_cutoff_cur, self.filter_resonance)
-                    self.reverb_filter2_r.set_params(self._filter_cutoff_cur, self.filter_resonance)
+                    self.reverb_filter2_l.set_params(effective_cutoff, self.filter_resonance)
+                    self.reverb_filter2_r.set_params(effective_cutoff, self.filter_resonance)
 
         if not self.osc1_filter_enabled:
             lc = np.log(max(self._osc1_indep_cutoff_cur, 20.0))
@@ -1556,6 +1851,33 @@ class SynthEngine:
                 self.filter_hp_r.set_params(self._filter_highpass_cur, 0.707)
                 output_l = self.filter_hp_l.process(output_l)
                 output_r = self.filter_hp_r.process(output_r)
+
+        # ─── LFO amp/pan modulation on pad bus ───
+        # Ramp mod values linearly from last block's end-value to this block's new
+        # value. That avoids the 10ms-block-sized discontinuity that would
+        # otherwise click on every render — particularly audible in the reverb tail.
+        if (self.lfo_enabled and self.lfo_depth * self.motion_mix > 0.001
+                and self.lfo_target in ("amp", "pan")):
+            ramp_a = np.linspace(self._lfo_mod_a_last, lfo_a, n_samples, dtype=np.float64)
+            if self.lfo_target == "amp":
+                ramp_b = np.linspace(self._lfo_mod_b_last, lfo_b, n_samples, dtype=np.float64)
+                # Tremolo: ±50% swing at depth=1
+                output_l *= (1.0 + ramp_a * 0.5)
+                output_r *= (1.0 + ramp_b * 0.5)
+            else:  # pan — opposite scale on L vs R (uses mod_a on both sides)
+                output_l *= (1.0 + ramp_a * 0.5)
+                output_r *= (1.0 - ramp_a * 0.5)
+        # Remember this block's end values for the next block's ramp start
+        self._lfo_mod_a_last = lfo_a
+        self._lfo_mod_b_last = lfo_b
+
+        # Snapshot dry pad (post-LFO, pre-FX) so callers asking for FX-bypass
+        # routing can subtract and extract a clean dry bus for the bus comp.
+        _pre_fx_dry_l = output_l.copy() if separate_fx else None
+        _pre_fx_dry_r = output_r.copy() if separate_fx else None
+
+        # ─── Ping-pong delay (pre-reverb so taps get cathedral treatment) ───
+        self._process_ping_pong(output_l, output_r)
 
         # Reverb gets stereo input — preserves stereo image in tail
         reverb_in_l = self._reverb_in_l[:n_samples]
@@ -1658,6 +1980,19 @@ class SynthEngine:
         stereo_out = self._stereo_out[:, :n_samples]
         stereo_out[0] = output_l * dry_gain + reverb_out[0] * wet_gain_val
         stereo_out[1] = output_r * dry_gain + reverb_out[1] * wet_gain_val
+
+        if separate_fx:
+            # dry bus = pre-FX pad × dry_gain.
+            # fx bus = final − dry = delay taps × dry_gain + reverb wet × wet_gain_val.
+            # Summing dry + fx post-comp reconstructs the same total mix as the
+            # single-return path, but the comp only sees the dry bus.
+            dry_bus = np.empty((2, n_samples), dtype=np.float64)
+            dry_bus[0] = _pre_fx_dry_l * dry_gain
+            dry_bus[1] = _pre_fx_dry_r * dry_gain
+            fx_bus = np.empty((2, n_samples), dtype=np.float64)
+            fx_bus[0] = stereo_out[0] - dry_bus[0]
+            fx_bus[1] = stereo_out[1] - dry_bus[1]
+            return dry_bus, fx_bus
 
         return stereo_out  # (2, n)
 
@@ -1777,6 +2112,42 @@ class SynthEngine:
             self.shimmer_high = bool(params["shimmer_high"])
         if "shimmer_send" in params:
             self.shimmer_send = max(0.0, min(2.0, float(params["shimmer_send"])))
+        if "lfo_enabled" in params:
+            self.lfo_enabled = bool(params["lfo_enabled"])
+        if "lfo_rate_hz" in params:
+            self.lfo_rate_hz = max(0.05, min(20.0, float(params["lfo_rate_hz"])))
+        if "lfo_depth" in params:
+            self.lfo_depth = max(0.0, min(1.0, float(params["lfo_depth"])))
+        if "lfo_shape" in params:
+            s = str(params["lfo_shape"])
+            if s in ("sine", "triangle", "square", "sh"):
+                self.lfo_shape = s
+        if "lfo_target" in params:
+            t = str(params["lfo_target"])
+            if t in ("filter", "amp", "pan"):
+                self.lfo_target = t
+                # Reset filter cache so modulation takes over cleanly
+                self._filter_cutoff_last_set = -1.0
+        if "lfo_spread" in params:
+            self.lfo_spread = max(0.0, min(1.0, float(params["lfo_spread"])))
+        if "delay_enabled" in params:
+            self.delay_enabled = bool(params["delay_enabled"])
+        if "delay_time_mode" in params:
+            m = str(params["delay_time_mode"])
+            if m == "FREE" or m in self._DELAY_DIVISIONS:
+                self.delay_time_mode = m
+        if "delay_time_ms" in params:
+            self.delay_time_ms = max(1.0, min(1000.0, float(params["delay_time_ms"])))
+        if "delay_offset_ms" in params:
+            self.delay_offset_ms = max(-200.0, min(200.0, float(params["delay_offset_ms"])))
+        if "delay_feedback" in params:
+            self.delay_feedback = max(0.0, min(0.85, float(params["delay_feedback"])))
+        if "delay_wet" in params:
+            self.delay_wet = max(0.0, min(1.0, float(params["delay_wet"])))
+        if "bpm" in params:
+            self.bpm = max(40.0, min(300.0, float(params["bpm"])))
+        if "motion_mix" in params:
+            self.motion_mix = max(0.0, min(1.0, float(params["motion_mix"])))
         if "freeze_enabled" in params:
             self.freeze_enabled = bool(params["freeze_enabled"])
             self.reverb.set_freeze(self.freeze_enabled)
@@ -1824,6 +2195,19 @@ class SynthEngine:
             "shimmer_mix": self.shimmer_mix,
             "shimmer_high": self.shimmer_high,
             "shimmer_send": self.shimmer_send,
+            "lfo_enabled": self.lfo_enabled,
+            "lfo_rate_hz": self.lfo_rate_hz,
+            "lfo_depth": self.lfo_depth,
+            "lfo_shape": self.lfo_shape,
+            "lfo_target": self.lfo_target,
+            "lfo_spread": self.lfo_spread,
+            "delay_enabled": self.delay_enabled,
+            "delay_time_mode": self.delay_time_mode,
+            "delay_time_ms": self.delay_time_ms,
+            "delay_offset_ms": self.delay_offset_ms,
+            "delay_feedback": self.delay_feedback,
+            "delay_wet": self.delay_wet,
+            "motion_mix": self.motion_mix,
             "freeze_enabled": self.freeze_enabled,
             "sympathetic_enabled": self.sympathetic_enabled,
             "sympathetic_level": self.sympathetic_level,

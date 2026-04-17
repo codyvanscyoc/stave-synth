@@ -62,7 +62,8 @@ class OrganVoice:
     """Lightweight per-note voice for the organ."""
 
     __slots__ = ('note', 'frequency', 'velocity', 'phases',
-                 'click_remaining', 'release_remaining', 'releasing')
+                 'click_remaining', 'attack_remaining', 'attack_total',
+                 'release_remaining', 'release_total', 'releasing')
 
     def __init__(self, note: int, velocity: float, sample_rate: int = SAMPLE_RATE):
         self.note = note
@@ -70,13 +71,17 @@ class OrganVoice:
         self.velocity = velocity
         self.phases = np.zeros(9, dtype=np.float64)
         self.click_remaining = int(0.002 * sample_rate)  # 2ms click burst
+        self.attack_remaining = 0
+        self.attack_total = 0
         self.release_remaining = 0
+        self.release_total = int(0.010 * sample_rate)
         self.releasing = False
 
-    def start_release(self, sample_rate: int = SAMPLE_RATE):
+    def start_release(self, release_samples: int):
         if not self.releasing:
             self.releasing = True
-            self.release_remaining = int(0.010 * sample_rate)  # 10ms fade-out
+            self.release_total = max(1, release_samples)
+            self.release_remaining = self.release_total
 
 
 class OrganEngine:
@@ -98,6 +103,11 @@ class OrganEngine:
         # Key click
         self.click_enabled = True
         self.click_level = 0.3
+
+        # Soft attack / release (ms). Defaults preserve original character:
+        # attack 0 = instant (click audible), release 10 = tight B3 decay.
+        self.attack_ms = 0.0
+        self.release_ms = 10.0
 
         # Leslie speaker (user-facing controls)
         self.leslie_speed = "slow"
@@ -166,23 +176,33 @@ class OrganEngine:
     def note_on(self, note: int, velocity: float):
         if not self.enabled:
             return
+        attack_samples = int(self.attack_ms * 0.001 * self.sample_rate)
         with self._lock:
             if note in self.voices and not self.voices[note].releasing:
                 v = self.voices[note]
                 v.velocity = velocity
                 v.click_remaining = int(0.002 * self.sample_rate)
+                v.attack_remaining = attack_samples
+                v.attack_total = attack_samples
                 return
-            self.voices[note] = OrganVoice(note, velocity, self.sample_rate)
+            v = OrganVoice(note, velocity, self.sample_rate)
+            v.attack_remaining = attack_samples
+            v.attack_total = attack_samples
+            self.voices[note] = v
+
+    def _release_samples(self) -> int:
+        return max(1, int(self.release_ms * 0.001 * self.sample_rate))
 
     def note_off(self, note: int):
         with self._lock:
             if note in self.voices:
-                self.voices[note].start_release(self.sample_rate)
+                self.voices[note].start_release(self._release_samples())
 
     def all_notes_off(self):
+        rs = self._release_samples()
         with self._lock:
             for v in self.voices.values():
-                v.start_release(self.sample_rate)
+                v.start_release(rs)
 
     def midi_callback(self, event_type: str, note: int, velocity: float):
         if event_type == "note_on":
@@ -222,7 +242,6 @@ class OrganEngine:
         amps = self._drawbar_amps
         click_sample = self._click_sample
         click_len = len(click_sample)
-        release_samples = int(0.010 * sr)
 
         with self._lock:
             voices = list(self.voices.items())
@@ -276,9 +295,23 @@ class OrganEngine:
                     signal[:actual_n] += click_sample[click_start:click_end] * self.click_level
                 voice.click_remaining = max(0, voice.click_remaining - n_samples)
 
-            # Release fade (10ms linear)
+            # Soft attack ramp (0 → 1 over attack_total samples). Ramps both the
+            # tonewheel content AND the click, so longer attack = softer key start.
+            if voice.attack_remaining > 0 and voice.attack_total > 0:
+                total = voice.attack_total
+                done = total - voice.attack_remaining
+                end_idx = min(voice.attack_remaining, n_samples)
+                ramp = np.linspace((done + 1) / total,
+                                   (done + end_idx) / total,
+                                   end_idx, dtype=np.float64)
+                np.clip(ramp, 0.0, 1.0, out=ramp)
+                signal[:end_idx] *= ramp
+                voice.attack_remaining = max(0, voice.attack_remaining - n_samples)
+
+            # Release fade (linear, length = voice.release_total)
             if voice.releasing:
                 remaining = voice.release_remaining
+                release_samples = max(1, voice.release_total)
                 if remaining <= 0:
                     dead_notes.append(note)
                     continue
@@ -435,6 +468,10 @@ class OrganEngine:
             self.click_enabled = bool(params["click_enabled"])
         if "click_level" in params:
             self.click_level = max(0.0, min(1.0, float(params["click_level"])))
+        if "attack_ms" in params:
+            self.attack_ms = max(0.0, min(200.0, float(params["attack_ms"])))
+        if "release_ms" in params:
+            self.release_ms = max(5.0, min(500.0, float(params["release_ms"])))
         if "drive" in params:
             self.drive = max(0.0, min(1.0, float(params["drive"])))
         if "filter_highcut_hz" in params:
@@ -451,6 +488,8 @@ class OrganEngine:
             "leslie_depth": self.leslie_depth,
             "click_enabled": self.click_enabled,
             "click_level": self.click_level,
+            "attack_ms": self.attack_ms,
+            "release_ms": self.release_ms,
             "drive": self.drive,
             "filter_highcut_hz": self.highcut_hz,
             "filter_lowcut_hz": self.lowcut_hz,

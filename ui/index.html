@@ -6,7 +6,7 @@
     <title>Stave Synth</title>
     <link rel="icon" type="image/png" href="logo.png">
     <!-- Keep style.css and script.js cache-bust versions in sync -->
-    <link rel="stylesheet" href="style.css?v=26">
+    <link rel="stylesheet" href="style.css?v=44">
 </head>
 <body>
     <div id="app">
@@ -27,7 +27,11 @@
             <button id="sat-btn" class="ctrl-btn ctrl-btn-sm">SAT</button>
             <button id="panic-btn" class="ctrl-btn panic-btn">STOP</button>
             <button id="menu-btn" class="ctrl-btn">MENU</button>
-            <div id="sys-monitor"><span id="cpu-val">--</span><span id="ram-val">--</span></div>
+            <div id="tempo-box">
+                <span id="bpm-val">120</span>
+                <span class="tempo-unit">BPM</span>
+                <button id="tap-btn" class="ctrl-btn ctrl-btn-sm">TAP</button>
+            </div>
             <div id="limit-midi-stack">
                 <div id="clip-indicator">LIMIT</div>
                 <div id="midi-indicator">MIDI</div>
@@ -113,6 +117,7 @@
                     </div>
                 </div>
                 <div class="fader-bottom-row">
+                    <button class="alt-btn" data-id="4">ALT</button>
                     <button id="fade-btn" class="ctrl-btn ctrl-btn-sm">FADE</button>
                 </div>
             </div>
@@ -199,6 +204,7 @@
                     <button class="settings-tab active" data-tab="synth">SYNTH PAD</button>
                     <button class="settings-tab" data-tab="piano">PIANO</button>
                     <button class="settings-tab" data-tab="reverb">REVERB</button>
+                    <button class="settings-tab" data-tab="motion">MOTION</button>
                     <button class="settings-tab" data-tab="organ">ORGAN</button>
                     <button class="settings-tab" data-tab="global">GLOBAL</button>
                     <button id="settings-close" class="ctrl-btn">X</button>
@@ -207,138 +213,165 @@
                     <!-- Synth Pad Tab -->
                     <div class="settings-panel active" data-panel="synth">
                         <div class="setting-section">OSCILLATORS</div>
-                        <div class="setting-row">
-                            <span class="setting-label">OSC1 Trim</span>
-                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc1_max" min="0" max="100" value="100">
-                            <span class="setting-value">100%</span>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">OSC1 Waveform</span>
-                            <select class="setting-select" data-section="synth_pad" data-param="osc1_waveform">
-                                <option value="sine" selected>Sine</option>
-                                <option value="square">Square</option>
-                                <option value="saw">Sawtooth</option>
-                                <option value="triangle">Triangle</option>
-                                <option value="saturated">Saturated</option>
-                            </select>
-                        </div>
-                        <div class="setting-row setting-row-checkbox">
-                            <label class="setting-checkbox-label">
-                                <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc1_filter_enabled" checked>
-                                <span>Shared filter on OSC1</span>
-                            </label>
-                        </div>
-                        <div class="setting-row indep-filter-row" id="osc1-indep-filter" style="display:none">
-                            <span class="setting-label">OSC1 Filter (Hz)</span>
-                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc1_indep_cutoff" min="0" max="1000" value="1000" data-hz-min="20" data-hz-max="20000">
-                            <span class="setting-value">20kHz</span>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">OSC2 Trim</span>
-                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc2_max" min="0" max="100" value="100">
-                            <span class="setting-value">100%</span>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">OSC2 Waveform</span>
-                            <select class="setting-select" data-section="synth_pad" data-param="osc2_waveform">
-                                <option value="sine">Sine</option>
-                                <option value="square" selected>Square</option>
-                                <option value="saw">Sawtooth</option>
-                                <option value="triangle">Triangle</option>
-                                <option value="saturated">Saturated</option>
-                            </select>
-                        </div>
-                        <div class="setting-row setting-row-checkbox">
-                            <label class="setting-checkbox-label">
-                                <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc2_filter_enabled" checked>
-                                <span>Shared filter on OSC2</span>
-                            </label>
-                        </div>
-                        <div class="setting-row indep-filter-row" id="osc2-indep-filter" style="display:none">
-                            <span class="setting-label">OSC2 Filter (Hz)</span>
-                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc2_indep_cutoff" min="0" max="1000" value="1000" data-hz-min="20" data-hz-max="20000">
-                            <span class="setting-value">20kHz</span>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">Unison Voices</span>
-                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="unison_voices" min="1" max="5" value="1">
-                            <span class="setting-value">3</span>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">Unison Detune</span>
-                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="unison_detune" min="0" max="100" value="50">
-                            <span class="setting-value">0.05</span>
-                        </div>
-
-                        <div class="setting-section">STEREO PAN</div>
-                        <div class="setting-row setting-row-checkbox">
-                            <label class="setting-checkbox-label">
-                                <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc_hard_pan">
-                                <span>WIDE (hard pan + Haas delay)</span>
-                            </label>
-                            <label class="setting-checkbox-label" style="margin-left: 2vw;">
-                                <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc_levels_linked">
-                                <span>LINK OSC levels</span>
-                            </label>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">Haas Delay</span>
-                            <select class="setting-select" data-section="synth_pad" data-param="haas_delay_ms">
-                                <option value="15">15 ms (tight)</option>
-                                <option value="20" selected>20 ms (classic)</option>
-                                <option value="40">40 ms (wide)</option>
-                            </select>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">OSC1 Pan</span>
-                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc1_pan" min="-100" max="100" value="0">
-                            <span class="setting-value">C</span>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">OSC2 Pan</span>
-                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc2_pan" min="-100" max="100" value="0">
-                            <span class="setting-value">C</span>
-                        </div>
-
-                        <div class="setting-section">FILTER</div>
-                        <div class="setting-row">
-                            <span class="setting-label">Filter Slope</span>
-                            <select class="setting-select" data-section="synth_pad" data-param="filter_slope">
-                                <option value="12" selected>12 dB/oct</option>
-                                <option value="24">24 dB/oct</option>
-                            </select>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">Filter Min (Hz)</span>
-                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="filter_range_min" min="0" max="1000" value="500" data-hz-min="20" data-hz-max="2000">
-                            <span class="setting-value">150</span>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">Filter Max (Hz)</span>
-                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="filter_range_max" min="0" max="1000" value="1000" data-hz-min="1000" data-hz-max="20000">
-                            <span class="setting-value">20kHz</span>
+                        <div class="osc-grid">
+                            <div class="osc-col">
+                                <div class="osc-title">OSC 1</div>
+                                <div class="setting-row">
+                                    <span class="setting-label">Trim</span>
+                                    <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc1_max" min="0" max="100" value="100">
+                                    <span class="setting-value">100%</span>
+                                </div>
+                                <div class="setting-row">
+                                    <span class="setting-label">Wave</span>
+                                    <select class="setting-select" data-section="synth_pad" data-param="osc1_waveform">
+                                        <option value="sine" selected>Sine</option>
+                                        <option value="square">Square</option>
+                                        <option value="saw">Sawtooth</option>
+                                        <option value="triangle">Triangle</option>
+                                        <option value="saturated">Saturated</option>
+                                    </select>
+                                </div>
+                                <div class="setting-row setting-row-checkbox">
+                                    <label class="setting-checkbox-label">
+                                        <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc1_filter_enabled" checked>
+                                        <span>Shared filter</span>
+                                    </label>
+                                </div>
+                                <div class="setting-row indep-filter-row" id="osc1-indep-filter" style="display:none">
+                                    <span class="setting-label">Filter (Hz)</span>
+                                    <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc1_indep_cutoff" min="0" max="1000" value="1000" data-hz-min="20" data-hz-max="20000">
+                                    <span class="setting-value">20kHz</span>
+                                </div>
+                                <div class="setting-row">
+                                    <span class="setting-label">Pan</span>
+                                    <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc1_pan" min="-100" max="100" value="0">
+                                    <span class="setting-value">C</span>
+                                </div>
+                            </div>
+                            <div class="osc-col">
+                                <div class="osc-title">OSC 2</div>
+                                <div class="setting-row">
+                                    <span class="setting-label">Trim</span>
+                                    <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc2_max" min="0" max="100" value="100">
+                                    <span class="setting-value">100%</span>
+                                </div>
+                                <div class="setting-row">
+                                    <span class="setting-label">Wave</span>
+                                    <select class="setting-select" data-section="synth_pad" data-param="osc2_waveform">
+                                        <option value="sine">Sine</option>
+                                        <option value="square" selected>Square</option>
+                                        <option value="saw">Sawtooth</option>
+                                        <option value="triangle">Triangle</option>
+                                        <option value="saturated">Saturated</option>
+                                    </select>
+                                </div>
+                                <div class="setting-row setting-row-checkbox">
+                                    <label class="setting-checkbox-label">
+                                        <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc2_filter_enabled" checked>
+                                        <span>Shared filter</span>
+                                    </label>
+                                </div>
+                                <div class="setting-row indep-filter-row" id="osc2-indep-filter" style="display:none">
+                                    <span class="setting-label">Filter (Hz)</span>
+                                    <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc2_indep_cutoff" min="0" max="1000" value="1000" data-hz-min="20" data-hz-max="20000">
+                                    <span class="setting-value">20kHz</span>
+                                </div>
+                                <div class="setting-row">
+                                    <span class="setting-label">Pan</span>
+                                    <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc2_pan" min="-100" max="100" value="0">
+                                    <span class="setting-value">C</span>
+                                </div>
+                            </div>
                         </div>
 
                         <div class="setting-section">ENVELOPE</div>
-                        <div class="setting-row">
-                            <span class="setting-label">Attack (ms)</span>
-                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="adsr.attack_ms" min="0" max="1000" value="200">
-                            <span class="setting-value">200</span>
+                        <div class="adsr-block">
+                            <svg class="adsr-curve" viewBox="0 0 200 60" preserveAspectRatio="none">
+                                <polyline id="adsr-path" points="0,60 40,2 80,15 140,15 200,60" />
+                            </svg>
+                            <div class="knob-row knob-row-tight">
+                                <div class="knob">
+                                    <div class="knob-label">ATTACK</div>
+                                    <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                    <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr.attack_ms" min="0" max="1000" value="200">
+                                    <span class="setting-value">200ms</span>
+                                </div>
+                                <div class="knob">
+                                    <div class="knob-label">DECAY</div>
+                                    <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                    <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr.decay_ms" min="0" max="2000" value="1500">
+                                    <span class="setting-value">1500ms</span>
+                                </div>
+                                <div class="knob">
+                                    <div class="knob-label">SUSTAIN</div>
+                                    <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                    <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr.sustain_percent" min="0" max="100" value="80">
+                                    <span class="setting-value">80%</span>
+                                </div>
+                                <div class="knob">
+                                    <div class="knob-label">RELEASE</div>
+                                    <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                    <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr.release_ms" min="0" max="3000" value="500">
+                                    <span class="setting-value">500ms</span>
+                                </div>
+                            </div>
                         </div>
-                        <div class="setting-row">
-                            <span class="setting-label">Decay (ms)</span>
-                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="adsr.decay_ms" min="0" max="2000" value="1500">
-                            <span class="setting-value">1500</span>
+
+                        <div class="setting-section">UNISON</div>
+                        <div class="two-col">
+                            <div class="setting-row">
+                                <span class="setting-label">Voices</span>
+                                <input type="range" class="setting-slider" data-section="synth_pad" data-param="unison_voices" min="1" max="5" value="1">
+                                <span class="setting-value">3</span>
+                            </div>
+                            <div class="setting-row">
+                                <span class="setting-label">Detune</span>
+                                <input type="range" class="setting-slider" data-section="synth_pad" data-param="unison_detune" min="0" max="100" value="50">
+                                <span class="setting-value">0.05</span>
+                            </div>
                         </div>
-                        <div class="setting-row">
-                            <span class="setting-label">Sustain (%)</span>
-                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="adsr.sustain_percent" min="0" max="100" value="80">
-                            <span class="setting-value">80</span>
+
+                        <div class="setting-section">STEREO</div>
+                        <div class="stereo-row">
+                            <div class="stereo-checks">
+                                <label class="setting-checkbox-label">
+                                    <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc_hard_pan">
+                                    <span>WIDE</span>
+                                </label>
+                                <label class="setting-checkbox-label">
+                                    <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc_levels_linked">
+                                    <span>LINK</span>
+                                </label>
+                            </div>
+                            <div class="setting-row stereo-haas">
+                                <span class="setting-label">Haas</span>
+                                <select class="setting-select compact-select" data-section="synth_pad" data-param="haas_delay_ms">
+                                    <option value="15">15 tight</option>
+                                    <option value="20" selected>20 classic</option>
+                                    <option value="40">40 wide</option>
+                                </select>
+                            </div>
                         </div>
-                        <div class="setting-row">
-                            <span class="setting-label">Release (ms)</span>
-                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="adsr.release_ms" min="0" max="3000" value="500">
-                            <span class="setting-value">500</span>
+
+                        <div class="setting-section">FILTER</div>
+                        <div class="filter-row">
+                            <div class="setting-row">
+                                <span class="setting-label">Slope</span>
+                                <select class="setting-select compact-select" data-section="synth_pad" data-param="filter_slope">
+                                    <option value="12" selected>12 dB</option>
+                                    <option value="24">24 dB</option>
+                                </select>
+                            </div>
+                            <div class="setting-row">
+                                <span class="setting-label">Min</span>
+                                <input type="range" class="setting-slider" data-section="synth_pad" data-param="filter_range_min" min="0" max="1000" value="500" data-hz-min="20" data-hz-max="2000">
+                                <span class="setting-value">150</span>
+                            </div>
+                            <div class="setting-row">
+                                <span class="setting-label">Max</span>
+                                <input type="range" class="setting-slider" data-section="synth_pad" data-param="filter_range_max" min="0" max="1000" value="1000" data-hz-min="1000" data-hz-max="20000">
+                                <span class="setting-value">20kHz</span>
+                            </div>
                         </div>
 
                     </div>
@@ -390,20 +423,25 @@
                                 <span>Compressor Enabled</span>
                             </label>
                         </div>
-                        <div class="setting-row">
-                            <span class="setting-label">Comp Threshold</span>
-                            <input type="range" class="setting-slider" data-section="piano" data-param="comp_threshold_db" min="-30" max="0" value="-12">
-                            <span class="setting-value">-12dB</span>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">Comp Ratio</span>
-                            <input type="range" class="setting-slider" data-section="piano" data-param="comp_ratio" min="1" max="10" value="3" step="0.5">
-                            <span class="setting-value">3:1</span>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">Comp Makeup (dB)</span>
-                            <input type="range" class="setting-slider" data-section="piano" data-param="comp_makeup_db" min="0" max="12" value="0">
-                            <span class="setting-value">0dB</span>
+                        <div class="knob-row">
+                            <div class="knob">
+                                <div class="knob-label">THRESH</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="comp_threshold_db" min="-30" max="0" value="-12">
+                                <span class="setting-value">-12dB</span>
+                            </div>
+                            <div class="knob">
+                                <div class="knob-label">RATIO</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="comp_ratio" min="1" max="10" value="3" step="0.5">
+                                <span class="setting-value">3:1</span>
+                            </div>
+                            <div class="knob">
+                                <div class="knob-label">MAKEUP</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="comp_makeup_db" min="0" max="12" value="0">
+                                <span class="setting-value">0dB</span>
+                            </div>
                         </div>
                     </div>
 
@@ -471,6 +509,103 @@
                         </div>
                     </div>
 
+                    <!-- Motion Tab -->
+                    <div class="settings-panel" data-panel="motion">
+                        <div class="setting-section">LFO</div>
+                        <div class="setting-row setting-row-checkbox">
+                            <label class="setting-checkbox-label">
+                                <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="lfo_enabled">
+                                <span>LFO Enabled</span>
+                            </label>
+                        </div>
+                        <div class="two-col">
+                            <div class="setting-row">
+                                <span class="setting-label">Shape</span>
+                                <select class="setting-select compact-select" data-section="synth_pad" data-param="lfo_shape">
+                                    <option value="sine" selected>Sine</option>
+                                    <option value="triangle">Triangle</option>
+                                    <option value="square">Square</option>
+                                    <option value="sh">S &amp; H</option>
+                                </select>
+                            </div>
+                            <div class="setting-row">
+                                <span class="setting-label">Target</span>
+                                <select class="setting-select compact-select" data-section="synth_pad" data-param="lfo_target">
+                                    <option value="filter" selected>Filter</option>
+                                    <option value="amp">Amp</option>
+                                    <option value="pan">Pan</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="knob-row">
+                            <div class="knob">
+                                <div class="knob-label">RATE</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="lfo_rate_hz" min="5" max="2000" value="100">
+                                <span class="setting-value">1.00Hz</span>
+                            </div>
+                            <div class="knob">
+                                <div class="knob-label">DEPTH</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="lfo_depth" min="0" max="100" value="0">
+                                <span class="setting-value">0%</span>
+                            </div>
+                            <div class="knob">
+                                <div class="knob-label">SPREAD</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="lfo_spread" min="0" max="100" value="0">
+                                <span class="setting-value">0%</span>
+                            </div>
+                        </div>
+
+                        <div class="setting-section">PING-PONG DELAY</div>
+                        <div class="setting-row setting-row-checkbox">
+                            <label class="setting-checkbox-label">
+                                <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="delay_enabled">
+                                <span>Delay Enabled</span>
+                            </label>
+                        </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Time</span>
+                            <select class="setting-select compact-select" data-section="synth_pad" data-param="delay_time_mode">
+                                <option value="1/2">1/2 — half</option>
+                                <option value="1/4." selected>1/4. — dotted</option>
+                                <option value="1/4">1/4 — quarter</option>
+                                <option value="1/4T">1/4T — triplet</option>
+                                <option value="1/8.">1/8. — dotted eighth</option>
+                                <option value="1/8">1/8 — eighth</option>
+                                <option value="1/8T">1/8T — triplet</option>
+                                <option value="1/16">1/16 — sixteenth</option>
+                                <option value="FREE">FREE (ms)</option>
+                            </select>
+                        </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Free Time</span>
+                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="delay_time_ms" min="1" max="1000" value="375">
+                            <span class="setting-value">375ms</span>
+                        </div>
+                        <div class="knob-row">
+                            <div class="knob">
+                                <div class="knob-label">OFFSET</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="delay_offset_ms" min="-200" max="200" value="0">
+                                <span class="setting-value">0ms</span>
+                            </div>
+                            <div class="knob">
+                                <div class="knob-label">FEEDBACK</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="delay_feedback" min="0" max="85" value="35">
+                                <span class="setting-value">35%</span>
+                            </div>
+                            <div class="knob">
+                                <div class="knob-label">WET</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="delay_wet" min="0" max="100" value="0">
+                                <span class="setting-value">0%</span>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Organ Tab -->
                     <div class="settings-panel" data-panel="organ">
                         <div class="setting-section">FILTER</div>
@@ -480,45 +615,51 @@
                                 <span>Route through main filter</span>
                             </label>
                         </div>
-                        <div class="setting-row" id="organ-lowcut-row">
-                            <span class="setting-label">Low Cut (Hz)</span>
-                            <input type="range" class="setting-slider" data-section="organ" data-param="filter_lowcut_hz" min="0" max="1000" value="500" data-hz-min="20" data-hz-max="500">
-                            <span class="setting-value">40Hz</span>
+                        <div class="two-col">
+                            <div class="setting-row" id="organ-lowcut-row">
+                                <span class="setting-label">Low Cut</span>
+                                <input type="range" class="setting-slider" data-section="organ" data-param="filter_lowcut_hz" min="0" max="1000" value="500" data-hz-min="20" data-hz-max="500">
+                                <span class="setting-value">40Hz</span>
+                            </div>
+                            <div class="setting-row" id="organ-highcut-row">
+                                <span class="setting-label">High Cut</span>
+                                <input type="range" class="setting-slider" data-section="organ" data-param="filter_highcut_hz" min="0" max="1000" value="800" data-hz-min="200" data-hz-max="12000">
+                                <span class="setting-value">8kHz</span>
+                            </div>
                         </div>
-                        <div class="setting-row" id="organ-highcut-row">
-                            <span class="setting-label">High Cut (Hz)</span>
-                            <input type="range" class="setting-slider" data-section="organ" data-param="filter_highcut_hz" min="0" max="1000" value="800" data-hz-min="200" data-hz-max="12000">
-                            <span class="setting-value">8kHz</span>
+
+                        <div class="setting-section">TONE &amp; LESLIE</div>
+                        <div class="organ-tone-row">
+                            <div class="setting-row">
+                                <span class="setting-label">Preset</span>
+                                <select class="setting-select compact-select" data-section="organ" data-param="preset">
+                                    <option value="mellow">Mellow</option>
+                                    <option value="full">Full</option>
+                                    <option value="gospel">Gospel</option>
+                                    <option value="jazz">Jazz</option>
+                                </select>
+                            </div>
+                            <div class="setting-row">
+                                <span class="setting-label">Speed</span>
+                                <select class="setting-select compact-select" data-section="organ" data-param="leslie_speed">
+                                    <option value="slow">Slow</option>
+                                    <option value="fast">Fast</option>
+                                </select>
+                            </div>
+                            <div class="knob knob-small">
+                                <div class="knob-label">DRIVE</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="organ" data-param="drive" min="0" max="100" value="15">
+                                <span class="setting-value">15%</span>
+                            </div>
+                            <div class="knob knob-small">
+                                <div class="knob-label">DEPTH</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="organ" data-param="leslie_depth" min="0" max="100" value="30">
+                                <span class="setting-value">30%</span>
+                            </div>
                         </div>
-                        <div class="setting-section">DRIVE</div>
-                        <div class="setting-row">
-                            <span class="setting-label">Overdrive</span>
-                            <input type="range" class="setting-slider" data-section="organ" data-param="drive" min="0" max="100" value="15">
-                            <span class="setting-value">15%</span>
-                        </div>
-                        <div class="setting-section">REGISTRATION</div>
-                        <div class="setting-row">
-                            <span class="setting-label">Preset</span>
-                            <select class="setting-select" data-section="organ" data-param="preset">
-                                <option value="mellow">Mellow (Fix You)</option>
-                                <option value="full">Full</option>
-                                <option value="gospel">Gospel</option>
-                                <option value="jazz">Jazz</option>
-                            </select>
-                        </div>
-                        <div class="setting-section">LESLIE</div>
-                        <div class="setting-row">
-                            <span class="setting-label">Leslie Speed</span>
-                            <select class="setting-select" data-section="organ" data-param="leslie_speed">
-                                <option value="slow">Slow (Chorale)</option>
-                                <option value="fast">Fast</option>
-                            </select>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">Leslie Depth</span>
-                            <input type="range" class="setting-slider" data-section="organ" data-param="leslie_depth" min="0" max="100" value="30">
-                            <span class="setting-value">30%</span>
-                        </div>
+
                         <div class="setting-section">KEY CLICK</div>
                         <div class="setting-row setting-row-checkbox">
                             <label class="setting-checkbox-label">
@@ -531,71 +672,202 @@
                             <input type="range" class="setting-slider" data-section="organ" data-param="click_level" min="0" max="100" value="30">
                             <span class="setting-value">30%</span>
                         </div>
+
+                        <div class="setting-section">ENVELOPE</div>
+                        <div class="knob-row knob-row-tight">
+                            <div class="knob knob-small">
+                                <div class="knob-label">ATTACK</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="organ" data-param="attack_ms" min="0" max="200" value="0">
+                                <span class="setting-value">0ms</span>
+                            </div>
+                            <div class="knob knob-small">
+                                <div class="knob-label">RELEASE</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="organ" data-param="release_ms" min="5" max="500" value="10">
+                                <span class="setting-value">10ms</span>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Global Tab -->
                     <div class="settings-panel" data-panel="global">
-                        <div class="setting-section">LOW CUT</div>
+                        <div class="setting-section">BUS COMPRESSOR</div>
                         <div class="setting-row setting-row-checkbox">
                             <label class="setting-checkbox-label">
-                                <input type="checkbox" class="setting-checkbox" data-section="master" data-param="eq_lowcut_enabled">
-                                <span>Low Cut Enabled</span>
+                                <input type="checkbox" class="setting-checkbox" data-section="master" data-param="bus_comp_enabled">
+                                <span>Enabled</span>
+                            </label>
+                            <label class="setting-checkbox-label" style="margin-left: 1.5vw;">
+                                <input type="checkbox" class="setting-checkbox" data-section="master" data-param="bus_comp_release_auto">
+                                <span>Auto Rel</span>
+                            </label>
+                            <label class="setting-checkbox-label" style="margin-left: 1.5vw;">
+                                <input type="checkbox" class="setting-checkbox" data-section="master" data-param="bus_comp_fx_bypass">
+                                <span>FX Bypass</span>
+                            </label>
+                            <label class="setting-checkbox-label" style="margin-left: 1.5vw;">
+                                <input type="checkbox" class="setting-checkbox" data-section="master" data-param="bus_comp_retrigger">
+                                <span>Key Sync</span>
                             </label>
                         </div>
-                        <div class="setting-row">
-                            <span class="setting-label">Frequency</span>
-                            <input type="range" class="setting-slider" data-section="master" data-param="eq_lowcut_hz" min="0" max="1000" value="500" data-hz-min="20" data-hz-max="500">
-                            <span class="setting-value">80Hz</span>
+                        <div class="setting-row bus-comp-sc-hpf">
+                            <span class="setting-label">SC HPF</span>
+                            <input type="range" class="setting-slider" data-section="master" data-param="bus_comp_sc_hpf_hz" min="0" max="1000" value="500" data-hz-min="20" data-hz-max="500">
+                            <span class="setting-value">100Hz</span>
                         </div>
-                        <div class="setting-row">
-                            <span class="setting-label">Slope</span>
-                            <select class="setting-select" data-section="master" data-param="eq_lowcut_slope">
-                                <option value="6">6 dB/oct</option>
-                                <option value="12" selected>12 dB/oct</option>
-                                <option value="24">24 dB/oct</option>
-                            </select>
+                        <div class="two-col">
+                            <div class="setting-row">
+                                <span class="setting-label">Preset</span>
+                                <select class="setting-select compact-select" id="bus-comp-preset-select">
+                                    <option value="">— select —</option>
+                                    <option value="glue">GLUE (subtle)</option>
+                                    <option value="punch">PUNCH (song mix)</option>
+                                    <option value="pump">PUMP (sidechain)</option>
+                                    <option value="custom" disabled>CUSTOM (edited)</option>
+                                </select>
+                            </div>
+                            <div class="setting-row">
+                                <span class="setting-label">Source</span>
+                                <select class="setting-select compact-select" data-section="master" data-param="bus_comp_source">
+                                    <option value="self" selected>Self (glue)</option>
+                                    <option value="piano">Piano</option>
+                                    <option value="lfo">LFO</option>
+                                    <option value="bpm">BPM</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="knob-row knob-row-tight bus-comp-knob-row">
+                            <div class="knob knob-small">
+                                <div class="knob-label">THRESH</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="master" data-param="bus_comp_threshold_db" min="-40" max="0" value="-10" step="0.5">
+                                <span class="setting-value">-10dB</span>
+                            </div>
+                            <div class="knob knob-small">
+                                <div class="knob-label">RATIO</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="master" data-param="bus_comp_ratio" min="1" max="25" value="4" step="0.5">
+                                <span class="setting-value">4:1</span>
+                            </div>
+                            <div class="knob knob-small">
+                                <div class="knob-label">ATTACK</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="master" data-param="bus_comp_attack_ms" min="0.1" max="30" value="3" step="0.1">
+                                <span class="setting-value">3.0ms</span>
+                            </div>
+                            <div class="gr-led-slot">
+                                <div class="knob-label">GR</div>
+                                <div id="bus-comp-gr-led" class="gr-led"></div>
+                                <span id="bus-comp-gr-label" class="setting-value">0.0 dB</span>
+                            </div>
+                            <div class="knob knob-small">
+                                <div class="knob-label">RELEASE</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="master" data-param="bus_comp_release_ms" min="50" max="1200" value="300" step="10">
+                                <span class="setting-value">300ms</span>
+                            </div>
+                            <div class="knob knob-small">
+                                <div class="knob-label">MAKEUP</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="master" data-param="bus_comp_makeup_db" min="0" max="20" value="0" step="0.5">
+                                <span class="setting-value">0dB</span>
+                            </div>
+                            <div class="knob knob-small">
+                                <div class="knob-label">MIX</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="master" data-param="bus_comp_mix" min="0" max="100" value="100">
+                                <span class="setting-value">100%</span>
+                            </div>
+                        </div>
+
+                        <div class="setting-section">PRE-LIMITER DRIVE</div>
+                        <div class="drive-row">
+                            <div class="knob knob-small warmth-knob">
+                                <div class="knob-label">DRIVE</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider warmth-slider" data-section="master" data-param="pre_limiter_trim" min="50" max="300" value="200">
+                                <span class="setting-value">2.0x</span>
+                            </div>
+                            <p class="drive-help">Drives into soft limiter for saturation.</p>
+                        </div>
+
+                        <div class="setting-section">MASTER LOW CUT</div>
+                        <div class="lowcut-row">
+                            <label class="setting-checkbox-label lowcut-enable">
+                                <input type="checkbox" class="setting-checkbox" data-section="master" data-param="eq_lowcut_enabled">
+                                <span>ON</span>
+                            </label>
+                            <div class="lowcut-freq">
+                                <div class="lowcut-freq-label">Freq</div>
+                                <div class="lowcut-freq-row">
+                                    <input type="range" class="setting-slider" data-section="master" data-param="eq_lowcut_hz" min="0" max="1000" value="500" data-hz-min="20" data-hz-max="500">
+                                    <span class="setting-value">80Hz</span>
+                                </div>
+                            </div>
+                            <div class="lowcut-slope">
+                                <span class="setting-label">Slope</span>
+                                <select class="setting-select compact-select" data-section="master" data-param="eq_lowcut_slope">
+                                    <option value="6">6 dB</option>
+                                    <option value="12" selected>12 dB</option>
+                                    <option value="24">24 dB</option>
+                                </select>
+                            </div>
                         </div>
 
                         <div class="setting-section">MASTER EQ</div>
-                        <div class="setting-row">
-                            <span class="setting-label">Low Freq</span>
-                            <input type="range" class="setting-slider" data-section="master" data-param="eq_low_freq" min="0" max="1000" value="500" data-hz-min="60" data-hz-max="500">
-                            <span class="setting-value">200Hz</span>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">Low Gain</span>
-                            <input type="range" class="setting-slider" data-section="master" data-param="eq_low_gain" min="-120" max="120" value="0">
-                            <span class="setting-value">0dB</span>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">Mid Freq</span>
-                            <input type="range" class="setting-slider" data-section="master" data-param="eq_mid_freq" min="0" max="1000" value="500" data-hz-min="300" data-hz-max="5000">
-                            <span class="setting-value">1.0kHz</span>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">Mid Gain</span>
-                            <input type="range" class="setting-slider" data-section="master" data-param="eq_mid_gain" min="-120" max="120" value="0">
-                            <span class="setting-value">0dB</span>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">High Freq</span>
-                            <input type="range" class="setting-slider" data-section="master" data-param="eq_high_freq" min="0" max="1000" value="500" data-hz-min="2000" data-hz-max="16000">
-                            <span class="setting-value">5.0kHz</span>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">High Gain</span>
-                            <input type="range" class="setting-slider" data-section="master" data-param="eq_high_gain" min="-120" max="120" value="0">
-                            <span class="setting-value">0dB</span>
-                        </div>
-
-                        <div class="setting-section">OUTPUT TRIM</div>
-                        <div class="setting-row">
-                            <span class="setting-label">Pre-Limiter Trim</span>
-                            <input type="range" class="setting-slider" data-section="master" data-param="pre_limiter_trim" min="50" max="300" value="200">
-                            <span class="setting-value">2.0x</span>
-                        </div>
-                        <div class="help-text">
-                            Drive into the soft limiter. Lower = cleaner/quieter. Higher = louder, more saturated. Can't clip (tanh).
+                        <div class="eq-band-row">
+                            <div class="eq-band">
+                                <div class="eq-band-title">LOW</div>
+                                <div class="knob-row knob-row-tight">
+                                    <div class="knob">
+                                        <div class="knob-label">FREQ</div>
+                                        <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                        <input type="range" class="setting-slider knob-slider" data-section="master" data-param="eq_low_freq" min="0" max="1000" value="500" data-hz-min="60" data-hz-max="500">
+                                        <span class="setting-value">200Hz</span>
+                                    </div>
+                                    <div class="knob">
+                                        <div class="knob-label">GAIN</div>
+                                        <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                        <input type="range" class="setting-slider knob-slider" data-section="master" data-param="eq_low_gain" min="-120" max="120" value="0">
+                                        <span class="setting-value">0dB</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="eq-band">
+                                <div class="eq-band-title">MID</div>
+                                <div class="knob-row knob-row-tight">
+                                    <div class="knob">
+                                        <div class="knob-label">FREQ</div>
+                                        <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                        <input type="range" class="setting-slider knob-slider" data-section="master" data-param="eq_mid_freq" min="0" max="1000" value="500" data-hz-min="300" data-hz-max="5000">
+                                        <span class="setting-value">1.0kHz</span>
+                                    </div>
+                                    <div class="knob">
+                                        <div class="knob-label">GAIN</div>
+                                        <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                        <input type="range" class="setting-slider knob-slider" data-section="master" data-param="eq_mid_gain" min="-120" max="120" value="0">
+                                        <span class="setting-value">0dB</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="eq-band">
+                                <div class="eq-band-title">HIGH</div>
+                                <div class="knob-row knob-row-tight">
+                                    <div class="knob">
+                                        <div class="knob-label">FREQ</div>
+                                        <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                        <input type="range" class="setting-slider knob-slider" data-section="master" data-param="eq_high_freq" min="0" max="1000" value="500" data-hz-min="2000" data-hz-max="16000">
+                                        <span class="setting-value">5.0kHz</span>
+                                    </div>
+                                    <div class="knob">
+                                        <div class="knob-label">GAIN</div>
+                                        <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                        <input type="range" class="setting-slider knob-slider" data-section="master" data-param="eq_high_gain" min="-120" max="120" value="0">
+                                        <span class="setting-value">0dB</span>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
 
                         <div class="setting-section">FADERS</div>
@@ -645,6 +917,6 @@
 
     </div>
 
-    <script src="script.js?v=26"></script>
+    <script src="script.js?v=42"></script>
 </body>
 </html>

@@ -16,6 +16,7 @@ import numpy as np
 
 from .synth_engine import (SynthEngine, BiquadLowpass, BiquadHighpass,
                            BiquadPeakingEQ, BiquadLowShelf, OnePole6dBHighpass,
+                           BusCompressor,
                            fader_to_amplitude, blend_to_amplitude)
 from .config import SAMPLE_RATE, BTL_MODE
 
@@ -105,6 +106,19 @@ class JackEngine:
         self.saturation_enabled = False
         self._sat_scratch = np.empty((2, 512), dtype=np.float64)
 
+        # ═══ Bus compressor (SSL G-style) ═══
+        # Sits on the master bus pre-saturation, pre-limiter. Sources:
+        # "self" (feedback), "piano" (piano mix), "lfo" (from synth LFO),
+        # "bpm" (synthesized pulse train at beat rate).
+        self.bus_comp = BusCompressor(SAMPLE_RATE)
+        self.bus_comp_source = "self"
+        self.bus_comp_fx_bypass = False  # if True, reverb/delay bypass the comp
+        self.bus_comp_retrigger = False  # if True, pad note-on retriggers BPM pulse phase
+        self._sc_scratch = np.empty(512, dtype=np.float64)
+        # BPM pulse generator state
+        self._bpm_beat_phase = 0.0     # 0..1 within current beat
+        self._bpm_pulse_remaining = 0  # samples left in current pulse envelope
+
         # Debug counters
         self._callback_count = 0
         self._peak_output = 0.0
@@ -180,6 +194,62 @@ class JackEngine:
         self._fade_gain = 1.0
         self._fade_target = 1.0
         self._push_master_to_bridge()
+
+    def set_bpm(self, bpm: float):
+        """Pass BPM to the synth engine so tempo-synced delay re-computes times."""
+        if self.synth:
+            self.synth.update_params({"bpm": float(bpm)})
+
+    def _generate_bpm_sidechain(self, n: int) -> np.ndarray:
+        """Synthesize a pulse train at the current BPM. Each beat fires a ~50ms
+        exp-decay pulse. Returns mono sidechain signal (mono — bus comp takes it
+        as sc_l only)."""
+        sr = SAMPLE_RATE
+        bpm = max(40.0, float(getattr(self.synth, "bpm", 120.0)))
+        beat_samples = (60.0 / bpm) * sr
+        pulse_len = int(0.05 * sr)  # 50ms
+        decay_rate = 4.0 / pulse_len  # decay factor
+        buf = self._sc_scratch[:n] if n <= self._sc_scratch.shape[0] else np.empty(n, dtype=np.float64)
+        if n > self._sc_scratch.shape[0]:
+            self._sc_scratch = np.empty(max(n, 1024), dtype=np.float64)
+            buf = self._sc_scratch[:n]
+        buf[:] = 0.0
+        phase = self._bpm_beat_phase
+        pulse_rem = self._bpm_pulse_remaining
+        for i in range(n):
+            phase += 1.0 / beat_samples
+            if phase >= 1.0:
+                phase -= 1.0
+                pulse_rem = pulse_len
+            if pulse_rem > 0:
+                age = pulse_len - pulse_rem
+                buf[i] = float(np.exp(-age * decay_rate))
+                pulse_rem -= 1
+        self._bpm_beat_phase = phase
+        self._bpm_pulse_remaining = pulse_rem
+        return buf
+
+    def _get_sidechain(self, source: str, n: int, piano_buf: np.ndarray = None):
+        """Return (sc_l, sc_r) buffers (either may be None) for the selected
+        sidechain source. None means use self (feedback) in BusCompressor."""
+        if source == "piano" and piano_buf is not None:
+            return piano_buf[0], piano_buf[1]
+        if source == "lfo":
+            # Use the LFO's current rectified amplitude as a DC-ish sidechain.
+            # Only meaningful when the user has LFO enabled with depth > 0.
+            if self.synth.lfo_enabled:
+                # Advance_lfo already ran this block; use the last computed mod value
+                amp = abs(self.synth._lfo_mod_a_last) * 0.7
+                buf = self._sc_scratch[:n] if n <= self._sc_scratch.shape[0] else np.empty(n, dtype=np.float64)
+                if n > self._sc_scratch.shape[0]:
+                    self._sc_scratch = np.empty(max(n, 1024), dtype=np.float64)
+                    buf = self._sc_scratch[:n]
+                buf[:] = amp
+                return buf, None
+            return None, None
+        if source == "bpm":
+            return self._generate_bpm_sidechain(n), None
+        return None, None  # self
 
     def _setup_bridge_types(self):
         b = self._bridge
@@ -260,10 +330,18 @@ class JackEngine:
                     if self.synth.drone_enabled and self._pad_notes_active:
                         self.synth.set_drone_chord(list(self._pad_notes_active))
 
-                    # Ring is getting low — render and push a block
-                    stereo = self.synth.render(bs)  # (2, n) stereo
+                    # Ring is getting low — render and push a block.
+                    # If bus comp's FX-bypass mode is on, ask synth for dry + fx
+                    # separately so we can route fx around the comp.
+                    fx_bus = None
+                    if self.bus_comp.enabled and self.bus_comp_fx_bypass:
+                        stereo, fx_bus = self.synth.render(bs, separate_fx=True)
+                    else:
+                        stereo = self.synth.render(bs)  # (2, n) stereo
 
-                    # Mix in piano/organ audio (stereo)
+                    # Mix in piano/organ audio (stereo). Keep a reference to
+                    # the piano buffer for bus-compressor sidechain use.
+                    piano_for_sc = None
                     if self.piano_player:
                         piano = self.piano_player.render_block(bs)
                         self._piano_renders += 1
@@ -284,6 +362,7 @@ class JackEngine:
 
                         stereo[0] += piano[0]
                         stereo[1] += piano[1]
+                        piano_for_sc = piano
 
                     # ── SSL-style stereo shuffler (pre-EQ/pre-cut) ──
                     # Split into mid/side, boost side below 800Hz with low-shelf.
@@ -318,6 +397,17 @@ class JackEngine:
                         else:
                             stereo[0] = self._master_hp12_l.process(stereo[0])
                             stereo[1] = self._master_hp12_r.process(stereo[1])
+
+                    # ═══ Bus compressor (SSL G-style) — pre-saturation, pre-limiter ═══
+                    if self.bus_comp.enabled:
+                        sc_l, sc_r = self._get_sidechain(self.bus_comp_source, bs, piano_for_sc)
+                        self.bus_comp.process(stereo[0], stereo[1], sc_l, sc_r)
+
+                    # FX-bypass routing: sum the untouched FX bus back in post-comp
+                    # so the reverb/delay tail isn't ducked by the sidechain pump.
+                    if fx_bus is not None:
+                        stereo[0] += fx_bus[0]
+                        stereo[1] += fx_bus[1]
 
                     # Pre-gain: boost into limiter for more headroom
                     stereo *= self.pre_gain
@@ -414,6 +504,13 @@ class JackEngine:
                         self.synth.note_on(transposed, vel_float)
                         self._midi_notes_triggered += 1
                         self._pad_notes_active.add(transposed)
+
+                        # Retrigger BPM sidechain on note-on so the first pump
+                        # lands on the first note instead of running free-phase.
+                        if (self.bus_comp_retrigger and self.bus_comp.enabled
+                                and self.bus_comp_source == "bpm"):
+                            self._bpm_beat_phase = 0.0
+                            self._bpm_pulse_remaining = int(0.05 * SAMPLE_RATE)
 
                         if self.piano_callback:
                             self.piano_callback("note_on", piano_note, vel_float)
