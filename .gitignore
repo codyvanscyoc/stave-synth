@@ -16,3 +16,5 @@ env/
 *~
 .DS_Store
 *.sf2
+# Track bundled fallback soundfonts committed to the repo
+!soundfonts/*.sf2
