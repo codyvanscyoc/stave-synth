@@ -13,7 +13,7 @@
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="logo.png">
     <!-- Keep style.css and script.js cache-bust versions in sync -->
-    <link rel="stylesheet" href="style.css?v=49">
+    <link rel="stylesheet" href="style.css?v=52">
 </head>
 <body>
     <div id="app">
@@ -29,10 +29,7 @@
             <button id="osc2-btn" class="ctrl-btn toggle-btn active">OSC2</button>
             <button id="piano-btn" class="ctrl-btn toggle-btn active">PIANO</button>
             <button id="shimmer-btn" class="ctrl-btn ctrl-btn-sm">SHIM</button>
-            <div id="drone-freeze-stack">
-                <button id="drone-btn" class="ctrl-btn ctrl-btn-sm">DRONE</button>
-                <button id="freeze-btn" class="ctrl-btn ctrl-btn-sm hidden">FRZ</button>
-            </div>
+            <button id="freeze-btn" class="ctrl-btn ctrl-btn-sm hidden">FRZ</button>
             <button id="panic-btn" class="ctrl-btn panic-btn">STOP</button>
             <button id="menu-btn" class="ctrl-btn">MENU</button>
             <div id="tempo-box">
@@ -141,29 +138,51 @@
                 <button class="preset-btn empty" data-pos="2" data-slot="2" style="--preset-color: #B06EFF"><span class="preset-label"></span></button>
                 <button class="preset-btn empty" data-pos="3" data-slot="3" style="--preset-color: #FF4D6A"><span class="preset-label"></span></button>
                 <button class="preset-btn empty" data-pos="4" data-slot="4" style="--preset-color: #4D9EFF"><span class="preset-label"></span></button>
-                <div id="macro-row" class="hidden">
-                    <div class="macro-slot" data-macro="0" style="--macro-color: #00D4AA">
-                        <div class="macro-fill"></div>
-                        <span class="macro-label">M1</span>
-                        <span class="macro-count">0</span>
-                    </div>
-                    <div class="macro-slot" data-macro="1" style="--macro-color: #FFB020">
-                        <div class="macro-fill"></div>
-                        <span class="macro-label">M2</span>
-                        <span class="macro-count">0</span>
-                    </div>
-                    <div class="macro-slot" data-macro="2" style="--macro-color: #B06EFF">
-                        <div class="macro-fill"></div>
-                        <span class="macro-label">M3</span>
-                        <span class="macro-count">0</span>
-                    </div>
-                    <div class="macro-slot" data-macro="3" style="--macro-color: #FF4D6A">
-                        <div class="macro-fill"></div>
-                        <span class="macro-label">M4</span>
-                        <span class="macro-count">0</span>
-                    </div>
-                </div>
                 <button id="preset-edit-btn" class="ctrl-btn">EDIT</button>
+            </div>
+            <div id="macro-row">
+                <button id="macro-layer-btn" class="ctrl-btn">A</button>
+                <div class="macro-slot" data-macro="0" style="--macro-color: #00D4AA">
+                    <div class="macro-fill"></div>
+                    <span class="macro-label">M1</span>
+                    <span class="macro-count">0</span>
+                </div>
+                <div class="macro-slot" data-macro="1" style="--macro-color: #FFB020">
+                    <div class="macro-fill"></div>
+                    <span class="macro-label">M2</span>
+                    <span class="macro-count">0</span>
+                </div>
+                <div class="macro-slot" data-macro="2" style="--macro-color: #B06EFF">
+                    <div class="macro-fill"></div>
+                    <span class="macro-label">M3</span>
+                    <span class="macro-count">0</span>
+                </div>
+                <div class="macro-slot" data-macro="3" style="--macro-color: #FF4D6A">
+                    <div class="macro-fill"></div>
+                    <span class="macro-label">M4</span>
+                    <span class="macro-count">0</span>
+                </div>
+            </div>
+            <div id="pad-player">
+                <div class="pad-keys">
+                    <button class="pad-key" data-note="60">C</button>
+                    <button class="pad-key sharp" data-note="61">C#</button>
+                    <button class="pad-key" data-note="62">D</button>
+                    <button class="pad-key sharp" data-note="63">D#</button>
+                    <button class="pad-key" data-note="64">E</button>
+                    <button class="pad-key" data-note="65">F</button>
+                    <button class="pad-key sharp" data-note="66">F#</button>
+                    <button class="pad-key" data-note="67">G</button>
+                    <button class="pad-key sharp" data-note="68">G#</button>
+                    <button class="pad-key" data-note="69">A</button>
+                    <button class="pad-key sharp" data-note="70">A#</button>
+                    <button class="pad-key" data-note="71">B</button>
+                </div>
+                <div class="pad-vol-wrap">
+                    <span class="pad-vol-label">VOL</span>
+                    <input type="range" id="pad-vol" min="0" max="100" value="100">
+                </div>
+                <button id="pad-fade-btn" class="ctrl-btn ctrl-btn-sm">FADE</button>
             </div>
         </div>
 
@@ -954,6 +973,6 @@
 
     </div>
 
-    <script src="script.js?v=49"></script>
+    <script src="script.js?v=52"></script>
 </body>
 </html>

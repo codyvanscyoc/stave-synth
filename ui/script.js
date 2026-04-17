@@ -60,7 +60,7 @@
     const shimOctBtn = document.getElementById("shim-oct-btn");
     const fadeBtn = document.getElementById("fade-btn");
     const freezeBtn = document.getElementById("freeze-btn");
-    const droneBtn = document.getElementById("drone-btn");
+    const droneBtn = document.getElementById("drone-btn");  // may be null — moved to pad player
     const menuBtn = document.getElementById("menu-btn");
     const settingsModal = document.getElementById("settings-modal");
     const settingsClose = document.getElementById("settings-close");
@@ -283,6 +283,11 @@
             midiLearnWaiting = false;
             updateMidiLearnUI();
             updateCCIndicators();
+        } else if (msg.type === "drone_key_ack") {
+            padActiveNote = (msg.enabled && typeof msg.note === "number") ? msg.note : null;
+            if (typeof updatePadKeyVisuals === "function") updatePadKeyVisuals();
+        } else if (msg.type === "drone_fade_ack") {
+            if (padFadeBtn) padFadeBtn.classList.toggle("fading-out", !!msg.faded_out);
         } else if (msg.type === "macro_assign_ack") {
             if (state && state.macros && state.macros[msg.idx]) {
                 state.macros[msg.idx].assignments = msg.assignments || [];
@@ -347,6 +352,13 @@
             shimmerHigh = s.synth_pad.shimmer_high ?? false;
             freezeEnabled = s.synth_pad.freeze_enabled ?? false;
             droneEnabled = s.synth_pad.drone_enabled ?? false;
+            // Pad player: reflect saved drone_key + volume
+            padActiveNote = droneEnabled ? (s.synth_pad.drone_key ?? null) : null;
+            if (typeof updatePadKeyVisuals === "function") updatePadKeyVisuals();
+            if (padVolSlider) {
+                var dl = s.synth_pad.drone_level;
+                if (typeof dl === "number") padVolSlider.value = Math.round(dl * 100);
+            }
             // Sync filter lowcut (ALT value)
             if (s.synth_pad.filter_highpass_hz) {
                 altFaderValues[2] = Math.log(s.synth_pad.filter_highpass_hz / 20) / Math.log(2000 / 20);
@@ -724,9 +736,9 @@
     var labelPickerModal = document.getElementById("label-picker-modal");
     var rearrangeSourceSlot = -1;  // slot number picked up for swap, -1 when idle
 
-    // Presets: 2 layers of 5 slots each (L1=0-4, L2=5-9). A 3rd layer (L3=MACROS)
-    // swaps the 5 preset buttons for 4 macro sliders in the same row.
-    var currentLayer = 0;  // 0=L1 presets, 1=L2 presets, 2=MACROS
+    // Presets: 2 layers of 5 slots each (L1=0-4, L2=5-9). Macros live in their
+    // own always-visible row below (not a layer).
+    var currentLayer = 0;  // 0=L1, 1=L2
     var allPresetSaved = [];
     for (var _i = 0; _i < 10; _i++) allPresetSaved.push(false);
     presetLabels = [];
@@ -734,15 +746,11 @@
 
     var macroRow = document.getElementById("macro-row");
     var macroSlots = macroRow ? macroRow.querySelectorAll(".macro-slot") : [];
+    var macroLayerBtn = document.getElementById("macro-layer-btn");
+    var macroLayer = 0;  // 0 = M1-M4, 1 = M5-M8
 
     function applyLayer() {
-        var showMacros = currentLayer === 2;
         presetBtns.forEach(function (btn, pos) {
-            if (showMacros) {
-                btn.classList.add("hidden");
-                return;
-            }
-            btn.classList.remove("hidden");
             var slot = pos + currentLayer * 5;
             btn.dataset.slot = slot;
             var isSaved = !!allPresetSaved[slot];
@@ -753,15 +761,14 @@
             var span = btn.querySelector(".preset-label");
             if (span) span.textContent = presetLabels[slot] || "";
         });
-        if (macroRow) macroRow.classList.toggle("hidden", !showMacros);
-        presetLayerBtn.textContent = showMacros ? "M" : ("L" + (currentLayer + 1));
+        presetLayerBtn.textContent = "L" + (currentLayer + 1);
         presetLayerBtn.classList.toggle("active", currentLayer > 0);
         hideActionPopup();
     }
 
     presetLayerBtn.addEventListener("click", function (e) {
         e.stopPropagation();
-        currentLayer = (currentLayer + 1) % 3;  // cycle L1 → L2 → MACROS
+        currentLayer = (currentLayer + 1) % 2;  // L1 ↔ L2
         applyLayer();
     });
 
@@ -775,15 +782,32 @@
 
     function applyMacroVisuals() {
         var macros = getMacros();
-        macroSlots.forEach(function (slot, idx) {
+        // Map visible slot -> absolute macro index (0-3 or 4-7)
+        macroSlots.forEach(function (slot, pos) {
+            var idx = pos + macroLayer * 4;
+            slot.dataset.macro = idx;
             var m = macros[idx];
             if (!m) return;
             slot.style.setProperty("--macro-value", (m.value || 0).toFixed(3));
             var cnt = slot.querySelector(".macro-count");
             if (cnt) cnt.textContent = (m.assignments || []).length;
+            var lbl = slot.querySelector(".macro-label");
+            if (lbl) lbl.textContent = "M" + (idx + 1);
             slot.classList.toggle("learn", idx === macroLearnIdx);
         });
         document.body.classList.toggle("macro-learning", macroLearnIdx >= 0);
+        if (macroLayerBtn) {
+            macroLayerBtn.textContent = macroLayer === 0 ? "A" : "B";
+            macroLayerBtn.classList.toggle("active", macroLayer > 0);
+        }
+    }
+
+    if (macroLayerBtn) {
+        macroLayerBtn.addEventListener("click", function (e) {
+            e.stopPropagation();
+            macroLayer = (macroLayer + 1) % 2;
+            applyMacroVisuals();
+        });
     }
 
     function setMacroLearn(idx) {
@@ -796,18 +820,21 @@
     }
 
     // Pointer drag on macro slot → value 0..1 based on horizontal position.
+    // idx is read from dataset.macro at EVENT TIME so it tracks macro-layer changes.
     macroSlots.forEach(function (slot) {
-        var idx = parseInt(slot.dataset.macro, 10);
         var dragging = false;
         var pressStart = 0;
         var moved = false;
 
+        function currentIdx() {
+            return parseInt(slot.dataset.macro || "0", 10);
+        }
         function setValueFromPointer(e) {
             var rect = slot.getBoundingClientRect();
             var x = (e.clientX !== undefined ? e.clientX : (e.touches ? e.touches[0].clientX : 0)) - rect.left;
             var v = Math.max(0, Math.min(1, x / rect.width));
             slot.style.setProperty("--macro-value", v.toFixed(3));
-            sendMacroValue(idx, v);
+            sendMacroValue(currentIdx(), v);
         }
 
         slot.addEventListener("pointerdown", function (e) {
@@ -819,7 +846,6 @@
         });
         slot.addEventListener("pointermove", function (e) {
             if (!dragging) return;
-            // Only start sliding once pointer has moved > 4px to preserve tap-to-learn
             var rect = slot.getBoundingClientRect();
             var x = e.clientX - rect.left;
             if (!moved) {
@@ -833,32 +859,42 @@
             dragging = false;
             slot.releasePointerCapture(e.pointerId);
             var held = Date.now() - pressStart;
-            // Tap (quick, no drag) → toggle learn mode
-            if (!moved && held < 300) setMacroLearn(idx);
+            if (!moved && held < 300) setMacroLearn(currentIdx());
         });
         slot.addEventListener("pointercancel", function () { dragging = false; });
     });
 
-    // Click-to-assign: while a macro is in learn mode, tapping a .setting-slider
-    // or .setting-checkbox toggles that param's assignment to the learn-macro.
-    // Intercept pointerdown in capture phase so the slider/checkbox never
-    // receives the input — no accidental value change during assignment.
-    function interceptForMacroLearn(e) {
+    // Click-to-assign: while a macro is in learn mode, the CSS disables
+    // pointer-events on the inputs (so no accidental value change) and the
+    // click lands on .setting-row. This handler reads the child input's
+    // section/param + CURRENT VALUE (captured as the macro's max target).
+    document.addEventListener("click", function (e) {
         if (macroLearnIdx < 0) return;
-        var ctl = e.target.closest(".setting-slider, .setting-checkbox");
+        var row = e.target.closest(".setting-row, .setting-row-checkbox");
+        if (!row) return;
+        // Find the first assignable control in this row.
+        var ctl = row.querySelector(
+            "[data-section][data-param].setting-slider, " +
+            "[data-section][data-param].setting-checkbox, " +
+            "[data-section][data-param].setting-select"
+        );
         if (!ctl) return;
-        var section = ctl.dataset.section;
-        var param = ctl.dataset.param;
-        if (!section || !param) return;
         e.preventDefault();
         e.stopPropagation();
-        // Only act on the initial pointerdown; suppress everything else on this control.
-        if (e.type !== "pointerdown") return;
+        var section = ctl.dataset.section;
+        var param = ctl.dataset.param;
         var is_bool = ctl.type === "checkbox";
         var mn = 0.0, mx = 1.0;
-        if (!is_bool) {
+        if (is_bool) {
+            // Boolean: macro >= 0.5 maps to true, < 0.5 to false
+            mn = 0.0; mx = 1.0;
+        } else {
+            // Relative mapping: macro 0 → slider.min; macro 1 → CURRENT value
+            // at capture time. Moving macro can only reduce param from its
+            // current setting, not push it beyond where you had it.
             mn = parseFloat(ctl.min || "0");
-            mx = parseFloat(ctl.max || "1");
+            mx = parseFloat(ctl.value);
+            if (!isFinite(mx)) mx = parseFloat(ctl.max || "1");
         }
         send({
             type: "macro_assign",
@@ -869,10 +905,7 @@
             min: mn, max: mx,
             is_bool: is_bool,
         });
-    }
-    ["pointerdown", "pointerup", "click", "input", "change"].forEach(function (ev) {
-        document.addEventListener(ev, interceptForMacroLearn, true);
-    });
+    }, true);
 
     function setEditMode(on) {
         presetEditMode = on;
@@ -1398,14 +1431,57 @@
         bpmVal.addEventListener("pointercancel", bpmEndDrag);
     }
 
-    droneBtn.addEventListener("click", function () {
-        droneEnabled = !droneEnabled;
-        updateDroneDisplay();
-        send({ type: "drone_toggle", enabled: droneEnabled });
-    });
+    if (droneBtn) {
+        droneBtn.addEventListener("click", function () {
+            droneEnabled = !droneEnabled;
+            updateDroneDisplay();
+            send({ type: "drone_toggle", enabled: droneEnabled });
+        });
+    }
 
     function updateDroneDisplay() {
-        droneBtn.classList.toggle("active", droneEnabled);
+        if (droneBtn) droneBtn.classList.toggle("active", droneEnabled);
+    }
+
+    // ═══ Pad Player (12-key drone launcher) ═══
+    var padKeys = document.querySelectorAll(".pad-key");
+    var padVolSlider = document.getElementById("pad-vol");
+    var padFadeBtn = document.getElementById("pad-fade-btn");
+    var padActiveNote = null;  // currently highlighted key
+
+    function updatePadKeyVisuals() {
+        padKeys.forEach(function (btn) {
+            var note = parseInt(btn.dataset.note, 10);
+            btn.classList.toggle("active", note === padActiveNote);
+        });
+    }
+
+    padKeys.forEach(function (btn) {
+        btn.addEventListener("click", function () {
+            var note = parseInt(btn.dataset.note, 10);
+            // Optimistic UI — backend will echo the true state in drone_key_ack
+            if (padActiveNote === note) {
+                padActiveNote = null;
+            } else {
+                padActiveNote = note;
+            }
+            updatePadKeyVisuals();
+            send({ type: "drone_key", note: note });
+        });
+    });
+
+    if (padVolSlider) {
+        padVolSlider.addEventListener("input", function () {
+            var v = parseFloat(padVolSlider.value) / 100.0;
+            send({ type: "setting", section: "synth_pad", param: "drone_level", value: v });
+        });
+    }
+
+    if (padFadeBtn) {
+        padFadeBtn.addEventListener("click", function () {
+            padFadeBtn.classList.toggle("fading-out");
+            send({ type: "drone_fade" });
+        });
     }
 
     // ═══ Sympathetic Resonance (RES button) ═══

@@ -157,6 +157,12 @@ class StaveSynth:
             return self._handle_macro_value(msg)
         elif msg_type == "macro_assign":
             return self._handle_macro_assign(msg)
+        elif msg_type == "drone_key":
+            return self._handle_drone_key(msg)
+        elif msg_type == "drone_off":
+            return self._handle_drone_off(msg)
+        elif msg_type == "drone_fade":
+            return self._handle_drone_fade(msg)
         elif msg_type == "get_state":
             return {"type": "state", "state": self.state}
         elif msg_type == "debug":
@@ -627,6 +633,71 @@ class StaveSynth:
             "bus_comp_fx_bypass": True,
         },
     }
+
+    # ═══ Pad player (drone key triggers from touchscreen) ═══
+
+    def _handle_drone_key(self, msg: dict) -> dict:
+        """Force drone to a specific root note from the pad-player UI.
+        Tapping the same key while active toggles drone off."""
+        note = int(msg.get("note", 60))
+        current_key = self.state["synth_pad"].get("drone_key")
+        current_on = bool(self.state["synth_pad"].get("drone_enabled", False))
+        if current_on and current_key == note:
+            # Tapping active key → turn off
+            self.state["synth_pad"]["drone_enabled"] = False
+            self.state["synth_pad"]["drone_key"] = None
+            if self.synth:
+                self.synth.drone_off()
+            return {"type": "drone_key_ack", "note": None, "enabled": False}
+        self.state["synth_pad"]["drone_enabled"] = True
+        self.state["synth_pad"]["drone_key"] = note
+        if self.synth:
+            self.synth.set_drone_key(note)
+        return {"type": "drone_key_ack", "note": note, "enabled": True}
+
+    def _handle_drone_off(self, msg: dict) -> dict:
+        self.state["synth_pad"]["drone_enabled"] = False
+        self.state["synth_pad"]["drone_key"] = None
+        if self.synth:
+            self.synth.drone_off()
+        return {"type": "drone_key_ack", "note": None, "enabled": False}
+
+    def _handle_drone_fade(self, msg: dict) -> dict:
+        """Toggle-swell the drone between full and silent. Mirrors master
+        FADE: 5s S-curve ramp, cancel+restart safe. Ramps synth._drone_fade_scale."""
+        if not self.synth:
+            return {"type": "drone_fade_ack", "faded_out": False}
+        duration = float(msg.get("duration_s", 5.0))
+        # Decide target: if currently faded (scale < 0.5), fade back in; else fade out
+        current = getattr(self.synth, "_drone_fade_scale", 1.0)
+        target = 1.0 if current < 0.5 else 0.0
+        self._start_drone_fade_ramp(target, duration)
+        return {"type": "drone_fade_ack", "faded_out": target < 0.5}
+
+    def _start_drone_fade_ramp(self, target: float, duration_s: float):
+        """Cancel any prior drone-fade ramp, then S-curve from current → target."""
+        import math, threading, time
+        if hasattr(self, "_drone_fade_cancel") and self._drone_fade_cancel:
+            self._drone_fade_cancel.set()
+        cancel = threading.Event()
+        self._drone_fade_cancel = cancel
+        start = getattr(self.synth, "_drone_fade_scale", 1.0)
+
+        def run():
+            steps = max(1, int(duration_s * 50))  # 20 ms steps
+            step_sec = duration_s / steps
+            span = target - start
+            for i in range(1, steps + 1):
+                if cancel.is_set():
+                    return
+                t = i / steps
+                prog = (1.0 - math.cos(t * math.pi)) * 0.5
+                self.synth._drone_fade_scale = max(0.0, min(1.0, start + span * prog))
+                time.sleep(step_sec)
+            if not cancel.is_set():
+                self.synth._drone_fade_scale = target
+
+        threading.Thread(target=run, daemon=True).start()
 
     # ═══ Macros (performance morph knobs) ═══
 

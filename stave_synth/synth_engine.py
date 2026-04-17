@@ -1124,6 +1124,8 @@ class SynthEngine:
 
         # Chord drone: sustained root+fifth an octave below
         self.drone_enabled = False
+        self.drone_level = 1.0           # user volume multiplier (pad-player fader)
+        self._drone_fade_scale = 1.0     # 0..1, ramped by FADE button (master-fade style)
         self._drone_root_freq = 0.0
         self._drone_fifth_freq = 0.0
         self._drone_root_freq_cur = 0.0
@@ -1500,6 +1502,19 @@ class SynthEngine:
         self._drone_gain_target = 0.5
         self._drone_latched = True
 
+    def set_drone_key(self, root_note: int):
+        """Force the drone to a specific root note (used by the pad-player UI).
+        Unlike set_drone_chord, this bypasses the latch so the user can switch
+        keys freely. Root is placed an octave below + fifth above that, matching
+        the organic-pad feel of the MIDI-triggered drone."""
+        self.drone_enabled = True
+        drone_root = max(24, int(root_note) - 12)
+        drone_fifth = max(24, int(root_note) - 12 + 7)
+        self._drone_root_freq = 440.0 * (2.0 ** ((drone_root - 69) / 12.0))
+        self._drone_fifth_freq = 440.0 * (2.0 ** ((drone_fifth - 69) / 12.0))
+        self._drone_gain_target = 0.5
+        self._drone_latched = True
+
     def drone_off(self):
         """Fade out the drone and clear latch so next enable re-picks the root.
         Zero the smoothed freqs so the next enable snaps to the new root (no glide)."""
@@ -1799,13 +1814,14 @@ class SynthEngine:
                 lf += freq_alpha * (np.log(self._drone_fifth_freq) - lf)
                 self._drone_fifth_freq_cur = np.exp(lf)
             if self._drone_gain > 0.001:
+                level = self.drone_level * self._drone_fade_scale
                 inc1 = TWO_PI * self._drone_root_freq_cur / self.sample_rate
                 ph1 = self._drone_root_phase + inc1 * indices
-                root_tone = generate_waveform(self.osc1_waveform, ph1) * self._drone_gain * 0.30
+                root_tone = generate_waveform(self.osc1_waveform, ph1) * self._drone_gain * 0.30 * level
                 self._drone_root_phase = ph1[-1] % TWO_PI
                 inc2 = TWO_PI * self._drone_fifth_freq_cur / self.sample_rate
                 ph2 = self._drone_fifth_phase + inc2 * indices
-                fifth_tone = generate_waveform(self.osc1_waveform, ph2) * self._drone_gain * 0.22
+                fifth_tone = generate_waveform(self.osc1_waveform, ph2) * self._drone_gain * 0.22 * level
                 self._drone_fifth_phase = ph2[-1] % TWO_PI
                 drone_mix = root_tone + fifth_tone
                 filter_buf[0] += drone_mix
@@ -2171,6 +2187,8 @@ class SynthEngine:
             self.sympathetic_level = max(0.0, min(0.15, float(params["sympathetic_level"])))
         if "drone_enabled" in params:
             self.drone_enabled = bool(params["drone_enabled"])
+        if "drone_level" in params:
+            self.drone_level = max(0.0, min(1.0, float(params["drone_level"])))
             if not self.drone_enabled:
                 self.drone_off()
 

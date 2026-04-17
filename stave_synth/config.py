@@ -96,6 +96,8 @@ DEFAULT_STATE = {
         "sympathetic_enabled": False,
         "sympathetic_level": 0.035,
         "drone_enabled": False,
+        "drone_key": None,       # MIDI note currently held by the pad player, or null
+        "drone_level": 1.0,      # pad-player volume multiplier (0..1)
         "volume": 0.8,
         "osc1_octave": 0,
         "osc2_octave": 0,
@@ -167,6 +169,10 @@ DEFAULT_STATE = {
         {"name": "M2", "value": 0.0, "assignments": []},
         {"name": "M3", "value": 0.0, "assignments": []},
         {"name": "M4", "value": 0.0, "assignments": []},
+        {"name": "M5", "value": 0.0, "assignments": []},
+        {"name": "M6", "value": 0.0, "assignments": []},
+        {"name": "M7", "value": 0.0, "assignments": []},
+        {"name": "M8", "value": 0.0, "assignments": []},
     ],
     "ui": {
         "preset_saved": [False] * 10,
