@@ -7,6 +7,7 @@ that handles the JACK process callback natively.
 
 import ctypes
 import logging
+import math
 import os
 import threading
 import time
@@ -38,6 +39,10 @@ class JackEngine:
 
         # Master volume and transpose (set from outside)
         self._master_volume = 0.85
+        self._fade_gain = 1.0  # multiplied with master before bridge; 0.0 = silent
+        self._fade_target = 1.0  # 1.0 = normal, 0.0 = faded out
+        self._fade_thread = None
+        self._fade_cancel = threading.Event()
         self.pre_gain = 2.0  # pre-gain into limiter — drive into tanh for louder sustained material
         self.transpose = 0
         self.piano_octave = 0  # -3 to +3 octaves for piano
@@ -126,8 +131,55 @@ class JackEngine:
     @master_volume.setter
     def master_volume(self, val):
         self._master_volume = val
+        self._push_master_to_bridge()
+
+    def _push_master_to_bridge(self):
         if hasattr(self, '_bridge'):
-            self._bridge.bridge_set_master_volume(ctypes.c_float(fader_to_amplitude(val)))
+            amp = fader_to_amplitude(self._master_volume) * self._fade_gain
+            self._bridge.bridge_set_master_volume(ctypes.c_float(amp))
+
+    def start_fade(self, target: float, duration_s: float = 5.0) -> float:
+        """Ramp fade_gain to target (0.0 or 1.0) over duration_s with an S-curve.
+        Cancels any running fade and continues smoothly from current gain.
+        Returns the requested target. The JACK bridge's own 5ms smoother
+        handles sample-level zipper-free ramps between our ~20ms updates."""
+        target = max(0.0, min(1.0, float(target)))
+        self._fade_target = target
+        # Cancel prior fade
+        self._fade_cancel.set()
+        if self._fade_thread and self._fade_thread.is_alive():
+            self._fade_thread.join(timeout=0.5)
+        cancel = threading.Event()
+        self._fade_cancel = cancel
+        start_gain = self._fade_gain
+
+        def run():
+            steps = max(1, int(duration_s * 50))  # 20ms steps
+            step_sec = duration_s / steps
+            span = target - start_gain
+            for i in range(1, steps + 1):
+                if cancel.is_set():
+                    return
+                t = i / steps
+                # Raised-cosine S-curve: smooth ease-in/ease-out
+                progress = (1.0 - math.cos(t * math.pi)) * 0.5
+                self._fade_gain = start_gain + span * progress
+                self._push_master_to_bridge()
+                time.sleep(step_sec)
+            if not cancel.is_set():
+                self._fade_gain = target
+                self._push_master_to_bridge()
+
+        self._fade_thread = threading.Thread(target=run, daemon=True)
+        self._fade_thread.start()
+        return target
+
+    def fade_reset(self):
+        """Snap fade to 1.0 immediately (used by panic)."""
+        self._fade_cancel.set()
+        self._fade_gain = 1.0
+        self._fade_target = 1.0
+        self._push_master_to_bridge()
 
     def _setup_bridge_types(self):
         b = self._bridge
@@ -165,7 +217,7 @@ class JackEngine:
         bs = self._bridge.bridge_get_buffer_size()
         logger.info("JACK C bridge active: sr=%d, blocksize=%d", sr, bs)
 
-        self._bridge.bridge_set_master_volume(ctypes.c_float(fader_to_amplitude(self.master_volume)))
+        self._push_master_to_bridge()
         self._bridge.bridge_set_btl_mode(1 if BTL_MODE else 0)
         # Verify BTL mode was set correctly
         self._bridge.bridge_get_btl_mode.restype = ctypes.c_int

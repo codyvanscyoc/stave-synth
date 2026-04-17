@@ -16,6 +16,8 @@
     let fader1CompValue = 0.5;  // compressor amount (maps to threshold)
     let transposeValue = 0;
     let shimmerEnabled = false;
+    let shimmerHigh = false;
+    let fadedOut = false;  // master FADE button state
     let freezeEnabled = false;
     let droneEnabled = false;
     let instrumentMode = "piano"; // "piano", "organ", "off"
@@ -53,6 +55,8 @@
     const transposeUp = document.getElementById("transpose-up");
     const transposeDisplay = document.getElementById("transpose-display");
     const shimmerBtn = document.getElementById("shimmer-btn");
+    const shimOctBtn = document.getElementById("shim-oct-btn");
+    const fadeBtn = document.getElementById("fade-btn");
     const freezeBtn = document.getElementById("freeze-btn");
     const droneBtn = document.getElementById("drone-btn");
     const menuBtn = document.getElementById("menu-btn");
@@ -120,6 +124,9 @@
         } else if (msg.type === "shimmer_ack") {
             shimmerEnabled = msg.enabled;
             updateShimmerDisplay();
+        } else if (msg.type === "shimmer_high_ack") {
+            shimmerHigh = msg.enabled;
+            updateShimmerDisplay();
         } else if (msg.type === "freeze_ack") {
             freezeEnabled = msg.enabled;
             updateFreezeDisplay();
@@ -127,6 +134,14 @@
         } else if (msg.type === "drone_ack") {
             droneEnabled = msg.enabled;
             updateDroneDisplay();
+        } else if (msg.type === "fade_ack") {
+            fadedOut = !!msg.faded_out;
+            updateFadeDisplay();
+        } else if (msg.type === "panic_ack") {
+            if (msg.fade_reset) {
+                fadedOut = false;
+                updateFadeDisplay();
+            }
         } else if (msg.type === "preset_saved") {
             markPresetSaved(msg.slot);
         } else if (msg.type === "preset_loaded") {
@@ -242,6 +257,7 @@
             faderValues[3] = s.synth_pad.reverb_dry_wet ?? 0.65;
             altFaderValues[3] = s.synth_pad.shimmer_mix ?? 0.5;
             shimmerEnabled = s.synth_pad.shimmer_enabled ?? false;
+            shimmerHigh = s.synth_pad.shimmer_high ?? false;
             freezeEnabled = s.synth_pad.freeze_enabled ?? false;
             droneEnabled = s.synth_pad.drone_enabled ?? false;
             // Sync filter lowcut (ALT value)
@@ -965,11 +981,31 @@
         send({ type: "freeze_toggle", enabled: freezeEnabled });
     });
 
+    shimOctBtn.addEventListener("click", function () {
+        shimmerHigh = !shimmerHigh;
+        updateShimmerDisplay();
+        send({ type: "shimmer_high_toggle", enabled: shimmerHigh });
+    });
+
+    // ═══ Master Fade (musical fade out / fade back in) ═══
+    fadeBtn.addEventListener("click", function () {
+        fadedOut = !fadedOut;
+        updateFadeDisplay();
+        send({ type: "fade_toggle", faded_out: fadedOut });
+    });
+
+    function updateFadeDisplay() {
+        fadeBtn.classList.toggle("active", fadedOut);
+        fadeBtn.textContent = fadedOut ? "UP" : "FADE";
+    }
+
     function updateShimmerDisplay() {
         shimmerBtn.textContent = shimmerEnabled ? "SHIM" : "SHIM";
         shimmerBtn.classList.toggle("active", shimmerEnabled);
-        // Show/hide freeze button based on shimmer state
+        // Show/hide freeze + +12 buttons based on shimmer state
         freezeBtn.classList.toggle("hidden", !shimmerEnabled);
+        shimOctBtn.classList.toggle("hidden", !shimmerEnabled);
+        shimOctBtn.classList.toggle("active", shimmerHigh);
     }
 
     function updateFreezeDisplay() {
@@ -1117,7 +1153,7 @@
             } else if (param === "reverb_wet_gain") {
                 sendValue = value / 100;
                 displayValue = sendValue.toFixed(1) + "x";
-            } else if (param === "pre_limiter_trim") {
+            } else if (param === "pre_limiter_trim" || param === "shimmer_send") {
                 sendValue = value / 100;
                 displayValue = sendValue.toFixed(2) + "x";
             } else if (param === "sympathetic_level") {
@@ -1235,7 +1271,7 @@
                 slider.value = value;
             } else if (param === "reverb_wet_gain") {
                 slider.value = value * 100;
-            } else if (param === "pre_limiter_trim") {
+            } else if (param === "pre_limiter_trim" || param === "shimmer_send") {
                 slider.value = value * 100;
             } else if (param === "sympathetic_level") {
                 slider.value = Math.round(Math.cbrt(Math.max(0, value) / 0.15) * 1000);
@@ -1270,7 +1306,7 @@
                     valueEl.textContent = Math.round(value) + "ms";
                 } else if (param === "reverb_wet_gain") {
                     valueEl.textContent = value.toFixed(1) + "x";
-                } else if (param === "pre_limiter_trim") {
+                } else if (param === "pre_limiter_trim" || param === "shimmer_send") {
                     valueEl.textContent = value.toFixed(2) + "x";
                 } else if (param === "sympathetic_level") {
                     valueEl.textContent = (value * 100).toFixed(3) + "%";

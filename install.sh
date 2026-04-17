@@ -19,6 +19,17 @@ CONFIG_DIR="$HOME/.config/stave-synth"
 
 # ── Step 1: System dependencies ──
 echo -e "${ORANGE}[1/6]${NC} Installing system dependencies..."
+
+# WebKit package differs by Debian release: Bookworm ships 4.0, Trixie ships 4.1.
+WEBKIT_PKG="gir1.2-webkit2-4.1"
+if [ -r /etc/os-release ]; then
+    . /etc/os-release
+    case "${VERSION_CODENAME:-}" in
+        bookworm|bullseye) WEBKIT_PKG="gir1.2-webkit2-4.0" ;;
+    esac
+fi
+echo -e "${GREEN}  Using WebKit package: $WEBKIT_PKG${NC}"
+
 sudo apt-get update -qq
 sudo apt-get install -y \
     jackd2 \
@@ -31,7 +42,7 @@ sudo apt-get install -y \
     alsa-utils \
     a2jmidid \
     libgirepository1.0-dev \
-    gir1.2-webkit2-4.1 \
+    "$WEBKIT_PKG" \
     python3-gi \
     python3-gi-cairo
 
@@ -150,20 +161,32 @@ if [ -n "$FOUND_SF" ]; then
     ln -sf "$FOUND_SF" "$SOUNDFONT_DIR/system.sf2" 2>/dev/null || true
 fi
 
-# Download TimGM6mb (small, reliable fallback)
+# Install TimGM6mb. Prefer the copy bundled in the repo (offline-proof);
+# fall back to Debian package; fall back to direct download.
+BUNDLED_SF="$SCRIPT_DIR/soundfonts/TimGM6mb.sf2"
 if [ ! -f "$SOUNDFONT_DIR/TimGM6mb.sf2" ]; then
-    echo "  Downloading TimGM6mb soundfont (~6MB)..."
-    # Try multiple sources
-    wget -q "https://sourceforge.net/projects/mscore/files/soundfont/TimGM6mb.sf2/download" \
-        -O "$SOUNDFONT_DIR/TimGM6mb.sf2" 2>/dev/null || \
-    echo -e "${ORANGE}  Could not auto-download soundfont. Place a .sf2 file in: $SOUNDFONT_DIR${NC}"
+    if [ -f "$BUNDLED_SF" ]; then
+        cp "$BUNDLED_SF" "$SOUNDFONT_DIR/TimGM6mb.sf2"
+        echo -e "${GREEN}  Installed bundled TimGM6mb.sf2${NC}"
+    elif apt-cache show timgm6mb-soundfont > /dev/null 2>&1; then
+        sudo apt-get install -y timgm6mb-soundfont > /dev/null 2>&1 && \
+            ln -sf /usr/share/sounds/sf2/TimGM6mb.sf2 "$SOUNDFONT_DIR/TimGM6mb.sf2" && \
+            echo -e "${GREEN}  Installed TimGM6mb via apt${NC}"
+    else
+        echo "  Attempting to download TimGM6mb soundfont (~6MB)..."
+        wget -q "https://sourceforge.net/projects/mscore/files/soundfont/TimGM6mb.sf2/download" \
+            -O "$SOUNDFONT_DIR/TimGM6mb.sf2" 2>/dev/null && \
+            echo -e "${GREEN}  Downloaded TimGM6mb.sf2${NC}" || \
+            echo -e "${ORANGE}  Could not install a soundfont. Drop a .sf2 file in: $SOUNDFONT_DIR${NC}"
+    fi
 fi
 
 # ── Install systemd service ──
 echo "  Installing systemd service..."
 mkdir -p "$HOME/.config/systemd/user"
 
-# Generate service file with correct paths
+# Generate service file with correct paths.
+# Amixer PCM/Master probe is wrapped: some USB DACs only expose Master.
 cat > "$HOME/.config/systemd/user/stave-synth.service" << EOF
 [Unit]
 Description=Stave Synth — Live MIDI Synthesizer
@@ -173,6 +196,7 @@ Wants=pipewire.service wireplumber.service
 [Service]
 Type=simple
 ExecStartPre=/bin/sleep 3
+ExecStartPre=-/bin/bash -c 'for c in /proc/asound/card*/id; do n=\$\$(dirname \$\$c | grep -o "[0-9]*"); if grep -qi usb "\$\$c" 2>/dev/null; then if amixer -c \$\$n sget PCM >/dev/null 2>&1; then amixer -c \$\$n set PCM 100%% >/dev/null 2>&1; elif amixer -c \$\$n sget Master >/dev/null 2>&1; then amixer -c \$\$n set Master 100%% >/dev/null 2>&1; fi; fi; done; true'
 ExecStart=/usr/bin/pw-jack ${SCRIPT_DIR}/venv/bin/python -m stave_synth.main
 WorkingDirectory=${SCRIPT_DIR}
 Environment=XDG_RUNTIME_DIR=/run/user/$(id -u)
@@ -194,15 +218,54 @@ echo -e "${GREEN}═════════════════════
 echo -e "${GREEN}  Installation complete!${NC}"
 echo -e "${GREEN}══════════════════════════════════════${NC}"
 echo ""
-echo "  To start now:   systemctl --user start stave-synth"
-echo "  To run manually: cd $SCRIPT_DIR && source venv/bin/activate && python -m stave_synth.main"
-echo "  Logs:           journalctl --user -u stave-synth -f"
+
+# ── Summary of environment detected at install time ──
+check() { if [ "$1" = "ok" ]; then echo -e "${GREEN}✓${NC} $2"; else echo -e "${ORANGE}✗${NC} $2"; fi; }
+
+echo "  Environment check:"
+
+# Soundfont
+SF_COUNT=$(ls -1 "$SOUNDFONT_DIR"/*.sf2 2>/dev/null | wc -l)
+if [ "$SF_COUNT" -gt 0 ]; then
+    check ok "Soundfont: $SF_COUNT file(s) in $SOUNDFONT_DIR"
+else
+    check no "No soundfont found — piano will be silent. Drop a .sf2 in $SOUNDFONT_DIR"
+fi
+
+# USB audio interfaces
+USB_AUDIO=""
+for c in /proc/asound/card*/id; do
+    [ -f "$c" ] || continue
+    if grep -qi usb "$c" 2>/dev/null; then
+        USB_AUDIO="$USB_AUDIO $(cat "$c")"
+    fi
+done
+if [ -n "$USB_AUDIO" ]; then
+    check ok "USB audio detected:$USB_AUDIO"
+else
+    check no "No USB audio interface plugged in (can attach later — UI audio selector will pick it up)"
+fi
+
+# USB MIDI
+if command -v aconnect >/dev/null 2>&1 && aconnect -i 2>/dev/null | grep -qi -E "midi|keyboard|mpk|akai"; then
+    MIDI_NAME=$(aconnect -i 2>/dev/null | grep -iE "client.*[0-9]+:" | grep -vi "system\|through" | head -1 | sed 's/client [0-9]*: //; s/ \[.*$//')
+    check ok "USB MIDI detected: $MIDI_NAME"
+else
+    check no "No USB MIDI input detected (plug in your keyboard — it'll auto-connect on synth start)"
+fi
+
+# Service enabled
+if systemctl --user is-enabled stave-synth.service >/dev/null 2>&1; then
+    check ok "Auto-start on boot: enabled"
+else
+    check no "Auto-start on boot: not enabled (run: systemctl --user enable stave-synth)"
+fi
+
+echo ""
+echo "  To start now:    systemctl --user start stave-synth"
+echo "  Open the UI:     http://localhost:8080  (or http://<pi-ip>:8080 from another device)"
+echo "  Logs:            journalctl --user -u stave-synth -f"
+echo "  Run manually:    pw-jack $SCRIPT_DIR/venv/bin/python -m stave_synth.main"
 echo ""
 echo "  On next boot, Stave Synth will start automatically."
 echo ""
-
-if [ ! -f "$SOUNDFONT_DIR/TimGM6mb.sf2" ] && [ ! -f "$SOUNDFONT_DIR/Arachno.sf2" ]; then
-    echo -e "${ORANGE}  NOTE: No soundfont found. Piano will be disabled.${NC}"
-    echo -e "${ORANGE}  Place a .sf2 file in: $SOUNDFONT_DIR${NC}"
-    echo ""
-fi

@@ -938,8 +938,33 @@ class SynthEngine:
         # Synthesized shimmer: octave-up sines fed into reverb input
         self.shimmer_enabled = False
         self.shimmer_mix = 0.5
+        self.shimmer_high = False  # False = +12 (2x), True = +24 (4x)
+        self.shimmer_send = 1.0    # CLOUD knob: wet level of pre-reverb multi-tap bouncing delay
         self._shimmer_mix_cur = 0.5
-        self._shimmer_hp = BiquadHighpass(2000.0, 0.707, sample_rate)  # low cut — keep only sparkle/air
+        self._shimmer_hp = BiquadHighpass(1200.0, 0.707, sample_rate)  # low cut — keep sparkle + upper fundamentals
+
+        # Shimmer pre-reverb "cloud": multi-tap stereo delay for sporadic bouncing.
+        # Irregular tap times (L vs R offset) create stereo motion without hard echoes.
+        # No feedback — single-generation bounces keep it musical and prevent buildup.
+        _shim_delay_s = 0.6
+        _shim_len = int(_shim_delay_s * sample_rate)
+        self._shimmer_delay_l = np.zeros(_shim_len, dtype=np.float64)
+        self._shimmer_delay_r = np.zeros(_shim_len, dtype=np.float64)
+        self._shimmer_delay_len = _shim_len
+        self._shimmer_delay_idx = 0
+        # (offset_samples, gain) — L and R offsets interleave for stereo bounce
+        self._shimmer_taps_l = [
+            (int(0.130 * sample_rate), 0.65),
+            (int(0.247 * sample_rate), 0.50),
+            (int(0.363 * sample_rate), 0.36),
+            (int(0.481 * sample_rate), 0.22),
+        ]
+        self._shimmer_taps_r = [
+            (int(0.173 * sample_rate), 0.65),
+            (int(0.289 * sample_rate), 0.50),
+            (int(0.405 * sample_rate), 0.36),
+            (int(0.523 * sample_rate), 0.22),
+        ]
 
         # Reverb freeze state
         self.freeze_enabled = False
@@ -985,6 +1010,8 @@ class SynthEngine:
         self._reverb_in_r = np.zeros(self._buf_size, dtype=np.float64)
         self._osc2_accum_l = np.zeros(self._buf_size, dtype=np.float64)
         self._osc2_accum_r = np.zeros(self._buf_size, dtype=np.float64)
+        self._shimmer_cloud_l = np.zeros(self._buf_size, dtype=np.float64)
+        self._shimmer_cloud_r = np.zeros(self._buf_size, dtype=np.float64)
 
         # Per-voice pre-allocated buffers (avoid np.zeros per voice per block)
         self._voice_osc1_l = np.zeros((max_voices, self._buf_size), dtype=np.float64)
@@ -1012,6 +1039,8 @@ class SynthEngine:
             self._reverb_in_r = np.zeros(n_samples, dtype=np.float64)
             self._osc2_accum_l = np.zeros(n_samples, dtype=np.float64)
             self._osc2_accum_r = np.zeros(n_samples, dtype=np.float64)
+            self._shimmer_cloud_l = np.zeros(n_samples, dtype=np.float64)
+            self._shimmer_cloud_r = np.zeros(n_samples, dtype=np.float64)
             self._voice_osc1_l = np.zeros((self.max_voices, n_samples), dtype=np.float64)
             self._voice_osc1_r = np.zeros((self.max_voices, n_samples), dtype=np.float64)
             self._voice_osc2_l = np.zeros((self.max_voices, n_samples), dtype=np.float64)
@@ -1093,6 +1122,51 @@ class SynthEngine:
         self.reverb_filter2_l.reset()
         self.reverb_filter2_r.reset()
         self._shimmer_hp.reset()
+        self._shimmer_delay_l[:] = 0.0
+        self._shimmer_delay_r[:] = 0.0
+
+    def _process_shimmer_cloud(self, shimmer_sig: np.ndarray, out_l: np.ndarray, out_r: np.ndarray):
+        """Multi-tap pre-reverb cloud: writes shimmer_sig into a ring buffer and
+        reads several stereo-offset taps, producing a sporadic bouncing stereo
+        wet signal that fills the space before the main reverb. No feedback —
+        single-generation taps keep it musical without buildup."""
+        n = shimmer_sig.shape[0]
+        buf_l = self._shimmer_delay_l
+        buf_r = self._shimmer_delay_r
+        buf_len = self._shimmer_delay_len
+        idx = self._shimmer_delay_idx
+
+        # Write the current block to both delay buffers (mono source, both channels).
+        end = idx + n
+        if end <= buf_len:
+            buf_l[idx:end] = shimmer_sig
+            buf_r[idx:end] = shimmer_sig
+        else:
+            first = buf_len - idx
+            buf_l[idx:] = shimmer_sig[:first]
+            buf_l[:end - buf_len] = shimmer_sig[first:]
+            buf_r[idx:] = shimmer_sig[:first]
+            buf_r[:end - buf_len] = shimmer_sig[first:]
+
+        out_l[:] = 0.0
+        out_r[:] = 0.0
+
+        def read_taps(buf, taps, out):
+            for offset, gain in taps:
+                # Read n samples starting at (idx - offset) mod buf_len, going forward.
+                start = (idx - offset) % buf_len
+                rend = start + n
+                if rend <= buf_len:
+                    out += buf[start:rend] * gain
+                else:
+                    split = buf_len - start
+                    out[:split] += buf[start:] * gain
+                    out[split:] += buf[:rend - buf_len] * gain
+
+        read_taps(buf_l, self._shimmer_taps_l, out_l)
+        read_taps(buf_r, self._shimmer_taps_r, out_r)
+
+        self._shimmer_delay_idx = (idx + n) % buf_len
 
     def sympathetic_fade_out(self):
         """Set all active sympathetic voices to fade toward zero. Lets held notes
@@ -1268,8 +1342,9 @@ class SynthEngine:
             # Per-unison phase increments for this voice (n_uni,)
             osc1_inc_per_u = base_inc * detune_mult * osc1_oct_mult
             osc2_inc_per_u = base_inc * detune_mult * osc2_oct_mult
-            # Shimmer: octave-up; detune still applies so unison voices fan out at top too
-            shim_inc_per_u = base_inc * 2.0 * detune_mult
+            # Shimmer: octave-up (+12 = 2x) or two octaves up (+24 = 4x) when shimmer_high
+            shim_mult = 4.0 if self.shimmer_high else 2.0
+            shim_inc_per_u = base_inc * shim_mult * detune_mult
 
             if render_osc1:
                 uni_starts = np.asarray(voice.osc1_phases[:n_uni], dtype=np.float64)
@@ -1306,7 +1381,7 @@ class SynthEngine:
             osc2_r *= scale
 
             if render_shimmer:
-                shimmer_sines += voice_shimmer * scale * 0.15
+                shimmer_sines += voice_shimmer * scale * 0.30
 
             # OSC1 goes directly to filter buffers
             if self.osc1_filter_enabled:
@@ -1493,8 +1568,16 @@ class SynthEngine:
             # Smooth shimmer mix (~20ms time constant)
             self._shimmer_mix_cur += alpha_s * (self.shimmer_mix - self._shimmer_mix_cur)
             shimmer_sig = shimmer_filtered * self._shimmer_mix_cur
+            # Dry shimmer → reverb
             reverb_in_l += shimmer_sig
             reverb_in_r += shimmer_sig
+            # Pre-reverb CLOUD: multi-tap bouncing delay scaled by shimmer_send (0..2)
+            if self.shimmer_send > 0.001:
+                cloud_l = self._shimmer_cloud_l[:n_samples]
+                cloud_r = self._shimmer_cloud_r[:n_samples]
+                self._process_shimmer_cloud(shimmer_sig, cloud_l, cloud_r)
+                reverb_in_l += cloud_l * self.shimmer_send
+                reverb_in_r += cloud_r * self.shimmer_send
 
         # Sympathetic resonance: piano notes generate subtle tones into reverb
         # Stereo detuned (L/R ~5 cents apart), frequency rolloff above C5,
@@ -1690,6 +1773,10 @@ class SynthEngine:
             self.shimmer_enabled = bool(params["shimmer_enabled"])
         if "shimmer_mix" in params:
             self.shimmer_mix = max(0.0, min(1.0, float(params["shimmer_mix"])))
+        if "shimmer_high" in params:
+            self.shimmer_high = bool(params["shimmer_high"])
+        if "shimmer_send" in params:
+            self.shimmer_send = max(0.0, min(2.0, float(params["shimmer_send"])))
         if "freeze_enabled" in params:
             self.freeze_enabled = bool(params["freeze_enabled"])
             self.reverb.set_freeze(self.freeze_enabled)
@@ -1735,6 +1822,8 @@ class SynthEngine:
             "reverb_filter_enabled": self.reverb_filter_enabled,
             "shimmer_enabled": self.shimmer_enabled,
             "shimmer_mix": self.shimmer_mix,
+            "shimmer_high": self.shimmer_high,
+            "shimmer_send": self.shimmer_send,
             "freeze_enabled": self.freeze_enabled,
             "sympathetic_enabled": self.sympathetic_enabled,
             "sympathetic_level": self.sympathetic_level,

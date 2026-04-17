@@ -6,7 +6,7 @@
     <title>Stave Synth</title>
     <link rel="icon" type="image/png" href="logo.png">
     <!-- Keep style.css and script.js cache-bust versions in sync -->
-    <link rel="stylesheet" href="style.css?v=22">
+    <link rel="stylesheet" href="style.css?v=26">
 </head>
 <body>
     <div id="app">
@@ -76,7 +76,11 @@
                     <div class="fader-fill"></div>
                     <div class="fader-value">20kHz</div>
                 </div>
-                <button class="alt-btn" data-id="2">ALT</button>
+                <div class="fader-bottom-row">
+                    <button class="alt-btn" data-id="2">ALT</button>
+                    <button id="res-btn" class="ctrl-btn ctrl-btn-sm">RESO</button>
+                    <button id="shim-oct-btn" class="ctrl-btn ctrl-btn-sm hidden">+12</button>
+                </div>
             </div>
 
             <div class="fader-column" data-id="3">
@@ -87,7 +91,6 @@
                 </div>
                 <div class="fader-bottom-row">
                     <button class="alt-btn" data-id="3">ALT</button>
-                    <button id="res-btn" class="ctrl-btn ctrl-btn-sm">RES</button>
                 </div>
             </div>
 
@@ -108,6 +111,9 @@
                         <div class="level-dot" data-dot="1"></div>
                         <div class="level-dot" data-dot="0"></div>
                     </div>
+                </div>
+                <div class="fader-bottom-row">
+                    <button id="fade-btn" class="ctrl-btn ctrl-btn-sm">FADE</button>
                 </div>
             </div>
         </div>
@@ -456,6 +462,12 @@
                                 <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="sympathetic_level" min="0" max="1000" value="614">
                                 <span class="setting-value">3.500%</span>
                             </div>
+                            <div class="knob">
+                                <div class="knob-label">CLOUD</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="shimmer_send" min="0" max="200" value="100">
+                                <span class="setting-value">1.00x</span>
+                            </div>
                         </div>
                     </div>
 
@@ -633,6 +645,6 @@
 
     </div>
 
-    <script src="script.js?v=22"></script>
+    <script src="script.js?v=26"></script>
 </body>
 </html>

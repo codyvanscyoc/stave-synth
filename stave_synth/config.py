@@ -77,6 +77,8 @@ DEFAULT_STATE = {
         "reverb_filter_enabled": False,
         "shimmer_enabled": False,
         "shimmer_mix": 0.5,
+        "shimmer_high": False,
+        "shimmer_send": 1.0,
         "freeze_enabled": False,
         "sympathetic_enabled": False,
         "sympathetic_level": 0.035,

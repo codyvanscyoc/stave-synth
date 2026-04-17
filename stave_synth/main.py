@@ -141,12 +141,16 @@ class StaveSynth:
             return self._handle_panic()
         elif msg_type == "shimmer_toggle":
             return self._handle_shimmer_toggle(msg)
+        elif msg_type == "shimmer_high_toggle":
+            return self._handle_shimmer_high_toggle(msg)
         elif msg_type == "freeze_toggle":
             return self._handle_freeze_toggle(msg)
         elif msg_type == "octave":
             return self._handle_octave(msg)
         elif msg_type == "drone_toggle":
             return self._handle_drone_toggle(msg)
+        elif msg_type == "fade_toggle":
+            return self._handle_fade_toggle(msg)
         elif msg_type == "get_state":
             return {"type": "state", "state": self.state}
         elif msg_type == "debug":
@@ -555,6 +559,14 @@ class StaveSynth:
         self.state["synth_pad"]["shimmer_enabled"] = enabled
         return {"type": "shimmer_ack", "enabled": enabled}
 
+    def _handle_shimmer_high_toggle(self, msg: dict) -> dict:
+        enabled = msg.get("enabled")
+        if enabled is None:
+            enabled = not self.synth.shimmer_high
+        self.synth.shimmer_high = enabled
+        self.state["synth_pad"]["shimmer_high"] = enabled
+        return {"type": "shimmer_high_ack", "enabled": enabled}
+
     def _handle_freeze_toggle(self, msg: dict) -> dict:
         enabled = msg.get("enabled")
         if enabled is None:
@@ -573,6 +585,20 @@ class StaveSynth:
             self.synth.drone_off()
         self.state["synth_pad"]["drone_enabled"] = enabled
         return {"type": "drone_ack", "enabled": enabled}
+
+    def _handle_fade_toggle(self, msg: dict) -> dict:
+        """Toggle master fade: down to 0 then back up to 1 (current master fader
+        position still governs the full-gain endpoint via fader_to_amplitude).
+        Duration defaults to 5s; user may override via msg['duration_s']."""
+        if not self.jack:
+            return {"type": "fade_ack", "faded_out": False}
+        duration = float(msg.get("duration_s", 5.0))
+        faded_out_requested = msg.get("faded_out")
+        if faded_out_requested is None:
+            faded_out_requested = self.jack._fade_target >= 0.5  # flip
+        target = 0.0 if faded_out_requested else 1.0
+        self.jack.start_fade(target, duration)
+        return {"type": "fade_ack", "faded_out": bool(faded_out_requested)}
 
     def _handle_instrument_cycle(self) -> dict:
         """Cycle keyboard instrument: piano → organ → off → piano."""
@@ -631,11 +657,12 @@ class StaveSynth:
             self.organ.all_notes_off()
         if self.jack:
             self.jack.panic()
+            self.jack.fade_reset()
         self.midi.all_notes_off()
         self.state["synth_pad"]["freeze_enabled"] = False
         self.state["synth_pad"]["drone_enabled"] = False
         logger.info("PANIC — all notes off, freeze/drone cleared, buffers flushed")
-        return {"type": "panic_ack"}
+        return {"type": "panic_ack", "fade_reset": True}
 
     def _handle_octave(self, msg: dict) -> dict:
         instrument = msg.get("instrument", "")
