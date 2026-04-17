@@ -153,6 +153,10 @@ class StaveSynth:
             return self._handle_fade_toggle(msg)
         elif msg_type == "bus_comp_preset":
             return self._handle_bus_comp_preset(msg)
+        elif msg_type == "macro_value":
+            return self._handle_macro_value(msg)
+        elif msg_type == "macro_assign":
+            return self._handle_macro_assign(msg)
         elif msg_type == "get_state":
             return {"type": "state", "state": self.state}
         elif msg_type == "debug":
@@ -624,6 +628,72 @@ class StaveSynth:
         },
     }
 
+    # ═══ Macros (performance morph knobs) ═══
+
+    def _handle_macro_value(self, msg: dict) -> dict:
+        """Set a macro's value and apply all of its assigned parameters. Each
+        assignment lerps its target param from min → max across the macro
+        value 0 → 1."""
+        idx = int(msg.get("idx", 0))
+        value = float(msg.get("value", 0.0))
+        value = max(0.0, min(1.0, value))
+        macros = self.state.get("macros", [])
+        if idx < 0 or idx >= len(macros):
+            return {"type": "error", "message": f"Invalid macro idx {idx}"}
+        macros[idx]["value"] = value
+        for a in macros[idx].get("assignments", []):
+            section = a.get("section")
+            param = a.get("param")
+            mn = float(a.get("min", 0.0))
+            mx = float(a.get("max", 1.0))
+            if a.get("is_bool"):
+                target_val = value >= 0.5
+            else:
+                target_val = mn + value * (mx - mn)
+            try:
+                self._handle_setting({"section": section, "param": param, "value": target_val})
+            except Exception as e:
+                logger.warning("Macro %d failed to apply %s.%s: %s", idx, section, param, e)
+        return {"type": "macro_value_ack", "idx": idx, "value": value}
+
+    def _handle_macro_assign(self, msg: dict) -> dict:
+        """Add, remove, toggle, or clear a macro's assignments.
+        action in {"toggle", "add", "remove", "clear"}."""
+        idx = int(msg.get("idx", 0))
+        action = str(msg.get("action", "toggle"))
+        macros = self.state.get("macros", [])
+        if idx < 0 or idx >= len(macros):
+            return {"type": "error", "message": f"Invalid macro idx {idx}"}
+        if action == "clear":
+            macros[idx]["assignments"] = []
+        else:
+            section = str(msg.get("section", ""))
+            param = str(msg.get("param", ""))
+            if not section or not param:
+                return {"type": "error", "message": "assign needs section + param"}
+            mn = float(msg.get("min", 0.0))
+            mx = float(msg.get("max", 1.0))
+            is_bool = bool(msg.get("is_bool", False))
+            assigns = macros[idx]["assignments"]
+            existing = next(
+                (a for a in assigns if a.get("section") == section and a.get("param") == param),
+                None,
+            )
+            if action == "remove" or (action == "toggle" and existing):
+                if existing:
+                    assigns.remove(existing)
+            else:  # add or toggle-add
+                if not existing:
+                    assigns.append({
+                        "section": section, "param": param,
+                        "min": mn, "max": mx, "is_bool": is_bool,
+                    })
+        return {
+            "type": "macro_assign_ack",
+            "idx": idx,
+            "assignments": macros[idx]["assignments"],
+        }
+
     def _handle_bus_comp_preset(self, msg: dict) -> dict:
         name = str(msg.get("name", "")).lower()
         preset = self._BUS_COMP_PRESETS.get(name)
@@ -1077,11 +1147,21 @@ class StaveSynth:
                 # Peak level for output meter — 5 Hz is plenty
                 if tick_counter % PEAK_EVERY == 0:
                     peak = self.jack.get_and_reset_peak()
-                    if peak > 0.01:
-                        self.ws_server.broadcast_sync({"type": "peak_level", "peak": peak})
+                    bus = self.jack.get_and_reset_bus_peaks()
+                    pad = bus.get("pad", 0.0)
+                    piano = bus.get("piano", 0.0)
+                    if peak > 0.01 or pad > 0.01 or piano > 0.01:
+                        self.ws_server.broadcast_sync({
+                            "type": "peak_level",
+                            "peak": peak,
+                            "pad": pad,
+                            "piano": piano,
+                        })
                         silence_ticks = 0
                     elif silence_ticks < 5:
-                        self.ws_server.broadcast_sync({"type": "peak_level", "peak": 0.0})
+                        self.ws_server.broadcast_sync({
+                            "type": "peak_level", "peak": 0.0, "pad": 0.0, "piano": 0.0,
+                        })
                         silence_ticks += 1
 
             # Broadcast CPU/RAM stats every ~1 second

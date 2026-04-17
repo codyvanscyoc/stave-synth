@@ -2,11 +2,18 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>Stave Synth</title>
     <link rel="icon" type="image/png" href="logo.png">
+    <!-- PWA: install to home screen for fullscreen app-like launch -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#000000">
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="logo.png">
     <!-- Keep style.css and script.js cache-bust versions in sync -->
-    <link rel="stylesheet" href="style.css?v=48">
+    <link rel="stylesheet" href="style.css?v=49">
 </head>
 <body>
     <div id="app">
@@ -134,6 +141,28 @@
                 <button class="preset-btn empty" data-pos="2" data-slot="2" style="--preset-color: #B06EFF"><span class="preset-label"></span></button>
                 <button class="preset-btn empty" data-pos="3" data-slot="3" style="--preset-color: #FF4D6A"><span class="preset-label"></span></button>
                 <button class="preset-btn empty" data-pos="4" data-slot="4" style="--preset-color: #4D9EFF"><span class="preset-label"></span></button>
+                <div id="macro-row" class="hidden">
+                    <div class="macro-slot" data-macro="0" style="--macro-color: #00D4AA">
+                        <div class="macro-fill"></div>
+                        <span class="macro-label">M1</span>
+                        <span class="macro-count">0</span>
+                    </div>
+                    <div class="macro-slot" data-macro="1" style="--macro-color: #FFB020">
+                        <div class="macro-fill"></div>
+                        <span class="macro-label">M2</span>
+                        <span class="macro-count">0</span>
+                    </div>
+                    <div class="macro-slot" data-macro="2" style="--macro-color: #B06EFF">
+                        <div class="macro-fill"></div>
+                        <span class="macro-label">M3</span>
+                        <span class="macro-count">0</span>
+                    </div>
+                    <div class="macro-slot" data-macro="3" style="--macro-color: #FF4D6A">
+                        <div class="macro-fill"></div>
+                        <span class="macro-label">M4</span>
+                        <span class="macro-count">0</span>
+                    </div>
+                </div>
                 <button id="preset-edit-btn" class="ctrl-btn">EDIT</button>
             </div>
         </div>
@@ -925,6 +954,6 @@
 
     </div>
 
-    <script src="script.js?v=48"></script>
+    <script src="script.js?v=49"></script>
 </body>
 </html>

@@ -422,14 +422,32 @@ body.retro-amber {
     --fader-color: var(--border-green);
     --fader-fill: var(--fill-green);
     --fader-text: var(--text-green);
+    --level: 0;  /* per-fader signal level 0..1 (set from JS) */
     flex: 1;
     width: 80%;
     max-width: 20vw;
+    max-height: 62vh;  /* scrunch — leaves breathing room for the macro row */
     border: 1px solid var(--fader-color);
     position: relative;
     cursor: pointer;
     overflow: hidden;
     min-height: 0;
+}
+
+/* Level meter: thin vertical bar on the right, filled from bottom by --level.
+   Sits ABOVE the fader-fill so it's visible regardless of fader position. */
+.fader-track::after {
+    content: "";
+    position: absolute;
+    right: 2px;
+    bottom: 0;
+    width: 3px;
+    height: calc(var(--level, 0) * 100%);
+    background: var(--fader-fill);
+    opacity: 0.55;
+    pointer-events: none;
+    transition: height 80ms ease-out;
+    border-radius: 1px;
 }
 
 /* Orange fader: filter column (normal) + other columns in alt mode */
@@ -731,6 +749,81 @@ body.retro-amber {
     background: var(--text-green);
     color: var(--bg);
     border-color: var(--text-green);
+}
+
+/* ═══ Macros (layer 3 in the preset row) ═══ */
+#macro-row {
+    display: flex;
+    flex: 1;
+    gap: clamp(4px, 0.6vw, 8px);
+    align-items: stretch;
+}
+.macro-slot {
+    --macro-color: var(--text-green);
+    --macro-value: 0;
+    flex: 1;
+    position: relative;
+    border: 1px solid var(--macro-color);
+    background: transparent;
+    cursor: pointer;
+    overflow: hidden;
+    min-height: clamp(36px, 5vh, 56px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    touch-action: none;  /* enable custom pointer drag */
+}
+.macro-fill {
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: calc(var(--macro-value, 0) * 100%);
+    background: var(--macro-color);
+    opacity: 0.45;
+    pointer-events: none;
+    transition: width 30ms linear;
+}
+.macro-label {
+    position: relative;
+    z-index: 1;
+    color: var(--macro-color);
+    font-family: var(--font);
+    font-size: clamp(10px, 1.6vw, 13px);
+    font-weight: bold;
+    letter-spacing: 0.1em;
+    pointer-events: none;
+}
+.macro-count {
+    position: absolute;
+    top: 2px;
+    right: 5px;
+    font-size: clamp(8px, 1.1vw, 10px);
+    color: var(--macro-color);
+    opacity: 0.7;
+    pointer-events: none;
+}
+.macro-slot.learn {
+    box-shadow: 0 0 8px var(--macro-color), inset 0 0 6px var(--macro-color);
+    animation: macro-learn-pulse 1.2s ease-in-out infinite;
+}
+@keyframes macro-learn-pulse {
+    0%, 100% { box-shadow: 0 0 4px var(--macro-color), inset 0 0 4px var(--macro-color); }
+    50%      { box-shadow: 0 0 12px var(--macro-color), inset 0 0 8px var(--macro-color); }
+}
+
+/* While a macro is learn-active, every assignable control gets a subtle
+   dashed overlay + cursor hint so the user knows it's tappable to assign. */
+body.macro-learning .setting-slider,
+body.macro-learning .setting-checkbox {
+    outline: 1px dashed currentColor;
+    outline-offset: 2px;
+    cursor: cell;
+}
+/* Already-assigned marker (small colored dot on the control's parent row) */
+.setting-row.macro-assigned::after {
+    content: "●";
+    color: var(--macro-dot, #00D4AA);
+    margin-left: 0.4em;
+    font-size: 0.7em;
 }
 
 /* When editing, presets pulse gently and load-on-tap is suppressed via JS */

@@ -162,6 +162,12 @@ DEFAULT_STATE = {
         "bus_comp_sc_hpf_hz": 100.0,
     },
     "midi_cc_map": {},
+    "macros": [
+        {"name": "M1", "value": 0.0, "assignments": []},
+        {"name": "M2", "value": 0.0, "assignments": []},
+        {"name": "M3", "value": 0.0, "assignments": []},
+        {"name": "M4", "value": 0.0, "assignments": []},
+    ],
     "ui": {
         "preset_saved": [False] * 10,
         "preset_labels": [""] * 10,

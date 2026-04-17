@@ -122,6 +122,7 @@ class JackEngine:
         # Debug counters
         self._callback_count = 0
         self._peak_output = 0.0
+        self._pad_peak = 0.0
         self._piano_peak = 0.0
         self._piano_renders = 0
         self._last_error = None
@@ -421,12 +422,21 @@ class JackEngine:
                     else:
                         stereo = self.synth.render(bs)  # (2, n) stereo
 
+                    # Pad/synth bus level (pre-piano, pre-FX) for fader meters
+                    pp = float(np.abs(stereo).max()) if stereo.size else 0.0
+                    if pp > self._pad_peak:
+                        self._pad_peak = pp
+
                     # Mix in piano/organ audio (stereo). Keep a reference to
                     # the piano buffer for bus-compressor sidechain use.
                     piano_for_sc = None
                     if self.piano_player:
                         piano = self.piano_player.render_block(bs)
                         self._piano_renders += 1
+                        # Piano bus level
+                        pkp = float(np.abs(piano).max()) if piano.size else 0.0
+                        if pkp > self._piano_peak:
+                            self._piano_peak = pkp
 
                         # Optionally route through main filter
                         if self.organ_filter_enabled:
@@ -701,6 +711,15 @@ class JackEngine:
         peak = self._peak_output
         self._peak_output = 0.0
         return peak
+
+    def get_and_reset_bus_peaks(self) -> dict:
+        """Return per-bus peak levels (pad, piano) since last call. Used to drive
+        per-fader signal meters in the UI."""
+        pad = self._pad_peak
+        piano = self._piano_peak
+        self._pad_peak = 0.0
+        self._piano_peak = 0.0
+        return {"pad": pad, "piano": piano}
 
     def stop(self):
         """Shut down."""

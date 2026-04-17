@@ -184,6 +184,18 @@
             flashMidiIndicator();
         } else if (msg.type === "peak_level") {
             updateLevelDots(msg.peak);
+            // Per-fader level meters: tanh-compress so brief high peaks don't
+            // slam the bar to 100% and stay there. Fader 0 (OSC) + 1 (piano)
+            // show their source; 2/3/4 show master peak as a rough activity cue.
+            var padN = Math.tanh((msg.pad || 0) * 1.0);
+            var pianoN = Math.tanh((msg.piano || 0) * 1.0);
+            var masterN = Math.tanh((msg.peak || 0) * 0.7);
+            var tracks = document.querySelectorAll(".fader-column .fader-track");
+            if (tracks[0]) tracks[0].style.setProperty("--level", padN.toFixed(3));
+            if (tracks[1]) tracks[1].style.setProperty("--level", pianoN.toFixed(3));
+            if (tracks[2]) tracks[2].style.setProperty("--level", masterN.toFixed(3));
+            if (tracks[3]) tracks[3].style.setProperty("--level", masterN.toFixed(3));
+            if (tracks[4]) tracks[4].style.setProperty("--level", masterN.toFixed(3));
             clipIndicator.classList.remove("limiting", "limiting-hard", "limiting-crush");
             if (msg.peak > 2.5) {
                 clipIndicator.classList.add("limiting-crush");
@@ -271,6 +283,17 @@
             midiLearnWaiting = false;
             updateMidiLearnUI();
             updateCCIndicators();
+        } else if (msg.type === "macro_assign_ack") {
+            if (state && state.macros && state.macros[msg.idx]) {
+                state.macros[msg.idx].assignments = msg.assignments || [];
+            }
+            applyMacroVisuals();
+        } else if (msg.type === "macro_value_ack") {
+            if (state && state.macros && state.macros[msg.idx]) {
+                state.macros[msg.idx].value = msg.value;
+            }
+            // Refresh sliders because assigned params just changed on the backend
+            updateSettingsSliders();
         } else if (msg.type === "audio_outputs") {
             showOutputMenu(msg.outputs);
         } else if (msg.type === "audio_output_set") {
@@ -389,6 +412,7 @@
         updateTransposeDisplay();
         updateShimmerDisplay();
         updateSettingsSliders();
+        if (typeof applyMacroVisuals === "function") applyMacroVisuals();
     }
 
     // ═══ Fader Logic ═══
@@ -700,16 +724,25 @@
     var labelPickerModal = document.getElementById("label-picker-modal");
     var rearrangeSourceSlot = -1;  // slot number picked up for swap, -1 when idle
 
-    // Presets now have 2 layers of 5 slots each (slots 0-4 = L1, slots 5-9 = L2).
-    // The 5 on-screen buttons dynamically remap data-slot when the layer toggles.
-    var currentLayer = 0;  // 0 = L1, 1 = L2
+    // Presets: 2 layers of 5 slots each (L1=0-4, L2=5-9). A 3rd layer (L3=MACROS)
+    // swaps the 5 preset buttons for 4 macro sliders in the same row.
+    var currentLayer = 0;  // 0=L1 presets, 1=L2 presets, 2=MACROS
     var allPresetSaved = [];
     for (var _i = 0; _i < 10; _i++) allPresetSaved.push(false);
     presetLabels = [];
     for (var _j = 0; _j < 10; _j++) presetLabels.push("");
 
+    var macroRow = document.getElementById("macro-row");
+    var macroSlots = macroRow ? macroRow.querySelectorAll(".macro-slot") : [];
+
     function applyLayer() {
+        var showMacros = currentLayer === 2;
         presetBtns.forEach(function (btn, pos) {
+            if (showMacros) {
+                btn.classList.add("hidden");
+                return;
+            }
+            btn.classList.remove("hidden");
             var slot = pos + currentLayer * 5;
             btn.dataset.slot = slot;
             var isSaved = !!allPresetSaved[slot];
@@ -720,15 +753,125 @@
             var span = btn.querySelector(".preset-label");
             if (span) span.textContent = presetLabels[slot] || "";
         });
-        presetLayerBtn.textContent = "L" + (currentLayer + 1);
+        if (macroRow) macroRow.classList.toggle("hidden", !showMacros);
+        presetLayerBtn.textContent = showMacros ? "M" : ("L" + (currentLayer + 1));
         presetLayerBtn.classList.toggle("active", currentLayer > 0);
         hideActionPopup();
     }
 
     presetLayerBtn.addEventListener("click", function (e) {
         e.stopPropagation();
-        currentLayer = (currentLayer + 1) % 2;
+        currentLayer = (currentLayer + 1) % 3;  // cycle L1 → L2 → MACROS
         applyLayer();
+    });
+
+    // ═══ Macros ═══
+    // State.macros is kept server-side; we mirror it for learn-mode + UI counts.
+    var macroLearnIdx = -1;  // which macro, if any, is currently in "learn" mode
+
+    function getMacros() {
+        return (state && state.macros) ? state.macros : [];
+    }
+
+    function applyMacroVisuals() {
+        var macros = getMacros();
+        macroSlots.forEach(function (slot, idx) {
+            var m = macros[idx];
+            if (!m) return;
+            slot.style.setProperty("--macro-value", (m.value || 0).toFixed(3));
+            var cnt = slot.querySelector(".macro-count");
+            if (cnt) cnt.textContent = (m.assignments || []).length;
+            slot.classList.toggle("learn", idx === macroLearnIdx);
+        });
+        document.body.classList.toggle("macro-learning", macroLearnIdx >= 0);
+    }
+
+    function setMacroLearn(idx) {
+        macroLearnIdx = (macroLearnIdx === idx) ? -1 : idx;
+        applyMacroVisuals();
+    }
+
+    function sendMacroValue(idx, value) {
+        send({ type: "macro_value", idx: idx, value: value });
+    }
+
+    // Pointer drag on macro slot → value 0..1 based on horizontal position.
+    macroSlots.forEach(function (slot) {
+        var idx = parseInt(slot.dataset.macro, 10);
+        var dragging = false;
+        var pressStart = 0;
+        var moved = false;
+
+        function setValueFromPointer(e) {
+            var rect = slot.getBoundingClientRect();
+            var x = (e.clientX !== undefined ? e.clientX : (e.touches ? e.touches[0].clientX : 0)) - rect.left;
+            var v = Math.max(0, Math.min(1, x / rect.width));
+            slot.style.setProperty("--macro-value", v.toFixed(3));
+            sendMacroValue(idx, v);
+        }
+
+        slot.addEventListener("pointerdown", function (e) {
+            dragging = true;
+            moved = false;
+            pressStart = Date.now();
+            slot.setPointerCapture(e.pointerId);
+            e.preventDefault();
+        });
+        slot.addEventListener("pointermove", function (e) {
+            if (!dragging) return;
+            // Only start sliding once pointer has moved > 4px to preserve tap-to-learn
+            var rect = slot.getBoundingClientRect();
+            var x = e.clientX - rect.left;
+            if (!moved) {
+                var startX = parseFloat(slot.style.getPropertyValue("--macro-value") || "0") * rect.width;
+                if (Math.abs(x - startX) > 4) moved = true;
+            }
+            if (moved) setValueFromPointer(e);
+        });
+        slot.addEventListener("pointerup", function (e) {
+            if (!dragging) return;
+            dragging = false;
+            slot.releasePointerCapture(e.pointerId);
+            var held = Date.now() - pressStart;
+            // Tap (quick, no drag) → toggle learn mode
+            if (!moved && held < 300) setMacroLearn(idx);
+        });
+        slot.addEventListener("pointercancel", function () { dragging = false; });
+    });
+
+    // Click-to-assign: while a macro is in learn mode, tapping a .setting-slider
+    // or .setting-checkbox toggles that param's assignment to the learn-macro.
+    // Intercept pointerdown in capture phase so the slider/checkbox never
+    // receives the input — no accidental value change during assignment.
+    function interceptForMacroLearn(e) {
+        if (macroLearnIdx < 0) return;
+        var ctl = e.target.closest(".setting-slider, .setting-checkbox");
+        if (!ctl) return;
+        var section = ctl.dataset.section;
+        var param = ctl.dataset.param;
+        if (!section || !param) return;
+        e.preventDefault();
+        e.stopPropagation();
+        // Only act on the initial pointerdown; suppress everything else on this control.
+        if (e.type !== "pointerdown") return;
+        var is_bool = ctl.type === "checkbox";
+        var mn = 0.0, mx = 1.0;
+        if (!is_bool) {
+            mn = parseFloat(ctl.min || "0");
+            mx = parseFloat(ctl.max || "1");
+        }
+        send({
+            type: "macro_assign",
+            idx: macroLearnIdx,
+            action: "toggle",
+            section: section,
+            param: param,
+            min: mn, max: mx,
+            is_bool: is_bool,
+        });
+    }
+    ["pointerdown", "pointerup", "click", "input", "change"].forEach(function (ev) {
+        document.addEventListener(ev, interceptForMacroLearn, true);
     });
 
     function setEditMode(on) {
