@@ -44,6 +44,46 @@ html, body {
     flex-direction: column;
 }
 
+/* ═══ RETRO HIDDEN MODE (toggled by clicking the logo) ═══ */
+/* Dot-pattern overlay: tiny CRT/halftone dots applied via multiply blend.
+   Dots appear only over non-black regions — black background stays pure. */
+body.retro-mode::before {
+    content: '';
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    pointer-events: none;
+    z-index: 9998;
+    background-image: radial-gradient(circle, rgba(0,0,0,0.55) 0.6px, transparent 1.1px);
+    background-size: 3px 3px;
+    mix-blend-mode: multiply;
+}
+/* Film-grain overlay via SVG fractal noise: subtle texture on top. */
+body.retro-mode::after {
+    content: '';
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    pointer-events: none;
+    z-index: 9999;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='1.4' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.6 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    opacity: 0.18;
+    mix-blend-mode: overlay;
+}
+
+/* Clickable logo cursor hint */
+#logo-btn { cursor: pointer; }
+
+/* Amber re-tint (IBM 5151 monochrome look) — stacks on top of retro-mode */
+body.retro-amber {
+    --border-green: #FFB020;
+    --text-green: #FFB020;
+    --text-green-dim: #8A5520;
+    --fill-green: #FFB020;
+    --border-orange: #FFD060;
+    --text-orange: #FFD060;
+    --text-orange-dim: #BA7520;
+    --fill-orange: #FFD060;
+}
+
 /* ═══ TOP BAR ═══ */
 #top-bar {
     position: relative;
@@ -67,14 +107,19 @@ html, body {
 #transpose-controls {
     display: flex;
     align-items: center;
-    gap: 1vw;
+    gap: 0.3vw;
 }
 
 #transpose-display {
     font-size: clamp(11px, 2.2vw, 16px);
-    min-width: 4em;
+    min-width: 2.2em;
     text-align: center;
     color: var(--text-green);
+}
+
+#transpose-down, #transpose-up {
+    min-width: 1.6em;
+    padding: 0.4vh 0.8vw;
 }
 
 .ctrl-btn {
@@ -180,6 +225,17 @@ html, body {
     color: var(--bg);
 }
 
+#sat-btn {
+    border-color: #C67A2F;
+    color: #8A5320;
+}
+
+#sat-btn.active {
+    background: linear-gradient(135deg, #C67A2F, #E8A865);
+    border-color: #C67A2F;
+    color: var(--bg);
+}
+
 #midi-indicator {
     font-size: clamp(8px, 1.5vw, 11px);
     padding: 0.3vh 0.8vw;
@@ -195,17 +251,33 @@ html, body {
 }
 
 #sys-monitor {
-    font-size: clamp(8px, 1.5vw, 11px);
-    padding: 0.3vh 0.8vw;
+    font-size: clamp(7px, 1.2vw, 10px);
+    padding: 0.2vh 0.6vw;
     border: 1px solid var(--bg);
     color: var(--text-muted);
     font-family: var(--font);
     white-space: nowrap;
-    min-width: 8ch;
-    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    line-height: 1.05;
+    min-width: 4ch;
 }
+#sys-monitor span { display: block; }
 #sys-monitor .warn { color: #FFB020; }
 #sys-monitor .crit { color: #FF4D6A; }
+
+#limit-midi-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3vh;
+    align-items: stretch;
+}
+#limit-midi-stack > div {
+    padding: 0.15vh 0.8vw;
+    text-align: center;
+}
 
 #clip-indicator {
     font-size: clamp(8px, 1.5vw, 11px);
@@ -567,6 +639,170 @@ html, body {
     100% { opacity: 0.7; box-shadow: none; }
 }
 
+/* Preset label text shown on filled buttons — bottom-left with hollow bullet */
+.preset-label {
+    position: absolute;
+    bottom: 0.5vh;
+    left: 0.6vw;
+    font-size: clamp(9px, 1.6vw, 13px);
+    font-family: var(--font);
+    color: var(--bg);
+    text-shadow: 0 1px 1px rgba(0, 0, 0, 0.4);
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+    overflow: hidden;
+    max-width: calc(100% - 1.2vw);
+    text-overflow: ellipsis;
+    pointer-events: none;
+}
+.preset-label:not(:empty)::before {
+    content: "□ ";
+}
+
+/* Narrow vertical EDIT and LAYER buttons bookending the preset row */
+#preset-edit-btn,
+#preset-layer-btn {
+    width: clamp(26px, 3.5vw, 34px);
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    font-size: clamp(9px, 1.6vw, 12px);
+    letter-spacing: 0.15em;
+    padding: 0.5vh 0;
+    min-width: auto;
+    flex: 0 0 auto;
+}
+#preset-edit-btn.active,
+#preset-layer-btn.active {
+    background: var(--text-green);
+    color: var(--bg);
+    border-color: var(--text-green);
+}
+
+/* When editing, presets pulse gently and load-on-tap is suppressed via JS */
+#app.preset-editing .preset-btn {
+    outline: 1px dashed var(--text-green);
+    outline-offset: -3px;
+    animation: preset-edit-pulse 1.4s ease-in-out infinite;
+}
+@keyframes preset-edit-pulse {
+    0%, 100% { outline-color: var(--text-green); }
+    50%      { outline-color: var(--text-green-dim); }
+}
+
+/* Rearrange "picked up" state — distinctive flash to show what's grabbed */
+.preset-btn.picked {
+    outline: 2px solid var(--border-orange) !important;
+    outline-offset: -4px;
+    animation: preset-picked-pulse 0.7s ease-in-out infinite !important;
+}
+@keyframes preset-picked-pulse {
+    0%, 100% { outline-color: var(--border-orange); opacity: 1.0; }
+    50%      { outline-color: var(--text-orange-dim); opacity: 0.75; }
+}
+
+/* Preset action popup (RENAME / DELETE / CANCEL) — floats near tapped preset */
+#preset-action-popup {
+    position: fixed;
+    z-index: 200;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3vh;
+    background: var(--bg);
+    border: 1px solid var(--border-green);
+    padding: 0.5vh;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
+}
+#preset-action-popup.hidden { display: none; }
+.preset-action {
+    background: transparent;
+    border: 1px solid var(--border-green);
+    color: var(--text-green);
+    font-family: var(--font);
+    font-size: clamp(10px, 1.8vw, 13px);
+    padding: 0.8vh 1.2vw;
+    cursor: pointer;
+    min-width: 7em;
+    text-align: left;
+}
+.preset-action:active {
+    background: var(--text-green);
+    color: var(--bg);
+}
+.preset-action[data-action="delete"] {
+    border-color: #cc2222;
+    color: #cc2222;
+}
+.preset-action[data-action="delete"]:active {
+    background: #cc2222;
+    color: var(--bg);
+}
+
+/* Label picker modal */
+#label-picker-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 210;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+#label-picker-modal.hidden { display: none; }
+#label-picker-box {
+    background: var(--bg);
+    border: 1px solid var(--border-green);
+    padding: 1.5vh 2vw;
+    max-width: 90vw;
+    max-height: 90vh;
+    overflow-y: auto;
+}
+.label-picker-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--border-green);
+    padding-bottom: 0.6vh;
+    margin-bottom: 1vh;
+    font-size: clamp(11px, 2vw, 14px);
+    letter-spacing: 0.1em;
+    color: var(--text-green);
+}
+#label-picker-close {
+    min-width: 2em;
+    padding: 0.2vh 0.6vw;
+}
+.label-category {
+    font-size: clamp(9px, 1.5vw, 11px);
+    color: var(--text-green-dim);
+    letter-spacing: 0.15em;
+    margin-top: 0.8vh;
+    margin-bottom: 0.4vh;
+}
+.label-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4vh 0.5vw;
+    margin-bottom: 0.5vh;
+}
+.label-pill {
+    background: transparent;
+    border: 1px solid var(--border-green);
+    color: var(--text-green);
+    font-family: var(--font);
+    font-size: clamp(9px, 1.6vw, 12px);
+    padding: 0.5vh 1vw;
+    cursor: pointer;
+    min-height: 2.5em;
+}
+.label-pill:active {
+    background: var(--text-green);
+    color: var(--bg);
+}
+.label-clear {
+    border-color: var(--text-muted);
+    color: var(--text-muted);
+}
+
 /* ═══ SETTINGS MODAL ═══ */
 #settings-modal {
     position: fixed;
@@ -719,6 +955,77 @@ html, body {
 .setting-select option {
     background: var(--bg);
     color: var(--text-green);
+}
+
+/* Knob row — compact circular controls, terminal theme */
+.knob-row {
+    display: flex;
+    justify-content: space-around;
+    align-items: flex-start;
+    gap: 2vw;
+    padding: 2vh 0;
+    border-bottom: 1px solid rgba(0, 191, 99, 0.1);
+}
+
+.knob {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.6vh;
+    cursor: ns-resize;
+    user-select: none;
+    touch-action: none;
+    min-width: 60px;
+}
+
+.knob-label {
+    font-size: clamp(9px, 1.6vw, 12px);
+    color: var(--text-green-dim);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+.knob-dial {
+    width: clamp(48px, 10vw, 68px);
+    height: clamp(48px, 10vw, 68px);
+    border: 1px solid var(--border-green);
+    border-radius: 50%;
+    position: relative;
+    background: transparent;
+    box-sizing: border-box;
+}
+
+.knob-indicator {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    top: 0;
+    left: 0;
+    transform: rotate(-135deg);
+    transition: none;
+}
+
+.knob-indicator::before {
+    content: '';
+    position: absolute;
+    top: 8%;
+    left: 50%;
+    width: 2px;
+    height: 32%;
+    background: var(--text-green);
+    transform: translateX(-50%);
+}
+
+.knob .setting-value {
+    font-size: clamp(9px, 1.6vw, 11px);
+    color: var(--text-green);
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    min-width: 5ch;
+}
+
+.knob-slider {
+    display: none !important;
 }
 
 /* Help text in Global tab */

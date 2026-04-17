@@ -5,7 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>Stave Synth</title>
     <link rel="icon" type="image/png" href="logo.png">
-    <link rel="stylesheet" href="style.css?v=2">
+    <!-- Keep style.css and script.js cache-bust versions in sync -->
+    <link rel="stylesheet" href="style.css?v=22">
 </head>
 <body>
     <div id="app">
@@ -14,7 +15,7 @@
             <div id="transpose-controls">
                 <div class="ctrl-btn" id="logo-btn"></div>
                 <button id="transpose-down" class="ctrl-btn">-</button>
-                <span id="transpose-display">T: 0</span>
+                <span id="transpose-display">T0</span>
                 <button id="transpose-up" class="ctrl-btn">+</button>
             </div>
             <button id="osc1-btn" class="ctrl-btn toggle-btn active">OSC1</button>
@@ -23,11 +24,14 @@
             <button id="shimmer-btn" class="ctrl-btn ctrl-btn-sm">SHIM</button>
             <button id="freeze-btn" class="ctrl-btn ctrl-btn-sm hidden">FRZ</button>
             <button id="drone-btn" class="ctrl-btn ctrl-btn-sm">DRONE</button>
+            <button id="sat-btn" class="ctrl-btn ctrl-btn-sm">SAT</button>
             <button id="panic-btn" class="ctrl-btn panic-btn">STOP</button>
             <button id="menu-btn" class="ctrl-btn">MENU</button>
-            <div id="midi-indicator">MIDI</div>
-            <div id="sys-monitor"><span id="cpu-val">--</span> <span id="ram-val">--</span></div>
-            <div id="clip-indicator">LIMIT</div>
+            <div id="sys-monitor"><span id="cpu-val">--</span><span id="ram-val">--</span></div>
+            <div id="limit-midi-stack">
+                <div id="clip-indicator">LIMIT</div>
+                <div id="midi-indicator">MIDI</div>
+            </div>
             <div id="status-indicator" class="disconnected">DISC</div>
             <div id="output-menu" class="hidden"></div>
         </div>
@@ -111,11 +115,74 @@
         <!-- Preset Area -->
         <div id="preset-area">
             <div class="preset-row">
-                <button class="preset-btn empty" data-slot="0" style="--preset-color: #00D4AA"></button>
-                <button class="preset-btn empty" data-slot="1" style="--preset-color: #FFB020"></button>
-                <button class="preset-btn empty" data-slot="2" style="--preset-color: #B06EFF"></button>
-                <button class="preset-btn empty" data-slot="3" style="--preset-color: #FF4D6A"></button>
-                <button class="preset-btn empty" data-slot="4" style="--preset-color: #4D9EFF"></button>
+                <button id="preset-layer-btn" class="ctrl-btn">L1</button>
+                <button class="preset-btn empty" data-pos="0" data-slot="0" style="--preset-color: #00D4AA"><span class="preset-label"></span></button>
+                <button class="preset-btn empty" data-pos="1" data-slot="1" style="--preset-color: #FFB020"><span class="preset-label"></span></button>
+                <button class="preset-btn empty" data-pos="2" data-slot="2" style="--preset-color: #B06EFF"><span class="preset-label"></span></button>
+                <button class="preset-btn empty" data-pos="3" data-slot="3" style="--preset-color: #FF4D6A"><span class="preset-label"></span></button>
+                <button class="preset-btn empty" data-pos="4" data-slot="4" style="--preset-color: #4D9EFF"><span class="preset-label"></span></button>
+                <button id="preset-edit-btn" class="ctrl-btn">EDIT</button>
+            </div>
+        </div>
+
+        <!-- Preset action popup (rename/rearrange/delete/cancel) -->
+        <div id="preset-action-popup" class="hidden">
+            <button class="preset-action" data-action="rename">RENAME</button>
+            <button class="preset-action" data-action="rearrange">REARRANGE</button>
+            <button class="preset-action" data-action="delete">DELETE</button>
+            <button class="preset-action" data-action="cancel">CANCEL</button>
+        </div>
+
+        <!-- Label picker modal (31 preset-category labels) -->
+        <div id="label-picker-modal" class="hidden">
+            <div id="label-picker-box">
+                <div class="label-picker-header">
+                    CHOOSE LABEL
+                    <button id="label-picker-close" class="ctrl-btn">X</button>
+                </div>
+                <div class="label-category">SERVICE</div>
+                <div class="label-grid" data-category="service">
+                    <button class="label-pill" data-label="Song 1">Song 1</button>
+                    <button class="label-pill" data-label="Song 2">Song 2</button>
+                    <button class="label-pill" data-label="Song 3">Song 3</button>
+                    <button class="label-pill" data-label="Song 4">Song 4</button>
+                    <button class="label-pill" data-label="Song 5">Song 5</button>
+                    <button class="label-pill" data-label="Intro">Intro</button>
+                    <button class="label-pill" data-label="Verse">Verse</button>
+                    <button class="label-pill" data-label="Chorus">Chorus</button>
+                    <button class="label-pill" data-label="Bridge">Bridge</button>
+                    <button class="label-pill" data-label="Outro">Outro</button>
+                    <button class="label-pill" data-label="Prayer">Prayer</button>
+                    <button class="label-pill" data-label="Sermon">Sermon</button>
+                </div>
+                <div class="label-category">FEEL</div>
+                <div class="label-grid" data-category="feel">
+                    <button class="label-pill" data-label="Warm">Warm</button>
+                    <button class="label-pill" data-label="Bright">Bright</button>
+                    <button class="label-pill" data-label="Dark">Dark</button>
+                    <button class="label-pill" data-label="Airy">Airy</button>
+                    <button class="label-pill" data-label="Wide">Wide</button>
+                    <button class="label-pill" data-label="Deep">Deep</button>
+                    <button class="label-pill" data-label="Soft">Soft</button>
+                    <button class="label-pill" data-label="Big">Big</button>
+                    <button class="label-pill" data-label="Tight">Tight</button>
+                </div>
+                <div class="label-category">SOUND</div>
+                <div class="label-grid" data-category="sound">
+                    <button class="label-pill" data-label="Pad">Pad</button>
+                    <button class="label-pill" data-label="Piano">Piano</button>
+                    <button class="label-pill" data-label="Keys">Keys</button>
+                    <button class="label-pill" data-label="Lead">Lead</button>
+                    <button class="label-pill" data-label="Bass">Bass</button>
+                    <button class="label-pill" data-label="Strings">Strings</button>
+                    <button class="label-pill" data-label="Organ">Organ</button>
+                    <button class="label-pill" data-label="Bells">Bells</button>
+                    <button class="label-pill" data-label="Choir">Choir</button>
+                    <button class="label-pill" data-label="Shimmer">Shimmer</button>
+                </div>
+                <div class="label-grid">
+                    <button class="label-pill label-clear" data-label="">NONE (clear)</button>
+                </div>
             </div>
         </div>
 
@@ -203,6 +270,18 @@
                                 <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc_hard_pan">
                                 <span>WIDE (hard pan + Haas delay)</span>
                             </label>
+                            <label class="setting-checkbox-label" style="margin-left: 2vw;">
+                                <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc_levels_linked">
+                                <span>LINK OSC levels</span>
+                            </label>
+                        </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Haas Delay</span>
+                            <select class="setting-select" data-section="synth_pad" data-param="haas_delay_ms">
+                                <option value="15">15 ms (tight)</option>
+                                <option value="20" selected>20 ms (classic)</option>
+                                <option value="40">40 ms (wide)</option>
+                            </select>
                         </div>
                         <div class="setting-row">
                             <span class="setting-label">OSC1 Pan</span>
@@ -341,11 +420,6 @@
                             <span class="setting-value">25ms</span>
                         </div>
                         <div class="setting-row">
-                            <span class="setting-label">Space</span>
-                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="reverb_space" min="0" max="100" value="0">
-                            <span class="setting-value">0%</span>
-                        </div>
-                        <div class="setting-row">
                             <span class="setting-label">Low Cut (Hz)</span>
                             <input type="range" class="setting-slider" data-section="synth_pad" data-param="reverb_low_cut" min="0" max="1000" value="500" data-hz-min="20" data-hz-max="500">
                             <span class="setting-value">80</span>
@@ -363,11 +437,25 @@
                             </label>
                         </div>
 
-                        <div class="setting-section">SHIMMER</div>
-                        <div class="setting-row">
-                            <span class="setting-label">Shimmer Mix</span>
-                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="shimmer_mix" min="0" max="100" value="35">
-                            <span class="setting-value">0.35</span>
+                        <div class="knob-row">
+                            <div class="knob">
+                                <div class="knob-label">SPACE</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="reverb_space" min="0" max="100" value="0">
+                                <span class="setting-value">0%</span>
+                            </div>
+                            <div class="knob">
+                                <div class="knob-label">SHIMMER</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="shimmer_mix" min="0" max="100" value="35">
+                                <span class="setting-value">0.35</span>
+                            </div>
+                            <div class="knob">
+                                <div class="knob-label">RESO</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="sympathetic_level" min="0" max="1000" value="614">
+                                <span class="setting-value">3.500%</span>
+                            </div>
                         </div>
                     </div>
 
@@ -488,6 +576,16 @@
                             <span class="setting-value">0dB</span>
                         </div>
 
+                        <div class="setting-section">OUTPUT TRIM</div>
+                        <div class="setting-row">
+                            <span class="setting-label">Pre-Limiter Trim</span>
+                            <input type="range" class="setting-slider" data-section="master" data-param="pre_limiter_trim" min="50" max="300" value="200">
+                            <span class="setting-value">2.0x</span>
+                        </div>
+                        <div class="help-text">
+                            Drive into the soft limiter. Lower = cleaner/quieter. Higher = louder, more saturated. Can't clip (tanh).
+                        </div>
+
                         <div class="setting-section">FADERS</div>
                         <div class="help-text">
                             <b>OSC 1</b> — Pad volume. ALT: OSC 2 volume.<br>
@@ -535,6 +633,6 @@
 
     </div>
 
-    <script src="script.js?v=4"></script>
+    <script src="script.js?v=22"></script>
 </body>
 </html>

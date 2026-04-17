@@ -9,11 +9,14 @@ setup(
     include_package_data=True,
     package_data={"": ["ui/*"]},
     install_requires=[
-        "JACK-Client>=0.5.4",
+        # python-jack-client is broken on aarch64 — the C bridge (jack_bridge.so)
+        # replaces it, so don't drag the CFFI dep along.
         "numpy>=1.24.0",
+        "scipy>=1.11.0",
         "websockets>=11.0",
         "pyfluidsynth>=1.3.0",
         "pywebview>=4.0",
+        "psutil>=5.9.0",
     ],
     entry_points={
         "console_scripts": [

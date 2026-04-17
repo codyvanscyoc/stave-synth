@@ -18,7 +18,7 @@ SOUNDFONT_DIR="$HOME/.local/share/stave-synth/soundfonts"
 CONFIG_DIR="$HOME/.config/stave-synth"
 
 # ── Step 1: System dependencies ──
-echo -e "${ORANGE}[1/5]${NC} Installing system dependencies..."
+echo -e "${ORANGE}[1/6]${NC} Installing system dependencies..."
 sudo apt-get update -qq
 sudo apt-get install -y \
     jackd2 \
@@ -36,7 +36,7 @@ sudo apt-get install -y \
     python3-gi-cairo
 
 # ── Step 2: Audio permissions ──
-echo -e "${ORANGE}[2/5]${NC} Configuring audio permissions..."
+echo -e "${ORANGE}[2/6]${NC} Configuring audio permissions..."
 # Configure real-time audio limits
 if ! grep -q "audio.*rtprio" /etc/security/limits.d/audio.conf 2>/dev/null; then
     echo -e "${ORANGE}Setting up real-time audio permissions...${NC}"
@@ -49,15 +49,76 @@ EOF
     echo -e "${GREEN}  Audio permissions configured (re-login may be needed)${NC}"
 fi
 
-# ── Step 3: Build C audio bridge ──
-echo -e "${ORANGE}[3/5]${NC} Building JACK audio bridge..."
+# ── Step 3: System tuning (live-performance stability) ──
+echo -e "${ORANGE}[3/6]${NC} Applying system tuning..."
+
+# CPU governor → performance (prevents audio stutter from clock scaling)
+if [ ! -f /etc/systemd/system/cpu-performance.service ]; then
+    sudo tee /etc/systemd/system/cpu-performance.service > /dev/null << 'EOF'
+[Unit]
+Description=Set CPU governor to performance (audio stability)
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'for c in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > $c; done'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    sudo systemctl daemon-reload
+    sudo systemctl enable cpu-performance.service > /dev/null 2>&1
+    sudo systemctl start cpu-performance.service > /dev/null 2>&1
+    echo -e "${GREEN}  CPU governor locked to performance${NC}"
+else
+    echo -e "${GREEN}  CPU governor service already installed${NC}"
+fi
+
+# Disable screen blanking (DPMS + screensaver) via user autostart
+BLANK_DESKTOP="$HOME/.config/autostart/disable-screen-blank.desktop"
+if [ ! -f "$BLANK_DESKTOP" ]; then
+    mkdir -p "$HOME/.config/autostart"
+    cat > "$BLANK_DESKTOP" << 'EOF'
+[Desktop Entry]
+Type=Application
+Name=Disable screen blanking
+Comment=Keep display always on for live synth use
+Exec=sh -c "xset s off; xset s noblank; xset -dpms"
+Terminal=false
+Hidden=false
+X-GNOME-Autostart-enabled=true
+EOF
+    echo -e "${GREEN}  Screen blanking disabled on login${NC}"
+else
+    echo -e "${GREEN}  Screen blanking autostart already present${NC}"
+fi
+
+# Disable USB autosuspend (prevents MIDI/audio interface dropouts) via kernel cmdline
+CMDLINE="/boot/firmware/cmdline.txt"
+if [ -f "$CMDLINE" ] && ! grep -q "usbcore.autosuspend=-1" "$CMDLINE"; then
+    sudo cp "$CMDLINE" "${CMDLINE}.bak"
+    # cmdline.txt must remain one line — append to end of existing line
+    sudo sed -i 's/$/ usbcore.autosuspend=-1/' "$CMDLINE"
+    echo -e "${GREEN}  USB autosuspend disabled (active after next reboot)${NC}"
+else
+    echo -e "${GREEN}  USB autosuspend already disabled${NC}"
+fi
+# Apply live as well for current session
+for dev in /sys/bus/usb/devices/*/power/control; do
+    [ -w "$dev" ] && echo on | sudo tee "$dev" > /dev/null 2>&1
+done 2>/dev/null
+echo -1 | sudo tee /sys/module/usbcore/parameters/autosuspend > /dev/null 2>&1 || true
+
+# ── Step 4: Build C audio bridge ──
+echo -e "${ORANGE}[4/6]${NC} Building JACK audio bridge..."
 cd "$SCRIPT_DIR/stave_synth"
 gcc -shared -fPIC -O2 -o jack_bridge.so jack_bridge.c -ljack -lpthread
 cd "$SCRIPT_DIR"
 echo -e "${GREEN}  Built jack_bridge.so${NC}"
 
-# ── Step 4: Python dependencies ──
-echo -e "${ORANGE}[4/5]${NC} Installing Python dependencies..."
+# ── Step 5: Python dependencies ──
+echo -e "${ORANGE}[5/6]${NC} Installing Python dependencies..."
 cd "$SCRIPT_DIR"
 
 # Create venv if it doesn't exist
@@ -69,8 +130,8 @@ source venv/bin/activate
 pip install --upgrade pip -q
 pip install -r requirements.txt -q
 
-# ── Step 5: Soundfonts & service ──
-echo -e "${ORANGE}[5/5]${NC} Setting up soundfonts & service..."
+# ── Step 6: Soundfonts & service ──
+echo -e "${ORANGE}[6/6]${NC} Setting up soundfonts & service..."
 mkdir -p "$SOUNDFONT_DIR"
 mkdir -p "$CONFIG_DIR/presets"
 

@@ -5,7 +5,7 @@ Live MIDI synthesizer for Raspberry Pi 5 — worship ambient pad with piano laye
 ## Hardware
 
 - Pi 5 (8GB), Pi OS Trixie (Debian 13)
-- Behringer USB audio interface (PCM2902/Burr-Brown, 16-bit/48kHz)
+- ART USB DI (primary audio out, USB-bus-powered, no galvanic isolation — picks up USB bus noise from Pi; a USB isolator dongle would fix it)
 - TTGK USB-C audio adapter (backup — NOT a BTL amplifier, confirmed proper stereo)
 - Akai MPKmini2 USB MIDI keyboard
 - 5" capacitive DSI touchscreen (800x480, not yet arrived)
@@ -20,7 +20,7 @@ Live MIDI synthesizer for Raspberry Pi 5 — worship ambient pad with piano laye
 
 ## BTL Mode (legacy)
 
-`BTL_MODE = False` in `config.py` — correct for both the Behringer interface and the TTGK adapter (confirmed proper stereo, not BTL). Only set `True` if using a genuine Bridge-Tied Load adapter where headphones hear L - R.
+`BTL_MODE = False` in `config.py` — correct for all common USB audio interfaces (ART USB DI, TTGK USB-C, etc — all confirmed proper stereo, not BTL). Only set `True` if using a genuine Bridge-Tied Load adapter where headphones hear L - R.
 
 ## Build the C bridge
 

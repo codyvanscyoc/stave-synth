@@ -67,6 +67,7 @@
     const pianoBtn = document.getElementById("piano-btn");
     let midiFlashTimeout = null;
     let clipTimeout = null;
+    let linkOscLevels = false;
     const clipIndicator = document.getElementById("clip-indicator");
     const levelDots = document.querySelectorAll(".level-dot");
     let midiLearnActive = false;
@@ -132,6 +133,9 @@
             markPresetLoaded(msg.slot);
         } else if (msg.type === "preset_deleted") {
             markPresetDeleted(msg.slot);
+            setPresetLabel(msg.slot, "");
+        } else if (msg.type === "preset_labeled") {
+            setPresetLabel(msg.slot, msg.label);
         } else if (msg.type === "instrument_mode") {
             instrumentMode = msg.mode;
             updateInstrumentButton();
@@ -193,8 +197,7 @@
             showOutputMenu(msg.outputs);
         } else if (msg.type === "audio_output_set") {
             if (msg.success) {
-                statusIndicator.textContent = msg.name.length > 12
-                    ? msg.name.substring(0, 12) : msg.name;
+                statusIndicator.textContent = shortOutputName(msg.name);
                 document.getElementById("output-menu").classList.add("hidden");
             }
         } else if (msg.type === "cc_map") {
@@ -249,6 +252,8 @@
             // Sync resonance button
             resEnabled = s.synth_pad.sympathetic_enabled ?? false;
             if (resBtn) resBtn.classList.toggle("active", resEnabled);
+            // Sync OSC level link state
+            linkOscLevels = s.synth_pad.osc_levels_linked ?? false;
             updateFreezeDisplay();
             updateDroneDisplay();
 
@@ -258,6 +263,11 @@
             if (osc1Enabled) osc1PreMute = faderValues[0];
             if (osc2Enabled) osc2PreMute = altFaderValues[0];
             updateOscButtons();
+        }
+        if (s.master) {
+            // Sync saturation button
+            satEnabled = s.master.saturation_enabled ?? false;
+            if (satBtn) satBtn.classList.toggle("active", satEnabled);
         }
         if (s.piano) {
             faderValues[1] = s.piano.volume ?? 0.5;
@@ -286,6 +296,7 @@
         }
         if (s.ui) {
             syncPresetSlots(s.ui.preset_saved);
+            syncPresetLabels(s.ui.preset_labels);
         }
 
         updateAllFaders();
@@ -368,6 +379,27 @@
         } else {
             faderValues[id] = normalizedValue;
             altVal = 0;
+        }
+
+        // Mirror OSC1/OSC2 fader values when LINK OSC levels is active
+        if (id === 0 && linkOscLevels) {
+            faderValues[0] = normalizedValue;
+            altFaderValues[0] = normalizedValue;
+        }
+
+        // Keep OSC1/OSC2 button state in sync with current fader values —
+        // if user drags fader above 0 while muted, button should flip to "on"
+        // (and vice versa). Also refresh the "pre-mute" memory to current level.
+        if (id === 0) {
+            var newOsc1 = faderValues[0] > 0;
+            var newOsc2 = altFaderValues[0] > 0;
+            if (newOsc1 !== osc1Enabled || newOsc2 !== osc2Enabled) {
+                osc1Enabled = newOsc1;
+                osc2Enabled = newOsc2;
+                updateOscButtons();
+            }
+            if (faderValues[0] > 0) osc1PreMute = faderValues[0];
+            if (altFaderValues[0] > 0) osc2PreMute = altFaderValues[0];
         }
 
         updateFader(id);
@@ -518,13 +550,172 @@
     }
 
     // ═══ Presets — tap empty=save, tap filled=load, long-press filled=overwrite, double-tap filled=delete confirm ═══
+    // In EDIT mode: tapping a preset opens an action popup (RENAME / DELETE / CANCEL).
     var presetLastTap = {};
     var presetLongTimer = {};
     var presetDeleteSlot = -1; // which slot is showing delete X
+    var presetEditMode = false;
+    var presetLabels = ["", "", "", "", ""];
+    var actionPopupSlot = -1;
+    var labelPickerSlot = -1;
+
+    var presetEditBtn = document.getElementById("preset-edit-btn");
+    var presetLayerBtn = document.getElementById("preset-layer-btn");
+    var actionPopup = document.getElementById("preset-action-popup");
+    var labelPickerModal = document.getElementById("label-picker-modal");
+    var rearrangeSourceSlot = -1;  // slot number picked up for swap, -1 when idle
+
+    // Presets now have 2 layers of 5 slots each (slots 0-4 = L1, slots 5-9 = L2).
+    // The 5 on-screen buttons dynamically remap data-slot when the layer toggles.
+    var currentLayer = 0;  // 0 = L1, 1 = L2
+    var allPresetSaved = [];
+    for (var _i = 0; _i < 10; _i++) allPresetSaved.push(false);
+    presetLabels = [];
+    for (var _j = 0; _j < 10; _j++) presetLabels.push("");
+
+    function applyLayer() {
+        presetBtns.forEach(function (btn, pos) {
+            var slot = pos + currentLayer * 5;
+            btn.dataset.slot = slot;
+            var isSaved = !!allPresetSaved[slot];
+            btn.classList.remove("loaded");
+            btn.classList.toggle("filled", isSaved);
+            btn.classList.toggle("empty", !isSaved);
+            btn.classList.toggle("picked", slot === rearrangeSourceSlot);
+            var span = btn.querySelector(".preset-label");
+            if (span) span.textContent = presetLabels[slot] || "";
+        });
+        presetLayerBtn.textContent = "L" + (currentLayer + 1);
+        presetLayerBtn.classList.toggle("active", currentLayer > 0);
+        hideActionPopup();
+    }
+
+    presetLayerBtn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        currentLayer = (currentLayer + 1) % 2;
+        applyLayer();
+    });
+
+    function setEditMode(on) {
+        presetEditMode = on;
+        presetEditBtn.classList.toggle("active", on);
+        document.getElementById("app").classList.toggle("preset-editing", on);
+        if (!on) {
+            hideActionPopup();
+            hideLabelPicker();
+            cancelRearrange();
+        }
+    }
+
+    function cancelRearrange() {
+        if (rearrangeSourceSlot >= 0) {
+            var btn = btnForSlot(rearrangeSourceSlot);
+            if (btn) btn.classList.remove("picked");
+        }
+        rearrangeSourceSlot = -1;
+    }
+
+    function pickupForRearrange(slot) {
+        cancelRearrange();
+        rearrangeSourceSlot = slot;
+        var btn = btnForSlot(slot);
+        if (btn) btn.classList.add("picked");
+    }
+
+    presetEditBtn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        setEditMode(!presetEditMode);
+    });
+
+    function showActionPopup(slot, anchorEl) {
+        actionPopupSlot = slot;
+        var rect = anchorEl.getBoundingClientRect();
+        actionPopup.classList.remove("hidden");
+        // Position above the preset button, clamped to viewport
+        var popRect = actionPopup.getBoundingClientRect();
+        var left = rect.left + rect.width / 2 - popRect.width / 2;
+        left = Math.max(4, Math.min(window.innerWidth - popRect.width - 4, left));
+        var top = rect.top - popRect.height - 6;
+        if (top < 4) top = rect.bottom + 6;
+        actionPopup.style.left = left + "px";
+        actionPopup.style.top = top + "px";
+    }
+
+    function hideActionPopup() {
+        actionPopup.classList.add("hidden");
+        actionPopupSlot = -1;
+    }
+
+    actionPopup.querySelectorAll(".preset-action").forEach(function (btn) {
+        btn.addEventListener("click", function (e) {
+            e.stopPropagation();
+            var action = btn.dataset.action;
+            var slot = actionPopupSlot;
+            hideActionPopup();
+            if (slot < 0) return;
+            if (action === "rename") {
+                showLabelPicker(slot);
+            } else if (action === "delete") {
+                send({ type: "preset_delete", slot: slot });
+            } else if (action === "rearrange") {
+                pickupForRearrange(slot);
+            }
+        });
+    });
+
+    function showLabelPicker(slot) {
+        labelPickerSlot = slot;
+        labelPickerModal.classList.remove("hidden");
+    }
+
+    function hideLabelPicker() {
+        labelPickerModal.classList.add("hidden");
+        labelPickerSlot = -1;
+    }
+
+    document.getElementById("label-picker-close").addEventListener("click", function (e) {
+        e.stopPropagation();
+        hideLabelPicker();
+    });
+    labelPickerModal.addEventListener("click", function (e) {
+        // Click outside the inner box closes the picker
+        if (e.target === labelPickerModal) hideLabelPicker();
+    });
+    labelPickerModal.querySelectorAll(".label-pill").forEach(function (pill) {
+        pill.addEventListener("click", function (e) {
+            e.stopPropagation();
+            var label = pill.dataset.label;
+            var slot = labelPickerSlot;
+            hideLabelPicker();
+            if (slot < 0) return;
+            send({ type: "preset_label", slot: slot, label: label });
+        });
+    });
+
+    function setPresetLabel(slot, label) {
+        presetLabels[slot] = label || "";
+        // If this slot is currently visible (matches the active layer), update its span
+        var pos = slot - currentLayer * 5;
+        if (pos >= 0 && pos < 5) {
+            var btn = presetBtns[pos];
+            if (btn) {
+                var span = btn.querySelector(".preset-label");
+                if (span) span.textContent = presetLabels[slot];
+            }
+        }
+    }
+
+    function syncPresetLabels(labels) {
+        if (!Array.isArray(labels)) return;
+        for (var i = 0; i < 10; i++) {
+            presetLabels[i] = labels[i] || "";
+        }
+        applyLayer();  // re-render to refresh label spans
+    }
 
     function cancelDeleteConfirm() {
         if (presetDeleteSlot >= 0) {
-            var old = presetBtns[presetDeleteSlot];
+            var old = btnForSlot(presetDeleteSlot);
             if (old) {
                 var x = old.querySelector(".preset-delete-x");
                 if (x) x.remove();
@@ -534,15 +725,18 @@
         presetDeleteSlot = -1;
     }
 
-    presetBtns.forEach(function (btn) {
-        var slot = parseInt(btn.dataset.slot);
+    // Read the CURRENT slot number from the button's data-slot attribute
+    // (not a cached closure value) so layer switching works correctly.
+    function slotOf(btn) { return parseInt(btn.dataset.slot); }
 
+    presetBtns.forEach(function (btn) {
         btn.addEventListener("contextmenu", function (e) { e.preventDefault(); });
 
         btn.addEventListener("pointerdown", function (e) {
             e.preventDefault();  // prevent touch selection/highlight
+            if (presetEditMode) return;
+            var slot = slotOf(btn);
             presetLongTimer[slot] = "armed";
-            // Start long-press timer for overwrite (filled slots only)
             if (btn.classList.contains("filled")) {
                 presetLongTimer[slot] = setTimeout(function () {
                     presetLongTimer[slot] = null;
@@ -553,27 +747,44 @@
         });
 
         btn.addEventListener("pointerup", function (e) {
-            var wasLong = (presetLongTimer[slot] === null);  // long-press fired
+            var slot = slotOf(btn);
+            if (presetEditMode) {
+                // If a preset is "picked up" for rearrange, this tap is the
+                // swap target. Tapping the source again cancels the pickup.
+                if (rearrangeSourceSlot >= 0) {
+                    if (slot === rearrangeSourceSlot) {
+                        cancelRearrange();
+                    } else {
+                        send({ type: "preset_swap",
+                               source: rearrangeSourceSlot,
+                               target: slot });
+                        cancelRearrange();
+                    }
+                    return;
+                }
+                // Otherwise open the action popup on filled slots only
+                if (btn.classList.contains("filled")) {
+                    showActionPopup(slot, btn);
+                }
+                return;
+            }
+
+            var wasLong = (presetLongTimer[slot] === null);
             if (typeof presetLongTimer[slot] === "number") {
                 clearTimeout(presetLongTimer[slot]);
             }
-
             if (wasLong) {
                 presetLongTimer[slot] = undefined;
-                return;  // long-press already handled save
+                return;
             }
             presetLongTimer[slot] = undefined;
 
-            // Handle tap (replaces click handler since we preventDefault on pointerdown)
-
-            // If clicking the delete X
             if (e.target.classList && e.target.classList.contains("preset-delete-x")) {
                 send({ type: "preset_delete", slot: slot });
                 cancelDeleteConfirm();
                 return;
             }
 
-            // If another slot is in delete-confirm mode, cancel it
             if (presetDeleteSlot >= 0 && presetDeleteSlot !== slot) {
                 cancelDeleteConfirm();
             }
@@ -583,13 +794,11 @@
                 return;
             }
 
-            // Double-tap detection on filled slots
             var now = Date.now();
             var last = presetLastTap[slot] || 0;
             presetLastTap[slot] = now;
 
             if (now - last < 400) {
-                // Double-tap — show delete X
                 presetLastTap[slot] = 0;
                 cancelDeleteConfirm();
                 presetDeleteSlot = slot;
@@ -601,7 +810,6 @@
                 return;
             }
 
-            // Single tap on filled — load
             if (presetDeleteSlot === slot) {
                 cancelDeleteConfirm();
                 return;
@@ -611,6 +819,7 @@
         });
 
         btn.addEventListener("pointerleave", function () {
+            var slot = slotOf(btn);
             if (typeof presetLongTimer[slot] === "number") {
                 clearTimeout(presetLongTimer[slot]);
             }
@@ -621,19 +830,35 @@
     // Cancel delete confirm when tapping elsewhere
     document.addEventListener("click", function (e) {
         if (presetDeleteSlot >= 0) {
-            var btn = presetBtns[presetDeleteSlot];
+            var btn = btnForSlot(presetDeleteSlot);
             if (btn && !btn.contains(e.target)) {
                 cancelDeleteConfirm();
             }
         }
+        // Close action popup if clicking outside it (and not a preset button)
+        if (actionPopupSlot >= 0 && !actionPopup.contains(e.target)) {
+            var isPreset = false;
+            for (var i = 0; i < presetBtns.length; i++) {
+                if (presetBtns[i].contains(e.target)) { isPreset = true; break; }
+            }
+            if (!isPreset) hideActionPopup();
+        }
     });
 
+    // Return the on-screen button element for a given slot (0-9), or null if
+    // that slot is not in the currently visible layer.
+    function btnForSlot(slot) {
+        var pos = slot - currentLayer * 5;
+        if (pos < 0 || pos >= 5) return null;
+        return presetBtns[pos];
+    }
+
     function markPresetSaved(slot) {
-        var btn = presetBtns[slot];
+        allPresetSaved[slot] = true;
+        var btn = btnForSlot(slot);
         if (!btn) return;
         btn.classList.remove("empty");
         btn.classList.add("filled", "just-saved");
-        // Clear loaded highlight from others
         presetBtns.forEach(function (b) { b.classList.remove("loaded"); });
         btn.classList.add("loaded");
         loadedPreset = slot;
@@ -642,13 +867,14 @@
 
     function markPresetLoaded(slot) {
         presetBtns.forEach(function (b) { b.classList.remove("loaded"); });
-        var btn = presetBtns[slot];
+        var btn = btnForSlot(slot);
         if (btn) btn.classList.add("loaded");
         loadedPreset = slot;
     }
 
     function markPresetDeleted(slot) {
-        var btn = presetBtns[slot];
+        allPresetSaved[slot] = false;
+        var btn = btnForSlot(slot);
         if (!btn) return;
         btn.classList.remove("filled", "loaded", "delete-confirm");
         btn.classList.add("empty");
@@ -657,15 +883,10 @@
 
     function syncPresetSlots(presetSaved) {
         if (!presetSaved) return;
-        presetBtns.forEach(function (btn, i) {
-            if (presetSaved[i]) {
-                btn.classList.remove("empty");
-                btn.classList.add("filled");
-            } else {
-                btn.classList.remove("filled", "loaded");
-                btn.classList.add("empty");
-            }
-        });
+        for (var i = 0; i < 10; i++) {
+            allPresetSaved[i] = !!presetSaved[i];
+        }
+        applyLayer();
     }
 
     function updateLevelDots(peak) {
@@ -709,7 +930,7 @@
 
     function updateTransposeDisplay() {
         const prefix = transposeValue > 0 ? "+" : "";
-        transposeDisplay.textContent = "T: " + prefix + transposeValue;
+        transposeDisplay.textContent = "T" + prefix + transposeValue;
         transposeUp.classList.toggle("shifted", transposeValue > 0);
         transposeDown.classList.toggle("shifted", transposeValue < 0);
     }
@@ -717,6 +938,13 @@
     // ═══ Panic / Stop ═══
     document.getElementById("panic-btn").addEventListener("click", function () {
         send({ type: "panic" });
+    });
+
+    // ═══ Hidden retro mode — click logo to toggle (dots + grain + amber retint all at once) ═══
+    document.getElementById("logo-btn").addEventListener("click", function () {
+        var on = !document.body.classList.contains("retro-mode");
+        document.body.classList.toggle("retro-mode", on);
+        document.body.classList.toggle("retro-amber", on);
     });
 
     // ═══ Shimmer & Freeze ═══
@@ -768,6 +996,16 @@
         resEnabled = !resEnabled;
         resBtn.classList.toggle("active", resEnabled);
         send({ type: "setting", section: "synth_pad", param: "sympathetic_enabled", value: resEnabled });
+    });
+
+    // ═══ Saturation (SAT button) ═══
+    var satBtn = document.getElementById("sat-btn");
+    var satEnabled = false;
+
+    satBtn.addEventListener("click", function () {
+        satEnabled = !satEnabled;
+        satBtn.classList.toggle("active", satEnabled);
+        send({ type: "setting", section: "master", param: "saturation_enabled", value: satEnabled });
     });
 
     // ═══ Octave Controls ═══
@@ -873,12 +1111,19 @@
                 param === "drive") {
                 sendValue = value / 100;
                 displayValue = Math.round(sendValue * 100) + "%";
-            } else if (param === "reverb_predelay_ms") {
+            } else if (param === "reverb_predelay_ms" || param === "haas_delay_ms") {
                 sendValue = value;
                 displayValue = Math.round(value) + "ms";
             } else if (param === "reverb_wet_gain") {
                 sendValue = value / 100;
                 displayValue = sendValue.toFixed(1) + "x";
+            } else if (param === "pre_limiter_trim") {
+                sendValue = value / 100;
+                displayValue = sendValue.toFixed(2) + "x";
+            } else if (param === "sympathetic_level") {
+                var t = value / 1000;
+                sendValue = t * t * t * 0.15;
+                displayValue = (sendValue * 100).toFixed(3) + "%";
             } else if (param === "unison_detune") {
                 sendValue = value / 1000;
                 displayValue = sendValue.toFixed(3);
@@ -986,10 +1231,14 @@
                 param === "leslie_depth" || param === "click_level" ||
                 param === "drive") {
                 slider.value = value * 100;
-            } else if (param === "reverb_predelay_ms") {
+            } else if (param === "reverb_predelay_ms" || param === "haas_delay_ms") {
                 slider.value = value;
             } else if (param === "reverb_wet_gain") {
                 slider.value = value * 100;
+            } else if (param === "pre_limiter_trim") {
+                slider.value = value * 100;
+            } else if (param === "sympathetic_level") {
+                slider.value = Math.round(Math.cbrt(Math.max(0, value) / 0.15) * 1000);
             } else if (param === "unison_detune") {
                 slider.value = value * 1000;
             } else if (param === "reverb_decay_seconds") {
@@ -1017,10 +1266,14 @@
                     param === "leslie_depth" || param === "click_level" ||
                 param === "drive") {
                     valueEl.textContent = Math.round(value * 100) + "%";
-                } else if (param === "reverb_predelay_ms") {
+                } else if (param === "reverb_predelay_ms" || param === "haas_delay_ms") {
                     valueEl.textContent = Math.round(value) + "ms";
                 } else if (param === "reverb_wet_gain") {
                     valueEl.textContent = value.toFixed(1) + "x";
+                } else if (param === "pre_limiter_trim") {
+                    valueEl.textContent = value.toFixed(2) + "x";
+                } else if (param === "sympathetic_level") {
+                    valueEl.textContent = (value * 100).toFixed(3) + "%";
                 } else if (param === "unison_detune") {
                     valueEl.textContent = value.toFixed(3);
                 } else if (param === "reverb_decay_seconds") {
@@ -1056,7 +1309,67 @@
                 select.value = sectionData[param];
             }
         });
+
+        syncKnobRotations();
     }
+
+    // ═══ Knobs ═══
+    function updateKnobRotation(knob) {
+        var slider = knob.querySelector(".knob-slider");
+        if (!slider) return;
+        var min = parseFloat(slider.min);
+        var max = parseFloat(slider.max);
+        var value = parseFloat(slider.value);
+        var norm = (value - min) / (max - min);
+        norm = Math.max(0, Math.min(1, norm));
+        var angle = -135 + norm * 270;
+        var indicator = knob.querySelector(".knob-indicator");
+        if (indicator) {
+            indicator.style.transform = "rotate(" + angle + "deg)";
+        }
+    }
+
+    function syncKnobRotations() {
+        document.querySelectorAll(".knob").forEach(updateKnobRotation);
+    }
+
+    document.querySelectorAll(".knob").forEach(function (knob) {
+        var slider = knob.querySelector(".knob-slider");
+        if (!slider) return;
+        updateKnobRotation(knob);
+
+        var startY = 0, startValue = 0, dragging = false;
+
+        knob.addEventListener("pointerdown", function (e) {
+            e.preventDefault();
+            dragging = true;
+            startY = e.clientY;
+            startValue = parseFloat(slider.value);
+            knob.setPointerCapture(e.pointerId);
+        });
+
+        knob.addEventListener("pointermove", function (e) {
+            if (!dragging) return;
+            var dy = startY - e.clientY;
+            var range = parseFloat(slider.max) - parseFloat(slider.min);
+            var sensitivity = range / 200;
+            var newValue = startValue + dy * sensitivity;
+            newValue = Math.max(parseFloat(slider.min), Math.min(parseFloat(slider.max), newValue));
+            if (newValue !== parseFloat(slider.value)) {
+                slider.value = newValue;
+                slider.dispatchEvent(new Event("input"));
+                updateKnobRotation(knob);
+            }
+        });
+
+        function endDrag(e) {
+            if (!dragging) return;
+            dragging = false;
+            try { knob.releasePointerCapture(e.pointerId); } catch (err) {}
+        }
+        knob.addEventListener("pointerup", endDrag);
+        knob.addEventListener("pointercancel", endDrag);
+    });
 
     // ═══ MIDI Learn ═══
     function updateMidiLearnUI() {
@@ -1152,6 +1465,23 @@
 
     // ═══ Audio Output Selector ═══
     var outputMenu = document.getElementById("output-menu");
+
+    function shortOutputName(name) {
+        if (!name) return "OUT";
+        var lower = name.toLowerCase();
+        if (lower.indexOf("bluez") >= 0 || lower.indexOf("bluetooth") >= 0) return "BT";
+        if (lower.indexOf("airpod") >= 0) return "PODS";
+        if (lower.indexOf("hdmi") >= 0) return "HDMI";
+        if (lower.indexOf("usb") >= 0) {
+            if (lower.indexOf("art") >= 0) return "ART";
+            if (lower.indexOf("burr") >= 0) return "USB";
+            return "USB";
+        }
+        if (lower.indexOf("headphone") >= 0) return "HPH";
+        // Fallback: strip prefix and take first 5 chars
+        var cleaned = name.replace(/^alsa_output\./, "").replace(/^bluez_output\./, "");
+        return cleaned.substring(0, 5).toUpperCase();
+    }
 
     statusIndicator.addEventListener("click", function (e) {
         e.stopPropagation();

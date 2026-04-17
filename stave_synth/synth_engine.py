@@ -68,8 +68,9 @@ class ADSREnvelope:
     RELEASE = 3
     OFF = 4
 
-    def __init__(self, config: ADSRConfig):
+    def __init__(self, config: ADSRConfig, sample_rate: int = SAMPLE_RATE):
         self.config = config
+        self.sample_rate = sample_rate
         self.stage = self.OFF
         self.level = 0.0
 
@@ -92,7 +93,7 @@ class ADSREnvelope:
             return np.full(n_samples, self.level, dtype=np.float64)
 
         if self.stage == self.ATTACK:
-            rate = 1.0 / max(self.config.attack_ms * SAMPLE_RATE / 1000.0, 1.0)
+            rate = 1.0 / max(self.config.attack_ms * self.sample_rate / 1000.0, 1.0)
             end_level = self.level + rate * n_samples
             if end_level >= 1.0:
                 attack_samples = min(int((1.0 - self.level) / rate) + 1, n_samples)
@@ -110,7 +111,7 @@ class ADSREnvelope:
             return self._decay_block(n_samples)
 
         if self.stage == self.RELEASE:
-            rate = 1.0 / max(self.config.release_ms * SAMPLE_RATE / 1000.0, 1.0)
+            rate = 1.0 / max(self.config.release_ms * self.sample_rate / 1000.0, 1.0)
             factors = (1.0 - rate) ** np.arange(1, n_samples + 1, dtype=np.float64)
             out = self.level * factors
             self.level = out[-1] if n_samples > 0 else self.level
@@ -123,7 +124,7 @@ class ADSREnvelope:
 
     def _decay_block(self, n_samples: int) -> np.ndarray:
         sustain = self.config.sustain_percent / 100.0
-        rate = 1.0 / max(self.config.decay_ms * SAMPLE_RATE / 1000.0, 1.0)
+        rate = 1.0 / max(self.config.decay_ms * self.sample_rate / 1000.0, 1.0)
         diff = self.level - sustain
         factors = (1.0 - rate) ** np.arange(1, n_samples + 1, dtype=np.float64)
         out = sustain + diff * factors
@@ -359,6 +360,58 @@ class BiquadPeakingEQ:
         self.zi[:] = 0.0
 
 
+class BiquadLowShelf:
+    """Low-shelf biquad (RBJ cookbook). Boosts or cuts below a shelf frequency.
+    Used for the SSL-style stereo shuffler: low-shelf on the side signal."""
+
+    def __init__(self, freq_hz: float = 800.0, gain_db: float = 0.0,
+                 q: float = 0.707, sample_rate: int = SAMPLE_RATE):
+        self.sample_rate = sample_rate
+        self.zi = np.zeros(2, dtype=np.float64)
+        self.b = np.zeros(3, dtype=np.float64)
+        self.a = np.zeros(3, dtype=np.float64)
+        self.set_params(freq_hz, gain_db, q)
+
+    def set_params(self, freq_hz: float, gain_db: float, q: float = 0.707):
+        freq_hz = max(20.0, min(freq_hz, self.sample_rate * 0.45))
+        q = max(0.1, min(q, 20.0))
+        A = 10.0 ** (gain_db / 40.0)
+        w0 = TWO_PI * freq_hz / self.sample_rate
+        cos_w0 = np.cos(w0)
+        sin_w0 = np.sin(w0)
+        alpha = sin_w0 / (2.0 * q)
+        two_sqrtA_alpha = 2.0 * np.sqrt(A) * alpha
+
+        a0 = (A + 1.0) + (A - 1.0) * cos_w0 + two_sqrtA_alpha
+        self.b[0] = (A * ((A + 1.0) - (A - 1.0) * cos_w0 + two_sqrtA_alpha)) / a0
+        self.b[1] = (2.0 * A * ((A - 1.0) - (A + 1.0) * cos_w0)) / a0
+        self.b[2] = (A * ((A + 1.0) - (A - 1.0) * cos_w0 - two_sqrtA_alpha)) / a0
+        self.a[0] = 1.0
+        self.a[1] = (-2.0 * ((A - 1.0) + (A + 1.0) * cos_w0)) / a0
+        self.a[2] = ((A + 1.0) + (A - 1.0) * cos_w0 - two_sqrtA_alpha) / a0
+
+    def process(self, samples: np.ndarray) -> np.ndarray:
+        if HAS_SCIPY:
+            out, self.zi = lfilter(self.b, self.a, samples, zi=self.zi)
+            return out
+        n = len(samples)
+        out = np.empty(n, dtype=np.float64)
+        z1, z2 = self.zi[0], self.zi[1]
+        b0, b1, b2 = self.b
+        a1, a2 = self.a[1], self.a[2]
+        for i in range(n):
+            x = samples[i]
+            y = b0 * x + z1
+            z1 = b1 * x - a1 * y + z2
+            z2 = b2 * x - a2 * y
+            out[i] = y
+        self.zi[0], self.zi[1] = z1, z2
+        return out
+
+    def reset(self):
+        self.zi[:] = 0.0
+
+
 class AllPassDiffuser:
     """Schroeder all-pass via block processing — smears transients.
     y[n] = -g*x[n] + x[n-D] + g*y[n-D]
@@ -527,19 +580,6 @@ class FeedbackDelayReverb:
         self._fb_lc_zi = np.zeros((self.n_lines, 2), dtype=np.float64)
         self._fb_hc_zi = np.zeros((self.n_lines, 2), dtype=np.float64)
 
-        # ── Output diffusion: allpass stages on wet output for extra smoothness ──
-        out_ap_config = [
-            (7.3, 0.45), (13.1, 0.40), (5.9, 0.45), (11.7, 0.40),
-        ]
-        self._out_diffusers_l = [
-            AllPassDiffuser(int(t * sample_rate / 1000), gain=g)
-            for t, g in out_ap_config
-        ]
-        self._out_diffusers_r = [
-            AllPassDiffuser(int((t + 2.3) * sample_rate / 1000), gain=g)
-            for t, g in out_ap_config
-        ]
-
         # Freeze state — smoothly ramped to avoid artifacts
         self.frozen = False
         self._normal_feedback = 0.0
@@ -549,8 +589,31 @@ class FeedbackDelayReverb:
         self._freeze_input_gain = 1.0       # 1.0 = normal, 0.0 = frozen (muted input)
         self._freeze_input_target = 1.0
         self._freeze_capture_remaining = 0  # samples left in capture window
-        # ~30ms ramp at 48kHz (per-block exponential smoothing)
-        self._freeze_alpha = 1.0 - np.exp(-1.0 / (0.030 * sample_rate / 128.0))
+        # Freeze/feedback/damp/input-gain smoothing: ~30 ms time constant,
+        # applied once per audio block. Recomputed each block in process() so
+        # it stays correct if JACK/PipeWire buffer size changes from the
+        # original assumption.
+
+    def panic(self):
+        """Silence the reverb instantly: force off freeze and zero every buffer."""
+        self.frozen = False
+        self._feedback_target = self._normal_feedback if self._normal_feedback else self.feedback
+        self._damp_target = self._normal_damp
+        self._freeze_input_gain = 1.0
+        self._freeze_input_target = 1.0
+        self._freeze_capture_remaining = 0
+        self.predelay_buf[:] = 0.0
+        self._er_buf[:] = 0.0
+        for b in self.bufs:
+            b[:] = 0.0
+        for d in self.diffusers:
+            d.x_buf[:] = 0.0
+            d.y_buf[:] = 0.0
+        self._damp_zi[:] = 0.0
+        self._fb_lc_zi[:] = 0.0
+        self._fb_hc_zi[:] = 0.0
+        self.fb_lowcut.reset()
+        self.fb_highcut.reset()
 
     def set_freeze(self, enabled: bool):
         """Freeze the reverb tail — captures input for ~2s then seals the loop."""
@@ -571,10 +634,9 @@ class FeedbackDelayReverb:
             self.frozen = False
 
     def set_space(self, value: float):
-        """Set space parameter (0-1). Affects stereo width, mod depth, output diffusion."""
+        """Stores the Space value (0-1). The actual SSL-style shuffler runs in
+        JackEngine on the full master bus — this attribute is read from there."""
         self.space = max(0.0, min(1.0, value))
-        # Scale mod depths: 1x at space=0, up to 2x at space=1
-        self._mod_depths = self._mod_depths_base * (1.0 + self.space)
 
     def set_predelay(self, ms: float):
         """Set pre-delay in milliseconds (0-150ms)."""
@@ -595,14 +657,18 @@ class FeedbackDelayReverb:
             self._feedback_target = self.feedback
 
     def set_low_cut(self, freq_hz: float):
-        self.low_cut_hz = max(20.0, freq_hz)
+        new_hz = max(20.0, freq_hz)
+        if new_hz == self.low_cut_hz:
+            return
+        self.low_cut_hz = new_hz
         self.fb_lowcut.set_params(self.low_cut_hz, 0.707)
-        self._fb_lc_zi[:] = 0.0
 
     def set_high_cut(self, freq_hz: float):
-        self.high_cut_hz = min(freq_hz, 20000.0)
+        new_hz = min(freq_hz, 20000.0)
+        if new_hz == self.high_cut_hz:
+            return
+        self.high_cut_hz = new_hz
         self.fb_highcut.set_params(self.high_cut_hz, 0.707)
-        self._fb_hc_zi[:] = 0.0
 
     def _write_block(self, buf, data, n):
         end = self.write_pos + n
@@ -623,15 +689,6 @@ class FeedbackDelayReverb:
         pos1 = (pos0 + 1) % bs
         frac = float_pos - np.floor(float_pos)
         return buf[pos0] * (1.0 - frac) + buf[pos1] * frac
-
-    def _er_read(self, delay, n):
-        """Read from early reflection buffer at given delay."""
-        bs = self._er_buf_size
-        start = (self._er_pos - delay) % bs
-        if start + n <= bs:
-            return self._er_buf[start:start + n].copy()
-        first = bs - start
-        return np.concatenate([self._er_buf[start:bs], self._er_buf[:n - first]])
 
     def process(self, samples: np.ndarray) -> np.ndarray:
         """Process stereo (2, n) or mono (n,) input, return stereo (2, n) output."""
@@ -714,8 +771,9 @@ class FeedbackDelayReverb:
             if self._freeze_capture_remaining <= 0:
                 self._freeze_input_target = 0.0  # seal the loop
 
-        # Smoothly ramp feedback/damp/input gain toward targets (freeze crossfade)
-        a_f = self._freeze_alpha
+        # Smoothly ramp feedback/damp/input gain toward targets (freeze crossfade).
+        # Alpha scales with actual block size so it stays ~30 ms regardless of quantum.
+        a_f = 1.0 - np.exp(-n / (0.030 * self.sample_rate))
         self.feedback += a_f * (self._feedback_target - self.feedback)
         self.damp_coeff += a_f * (self._damp_target - self.damp_coeff)
         self._freeze_input_gain += a_f * (self._freeze_input_target - self._freeze_input_gain)
@@ -780,22 +838,6 @@ class FeedbackDelayReverb:
 
         # ── Stereo width enhancement (space-dependent) ──
         # Cross-feed: blend opposite channels for wider image
-        width = self.space
-        if width > 0.0:
-            mid = (wet_l + wet_r) * 0.5
-            side = (wet_l - wet_r) * 0.5
-            # Boost side signal by space amount (up to 2x)
-            side *= (1.0 + width)
-            wet_l = mid + side
-            wet_r = mid - side
-
-        # ── Output diffusion (space-dependent) ──
-        if width > 0.0:
-            for ap in self._out_diffusers_l:
-                wet_l = ap.process(wet_l)
-            for ap in self._out_diffusers_r:
-                wet_r = ap.process(wet_r)
-
         # ── Soft-limit wet taps so FDN energy can't clip ──
         wet_l = np.tanh(wet_l)
         wet_r = np.tanh(wet_r)
@@ -846,8 +888,9 @@ class SynthEngine:
         self.osc1_pan = 0.0   # -1 (full L) to +1 (full R)
         self.osc2_pan = 0.0
         self.osc_hard_pan = False  # shortcut: OSC1 full L, OSC2 full R + Haas
-        self._haas_delay_samples = int(0.015 * sample_rate)  # 15ms
-        self._haas_buf_size = int(0.030 * sample_rate) + 512  # room for 30ms
+        self.haas_delay_ms = 20.0  # user-selectable (15 / 20 / 40 ms)
+        self._haas_delay_samples = int(self.haas_delay_ms * 0.001 * sample_rate)
+        self._haas_buf_size = int(0.050 * sample_rate) + 512  # room for up to 50ms
         self._haas_buf_l = np.zeros(self._haas_buf_size, dtype=np.float64)
         self._haas_buf_r = np.zeros(self._haas_buf_size, dtype=np.float64)
         self._haas_pos = 0
@@ -905,6 +948,9 @@ class SynthEngine:
 
         # Sympathetic resonance: piano notes reinforce the pad subtly
         self.sympathetic_enabled = False
+        self.sympathetic_level = 0.035
+        self._sympathetic_level_cur = 0.035
+        self._sympathetic_suppress = False  # set during preset crossfade to silence resonance
         self._sympathetic_state = {}  # note -> {phase_l, phase_r, gain, target}
 
         # Chord drone: sustained root+fifth an octave below
@@ -917,6 +963,7 @@ class SynthEngine:
         self._drone_fifth_phase = 0.0
         self._drone_gain = 0.0
         self._drone_gain_target = 0.0
+        self._drone_latched = False  # locks drone pitch after first note
 
         self.volume = 0.8
 
@@ -984,14 +1031,21 @@ class SynthEngine:
             oldest = min(self.voices, key=lambda v: v.age)
             self.voices.remove(oldest)
 
+        # Randomize unison starting phases so detuned voices decorrelate from
+        # the first sample — classic supersaw trick. Aligned phases (all 0)
+        # cause audible beating/LFO-phasing when detune is small.
+        n_u = self.unison_voices
+        rand_phases_osc1 = list(np.random.uniform(0.0, TWO_PI, n_u))
+        rand_phases_osc2 = list(np.random.uniform(0.0, TWO_PI, n_u))
+        rand_phases_shim = list(np.random.uniform(0.0, TWO_PI, n_u))
         voice = Voice(
             note=note,
             velocity=velocity,
-            adsr=ADSREnvelope(self.adsr_config),
-            phases=[0.0] * self.unison_voices,
-            osc1_phases=[0.0] * self.unison_voices,
-            osc2_phases=[0.0] * self.unison_voices,
-            shimmer_phases=[0.0] * self.unison_voices,
+            adsr=ADSREnvelope(self.adsr_config, self.sample_rate),
+            phases=[0.0] * n_u,
+            osc1_phases=rand_phases_osc1,
+            osc2_phases=rand_phases_osc2,
+            shimmer_phases=rand_phases_shim,
             age=self._age_counter,
         )
         voice.adsr.trigger()
@@ -1006,6 +1060,53 @@ class SynthEngine:
     def all_notes_off(self):
         for v in self.voices:
             v.adsr.release()
+
+    def panic(self):
+        """Hard-silence everything: kill voices, drone, sympathetic, freeze, flush buffers."""
+        for v in self.voices:
+            v.adsr.stage = ADSREnvelope.OFF
+            v.adsr.level = 0.0
+        self._drone_root_freq = 0.0
+        self._drone_fifth_freq = 0.0
+        self._drone_root_freq_cur = 0.0
+        self._drone_fifth_freq_cur = 0.0
+        self._drone_gain = 0.0
+        self._drone_gain_target = 0.0
+        self._drone_latched = False
+        self._sympathetic_state.clear()
+        self.freeze_enabled = False
+        self.reverb.panic()
+        self._haas_buf_l[:] = 0.0
+        self._haas_buf_r[:] = 0.0
+        self.filter_l.reset()
+        self.filter_r.reset()
+        self.filter2_l.reset()
+        self.filter2_r.reset()
+        self.filter_hp_l.reset()
+        self.filter_hp_r.reset()
+        self.osc1_indep_filter_l.reset()
+        self.osc1_indep_filter_r.reset()
+        self.osc2_indep_filter_l.reset()
+        self.osc2_indep_filter_r.reset()
+        self.reverb_filter_l.reset()
+        self.reverb_filter_r.reset()
+        self.reverb_filter2_l.reset()
+        self.reverb_filter2_r.reset()
+        self._shimmer_hp.reset()
+
+    def sympathetic_fade_out(self):
+        """Set all active sympathetic voices to fade toward zero. Lets held notes
+        re-arm naturally from jack_engine's per-buffer sync after a preset switch."""
+        for st in self._sympathetic_state.values():
+            st["target"] = 0.0
+
+    def sympathetic_set_suppress(self, suppress: bool):
+        """Block sympathetic rendering and re-arm. Used during preset crossfade so
+        held keys don't keep pumping tone into the reverb at changing levels."""
+        self._sympathetic_suppress = bool(suppress)
+        if suppress:
+            for st in self._sympathetic_state.values():
+                st["target"] = 0.0
 
     def set_sympathetic_notes(self, notes: set):
         """Update which piano notes resonate sympathetically (with fade envelopes)."""
@@ -1022,8 +1123,9 @@ class SynthEngine:
                 self._sympathetic_state[n]["target"] = 0.0
 
     def set_drone_chord(self, notes: list):
-        """Set drone from held notes. Lowest = root, +7st = fifth, one octave below."""
-        if not notes:
+        """Latch drone to the lowest held note at first call after enable.
+        Ignored once latched — drone stays put as a pad underneath subsequent playing."""
+        if not notes or self._drone_latched:
             return
         root = min(notes)
         drone_root = max(24, root - 12)
@@ -1031,10 +1133,15 @@ class SynthEngine:
         self._drone_root_freq = 440.0 * (2.0 ** ((drone_root - 69) / 12.0))
         self._drone_fifth_freq = 440.0 * (2.0 ** ((drone_fifth - 69) / 12.0))
         self._drone_gain_target = 0.5
+        self._drone_latched = True
 
     def drone_off(self):
-        """Fade out the drone."""
+        """Fade out the drone and clear latch so next enable re-picks the root.
+        Zero the smoothed freqs so the next enable snaps to the new root (no glide)."""
         self._drone_gain_target = 0.0
+        self._drone_latched = False
+        self._drone_root_freq_cur = 0.0
+        self._drone_fifth_freq_cur = 0.0
 
     def render(self, n_samples: int) -> np.ndarray:
         if n_samples == 0:
@@ -1102,6 +1209,33 @@ class SynthEngine:
         osc2_accum_r = self._osc2_accum_r[:n_samples]
         osc2_accum_r[:] = 0
 
+        # ── Per-unison values, precomputed once per block (same for every voice) ──
+        # Detune multipliers and stereo spread offsets
+        if n_uni > 1:
+            u_arr = np.arange(n_uni, dtype=np.float64)
+            detune_factor = 2.0 * u_arr / (n_uni - 1) - 1.0  # -1 .. +1
+            detune_mult = 2.0 ** (self.unison_detune * detune_factor / 12.0)
+            uni_pan_arr = detune_factor * spread
+        else:
+            detune_mult = np.ones(1, dtype=np.float64)
+            uni_pan_arr = np.zeros(1, dtype=np.float64)
+
+        # Per-unison equal-power pan gains for OSC1
+        _pan1 = np.clip(o1_pan + uni_pan_arr, -1.0, 1.0)
+        _pan1_shaped = np.sign(_pan1) * np.abs(_pan1) ** 0.7
+        _angle1 = (_pan1_shaped + 1.0) * 0.25 * np.pi
+        o1_gl_arr = np.cos(_angle1) * 1.4142135623730951
+        o1_gr_arr = np.sin(_angle1) * 1.4142135623730951
+        # Per-unison equal-power pan gains for OSC2
+        _pan2 = np.clip(o2_pan + uni_pan_arr, -1.0, 1.0)
+        _pan2_shaped = np.sign(_pan2) * np.abs(_pan2) ** 0.7
+        _angle2 = (_pan2_shaped + 1.0) * 0.25 * np.pi
+        o2_gl_arr = np.cos(_angle2) * 1.4142135623730951
+        o2_gr_arr = np.sin(_angle2) * 1.4142135623730951
+
+        osc1_oct_mult = 2.0 ** self.osc1_octave
+        osc2_oct_mult = 2.0 ** self.osc2_octave
+
         voice_idx = 0
         for voice in self.voices:
             if not voice.is_active():
@@ -1119,8 +1253,7 @@ class SynthEngine:
                 continue
 
             base_freq = 440.0 * (2.0 ** ((voice.note - 69) / 12.0))
-            osc1_oct_mult = 2.0 ** self.osc1_octave
-            osc2_oct_mult = 2.0 ** self.osc2_octave
+            base_inc = TWO_PI * base_freq / self.sample_rate
             osc1_l = self._voice_osc1_l[voice_idx, :n_samples]
             osc1_l[:] = 0
             osc1_r = self._voice_osc1_r[voice_idx, :n_samples]
@@ -1132,53 +1265,39 @@ class SynthEngine:
             voice_shimmer = self._voice_shimmer[voice_idx, :n_samples]
             voice_shimmer[:] = 0
 
-            for u in range(n_uni):
-                if n_uni > 1:
-                    detune_st = self.unison_detune * (
-                        2.0 * u / (n_uni - 1) - 1.0
-                    )
-                    uni_pan = (2.0 * u / (n_uni - 1) - 1.0) * spread
-                else:
-                    detune_st = 0.0
-                    uni_pan = 0.0
+            # Per-unison phase increments for this voice (n_uni,)
+            osc1_inc_per_u = base_inc * detune_mult * osc1_oct_mult
+            osc2_inc_per_u = base_inc * detune_mult * osc2_oct_mult
+            # Shimmer: octave-up; detune still applies so unison voices fan out at top too
+            shim_inc_per_u = base_inc * 2.0 * detune_mult
 
-                freq = base_freq * (2.0 ** (detune_st / 12.0))
-                base_inc = TWO_PI * freq / self.sample_rate
+            if render_osc1:
+                uni_starts = np.asarray(voice.osc1_phases[:n_uni], dtype=np.float64)
+                ph_2d = uni_starts[:, None] + osc1_inc_per_u[:, None] * indices[None, :]
+                wave_2d = generate_waveform(osc1_wf, ph_2d) * osc1_b
+                osc1_l += (wave_2d * o1_gl_arr[:, None]).sum(axis=0)
+                osc1_r += (wave_2d * o1_gr_arr[:, None]).sum(axis=0)
+                # Phase wrap-and-store
+                for u in range(n_uni):
+                    voice.osc1_phases[u] = float(ph_2d[u, -1]) % TWO_PI
 
-                if render_osc1:
-                    pan1 = max(-1.0, min(1.0, o1_pan + uni_pan))
-                    pan1_shaped = np.sign(pan1) * abs(pan1) ** 0.7
-                    angle1 = (pan1_shaped + 1.0) * 0.25 * np.pi
-                    o1_gl = np.cos(angle1) * 1.4142135623730951
-                    o1_gr = np.sin(angle1) * 1.4142135623730951
-                    osc1_inc = base_inc * osc1_oct_mult
-                    osc1_ph = voice.osc1_phases[u] + osc1_inc * indices
-                    osc1_wave = generate_waveform(osc1_wf, osc1_ph)
-                    osc1_wave *= osc1_b
-                    osc1_l += osc1_wave * o1_gl
-                    osc1_r += osc1_wave * o1_gr
-                    voice.osc1_phases[u] = osc1_ph[-1] % TWO_PI
+            if render_osc2:
+                uni_starts = np.asarray(voice.osc2_phases[:n_uni], dtype=np.float64)
+                ph_2d = uni_starts[:, None] + osc2_inc_per_u[:, None] * indices[None, :]
+                wave_2d = generate_waveform(osc2_wf, ph_2d) * osc2_b
+                osc2_l += (wave_2d * o2_gl_arr[:, None]).sum(axis=0)
+                osc2_r += (wave_2d * o2_gr_arr[:, None]).sum(axis=0)
+                for u in range(n_uni):
+                    voice.osc2_phases[u] = float(ph_2d[u, -1]) % TWO_PI
 
-                if render_osc2:
-                    pan2 = max(-1.0, min(1.0, o2_pan + uni_pan))
-                    pan2_shaped = np.sign(pan2) * abs(pan2) ** 0.7
-                    angle2 = (pan2_shaped + 1.0) * 0.25 * np.pi
-                    o2_gl = np.cos(angle2) * 1.4142135623730951
-                    o2_gr = np.sin(angle2) * 1.4142135623730951
-                    osc2_inc = base_inc * osc2_oct_mult
-                    osc2_ph = voice.osc2_phases[u] + osc2_inc * indices
-                    osc2_wave = generate_waveform(osc2_wf, osc2_ph)
-                    osc2_wave *= osc2_b
-                    osc2_l += osc2_wave * o2_gl
-                    osc2_r += osc2_wave * o2_gr
-                    voice.osc2_phases[u] = osc2_ph[-1] % TWO_PI
-
-                if render_shimmer:
-                    shim_inc = base_inc * 2.0
-                    shim_ph = voice.shimmer_phases[u] + shim_inc * indices
-                    np.sin(shim_ph, out=shim_ph)
-                    voice_shimmer += shim_ph
-                    voice.shimmer_phases[u] = (voice.shimmer_phases[u] + shim_inc * n_samples) % TWO_PI
+            if render_shimmer:
+                uni_starts = np.asarray(voice.shimmer_phases[:n_uni], dtype=np.float64)
+                shim_2d = uni_starts[:, None] + shim_inc_per_u[:, None] * indices[None, :]
+                voice_shimmer += np.sin(shim_2d).sum(axis=0)
+                # Advance phases by full block length for consistent tracking
+                new_phases = (uni_starts + shim_inc_per_u * n_samples) % TWO_PI
+                for u in range(n_uni):
+                    voice.shimmer_phases[u] = float(new_phases[u])
 
             scale = (1.0 / max(n_uni, 1)) * (1.0 + 0.15 * (n_uni - 1)) * env * voice.velocity
             osc1_l *= scale
@@ -1379,36 +1498,55 @@ class SynthEngine:
 
         # Sympathetic resonance: piano notes generate subtle tones into reverb
         # Stereo detuned (L/R ~5 cents apart), frequency rolloff above C5,
-        # smooth fade envelopes to avoid pops on note-off
-        if self.sympathetic_enabled and self._sympathetic_state:
-            sym_level = 0.035
-            # Exponential gain ramp: vectorized, ~150ms time constant
+        # smooth fade envelopes to avoid pops on note-off.
+        # Batched across held notes: one sin call per channel instead of N,
+        # and shared exponential-decay ramp factors computed once per block.
+        if self.sympathetic_enabled and not self._sympathetic_suppress and self._sympathetic_state:
+            self._sympathetic_level_cur += alpha_s * (self.sympathetic_level - self._sympathetic_level_cur)
+            sym_level = self._sympathetic_level_cur
             decay_rate = np.exp(-1.0 / (0.15 * self.sample_rate))
+            # Shared across all entries: exponential ramp factors over the block
+            ramp_factors = decay_rate ** indices
+
+            notes_list = list(self._sympathetic_state.keys())
+            N = len(notes_list)
+            freqs = np.empty(N, dtype=np.float64)
+            tgts = np.empty(N, dtype=np.float64)
+            g0s = np.empty(N, dtype=np.float64)
+            ph_l_init = np.empty(N, dtype=np.float64)
+            ph_r_init = np.empty(N, dtype=np.float64)
+            for i, note in enumerate(notes_list):
+                st = self._sympathetic_state[note]
+                freqs[i] = 440.0 * 2.0 ** ((note - 69) / 12.0)
+                tgts[i] = st["target"]
+                g0s[i] = st["gain"]
+                ph_l_init[i] = st["phase_l"]
+                ph_r_init[i] = st["phase_r"]
+
+            rolloffs = np.minimum(1.0, 523.0 / np.maximum(freqs, 523.0))
+            gain_ramps = tgts[:, None] + (g0s - tgts)[:, None] * ramp_factors[None, :]
+            final_gains = gain_ramps[:, -1]
+
+            inc_l = TWO_PI * freqs / self.sample_rate
+            inc_r = TWO_PI * (freqs * 1.003) / self.sample_rate
+            ph_l_2d = ph_l_init[:, None] + inc_l[:, None] * indices[None, :]
+            ph_r_2d = ph_r_init[:, None] + inc_r[:, None] * indices[None, :]
+            g_scaled = gain_ramps * (sym_level * rolloffs)[:, None]
+
+            reverb_in_l += (np.sin(ph_l_2d) * g_scaled).sum(axis=0)
+            reverb_in_r += (np.sin(ph_r_2d) * g_scaled).sum(axis=0)
+
             dead_sym = []
-            for note, st in self._sympathetic_state.items():
-                freq = 440.0 * (2.0 ** ((note - 69) / 12.0))
-                rolloff = min(1.0, 523.0 / max(freq, 523.0))
-                tgt = st["target"]
-                g0 = st["gain"]
-                diff = g0 - tgt
-                # Vectorized exponential decay toward target
-                ramp_factors = decay_rate ** np.arange(1, n_samples + 1, dtype=np.float64)
-                gain_ramp = tgt + diff * ramp_factors
-                st["gain"] = float(gain_ramp[-1])
-                if st["gain"] < 0.001 and tgt <= 0:
+            for i, note in enumerate(notes_list):
+                st = self._sympathetic_state[note]
+                st["gain"] = float(final_gains[i])
+                if final_gains[i] < 0.001 and tgts[i] <= 0:
                     dead_sym.append(note)
-                    continue
-                inc_l = TWO_PI * freq / self.sample_rate
-                inc_r = TWO_PI * (freq * 1.003) / self.sample_rate
-                ph_l = st["phase_l"] + inc_l * indices
-                ph_r = st["phase_r"] + inc_r * indices
-                g_scaled = gain_ramp * (sym_level * rolloff)
-                reverb_in_l += np.sin(ph_l) * g_scaled
-                reverb_in_r += np.sin(ph_r) * g_scaled
-                st["phase_l"] = float(ph_l[-1]) % TWO_PI
-                st["phase_r"] = float(ph_r[-1]) % TWO_PI
-            for n in dead_sym:
-                del self._sympathetic_state[n]
+                else:
+                    st["phase_l"] = float(ph_l_2d[i, -1]) % TWO_PI
+                    st["phase_r"] = float(ph_r_2d[i, -1]) % TWO_PI
+            for note in dead_sym:
+                del self._sympathetic_state[note]
 
         np.tanh(reverb_in_l, out=reverb_in_l)
         np.tanh(reverb_in_r, out=reverb_in_r)
@@ -1461,12 +1599,14 @@ class SynthEngine:
             new_count = max(1, min(5, int(params["unison_voices"])))
             if new_count != self.unison_voices:
                 self.unison_voices = new_count
-                # Resize phase arrays on all active voices
+                # Resize phase arrays on all active voices. New slots get
+                # random starting phases (same decorrelation trick as note_on)
+                # so bumping unison mid-note doesn't cause phase-aligned beating.
                 for v in self.voices:
                     while len(v.osc1_phases) < new_count:
-                        v.osc1_phases.append(v.osc1_phases[0] if v.osc1_phases else 0.0)
-                        v.osc2_phases.append(v.osc2_phases[0] if v.osc2_phases else 0.0)
-                        v.shimmer_phases.append(0.0)
+                        v.osc1_phases.append(float(np.random.uniform(0.0, TWO_PI)))
+                        v.osc2_phases.append(float(np.random.uniform(0.0, TWO_PI)))
+                        v.shimmer_phases.append(float(np.random.uniform(0.0, TWO_PI)))
                     v.osc1_phases = v.osc1_phases[:new_count]
                     v.osc2_phases = v.osc2_phases[:new_count]
                     v.shimmer_phases = v.shimmer_phases[:new_count]
@@ -1480,6 +1620,10 @@ class SynthEngine:
             self.osc2_pan = max(-1.0, min(1.0, float(params["osc2_pan"])))
         if "osc_hard_pan" in params:
             self.osc_hard_pan = bool(params["osc_hard_pan"])
+        if "haas_delay_ms" in params:
+            ms = max(5.0, min(40.0, float(params["haas_delay_ms"])))
+            self.haas_delay_ms = ms
+            self._haas_delay_samples = int(ms * 0.001 * self.sample_rate)
         if "volume" in params:
             self.volume = float(params["volume"])
 
@@ -1508,6 +1652,9 @@ class SynthEngine:
                 if slope == 12:
                     self.filter2_l.reset()
                     self.filter2_r.reset()
+                # Invalidate coefficient cache so filter2 picks up the current
+                # cutoff on the next render when switching 12 → 24.
+                self._filter_cutoff_last_set = -1.0
         if "filter_highpass_hz" in params:
             self.filter_highpass_hz = max(20.0, min(2000.0, float(params["filter_highpass_hz"])))
         if "osc1_filter_enabled" in params:
@@ -1534,7 +1681,11 @@ class SynthEngine:
         if "reverb_predelay_ms" in params:
             self.reverb.set_predelay(float(params["reverb_predelay_ms"]))
         if "reverb_filter_enabled" in params:
+            was = self.reverb_filter_enabled
             self.reverb_filter_enabled = bool(params["reverb_filter_enabled"])
+            # Invalidate cache so reverb filters pick up current cutoff on enable
+            if not was and self.reverb_filter_enabled:
+                self._filter_cutoff_last_set = -1.0
         if "shimmer_enabled" in params:
             self.shimmer_enabled = bool(params["shimmer_enabled"])
         if "shimmer_mix" in params:
@@ -1544,6 +1695,8 @@ class SynthEngine:
             self.reverb.set_freeze(self.freeze_enabled)
         if "sympathetic_enabled" in params:
             self.sympathetic_enabled = bool(params["sympathetic_enabled"])
+        if "sympathetic_level" in params:
+            self.sympathetic_level = max(0.0, min(0.15, float(params["sympathetic_level"])))
         if "drone_enabled" in params:
             self.drone_enabled = bool(params["drone_enabled"])
             if not self.drone_enabled:
@@ -1583,5 +1736,7 @@ class SynthEngine:
             "shimmer_enabled": self.shimmer_enabled,
             "shimmer_mix": self.shimmer_mix,
             "freeze_enabled": self.freeze_enabled,
+            "sympathetic_enabled": self.sympathetic_enabled,
+            "sympathetic_level": self.sympathetic_level,
             "volume": self.volume,
         }

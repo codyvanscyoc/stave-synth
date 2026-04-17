@@ -139,9 +139,6 @@ class OrganEngine:
         # Pre-allocated click noise (band-limited)
         self._click_sample = self._generate_click_sample(sample_rate)
 
-        # Crosstalk noise generator (deterministic per-block for consistency)
-        self._crosstalk_rng = np.random.default_rng(7)
-
     def _generate_click_sample(self, sample_rate: int) -> np.ndarray:
         """Generate the B3 key-click sample: filtered noise with fast decay."""
         click_len = int(0.003 * sample_rate)  # 3ms

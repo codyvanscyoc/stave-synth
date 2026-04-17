@@ -14,9 +14,9 @@ import time
 import numpy as np
 
 from .synth_engine import (SynthEngine, BiquadLowpass, BiquadHighpass,
-                           BiquadPeakingEQ, OnePole6dBHighpass,
+                           BiquadPeakingEQ, BiquadLowShelf, OnePole6dBHighpass,
                            fader_to_amplitude, blend_to_amplitude)
-from .config import SAMPLE_RATE, BUFFER_SIZE, BTL_MODE
+from .config import SAMPLE_RATE, BTL_MODE
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ class JackEngine:
 
         # Master volume and transpose (set from outside)
         self._master_volume = 0.85
-        self.pre_gain = 1.5  # pre-gain into limiter — mild boost before tanh
+        self.pre_gain = 2.0  # pre-gain into limiter — drive into tanh for louder sustained material
         self.transpose = 0
         self.piano_octave = 0  # -3 to +3 octaves for piano
 
@@ -87,6 +87,18 @@ class JackEngine:
                                BiquadHighpass(80.0, 0.707, SAMPLE_RATE)]
         self._master_hp24_r = [BiquadHighpass(80.0, 0.707, SAMPLE_RATE),
                                BiquadHighpass(80.0, 0.707, SAMPLE_RATE)]
+
+        # SSL Fusion-style stereo shuffler (Blumlein) — low-shelf on side signal.
+        # Crossover 250 Hz: inside SSL's documented 40-400 Hz range, targets
+        # only true bass so low-mid body (400 Hz-1 kHz) isn't pumped by the
+        # reverb's slow internal modulation. Runs pre-EQ/pre-low-cut.
+        self._shuffler_shelf = BiquadLowShelf(250.0, 0.0, 0.707, SAMPLE_RATE)
+        self._shuffler_space_last = -1.0
+
+        # Saturation (SAT button): optional asymmetric drive before the tanh
+        # soft limiter. Off by default — tanh alone is the clean path.
+        self.saturation_enabled = False
+        self._sat_scratch = np.empty((2, 512), dtype=np.float64)
 
         # Debug counters
         self._callback_count = 0
@@ -174,6 +186,8 @@ class JackEngine:
         bs = self._bridge.bridge_get_buffer_size()
         sr = self._bridge.bridge_get_sample_rate()
         block_time = bs / sr
+        consecutive_errors = 0
+        MAX_CONSECUTIVE_ERRORS = 20
 
         while self.running:
             try:
@@ -186,10 +200,11 @@ class JackEngine:
                 fill = self._bridge.bridge_get_ring_fill()
 
                 if fill < 4:
-                    # Update sympathetic resonance notes from piano
-                    if self.synth.sympathetic_enabled:
-                        self.synth.set_sympathetic_notes(self._piano_notes_active)
-                    # Update drone chord from held pad notes
+                    # Snapshot note sets — the MIDI thread mutates these
+                    # concurrently, and iterating live sets would raise a
+                    # RuntimeError mid-render that gets swallowed silently.
+                    if self.synth.sympathetic_enabled and not self.synth._sympathetic_suppress:
+                        self.synth.set_sympathetic_notes(self._piano_notes_active.copy())
                     if self.synth.drone_enabled and self._pad_notes_active:
                         self.synth.set_drone_chord(list(self._pad_notes_active))
 
@@ -217,6 +232,20 @@ class JackEngine:
 
                         stereo[0] += piano[0]
                         stereo[1] += piano[1]
+
+                    # ── SSL-style stereo shuffler (pre-EQ/pre-cut) ──
+                    # Split into mid/side, boost side below 800Hz with low-shelf.
+                    # Opens the low end of the stereo image without phasey
+                    # highs or mono-collapse risk.
+                    space = self.synth.reverb.space
+                    if space > 0.001:
+                        if abs(space - self._shuffler_space_last) > 0.005:
+                            self._shuffler_shelf.set_params(250.0, 10.0 * space, 0.707)
+                            self._shuffler_space_last = space
+                        mid = (stereo[0] + stereo[1]) * 0.5
+                        side = self._shuffler_shelf.process((stereo[0] - stereo[1]) * 0.5)
+                        stereo[0] = mid + side
+                        stereo[1] = mid - side
 
                     # Master EQ (configurable 3-band parametric)
                     if self._master_eq_active:
@@ -246,7 +275,17 @@ class JackEngine:
                     if pre_peak > self._peak_output:
                         self._peak_output = pre_peak
 
-                    # Soft limiter (tanh) on both channels
+                    # Optional asymmetric drive (SAT button) — injects 2nd
+                    # harmonic for tape/transformer-style warmth. Skipped when
+                    # off so the limiter stays purely clean tanh.
+                    if self.saturation_enabled:
+                        scratch = self._sat_scratch[:, :bs]
+                        np.abs(stereo, out=scratch)
+                        scratch *= 0.09
+                        stereo *= 1.01
+                        stereo += scratch
+
+                    # Soft limiter (tanh) — clean when SAT is off
                     np.tanh(stereo, out=stereo)
 
                     left_f32 = stereo[0].astype(np.float32)
@@ -262,11 +301,25 @@ class JackEngine:
                     # Ring is full enough — sleep briefly
                     time.sleep(block_time * 0.5)
 
+                # Reset the consecutive-error counter on a successful pass
+                consecutive_errors = 0
+
             except Exception as e:
                 self._last_error = str(e)
                 import traceback
                 self._last_traceback = traceback.format_exc()
                 logger.error("Render error: %s", e)
+                consecutive_errors += 1
+                # Sleep one block so we don't burn CPU spinning on the error
+                time.sleep(block_time)
+                # If we've been failing for a while, die so systemd restarts us
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                    logger.critical(
+                        "Render loop failed %d blocks in a row — exiting "
+                        "for systemd restart. Last error: %s",
+                        consecutive_errors, e,
+                    )
+                    os._exit(1)
 
     def _midi_loop(self):
         """Read MIDI events from the C bridge and dispatch.
@@ -399,6 +452,15 @@ class JackEngine:
         self._master_eq_active = any(
             abs(float(b.get("gain_db", 0.0))) > 0.01 for b in bands
         )
+
+    def panic(self):
+        """Clear sustain pedal, note-maps, and active-note sets so no ghost state remains."""
+        self._sustain_on = False
+        self._physically_held.clear()
+        self._sustained_notes.clear()
+        self._note_map.clear()
+        self._pad_notes_active.clear()
+        self._piano_notes_active.clear()
 
     def get_and_reset_peak(self) -> float:
         """Return post-limiter peak level. Reflects actual output after tanh + master volume."""

@@ -1,6 +1,5 @@
 """FluidSynth player: manages FluidSynth for piano/e-piano soundfont playback."""
 
-import ctypes
 import logging
 import math
 import threading
@@ -15,21 +14,6 @@ import numpy as np
 from pathlib import Path
 
 from .config import SOUNDFONT_DIR, SAMPLE_RATE
-
-# FluidSynth generator IDs for direct filter control
-GEN_FILTERFC = 8   # Filter cutoff in cents (from 8.176 Hz)
-GEN_FILTERQ = 9    # Filter Q (centibels of attenuation)
-
-# Load libfluidsynth for set_gen (not exposed by pyfluidsynth)
-try:
-    _fluidlib = ctypes.CDLL("libfluidsynth.so.3")
-    _fluidlib.fluid_synth_set_gen.argtypes = [
-        ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_float
-    ]
-    _fluidlib.fluid_synth_set_gen.restype = ctypes.c_int
-    _HAS_SET_GEN = True
-except (OSError, AttributeError):
-    _HAS_SET_GEN = False
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +66,6 @@ class FluidSynthPlayer:
         self._render_count = 0
         self._active_notes = 0  # tracks held notes for render skip optimization
         self._silent_blocks = 0  # count consecutive silent blocks after last note-off
-        self._last_render_peak = 0.0
         self._last_raw_peak = 0
 
         # Compressor state
@@ -172,7 +155,7 @@ class FluidSynthPlayer:
     def note_on(self, note: int, velocity: float):
         """Play a note."""
         if not self.enabled or self.fs is None:
-            logger.warning("note_on BLOCKED: enabled=%s, fs=%s", self.enabled, self.fs is not None)
+            logger.debug("note_on skipped (enabled=%s, fs=%s)", self.enabled, self.fs is not None)
             return
         vel_midi = max(1, min(127, int(velocity * 127)))
         self._note_on_count += 1

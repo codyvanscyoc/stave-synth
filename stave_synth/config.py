@@ -13,7 +13,6 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 
 # Audio
 SAMPLE_RATE = 48000
-BUFFER_SIZE = 128
 BIT_DEPTH = 24
 
 # Network
@@ -50,6 +49,8 @@ DEFAULT_STATE = {
         "osc1_pan": 0.0,
         "osc2_pan": 0.0,
         "osc_hard_pan": False,
+        "osc_levels_linked": False,
+        "haas_delay_ms": 20.0,
         "adsr": {
             "attack_ms": 200,
             "decay_ms": 1500,
@@ -78,6 +79,7 @@ DEFAULT_STATE = {
         "shimmer_mix": 0.5,
         "freeze_enabled": False,
         "sympathetic_enabled": False,
+        "sympathetic_level": 0.035,
         "drone_enabled": False,
         "volume": 0.8,
         "osc1_octave": 0,
@@ -125,10 +127,13 @@ DEFAULT_STATE = {
         "eq_lowcut_enabled": False,
         "eq_lowcut_hz": 80,
         "eq_lowcut_slope": 12,
+        "pre_limiter_trim": 2.0,
+        "saturation_enabled": False,
     },
     "midi_cc_map": {},
     "ui": {
-        "preset_saved": [False, False, False, False, False],
+        "preset_saved": [False] * 10,
+        "preset_labels": [""] * 10,
         "preset_colors": [
             "#00D4AA",
             "#FFB020",
@@ -160,14 +165,26 @@ def _deep_merge(base: dict, override: dict) -> dict:
 def load_state():
     """Load current state from disk, merged with defaults so new keys exist."""
     defaults = json.loads(json.dumps(DEFAULT_STATE))
+    state = defaults
     if STATE_FILE.exists():
         try:
             with open(STATE_FILE) as f:
                 saved = json.load(f)
-            return _deep_merge(defaults, saved)
+            state = _deep_merge(defaults, saved)
         except (json.JSONDecodeError, OSError):
             pass
-    return defaults
+
+    # Migration: pad preset arrays if they're shorter than current default
+    # (handles users upgrading from 5-slot → 10-slot layout).
+    ui = state.setdefault("ui", {})
+    for key, filler in (("preset_saved", False), ("preset_labels", "")):
+        arr = ui.get(key, [])
+        if not isinstance(arr, list):
+            arr = []
+        if len(arr) < 10:
+            arr = list(arr) + [filler] * (10 - len(arr))
+            ui[key] = arr
+    return state
 
 
 def save_state(state):

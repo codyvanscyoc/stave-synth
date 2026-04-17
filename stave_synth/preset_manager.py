@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class PresetManager:
     """Manages preset persistence — save, load, list, and label editing."""
 
-    def __init__(self, num_slots: int = 5):
+    def __init__(self, num_slots: int = 10):
         self.num_slots = num_slots
         ensure_dirs()
 

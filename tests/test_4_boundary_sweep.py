@@ -79,8 +79,6 @@ SWEEP = [
     ("piano",     "comp_threshold_db",  [-40.0, -20.0, 0.0, 10.0]),
     ("piano",     "comp_ratio",         [1.0, 2.0, 10.0, 100.0, 0.5, -1.0]),
     ("piano",     "comp_makeup_db",     [0.0, 6.0, 24.0, 60.0]),
-    ("piano",     "eq_bass_db",         [-24.0, 0.0, 24.0]),
-    ("piano",     "eq_treble_db",       [-24.0, 0.0, 24.0]),
 ]
 
 FADER_MSGS = [

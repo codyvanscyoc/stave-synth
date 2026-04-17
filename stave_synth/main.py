@@ -28,8 +28,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-UI_DIR = Path(__file__).parent.parent / "ui"
-
 
 def ensure_jack_running():
     """Start JACK server if not already running, targeting USB audio."""
@@ -101,6 +99,10 @@ class StaveSynth:
         self._running = False
         self._autosave_thread = None
 
+        # Preset crossfade (ramps numeric params; discrete params snap)
+        self._crossfade_thread = None
+        self._crossfade_cancel = threading.Event()
+
         # MIDI CC learn mode (accessed from MIDI thread + WS thread, needs lock)
         self._midi_learn_lock = threading.Lock()
         self._midi_learn_active = False
@@ -129,6 +131,10 @@ class StaveSynth:
             return self._handle_preset_save(msg)
         elif msg_type == "preset_delete":
             return self._handle_preset_delete(msg)
+        elif msg_type == "preset_label":
+            return self._handle_preset_label(msg)
+        elif msg_type == "preset_swap":
+            return self._handle_preset_swap(msg)
         elif msg_type == "transpose":
             return self._handle_transpose(msg)
         elif msg_type == "panic":
@@ -218,16 +224,27 @@ class StaveSynth:
         alt = msg.get("alt", False)
 
         if fader_id == 0:  # OSC 1 volume / OSC 2 volume (alt)
+            linked = bool(self.state["synth_pad"].get("osc_levels_linked", False))
             if not alt:
                 osc_max = self.state["synth_pad"].get("osc1_max", 1.0)
                 scaled = value * osc_max
                 self.state["synth_pad"]["osc1_blend"] = scaled
                 self.synth.osc1_blend = scaled
+                if linked:
+                    osc2_max = self.state["synth_pad"].get("osc2_max", 1.0)
+                    scaled2 = value * osc2_max
+                    self.state["synth_pad"]["osc2_blend"] = scaled2
+                    self.synth.osc2_blend = scaled2
             else:
                 osc_max = self.state["synth_pad"].get("osc2_max", 1.0)
                 scaled = value * osc_max
                 self.state["synth_pad"]["osc2_blend"] = scaled
                 self.synth.osc2_blend = scaled
+                if linked:
+                    osc1_max = self.state["synth_pad"].get("osc1_max", 1.0)
+                    scaled1 = value * osc1_max
+                    self.state["synth_pad"]["osc1_blend"] = scaled1
+                    self.synth.osc1_blend = scaled1
 
         elif fader_id == 1:  # Piano/Organ: Volume(0) / Tone(1) / Comp or Leslie(2)
             alt_state = int(alt) if isinstance(alt, (int, float)) else (1 if alt else 0)
@@ -321,30 +338,114 @@ class StaveSynth:
         state = self.presets.load(slot)
         if state:
             # Merge with defaults so new params added since preset was saved exist
-            from .config import DEFAULT_STATE, _deep_merge
+            from .config import _deep_merge
             import json
             defaults = json.loads(json.dumps(DEFAULT_STATE))
+            old_state = json.loads(json.dumps(self.state))  # snapshot current
             self.state = _deep_merge(defaults, state)
             # Rebuild preset_saved from disk — never trust the snapshot
             self._rebuild_preset_saved()
-            self.synth.update_params(state.get("synth_pad", {}))
-            if self.piano:
-                self.piano.update_params(state.get("piano", {}))
-            if self.organ:
-                self.organ.update_params(state.get("organ", {}))
-            master = state.get("master", {})
+
+            # Snap discrete params (instrument mode, waveforms, on/off toggles snap
+            # at the start of the crossfade; numeric params ramp over ~400ms).
+            master = self.state.get("master", {})
             self.instrument_mode = master.get("instrument_mode", "piano")
             self._apply_instrument_mode()
+            new_transpose = int(master.get("transpose_semitones", 0))
+            self.midi.set_transpose(new_transpose)
             if self.jack:
-                self.jack.master_volume = master.get("volume", 0.85)
-                self.jack.transpose = master.get("transpose_semitones", 0)
-            self.midi.set_transpose(master.get("transpose_semitones", 0))
-            logger.info("Loaded preset slot %d", slot)
-            # Send both state update and loaded ack
+                self.jack.transpose = new_transpose
+
+            # Suppress sympathetic for the crossfade — held keys won't pump tone
+            # at changing levels into the reverb. Re-armed at the end of the ramp.
+            self.synth.sympathetic_set_suppress(True)
+
+            self._start_preset_crossfade(old_state, self.state, duration_ms=800)
+            logger.info("Loaded preset slot %d (800ms crossfade)", slot)
+
             if self.ws_server:
                 self.ws_server.broadcast_sync({"type": "state", "state": self.state})
             return {"type": "preset_loaded", "slot": slot}
         return {"type": "error", "message": f"Failed to load preset {slot}"}
+
+    def _start_preset_crossfade(self, old_state: dict, new_state: dict, duration_ms: int = 400):
+        """Kick off a linear ramp of numeric params from old_state to new_state.
+        Cancels any in-flight crossfade. Non-numeric params are applied at step 0."""
+        self._crossfade_cancel.set()
+        if self._crossfade_thread and self._crossfade_thread.is_alive():
+            self._crossfade_thread.join(timeout=0.05)
+        self._crossfade_cancel = threading.Event()
+        self._crossfade_thread = threading.Thread(
+            target=self._run_preset_crossfade,
+            args=(old_state, new_state, duration_ms, self._crossfade_cancel),
+            daemon=True,
+        )
+        self._crossfade_thread.start()
+
+    # Discrete/integer params that must NOT interpolate — mid-ramp fractional
+    # values would be truncated (int()) causing weird half-transitions or, worse,
+    # brief invalid states (e.g. filter_slope=18 is undefined).
+    _SNAP_KEYS = {
+        "osc1_octave", "osc2_octave", "piano_octave", "transpose_semitones",
+        "unison_voices", "filter_slope", "eq_lowcut_slope",
+    }
+
+    @staticmethod
+    def _interp_section(old: dict, new: dict, t: float) -> dict:
+        """Return a dict with numerics interpolated old->new at fraction t, and
+        non-numerics / discrete integer params pulled from new (snap at step 0)."""
+        out = {}
+        for k, nv in new.items():
+            ov = old.get(k, nv)
+            if k in StaveSynth._SNAP_KEYS:
+                out[k] = nv
+            elif isinstance(nv, bool) or isinstance(ov, bool):
+                out[k] = nv
+            elif isinstance(nv, (int, float)) and isinstance(ov, (int, float)):
+                out[k] = ov + (nv - ov) * t
+            elif isinstance(nv, dict) and isinstance(ov, dict):
+                out[k] = StaveSynth._interp_section(ov, nv, t)
+            else:
+                out[k] = nv
+        return out
+
+    def _run_preset_crossfade(self, old_state: dict, new_state: dict,
+                              duration_ms: int, cancel: threading.Event):
+        """Linear ramp in ~20ms steps. Cheap — just re-pushes smoothed params."""
+        steps = max(1, duration_ms // 20)
+        step_sec = (duration_ms / 1000.0) / steps
+        old_sp = old_state.get("synth_pad", {})
+        new_sp = new_state.get("synth_pad", {})
+        old_pi = old_state.get("piano", {})
+        new_pi = new_state.get("piano", {})
+        old_or = old_state.get("organ", {})
+        new_or = new_state.get("organ", {})
+        old_m = old_state.get("master", {})
+        new_m = new_state.get("master", {})
+
+        for i in range(1, steps + 1):
+            if cancel.is_set():
+                return
+            t = i / steps
+            try:
+                self.synth.update_params(self._interp_section(old_sp, new_sp, t))
+                if self.piano:
+                    self.piano.update_params(self._interp_section(old_pi, new_pi, t))
+                if self.organ:
+                    self.organ.update_params(self._interp_section(old_or, new_or, t))
+                if self.jack:
+                    ov = old_m.get("volume", 0.85)
+                    nv = new_m.get("volume", 0.85)
+                    self.jack.master_volume = ov + (nv - ov) * t
+                    otrim = float(old_m.get("pre_limiter_trim", 2.0))
+                    ntrim = float(new_m.get("pre_limiter_trim", 2.0))
+                    self.jack.pre_gain = max(0.5, min(3.0, otrim + (ntrim - otrim) * t))
+            except Exception as e:
+                logger.error("Preset crossfade error: %s", e)
+                self.synth.sympathetic_set_suppress(False)
+                return
+            time.sleep(step_sec)
+        self.synth.sympathetic_set_suppress(False)
 
     def _handle_preset_save(self, msg: dict) -> dict:
         slot = msg.get("slot", 0)
@@ -359,9 +460,61 @@ class StaveSynth:
         slot = msg.get("slot", 0)
         if self.presets.delete(slot):
             self._rebuild_preset_saved()
+            # Clear label for the deleted slot
+            labels = self.state.setdefault("ui", {}).setdefault(
+                "preset_labels", [""] * self.presets.num_slots
+            )
+            if 0 <= slot < len(labels):
+                labels[slot] = ""
             save_state(self.state)
             return {"type": "preset_deleted", "slot": slot}
         return {"type": "error", "message": f"Failed to delete preset {slot}"}
+
+    def _handle_preset_label(self, msg: dict) -> dict:
+        slot = msg.get("slot", 0)
+        label = str(msg.get("label", ""))[:16]  # cap at 16 chars
+        labels = self.state.setdefault("ui", {}).setdefault(
+            "preset_labels", [""] * self.presets.num_slots
+        )
+        if 0 <= slot < len(labels):
+            labels[slot] = label
+            save_state(self.state)
+            return {"type": "preset_labeled", "slot": slot, "label": label}
+        return {"type": "error", "message": f"Invalid preset slot {slot}"}
+
+    def _handle_preset_swap(self, msg: dict) -> dict:
+        """Swap preset file contents (and labels) between two slots."""
+        src = int(msg.get("source", -1))
+        dst = int(msg.get("target", -1))
+        n = self.presets.num_slots
+        if src == dst or src < 0 or src >= n or dst < 0 or dst >= n:
+            return {"type": "error", "message": f"Invalid swap {src}→{dst}"}
+        src_state = self.presets.load(src)  # None if empty
+        dst_state = self.presets.load(dst)
+        # Write swapped: source gets dst's content (or delete if dst was empty),
+        # dst gets src's content (or delete if src was empty).
+        if dst_state is None:
+            self.presets.delete(src)
+        else:
+            self.presets.save(src, dst_state)
+        if src_state is None:
+            self.presets.delete(dst)
+        else:
+            self.presets.save(dst, src_state)
+        # Swap labels too
+        labels = self.state.setdefault("ui", {}).setdefault(
+            "preset_labels", [""] * n
+        )
+        # Pad if needed
+        while len(labels) < n:
+            labels.append("")
+        labels[src], labels[dst] = labels[dst], labels[src]
+        self._rebuild_preset_saved()
+        save_state(self.state)
+        # Broadcast updated state so the UI's visible 5 buttons refresh
+        if self.ws_server:
+            self.ws_server.broadcast_sync({"type": "state", "state": self.state})
+        return {"type": "preset_swapped", "source": src, "target": dst}
 
     def _handle_transpose(self, msg: dict) -> dict:
         semitones = msg.get("semitones", 0)
@@ -464,15 +617,24 @@ class StaveSynth:
         # Sync organ shared filter setting
         if self.jack:
             self.jack.organ_filter_enabled = self.state.get("organ", {}).get("shared_filter_enabled", False)
+            # Clear piano-note state so sympathetic/drone don't keep pumping
+            # ghost notes into the new instrument after an instrument switch
+            # with keys still held.
+            self.jack._piano_notes_active.clear()
 
     def _handle_panic(self) -> dict:
-        """All notes off on every instrument."""
-        self.synth.all_notes_off()
+        """Hard-silence everything: voices, piano, organ, freeze, drone, sympathetic, sustain."""
+        self.synth.panic()
         if self.piano:
             self.piano.all_notes_off()
         if self.organ:
             self.organ.all_notes_off()
-        logger.info("PANIC — all notes off")
+        if self.jack:
+            self.jack.panic()
+        self.midi.all_notes_off()
+        self.state["synth_pad"]["freeze_enabled"] = False
+        self.state["synth_pad"]["drone_enabled"] = False
+        logger.info("PANIC — all notes off, freeze/drone cleared, buffers flushed")
         return {"type": "panic_ack"}
 
     def _handle_octave(self, msg: dict) -> dict:
@@ -545,12 +707,16 @@ class StaveSynth:
             for i, line in enumerate(lines):
                 stripped = line.strip()
                 if stripped in ("StaveSynth:out_L", "StaveSynth:out_R"):
-                    if i + 1 < len(lines) and lines[i + 1].startswith("   "):
-                        dest = lines[i + 1].strip()
+                    # Walk every consecutive indented line — a port can have
+                    # multiple connections and each shows as its own indented row.
+                    j = i + 1
+                    while j < len(lines) and lines[j].startswith("   "):
+                        dest = lines[j].strip()
                         subprocess.run(
                             ["pw-jack", "jack_disconnect", stripped, dest],
                             capture_output=True, timeout=3
                         )
+                        j += 1
             # Connect to new target
             subprocess.run(
                 ["pw-jack", "jack_connect", "StaveSynth:out_L", f"{target}:playback_FL"],
@@ -573,7 +739,20 @@ class StaveSynth:
         value = msg.get("value")
 
         if section == "synth_pad":
-            if param in ("osc1_max", "osc2_max"):
+            if param == "sympathetic_level":
+                value = max(0.0, min(0.15, float(value)))
+            if param == "osc_levels_linked":
+                new_val = bool(value)
+                self.state["synth_pad"]["osc_levels_linked"] = new_val
+                if new_val:
+                    # Snap osc2 to osc1 so they're equal at toggle time
+                    osc1_b = float(self.state["synth_pad"].get("osc1_blend", 0.6))
+                    self.state["synth_pad"]["osc2_blend"] = osc1_b
+                    self.synth.osc2_blend = osc1_b
+                    # Broadcast new state so UI fader visuals catch up
+                    if self.ws_server:
+                        self.ws_server.broadcast_sync({"type": "state", "state": self.state})
+            elif param in ("osc1_max", "osc2_max"):
                 self.state["synth_pad"][param] = value
                 # No synth param to update — max is applied when fader moves
             elif param in self.state["synth_pad"]:
@@ -611,6 +790,14 @@ class StaveSynth:
                         int(self.state["master"].get("eq_lowcut_slope", 12)),
                         bool(self.state["master"].get("eq_lowcut_enabled", False)),
                     )
+            elif param == "pre_limiter_trim":
+                self.state["master"][param] = value
+                if self.jack:
+                    self.jack.pre_gain = max(0.5, min(3.0, float(value)))
+            elif param == "saturation_enabled":
+                self.state["master"][param] = bool(value)
+                if self.jack:
+                    self.jack.saturation_enabled = bool(value)
             elif param in _EQ_MAP:
                 idx, field = _EQ_MAP[param]
                 bands = self.state["master"].get("eq_bands", [])
@@ -727,8 +914,14 @@ class StaveSynth:
         """Called from JACK engine on MIDI events."""
         if event_type == "note_on":
             self.midi.on_note_on(note, velocity)
+            # Throttle the visual activity ping to ~10 Hz so dense passages
+            # (32nd notes on a chord) don't flood the WebSocket queue.
             if self.ws_server:
-                self.ws_server.broadcast_sync({"type": "midi_activity", "event": "on"})
+                now = time.monotonic()
+                last = getattr(self, "_midi_activity_last_ts", 0.0)
+                if now - last >= 0.1:
+                    self._midi_activity_last_ts = now
+                    self.ws_server.broadcast_sync({"type": "midi_activity", "event": "on"})
         elif event_type == "note_off":
             self.midi.on_note_off(note)
         elif event_type == "all_notes_off":
@@ -820,6 +1013,8 @@ class StaveSynth:
             self.jack.master_volume = self.state.get("master", {}).get("volume", 0.85)
             self.jack.transpose = self.state.get("master", {}).get("transpose_semitones", 0)
             self.jack.piano_octave = self.state.get("master", {}).get("piano_octave", 0)
+            self.jack.pre_gain = float(self.state.get("master", {}).get("pre_limiter_trim", 2.0))
+            self.jack.saturation_enabled = bool(self.state.get("master", {}).get("saturation_enabled", False))
             eq_bands = self.state.get("master", {}).get("eq_bands", [])
             if eq_bands:
                 self.jack.set_master_eq(eq_bands)
@@ -875,17 +1070,34 @@ class StaveSynth:
         self._midi_watch_thread.start()
 
     def _get_midi_capture_ports(self) -> list[str]:
-        """List a2j MIDI capture ports (real devices, not Midi Through)."""
+        """List MIDI capture ports (a2jmidid or PipeWire Midi-Bridge), real devices only.
+        PipeWire's built-in bridge exposes 'Midi-Bridge:<device> (capture)'; legacy
+        a2jmidid setups use 'a2j:<device>' style names."""
         try:
             result = subprocess.run(
                 ["jack_lsp", "-t"], capture_output=True, text=True, timeout=5
             )
+            lines = result.stdout.splitlines()
             ports = []
-            for line in result.stdout.splitlines():
-                line = line.strip()
-                if (line.startswith("a2j:") and "capture" in line
-                        and "Midi Through" not in line):
+            for i, raw in enumerate(lines):
+                line = raw.strip()
+                # -t output alternates: port name, then type line starting with whitespace
+                if raw.startswith((" ", "\t")):
+                    continue
+                if "Midi Through" in line:
+                    continue
+                # Only keep midi capture ports
+                type_line = lines[i + 1] if i + 1 < len(lines) else ""
+                if "midi" not in type_line.lower():
+                    continue
+                is_a2j = line.startswith("a2j:") and "capture" in line
+                is_pw_bridge = line.startswith("Midi-Bridge:") and line.endswith("(capture)")
+                if is_a2j or is_pw_bridge:
                     ports.append(line)
+            # If a2j is active, skip Midi-Bridge duplicates to avoid double MIDI events.
+            has_a2j = any(p.startswith("a2j:") for p in ports)
+            if has_a2j:
+                ports = [p for p in ports if not p.startswith("Midi-Bridge:")]
             return ports
         except Exception:
             return []
@@ -936,6 +1148,7 @@ class StaveSynth:
         """Gracefully shut down all components."""
         logger.info("Shutting down Stave Synth...")
         self._running = False
+        self._crossfade_cancel.set()
 
         # Save final state
         try:

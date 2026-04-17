@@ -53,7 +53,7 @@ pw-jack ./venv/bin/python -m stave_synth.main --no-gui
 - **Reverb Freeze** — Infinite sustain on current reverb tail
 - **Piano Layer** — FluidSynth GM soundfont, 6dB/oct low-cut and high-cut EQ, compressor
 - **Sustain Pedal** — CC64, holds pad and piano notes
-- **5 Presets** — Color-coded, tap to save/load
+- **10 Presets** — Color-coded, two layers of 5 (L1/L2), tap to save/load, long-press to overwrite, double-tap to delete, rename/rearrange via EDIT mode
 - **MIDI Learn** — Map any CC to any fader
 - **Audio Output Selector** — Switch between USB, Bluetooth, HDMI from the UI
 - **True Stereo** — Full stereo pipeline from render to output
@@ -63,7 +63,7 @@ pw-jack ./venv/bin/python -m stave_synth.main --no-gui
 
 - Raspberry Pi 5
 - USB MIDI keyboard
-- Audio output: USB audio interface, Bluetooth headphones, or HDMI
+- Audio output: ART USB DI (primary) or any USB audio interface / Bluetooth / HDMI sink
 - 5" DSI touchscreen (optional — UI works from any browser)
 
 ## UI
