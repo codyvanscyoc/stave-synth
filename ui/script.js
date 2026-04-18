@@ -2015,20 +2015,31 @@
                 value: sendValue,
             });
 
-            // MIRROR: when OSC level-mirror is on, also mirror per-OSC reverb sends
-            if (linkOscLevels && (param === "osc1_reverb_send" || param === "osc2_reverb_send")) {
-                var twin = param === "osc1_reverb_send" ? "osc2_reverb_send" : "osc1_reverb_send";
-                var twinSlider = document.querySelector('.setting-slider[data-param="' + twin + '"]');
+            // MIRROR: when OSC level-mirror is on, mirror per-OSC sliders to the twin.
+            // Covers reverb sends + per-OSC ADSR knobs.
+            var mirrorTwin = null;
+            if (param === "osc1_reverb_send") mirrorTwin = "osc2_reverb_send";
+            else if (param === "osc2_reverb_send") mirrorTwin = "osc1_reverb_send";
+            else if (param.indexOf("adsr_osc1.") === 0) mirrorTwin = "adsr_osc2." + param.slice(10);
+            else if (param.indexOf("adsr_osc2.") === 0) mirrorTwin = "adsr_osc1." + param.slice(10);
+            if (linkOscLevels && mirrorTwin) {
+                var twinSlider = document.querySelector('.setting-slider[data-param="' + mirrorTwin + '"]');
                 if (twinSlider && twinSlider.value !== slider.value) {
                     twinSlider.value = slider.value;
                     var twinValEl = twinSlider.parentElement.querySelector(".setting-value");
                     if (twinValEl) twinValEl.textContent = displayValue;
-                    send({ type: "setting", section: "synth_pad", param: twin, value: sendValue });
+                    var twinKnob = twinSlider.closest(".knob");
+                    if (twinKnob && typeof updateKnobRotation === "function") updateKnobRotation(twinKnob);
+                    send({ type: "setting", section: "synth_pad", param: mirrorTwin, value: sendValue });
                 }
             }
 
-            if (param && param.indexOf && param.indexOf("adsr.") === 0) {
-                updateAdsrCurve();
+            if (param && param.indexOf && param.indexOf("adsr_osc1.") === 0) {
+                updateAdsrCurve("osc1");
+                if (linkOscLevels) updateAdsrCurve("osc2");
+            } else if (param && param.indexOf && param.indexOf("adsr_osc2.") === 0) {
+                updateAdsrCurve("osc2");
+                if (linkOscLevels) updateAdsrCurve("osc1");
             }
             if (param && param.indexOf && param.indexOf("bus_comp_") === 0) {
                 markBusCompCustom();
@@ -2249,7 +2260,13 @@
             if (!sectionData) return;
 
             let value;
-            if (param.startsWith("adsr.")) {
+            if (param.startsWith("adsr_osc1.")) {
+                const adsr = sectionData.adsr_osc1 || sectionData.adsr; // back-compat
+                if (adsr) value = adsr[param.split(".")[1]];
+            } else if (param.startsWith("adsr_osc2.")) {
+                const adsr = sectionData.adsr_osc2 || sectionData.adsr; // back-compat
+                if (adsr) value = adsr[param.split(".")[1]];
+            } else if (param.startsWith("adsr.")) {
                 const adsr = sectionData.adsr;
                 if (adsr) {
                     value = adsr[param.split(".")[1]];
@@ -2437,19 +2454,20 @@
         updateAdsrCurve();
     }
 
-    // ═══ ADSR envelope curve ═══
-    function getAdsrSliderVal(param) {
-        var el = document.querySelector('[data-param="adsr.' + param + '"]');
+    // ═══ ADSR envelope curves (per-OSC) ═══
+    function getAdsrSliderVal(osc, param) {
+        var el = document.querySelector('[data-param="adsr_' + osc + '.' + param + '"]');
         return el ? parseFloat(el.value) : 0;
     }
 
-    function updateAdsrCurve() {
-        var poly = document.getElementById("adsr-path");
+    function updateAdsrCurve(osc) {
+        if (!osc) { updateAdsrCurve("osc1"); updateAdsrCurve("osc2"); return; }
+        var poly = document.getElementById("adsr-path-" + osc);
         if (!poly) return;
-        var a = Math.min(1, getAdsrSliderVal("attack_ms") / 1000);
-        var d = Math.min(1, getAdsrSliderVal("decay_ms") / 2000);
-        var s = Math.max(0, Math.min(1, getAdsrSliderVal("sustain_percent") / 100));
-        var r = Math.min(1, getAdsrSliderVal("release_ms") / 3000);
+        var a = Math.min(1, getAdsrSliderVal(osc, "attack_ms") / 1000);
+        var d = Math.min(1, getAdsrSliderVal(osc, "decay_ms") / 2000);
+        var s = Math.max(0, Math.min(1, getAdsrSliderVal(osc, "sustain_percent") / 100));
+        var r = Math.min(1, getAdsrSliderVal(osc, "release_ms") / 3000);
         // attack starts at x=0 (no hardcoded offset) so attack_ms=0 draws a
         // true vertical rise; any offset misleads at the bottom of the knob.
         var ax = a * 45;

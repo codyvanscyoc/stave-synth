@@ -12,15 +12,23 @@ TWO_PI  = 2.0 * ma.PI;
 SR      = ma.SR;
 
 // ═══════════════════════════════════════════════════════════════════════
-// Per-voice runtime params: freq (Hz) + gate (ADSR env × velocity from Py)
-// Python writes freq when note_on, gate every block from its ADSR path.
+// Per-voice runtime params: freq (Hz) + gates (ADSR env × velocity from Py).
+// Python writes freq when note_on. Gates per block:
+//   gate_osc1_v%i / gate_osc2_v%i — per-OSC envelope × velocity (independent
+//     ADSR shapes; multiplies into the osc1 / osc2 output streams).
+//   gate_v%i — "voice alive" signal = max(env1, env2) × velocity. Used by
+//     shimmer + any voice-lifetime-gated path. Keeping this separate from
+//     the per-OSC gates means per-OSC envelope divergence doesn't cut
+//     shimmer prematurely.
 // ═══════════════════════════════════════════════════════════════════════
 voice_freq(i) = hslider("freq_v%i",   0, 0, 12000, 0.01);
 // 1 ms smoothing — just enough to de-click the block-rate gate step
 // (256-sample blocks = ~5.3ms, so sub-sample jitter at 1ms tau is inaudible)
 // while leaving attack_ms=0 feeling truly snappy. Default si.smoo (~30ms)
 // rounded off short attacks audibly; 2ms was close but not punchy.
-voice_gate(i) = hslider("gate_v%i",   0, 0, 1,     0.001) : si.smooth(ba.tau2pole(0.001));
+voice_gate(i)      = hslider("gate_v%i",      0, 0, 1, 0.001) : si.smooth(ba.tau2pole(0.001));
+voice_gate_osc1(i) = hslider("gate_osc1_v%i", 0, 0, 1, 0.001) : si.smooth(ba.tau2pole(0.001));
+voice_gate_osc2(i) = hslider("gate_osc2_v%i", 0, 0, 1, 0.001) : si.smooth(ba.tau2pole(0.001));
 
 // ═══════════════════════════════════════════════════════════════════════
 // Global oscillator params (apply to all voices)
@@ -143,14 +151,18 @@ voice_osc1_phase_off(i) = hslider("osc1_phase_v%i", 0, 0, 1, 0.001);
 voice_osc2_phase_off(i) = hslider("osc2_phase_v%i", 0, 0, 1, 0.001);
 
 // ═══════════════════════════════════════════════════════════════════════
-// One full voice — produces 4 channels: osc1_L, osc1_R, osc2_L, osc2_R
+// One full voice — produces 4 channels: osc1_L, osc1_R, osc2_L, osc2_R.
+// Each osc is gated by its own per-OSC envelope so OSC1 and OSC2 can have
+// independent ADSR shapes within the same voice.
 // ═══════════════════════════════════════════════════════════════════════
 one_voice(i) =
-    (one_osc_phased(i, osc1_wf, osc1_oct, osc1_blend, osc1_pan, voice_osc1_phase_off(i)) : scale_2ch),
-    (one_osc_phased(i, osc2_wf, osc2_oct, osc2_blend, osc2_pan, voice_osc2_phase_off(i)) : scale_2ch)
+    (one_osc_phased(i, osc1_wf, osc1_oct, osc1_blend, osc1_pan, voice_osc1_phase_off(i)) : scale_osc1),
+    (one_osc_phased(i, osc2_wf, osc2_oct, osc2_blend, osc2_pan, voice_osc2_phase_off(i)) : scale_osc2)
 with {
-    g = voice_gate(i) * UNI_SCALE;
-    scale_2ch = *(g), *(g);
+    g_osc1 = voice_gate_osc1(i) * UNI_SCALE;
+    g_osc2 = voice_gate_osc2(i) * UNI_SCALE;
+    scale_osc1 = *(g_osc1), *(g_osc1);
+    scale_osc2 = *(g_osc2), *(g_osc2);
 };
 
 // ═══════════════════════════════════════════════════════════════════════

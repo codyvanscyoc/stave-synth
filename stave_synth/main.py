@@ -1226,10 +1226,17 @@ class StaveSynth:
                         # Broadcast so the open reverb tab's sliders update live.
                         if self.ws_server:
                             self.ws_server.broadcast_sync({"type": "state", "state": self.state})
+            elif param.startswith("adsr_osc1.") or param.startswith("adsr_osc2."):
+                # Per-OSC ADSR namespace: "adsr_osc1.attack_ms" / "adsr_osc2.*"
+                adsr_ns, adsr_key = param.split(".", 1)
+                self.state["synth_pad"][adsr_ns][adsr_key] = value
+                self.synth.update_params({adsr_ns: {adsr_key: value}})
             elif param.startswith("adsr."):
+                # Legacy single-ADSR: splat to both OSCs for back-compat.
                 adsr_key = param.split(".", 1)[1]
-                self.state["synth_pad"]["adsr"][adsr_key] = value
-                self.synth.update_params({"adsr": {adsr_key: value}})
+                self.state["synth_pad"]["adsr_osc1"][adsr_key] = value
+                self.state["synth_pad"]["adsr_osc2"][adsr_key] = value
+                self.synth.update_params({"adsr_osc1": {adsr_key: value}, "adsr_osc2": {adsr_key: value}})
         elif section == "piano":
             if param in self.state["piano"]:
                 self.state["piano"][param] = value

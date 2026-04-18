@@ -69,7 +69,13 @@ DEFAULT_STATE = {
         "osc_hard_pan": False,
         "osc_levels_linked": False,
         "haas_delay_ms": 20.0,
-        "adsr": {
+        "adsr_osc1": {
+            "attack_ms": 200,
+            "decay_ms": 1500,
+            "sustain_percent": 80,
+            "release_ms": 500,
+        },
+        "adsr_osc2": {
             "attack_ms": 200,
             "decay_ms": 1500,
             "sustain_percent": 80,

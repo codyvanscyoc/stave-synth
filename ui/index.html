@@ -13,7 +13,7 @@
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="logo.png">
     <!-- Keep style.css and script.js cache-bust versions in sync -->
-    <link rel="stylesheet" href="style.css?v=89">
+    <link rel="stylesheet" href="style.css?v=90">
 </head>
 <body>
     <div id="app">
@@ -284,40 +284,7 @@
                 <div id="settings-content">
                     <!-- LINK Tab — shared pad controls (both OSCs) -->
                     <div class="settings-panel active" data-panel="link">
-                        <div class="help-text">Shared pad controls that apply to both oscillators. Per-OSC tone/send/bypass live on their own OSC 1 / OSC 2 tabs.</div>
-
-                        <div class="setting-section">ENVELOPE</div>
-                        <div class="adsr-block">
-                            <svg class="adsr-curve" viewBox="0 0 200 60" preserveAspectRatio="none">
-                                <polyline id="adsr-path" points="0,60 40,2 80,15 140,15 200,60" />
-                            </svg>
-                            <div class="knob-row knob-row-tight">
-                                <div class="knob">
-                                    <div class="knob-label">ATTACK</div>
-                                    <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                    <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr.attack_ms" min="0" max="1000" value="200">
-                                    <span class="setting-value">200ms</span>
-                                </div>
-                                <div class="knob">
-                                    <div class="knob-label">DECAY</div>
-                                    <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                    <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr.decay_ms" min="0" max="2000" value="1500">
-                                    <span class="setting-value">1500ms</span>
-                                </div>
-                                <div class="knob">
-                                    <div class="knob-label">SUSTAIN</div>
-                                    <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                    <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr.sustain_percent" min="0" max="100" value="80">
-                                    <span class="setting-value">80%</span>
-                                </div>
-                                <div class="knob">
-                                    <div class="knob-label">RELEASE</div>
-                                    <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                    <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr.release_ms" min="0" max="3000" value="500">
-                                    <span class="setting-value">500ms</span>
-                                </div>
-                            </div>
-                        </div>
+                        <div class="help-text">Shared pad controls that apply to both oscillators. Per-OSC tone/send/bypass/envelope live on their own OSC 1 / OSC 2 tabs.</div>
 
                         <div class="setting-section">UNISON</div>
                         <div class="two-col">
@@ -407,6 +374,39 @@
                             <span class="setting-value">C</span>
                         </div>
 
+                        <div class="setting-section">ENVELOPE</div>
+                        <div class="adsr-block">
+                            <svg class="adsr-curve" viewBox="0 0 200 60" preserveAspectRatio="none">
+                                <polyline id="adsr-path-osc1" points="0,60 40,2 80,15 140,15 200,60" />
+                            </svg>
+                            <div class="knob-row knob-row-tight">
+                                <div class="knob">
+                                    <div class="knob-label">ATTACK</div>
+                                    <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                    <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr_osc1.attack_ms" min="0" max="1000" value="200">
+                                    <span class="setting-value">200ms</span>
+                                </div>
+                                <div class="knob">
+                                    <div class="knob-label">DECAY</div>
+                                    <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                    <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr_osc1.decay_ms" min="0" max="2000" value="1500">
+                                    <span class="setting-value">1500ms</span>
+                                </div>
+                                <div class="knob">
+                                    <div class="knob-label">SUSTAIN</div>
+                                    <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                    <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr_osc1.sustain_percent" min="0" max="100" value="80">
+                                    <span class="setting-value">80%</span>
+                                </div>
+                                <div class="knob">
+                                    <div class="knob-label">RELEASE</div>
+                                    <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                    <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr_osc1.release_ms" min="0" max="3000" value="500">
+                                    <span class="setting-value">500ms</span>
+                                </div>
+                            </div>
+                        </div>
+
                         <div class="setting-section">FILTER</div>
                         <div class="setting-row setting-row-checkbox">
                             <label class="setting-checkbox-label">
@@ -461,6 +461,39 @@
                             <span class="setting-label">Pan</span>
                             <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc2_pan" min="-100" max="100" value="0">
                             <span class="setting-value">C</span>
+                        </div>
+
+                        <div class="setting-section">ENVELOPE</div>
+                        <div class="adsr-block">
+                            <svg class="adsr-curve" viewBox="0 0 200 60" preserveAspectRatio="none">
+                                <polyline id="adsr-path-osc2" points="0,60 40,2 80,15 140,15 200,60" />
+                            </svg>
+                            <div class="knob-row knob-row-tight">
+                                <div class="knob">
+                                    <div class="knob-label">ATTACK</div>
+                                    <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                    <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr_osc2.attack_ms" min="0" max="1000" value="200">
+                                    <span class="setting-value">200ms</span>
+                                </div>
+                                <div class="knob">
+                                    <div class="knob-label">DECAY</div>
+                                    <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                    <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr_osc2.decay_ms" min="0" max="2000" value="1500">
+                                    <span class="setting-value">1500ms</span>
+                                </div>
+                                <div class="knob">
+                                    <div class="knob-label">SUSTAIN</div>
+                                    <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                    <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr_osc2.sustain_percent" min="0" max="100" value="80">
+                                    <span class="setting-value">80%</span>
+                                </div>
+                                <div class="knob">
+                                    <div class="knob-label">RELEASE</div>
+                                    <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                    <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr_osc2.release_ms" min="0" max="3000" value="500">
+                                    <span class="setting-value">500ms</span>
+                                </div>
+                            </div>
                         </div>
 
                         <div class="setting-section">FILTER</div>
@@ -1120,6 +1153,6 @@
 
     </div>
 
-    <script src="script.js?v=89"></script>
+    <script src="script.js?v=90"></script>
 </body>
 </html>

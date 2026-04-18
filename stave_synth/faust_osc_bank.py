@@ -88,6 +88,11 @@ class FaustOscBank:
         # lookup on the hot path.
         self._freq_zones = [self._zones[f"freq_v{i}"] for i in range(NVOICES)]
         self._gate_zones = [self._zones[f"gate_v{i}"] for i in range(NVOICES)]
+        # Per-OSC envelope gates — OSC1 and OSC2 can have independent ADSR shapes.
+        # Python writes both every block; voice_gate (above) is max(env1, env2)
+        # for shimmer and voice-lifetime-gated paths.
+        self._gate_osc1_zones = [self._zones[f"gate_osc1_v{i}"] for i in range(NVOICES)]
+        self._gate_osc2_zones = [self._zones[f"gate_osc2_v{i}"] for i in range(NVOICES)]
         self._osc1_phase_zones = [self._zones[f"osc1_phase_v{i}"] for i in range(NVOICES)]
         self._osc2_phase_zones = [self._zones[f"osc2_phase_v{i}"] for i in range(NVOICES)]
 
@@ -114,15 +119,24 @@ class FaustOscBank:
         _lib.instanceClearStaveOscBank(self._dsp)
         for i in range(NVOICES):
             self._gate_zones[i][0] = 0.0
+            self._gate_osc1_zones[i][0] = 0.0
+            self._gate_osc2_zones[i][0] = 0.0
 
     # ─── Per-voice setters (hot path — called every block per active voice) ───
-    def set_voice(self, slot: int, freq_hz: float, gate_level: float):
-        """gate_level already includes ADSR envelope × velocity."""
+    def set_voice(self, slot: int, freq_hz: float, g_osc1: float, g_osc2: float):
+        """Per-OSC gate levels = ADSR envelope × velocity. The combined
+        voice-alive gate (used by shimmer) is set to max(g_osc1, g_osc2)."""
         self._freq_zones[slot][0] = float(freq_hz)
-        self._gate_zones[slot][0] = float(max(0.0, min(1.0, gate_level)))
+        g1 = float(max(0.0, min(1.0, g_osc1)))
+        g2 = float(max(0.0, min(1.0, g_osc2)))
+        self._gate_osc1_zones[slot][0] = g1
+        self._gate_osc2_zones[slot][0] = g2
+        self._gate_zones[slot][0] = g1 if g1 >= g2 else g2
 
     def clear_voice(self, slot: int):
         self._gate_zones[slot][0] = 0.0
+        self._gate_osc1_zones[slot][0] = 0.0
+        self._gate_osc2_zones[slot][0] = 0.0
 
     def randomize_phase(self, slot: int):
         """Assign fresh random osc1/osc2 phase offsets for a slot — call at

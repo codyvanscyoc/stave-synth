@@ -1179,7 +1179,11 @@ class BusCompressor:
 class Voice:
     note: int = 0
     velocity: float = 1.0
-    adsr: ADSREnvelope = field(default_factory=lambda: ADSREnvelope(ADSRConfig()))
+    # Per-OSC envelopes — OSC1 and OSC2 can have independent ADSR shapes.
+    # Triggered + released together; stage transitions diverge based on each
+    # config's timing. Voice stays alive while either envelope is active.
+    adsr_osc1: ADSREnvelope = field(default_factory=lambda: ADSREnvelope(ADSRConfig()))
+    adsr_osc2: ADSREnvelope = field(default_factory=lambda: ADSREnvelope(ADSRConfig()))
     phases: list = field(default_factory=list)       # base phase per unison voice
     osc1_phases: list = field(default_factory=list)  # osc1 phase (with octave baked in)
     osc2_phases: list = field(default_factory=list)  # osc2 phase (with octave baked in)
@@ -1188,7 +1192,7 @@ class Voice:
     faust_slot: int = -1  # index in FaustOscBank (0..15), -1 = unassigned / Python path
 
     def is_active(self):
-        return self.adsr.is_active()
+        return self.adsr_osc1.is_active() or self.adsr_osc2.is_active()
 
 
 class SynthEngine:
@@ -1221,7 +1225,11 @@ class SynthEngine:
         self._haas_buf_r = np.zeros(self._haas_buf_size, dtype=np.float64)
         self._haas_pos = 0
 
-        self.adsr_config = ADSRConfig()
+        # Per-OSC ADSR configs. Voices create their own ADSREnvelope instances
+        # from these; live config edits propagate to in-flight voices via the
+        # shared config reference.
+        self.adsr_osc1_config = ADSRConfig()
+        self.adsr_osc2_config = ADSRConfig()
 
         # Stereo filter pairs (L/R share params, independent state)
         self.filter_l = BiquadLowpass(8000.0, 0.707, sample_rate)
@@ -1495,8 +1503,12 @@ class SynthEngine:
 
     def note_on(self, note: int, velocity: float = 1.0):
         for v in self.voices:
-            if v.note == note and v.adsr.stage != ADSREnvelope.RELEASE:
-                v.adsr.trigger()
+            # "Still held" = neither envelope has been user-released. release()
+            # is called on both simultaneously at note_off, so checking OSC1 is
+            # sufficient but we check both for safety.
+            if v.note == note and v.adsr_osc1.stage != ADSREnvelope.RELEASE and v.adsr_osc2.stage != ADSREnvelope.RELEASE:
+                v.adsr_osc1.trigger()
+                v.adsr_osc2.trigger()
                 v.velocity = velocity
                 v.age = self._age_counter
                 self._age_counter += 1
@@ -1509,13 +1521,15 @@ class SynthEngine:
             # For the fallback-oldest case, set ADSR level to 0 before removal
             # so the freed voice buffer won't cause a waveform discontinuity
             # when its slot gets re-used by the new voice below.
-            releasing = [v for v in self.voices if v.adsr.stage == ADSREnvelope.RELEASE]
+            releasing = [v for v in self.voices if v.adsr_osc1.stage == ADSREnvelope.RELEASE]
             if releasing:
-                victim = min(releasing, key=lambda v: v.adsr.level)
+                victim = min(releasing, key=lambda v: max(v.adsr_osc1.level, v.adsr_osc2.level))
             else:
                 victim = min(self.voices, key=lambda v: v.age)
-                victim.adsr.level = 0.0    # zero so next block starts cleanly
-            victim.adsr.stage = ADSREnvelope.OFF
+                victim.adsr_osc1.level = 0.0    # zero so next block starts cleanly
+                victim.adsr_osc2.level = 0.0
+            victim.adsr_osc1.stage = ADSREnvelope.OFF
+            victim.adsr_osc2.stage = ADSREnvelope.OFF
             # Transfer Faust slot to the replacement voice so the slot's phase
             # accumulator keeps flowing without click (new freq is written
             # first thing in render's Faust path).
@@ -1532,14 +1546,16 @@ class SynthEngine:
         voice = Voice(
             note=note,
             velocity=velocity,
-            adsr=ADSREnvelope(self.adsr_config, self.sample_rate),
+            adsr_osc1=ADSREnvelope(self.adsr_osc1_config, self.sample_rate),
+            adsr_osc2=ADSREnvelope(self.adsr_osc2_config, self.sample_rate),
             phases=[0.0] * n_u,
             osc1_phases=rand_phases_osc1,
             osc2_phases=rand_phases_osc2,
             shimmer_phases=rand_phases_shim,
             age=self._age_counter,
         )
-        voice.adsr.trigger()
+        voice.adsr_osc1.trigger()
+        voice.adsr_osc2.trigger()
         self._age_counter += 1
         # Faust slot assignment: steal if replacing a voice, else pop from pool.
         if self._faust_osc_bank is not None:
@@ -1559,18 +1575,22 @@ class SynthEngine:
 
     def note_off(self, note: int):
         for v in self.voices:
-            if v.note == note and v.adsr.stage != ADSREnvelope.RELEASE:
-                v.adsr.release()
+            if v.note == note and v.adsr_osc1.stage != ADSREnvelope.RELEASE:
+                v.adsr_osc1.release()
+                v.adsr_osc2.release()
 
     def all_notes_off(self):
         for v in self.voices:
-            v.adsr.release()
+            v.adsr_osc1.release()
+            v.adsr_osc2.release()
 
     def panic(self):
         """Hard-silence everything: kill voices, drone, sympathetic, freeze, flush buffers."""
         for v in self.voices:
-            v.adsr.stage = ADSREnvelope.OFF
-            v.adsr.level = 0.0
+            v.adsr_osc1.stage = ADSREnvelope.OFF
+            v.adsr_osc1.level = 0.0
+            v.adsr_osc2.stage = ADSREnvelope.OFF
+            v.adsr_osc2.level = 0.0
         if self._faust_osc_bank is not None:
             self._faust_osc_bank.panic()
             self._faust_slot_free = list(range(16))
@@ -2072,11 +2092,16 @@ class SynthEngine:
                 dead_voices.append(voice)
                 continue
 
-            # ADSR: sustain fast path returns scalar (avoids np.full allocation)
-            if voice.adsr.stage == ADSREnvelope.SUSTAIN:
-                env = voice.adsr.config.sustain_percent / 100.0
+            # Per-OSC ADSR. Sustain fast-path returns scalar (no np.full alloc).
+            # Each env can be scalar or array; numpy broadcasting handles the mix.
+            if voice.adsr_osc1.stage == ADSREnvelope.SUSTAIN:
+                env1 = voice.adsr_osc1.config.sustain_percent / 100.0
             else:
-                env = voice.adsr.process(n_samples)
+                env1 = voice.adsr_osc1.process(n_samples)
+            if voice.adsr_osc2.stage == ADSREnvelope.SUSTAIN:
+                env2 = voice.adsr_osc2.config.sustain_percent / 100.0
+            else:
+                env2 = voice.adsr_osc2.process(n_samples)
 
             if skip_voices:
                 voice_idx += 1
@@ -2097,9 +2122,12 @@ class SynthEngine:
             # ── Oscillator generation: Faust writes slot, Python fills buffers ──
             if use_faust:
                 # Write this voice's slot. Faust owns osc1/osc2 generation.
-                env_scalar = float(env) if np.isscalar(env) else float(env[-1])
-                gate_level = env_scalar * voice.velocity
-                self._faust_osc_bank.set_voice(voice.faust_slot, base_freq, gate_level)
+                # Per-OSC gates let OSC1 and OSC2 have independent envelope shapes.
+                env1_scalar = float(env1) if np.isscalar(env1) else float(env1[-1])
+                env2_scalar = float(env2) if np.isscalar(env2) else float(env2[-1])
+                g1 = env1_scalar * voice.velocity
+                g2 = env2_scalar * voice.velocity
+                self._faust_osc_bank.set_voice(voice.faust_slot, base_freq, g1, g2)
                 osc1_l = osc1_r = osc2_l = osc2_r = None  # filled via Faust post-loop
             else:
                 osc1_l = self._voice_osc1_l[voice_idx, :n_samples]
@@ -2140,18 +2168,28 @@ class SynthEngine:
                 for u in range(n_uni):
                     voice.shimmer_phases[u] = float(new_phases[u])
 
-            scale = (1.0 / max(n_uni, 1)) * (1.0 + 0.15 * (n_uni - 1)) * env * voice.velocity
+            # Unison gain-normalization common factor (envelope applied per-OSC below)
+            scale_common = (1.0 / max(n_uni, 1)) * (1.0 + 0.15 * (n_uni - 1)) * voice.velocity
+            scale1 = scale_common * env1
+            scale2 = scale_common * env2
 
             if render_shimmer and not use_faust:
-                # Faust path: shimmer aggregation handled post-loop
-                shimmer_sines += voice_shimmer * scale * 0.30
+                # Shimmer tracks the voice lifetime (louder of the two envelopes)
+                # so it doesn't cut out when one OSC releases faster than the other.
+                if np.isscalar(env1) and np.isscalar(env2):
+                    env_voice = max(env1, env2)
+                else:
+                    e1 = env1 if not np.isscalar(env1) else np.full(n_samples, env1)
+                    e2 = env2 if not np.isscalar(env2) else np.full(n_samples, env2)
+                    env_voice = np.maximum(e1, e2)
+                shimmer_sines += voice_shimmer * scale_common * env_voice * 0.30
 
             if not use_faust:
-                # Python path: apply env*vel scale and route osc1/osc2 by flag
-                osc1_l *= scale
-                osc1_r *= scale
-                osc2_l *= scale
-                osc2_r *= scale
+                # Python path: apply per-OSC env*vel scale and route osc1/osc2 by flag
+                osc1_l *= scale1
+                osc1_r *= scale1
+                osc2_l *= scale2
+                osc2_r *= scale2
 
                 # OSC1 goes directly to filter buffers + pre-filter accumulator
                 if self.osc1_filter_enabled:
@@ -2681,15 +2719,27 @@ class SynthEngine:
         if "volume" in params:
             self.volume = float(params["volume"])
 
-        adsr = params.get("adsr", {})
-        if "attack_ms" in adsr:
-            self.adsr_config.attack_ms = float(adsr["attack_ms"])
-        if "decay_ms" in adsr:
-            self.adsr_config.decay_ms = float(adsr["decay_ms"])
-        if "sustain_percent" in adsr:
-            self.adsr_config.sustain_percent = float(adsr["sustain_percent"])
-        if "release_ms" in adsr:
-            self.adsr_config.release_ms = float(adsr["release_ms"])
+        # Per-OSC ADSR. Back-compat: a legacy "adsr" dict splats to both OSCs.
+        # Per-OSC "adsr_osc1" / "adsr_osc2" keys win if present.
+        legacy_adsr = params.get("adsr", {})
+        adsr_osc1 = params.get("adsr_osc1", legacy_adsr)
+        adsr_osc2 = params.get("adsr_osc2", legacy_adsr)
+        if "attack_ms" in adsr_osc1:
+            self.adsr_osc1_config.attack_ms = float(adsr_osc1["attack_ms"])
+        if "decay_ms" in adsr_osc1:
+            self.adsr_osc1_config.decay_ms = float(adsr_osc1["decay_ms"])
+        if "sustain_percent" in adsr_osc1:
+            self.adsr_osc1_config.sustain_percent = float(adsr_osc1["sustain_percent"])
+        if "release_ms" in adsr_osc1:
+            self.adsr_osc1_config.release_ms = float(adsr_osc1["release_ms"])
+        if "attack_ms" in adsr_osc2:
+            self.adsr_osc2_config.attack_ms = float(adsr_osc2["attack_ms"])
+        if "decay_ms" in adsr_osc2:
+            self.adsr_osc2_config.decay_ms = float(adsr_osc2["decay_ms"])
+        if "sustain_percent" in adsr_osc2:
+            self.adsr_osc2_config.sustain_percent = float(adsr_osc2["sustain_percent"])
+        if "release_ms" in adsr_osc2:
+            self.adsr_osc2_config.release_ms = float(adsr_osc2["release_ms"])
 
         if "filter_cutoff_hz" in params:
             self.filter_cutoff = float(params["filter_cutoff_hz"])
@@ -2835,11 +2885,17 @@ class SynthEngine:
             "osc1_pan": self.osc1_pan,
             "osc2_pan": self.osc2_pan,
             "osc_hard_pan": self.osc_hard_pan,
-            "adsr": {
-                "attack_ms": self.adsr_config.attack_ms,
-                "decay_ms": self.adsr_config.decay_ms,
-                "sustain_percent": self.adsr_config.sustain_percent,
-                "release_ms": self.adsr_config.release_ms,
+            "adsr_osc1": {
+                "attack_ms": self.adsr_osc1_config.attack_ms,
+                "decay_ms": self.adsr_osc1_config.decay_ms,
+                "sustain_percent": self.adsr_osc1_config.sustain_percent,
+                "release_ms": self.adsr_osc1_config.release_ms,
+            },
+            "adsr_osc2": {
+                "attack_ms": self.adsr_osc2_config.attack_ms,
+                "decay_ms": self.adsr_osc2_config.decay_ms,
+                "sustain_percent": self.adsr_osc2_config.sustain_percent,
+                "release_ms": self.adsr_osc2_config.release_ms,
             },
             "filter_cutoff_hz": self.filter_cutoff,
             "filter_resonance": self.filter_resonance,
