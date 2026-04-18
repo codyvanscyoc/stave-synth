@@ -670,19 +670,22 @@ class JackEngine:
     def _gc_loop(self):
         """Idle-triggered cyclic GC + malloc arena trim.
 
-        The render thread disables Python's cyclic collector so it can't
-        fire mid-callback and cause pops; this thread catches up the sweep
-        during lulls, then asks glibc to return freed arena memory to the
-        OS (so RSS actually drops for 24/7 operation).
+        Every 30 s, when no voices and no piano notes are held, runs
+        gen-0 gc + malloc_trim(0). Fast (~7 ms gc, ~0.2 ms trim), well
+        inside the ring's 127 ms headroom.
 
-        Strategy: every 30 s, if no voices and no piano notes are held,
-        run gen-0 gc + malloc_trim(0). gen-0 is fast (~7 ms). malloc_trim
-        walks arenas and madvise-releases free pages — typically <5 ms on
-        our 2-arena config (MALLOC_ARENA_MAX=2 in the unit file). Both fit
-        well inside the ring's 127 ms headroom.
+        Additionally, once per day at 3 AM local time, runs a full
+        gen-2 gc as backstop against long-lived cyclic leaks. Only
+        fires after 90 s of confirmed silence — reverb / freeze /
+        shimmer tails have fully decayed so the GIL hold produces no
+        audible dropout. If 3 AM arrives with active play, skips
+        silently and retries tomorrow.
         """
         import gc
         CHECK_INTERVAL_S = 30.0
+        FULL_GC_HOUR = 3                 # local 3 AM
+        MIN_FULL_GC_INTERVAL_S = 82800   # ≈23 hr — prevents repeat firings in the hour
+        SILENCE_CYCLES_REQUIRED = 3      # 3 × 30 s = 90 s of confirmed silence
 
         # Resolve glibc's malloc_trim() via ctypes. If it's not glibc
         # (musl, alternate libc) we just skip the trim; gen-0 GC still runs.
@@ -705,6 +708,8 @@ class JackEngine:
                 pass
             return 0
 
+        _silent_cycles = 0
+        _last_full = 0.0
         while self.running:
             time.sleep(CHECK_INTERVAL_S)
             if not self.running:
@@ -712,7 +717,9 @@ class JackEngine:
             idle = (len(self.synth.voices) == 0
                     and len(self._piano_notes_active) == 0)
             if not idle:
+                _silent_cycles = 0
                 continue
+            _silent_cycles += 1
             rss_before = _rss_kb()
             t0 = time.perf_counter()
             try:
@@ -734,6 +741,33 @@ class JackEngine:
             logger.info("idle GC gen0: collected=%d freed=%dKB rss=%dKB "
                         "gc=%.1fms trim=%.1fms",
                         collected, freed_kb, rss_after, gc_ms, trim_ms)
+
+            # Daily full sweep at 3 AM — backstop for long-lived cyclic leaks.
+            now = time.time()
+            if (time.localtime(now).tm_hour == FULL_GC_HOUR
+                    and (now - _last_full) > MIN_FULL_GC_INTERVAL_S
+                    and _silent_cycles >= SILENCE_CYCLES_REQUIRED):
+                t2 = time.perf_counter()
+                try:
+                    full_collected = gc.collect(2)
+                except Exception as e:
+                    logger.warning("daily full gc.collect failed: %s", e)
+                else:
+                    full_ms = (time.perf_counter() - t2) * 1000.0
+                    full_trim_ms = 0.0
+                    if _malloc_trim is not None:
+                        t3 = time.perf_counter()
+                        try:
+                            _malloc_trim(0)
+                        except Exception as e:
+                            logger.warning("daily malloc_trim failed: %s", e)
+                        full_trim_ms = (time.perf_counter() - t3) * 1000.0
+                    _last_full = now
+                    logger.info("DAILY full GC: collected=%d rss=%dKB "
+                                "gc=%.1fms trim=%.1fms (silence=%ds)",
+                                full_collected, _rss_kb(),
+                                full_ms, full_trim_ms,
+                                _silent_cycles * int(CHECK_INTERVAL_S))
 
     def _midi_loop(self):
         """Read MIDI events from the C bridge and dispatch.
