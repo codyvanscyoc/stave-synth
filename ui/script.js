@@ -1022,8 +1022,22 @@
         });
     });
 
+    var LABEL_MAX = 16;
+    var LABEL_DICTIONARY = [
+        "Song 1", "Song 2", "Song 3", "Song 4", "Song 5",
+        "Intro", "Verse", "Chorus", "Bridge", "Outro", "Prayer", "Sermon",
+        "Warm", "Bright", "Dark", "Airy", "Wide", "Deep", "Soft", "Big", "Tight",
+        "Pad", "Piano", "Keys", "Lead", "Bass", "Strings", "Organ", "Bells",
+        "Choir", "Shimmer"
+    ];
+    var labelInputBuf = "";
+    var labelInputTextEl = document.getElementById("label-input-text");
+    var labelSuggestEl = document.getElementById("label-suggestions");
+
     function showLabelPicker(slot) {
         labelPickerSlot = slot;
+        labelInputBuf = presetLabels[slot] || "";
+        renderLabelInput();
         labelPickerModal.classList.remove("hidden");
     }
 
@@ -1032,22 +1046,72 @@
         labelPickerSlot = -1;
     }
 
+    function renderLabelInput() {
+        labelInputTextEl.textContent = labelInputBuf;
+        var q = labelInputBuf.trim().toLowerCase();
+        var matches = [];
+        if (q.length === 0) {
+            matches = LABEL_DICTIONARY.slice(0, 10);
+        } else {
+            for (var i = 0; i < LABEL_DICTIONARY.length; i++) {
+                if (LABEL_DICTIONARY[i].toLowerCase().indexOf(q) === 0) matches.push(LABEL_DICTIONARY[i]);
+            }
+            for (var j = 0; j < LABEL_DICTIONARY.length && matches.length < 10; j++) {
+                var w = LABEL_DICTIONARY[j];
+                if (matches.indexOf(w) === -1 && w.toLowerCase().indexOf(q) > 0) matches.push(w);
+            }
+        }
+        labelSuggestEl.innerHTML = "";
+        matches.forEach(function (word) {
+            var b = document.createElement("button");
+            b.className = "label-suggest";
+            b.textContent = word;
+            b.addEventListener("click", function (e) {
+                e.stopPropagation();
+                labelInputBuf = word.slice(0, LABEL_MAX);
+                renderLabelInput();
+            });
+            labelSuggestEl.appendChild(b);
+        });
+    }
+
+    function labelKeyPress(ch) {
+        if (labelInputBuf.length >= LABEL_MAX) return;
+        // First letter of a word → uppercase; mid-word → lowercase (except digits/space)
+        if (/[A-Z]/.test(ch)) {
+            var atWordStart = labelInputBuf.length === 0 ||
+                              labelInputBuf.charAt(labelInputBuf.length - 1) === " ";
+            ch = atWordStart ? ch : ch.toLowerCase();
+        }
+        labelInputBuf += ch;
+        renderLabelInput();
+    }
+
     document.getElementById("label-picker-close").addEventListener("click", function (e) {
         e.stopPropagation();
         hideLabelPicker();
     });
     labelPickerModal.addEventListener("click", function (e) {
-        // Click outside the inner box closes the picker
         if (e.target === labelPickerModal) hideLabelPicker();
     });
-    labelPickerModal.querySelectorAll(".label-pill").forEach(function (pill) {
-        pill.addEventListener("click", function (e) {
+    document.querySelectorAll("#label-keyboard .kb-key").forEach(function (key) {
+        key.addEventListener("click", function (e) {
             e.stopPropagation();
-            var label = pill.dataset.label;
-            var slot = labelPickerSlot;
-            hideLabelPicker();
-            if (slot < 0) return;
-            send({ type: "preset_label", slot: slot, label: label });
+            var action = key.dataset.action;
+            if (action === "backspace") {
+                labelInputBuf = labelInputBuf.slice(0, -1);
+                renderLabelInput();
+            } else if (action === "clear") {
+                labelInputBuf = "";
+                renderLabelInput();
+            } else if (action === "done") {
+                var slot = labelPickerSlot;
+                var label = labelInputBuf.trim();
+                hideLabelPicker();
+                if (slot >= 0) send({ type: "preset_label", slot: slot, label: label });
+            } else if (key.dataset.key) {
+                labelKeyPress(key.dataset.key);
+            }
         });
     });
 

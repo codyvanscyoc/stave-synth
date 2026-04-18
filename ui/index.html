@@ -13,7 +13,7 @@
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="logo.png">
     <!-- Keep style.css and script.js cache-bust versions in sync -->
-    <link rel="stylesheet" href="style.css?v=74">
+    <link rel="stylesheet" href="style.css?v=75">
 </head>
 <body>
     <div id="app">
@@ -200,55 +200,68 @@
             <button class="preset-action" data-action="cancel">CANCEL</button>
         </div>
 
-        <!-- Label picker modal (31 preset-category labels) -->
+        <!-- Label picker modal: on-screen keyboard with predictive text -->
         <div id="label-picker-modal" class="hidden">
             <div id="label-picker-box">
                 <div class="label-picker-header">
-                    CHOOSE LABEL
+                    RENAME PRESET
                     <button id="label-picker-close" class="ctrl-btn">X</button>
                 </div>
-                <div class="label-category">SERVICE</div>
-                <div class="label-grid" data-category="service">
-                    <button class="label-pill" data-label="Song 1">Song 1</button>
-                    <button class="label-pill" data-label="Song 2">Song 2</button>
-                    <button class="label-pill" data-label="Song 3">Song 3</button>
-                    <button class="label-pill" data-label="Song 4">Song 4</button>
-                    <button class="label-pill" data-label="Song 5">Song 5</button>
-                    <button class="label-pill" data-label="Intro">Intro</button>
-                    <button class="label-pill" data-label="Verse">Verse</button>
-                    <button class="label-pill" data-label="Chorus">Chorus</button>
-                    <button class="label-pill" data-label="Bridge">Bridge</button>
-                    <button class="label-pill" data-label="Outro">Outro</button>
-                    <button class="label-pill" data-label="Prayer">Prayer</button>
-                    <button class="label-pill" data-label="Sermon">Sermon</button>
+                <div id="label-input-display">
+                    <span id="label-input-text"></span><span id="label-input-caret">_</span>
                 </div>
-                <div class="label-category">FEEL</div>
-                <div class="label-grid" data-category="feel">
-                    <button class="label-pill" data-label="Warm">Warm</button>
-                    <button class="label-pill" data-label="Bright">Bright</button>
-                    <button class="label-pill" data-label="Dark">Dark</button>
-                    <button class="label-pill" data-label="Airy">Airy</button>
-                    <button class="label-pill" data-label="Wide">Wide</button>
-                    <button class="label-pill" data-label="Deep">Deep</button>
-                    <button class="label-pill" data-label="Soft">Soft</button>
-                    <button class="label-pill" data-label="Big">Big</button>
-                    <button class="label-pill" data-label="Tight">Tight</button>
-                </div>
-                <div class="label-category">SOUND</div>
-                <div class="label-grid" data-category="sound">
-                    <button class="label-pill" data-label="Pad">Pad</button>
-                    <button class="label-pill" data-label="Piano">Piano</button>
-                    <button class="label-pill" data-label="Keys">Keys</button>
-                    <button class="label-pill" data-label="Lead">Lead</button>
-                    <button class="label-pill" data-label="Bass">Bass</button>
-                    <button class="label-pill" data-label="Strings">Strings</button>
-                    <button class="label-pill" data-label="Organ">Organ</button>
-                    <button class="label-pill" data-label="Bells">Bells</button>
-                    <button class="label-pill" data-label="Choir">Choir</button>
-                    <button class="label-pill" data-label="Shimmer">Shimmer</button>
-                </div>
-                <div class="label-grid">
-                    <button class="label-pill label-clear" data-label="">NONE (clear)</button>
+                <div id="label-suggestions"></div>
+                <div id="label-keyboard">
+                    <div class="kb-row kb-row-num">
+                        <button class="kb-key" data-key="1">1</button>
+                        <button class="kb-key" data-key="2">2</button>
+                        <button class="kb-key" data-key="3">3</button>
+                        <button class="kb-key" data-key="4">4</button>
+                        <button class="kb-key" data-key="5">5</button>
+                        <button class="kb-key" data-key="6">6</button>
+                        <button class="kb-key" data-key="7">7</button>
+                        <button class="kb-key" data-key="8">8</button>
+                        <button class="kb-key" data-key="9">9</button>
+                        <button class="kb-key" data-key="0">0</button>
+                    </div>
+                    <div class="kb-row">
+                        <button class="kb-key" data-key="Q">Q</button>
+                        <button class="kb-key" data-key="W">W</button>
+                        <button class="kb-key" data-key="E">E</button>
+                        <button class="kb-key" data-key="R">R</button>
+                        <button class="kb-key" data-key="T">T</button>
+                        <button class="kb-key" data-key="Y">Y</button>
+                        <button class="kb-key" data-key="U">U</button>
+                        <button class="kb-key" data-key="I">I</button>
+                        <button class="kb-key" data-key="O">O</button>
+                        <button class="kb-key" data-key="P">P</button>
+                    </div>
+                    <div class="kb-row kb-row-home">
+                        <button class="kb-key" data-key="A">A</button>
+                        <button class="kb-key" data-key="S">S</button>
+                        <button class="kb-key" data-key="D">D</button>
+                        <button class="kb-key" data-key="F">F</button>
+                        <button class="kb-key" data-key="G">G</button>
+                        <button class="kb-key" data-key="H">H</button>
+                        <button class="kb-key" data-key="J">J</button>
+                        <button class="kb-key" data-key="K">K</button>
+                        <button class="kb-key" data-key="L">L</button>
+                    </div>
+                    <div class="kb-row">
+                        <button class="kb-key" data-key="Z">Z</button>
+                        <button class="kb-key" data-key="X">X</button>
+                        <button class="kb-key" data-key="C">C</button>
+                        <button class="kb-key" data-key="V">V</button>
+                        <button class="kb-key" data-key="B">B</button>
+                        <button class="kb-key" data-key="N">N</button>
+                        <button class="kb-key" data-key="M">M</button>
+                        <button class="kb-key kb-wide" data-action="backspace">&larr;</button>
+                    </div>
+                    <div class="kb-row kb-row-bottom">
+                        <button class="kb-key kb-wide" data-action="clear">CLEAR</button>
+                        <button class="kb-key kb-space" data-key=" ">SPACE</button>
+                        <button class="kb-key kb-wide kb-done" data-action="done">DONE</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -995,6 +1008,6 @@
 
     </div>
 
-    <script src="script.js?v=72"></script>
+    <script src="script.js?v=73"></script>
 </body>
 </html>

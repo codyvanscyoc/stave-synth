@@ -1229,10 +1229,14 @@ body.macro-learning .setting-row:active {
 #label-picker-box {
     background: var(--bg);
     border: 1px solid var(--border-green);
-    padding: 1.5vh 2vw;
+    padding: 1.2vh 1.5vw;
+    width: 90vw;
     max-width: 90vw;
     max-height: 90vh;
-    overflow-y: auto;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 0.8vh;
 }
 .label-picker-header {
     display: flex;
@@ -1240,7 +1244,6 @@ body.macro-learning .setting-row:active {
     align-items: center;
     border-bottom: 1px solid var(--border-green);
     padding-bottom: 0.6vh;
-    margin-bottom: 1vh;
     font-size: clamp(11px, 2vw, 14px);
     letter-spacing: 0.1em;
     color: var(--text-green);
@@ -1249,36 +1252,81 @@ body.macro-learning .setting-row:active {
     min-width: 2em;
     padding: 0.2vh 0.6vw;
 }
-.label-category {
-    font-size: clamp(9px, 1.5vw, 11px);
-    color: var(--text-green-dim);
-    letter-spacing: 0.15em;
-    margin-top: 0.8vh;
-    margin-bottom: 0.4vh;
+#label-input-display {
+    border: 1px solid var(--border-green);
+    background: rgba(0, 0, 0, 0.3);
+    color: var(--text-green);
+    font-family: var(--font);
+    font-size: clamp(14px, 2.8vw, 20px);
+    letter-spacing: 0.08em;
+    padding: 0.8vh 1vw;
+    min-height: 1.8em;
+    text-align: center;
 }
-.label-grid {
+#label-input-caret {
+    opacity: 0.6;
+    animation: kb-blink 1s step-end infinite;
+}
+@keyframes kb-blink {
+    50% { opacity: 0; }
+}
+#label-suggestions {
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.4vh 0.5vw;
-    margin-bottom: 0.5vh;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    gap: 0.5vw;
+    min-height: 2.6em;
+    align-items: stretch;
 }
-.label-pill {
+.label-suggest {
     background: transparent;
     border: 1px solid var(--border-green);
     color: var(--text-green);
     font-family: var(--font);
-    font-size: clamp(9px, 1.6vw, 12px);
-    padding: 0.5vh 1vw;
+    font-size: clamp(10px, 1.8vw, 13px);
+    padding: 0.3vh 1vw;
     cursor: pointer;
-    min-height: 2.5em;
+    white-space: nowrap;
+    flex: 0 0 auto;
 }
-.label-pill:active {
+.label-suggest:active {
     background: var(--text-green);
     color: var(--bg);
 }
-.label-clear {
-    border-color: var(--text-muted);
-    color: var(--text-muted);
+#label-keyboard {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5vh;
+}
+.kb-row {
+    display: flex;
+    gap: 0.4vw;
+    justify-content: center;
+}
+.kb-row-home { padding: 0 2.2vw; }
+.kb-key {
+    flex: 1 1 0;
+    background: transparent;
+    border: 1px solid var(--border-green);
+    color: var(--text-green);
+    font-family: var(--font);
+    font-size: clamp(12px, 2.4vw, 18px);
+    padding: 0;
+    min-height: 5.2vh;
+    cursor: pointer;
+    touch-action: manipulation;
+    user-select: none;
+}
+.kb-key:active {
+    background: var(--text-green);
+    color: var(--bg);
+}
+.kb-wide { flex: 1.6 1 0; font-size: clamp(10px, 1.8vw, 13px); }
+.kb-space { flex: 5 1 0; }
+.kb-done {
+    border-color: var(--text-green);
+    color: var(--text-green);
+    font-weight: bold;
 }
 
 /* ═══ SETTINGS MODAL ═══ */
