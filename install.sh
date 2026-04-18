@@ -171,6 +171,13 @@ source venv/bin/activate
 pip install --upgrade pip -q
 pip install -r requirements.txt -q
 
+# Optional native-window deps — only needed to open a fullscreen pywebview
+# window directly on the Pi. The browser UI at http://<pi-ip>:8080 works
+# without it, so a pywebview install hiccup is non-fatal.
+if ! pip install -r requirements-gui.txt -q 2>/dev/null; then
+    echo -e "${ORANGE}  (Optional pywebview skipped — browser UI at :8080 still works)${NC}"
+fi
+
 # ── Step 6: Soundfonts & service ──
 echo -e "${ORANGE}[6/6]${NC} Setting up soundfonts & service..."
 mkdir -p "$SOUNDFONT_DIR"

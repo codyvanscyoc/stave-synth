@@ -1,0 +1,4 @@
+# Optional: needed only when launching a native pywebview window on the Pi.
+# Skipped by default — the synth already exposes its UI over HTTP on port 8080
+# so every device on the network can control it from a browser.
+pywebview>=4.0
