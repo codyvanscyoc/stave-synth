@@ -13,7 +13,7 @@
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="logo.png">
     <!-- Keep style.css and script.js cache-bust versions in sync -->
-    <link rel="stylesheet" href="style.css?v=98">
+    <link rel="stylesheet" href="style.css?v=106">
 </head>
 <body>
     <div id="app">
@@ -524,6 +524,7 @@
 
                     <!-- Piano Tab -->
                     <div class="settings-panel" data-panel="piano">
+                        <div class="setting-section">PIANO</div>
                         <div class="setting-section">SOUND</div>
                         <div class="setting-row">
                             <span class="setting-label">Sound</span>
@@ -719,12 +720,21 @@
 
                     <!-- Motion Tab -->
                     <div class="settings-panel" data-panel="motion">
-                        <div class="setting-section">LFO</div>
-                        <div class="setting-row setting-row-checkbox lfo-link-row">
-                            <label class="setting-checkbox-label">
-                                <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="lfo_link">
-                                <span>LINK LFOs — mirror all LFO 1 edits to LFO 2</span>
-                            </label>
+                        <!-- LFO header row: title + LINK checkbox (left), scope (dead center) -->
+                        <div class="lfo-header-row">
+                            <div class="lfo-header-left">
+                                <span class="lfo-header-title">LFO</span>
+                                <label class="setting-checkbox-label">
+                                    <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="lfo_link">
+                                    <span>LINK LFOs</span>
+                                </label>
+                            </div>
+                            <svg id="lfo-scope" class="lfo-scope" viewBox="0 0 400 60" preserveAspectRatio="none">
+                                <line class="lfo-scope-mid" x1="0" y1="30" x2="400" y2="30" />
+                                <polyline id="lfo-scope-path-1" class="lfo-scope-trace lfo-scope-trace-1" points="" />
+                                <polyline id="lfo-scope-path-2" class="lfo-scope-trace lfo-scope-trace-2" points="" />
+                            </svg>
+                            <div class="lfo-header-spacer"></div>
                         </div>
 
                         <div class="lfo-dual">
@@ -911,15 +921,12 @@
                             </div>
                         </div>
 
-                        <div class="setting-section">PING-PONG DELAY</div>
-                        <div class="setting-row setting-row-checkbox">
+                        <div class="setting-section">DELAY</div>
+                        <div class="setting-row delay-row-inline">
                             <label class="setting-checkbox-label">
                                 <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="delay_enabled">
-                                <span>Delay Enabled</span>
+                                <span>Enabled</span>
                             </label>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">Time</span>
                             <select class="setting-select compact-select" data-section="synth_pad" data-param="delay_time_mode">
                                 <option value="1/2">1/2 — half</option>
                                 <option value="1/4." selected>1/4. — dotted</option>
@@ -931,13 +938,10 @@
                                 <option value="1/16">1/16 — sixteenth</option>
                                 <option value="FREE">FREE (ms)</option>
                             </select>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">Free Time</span>
                             <input type="range" class="setting-slider" data-section="synth_pad" data-param="delay_time_ms" min="1" max="1000" value="375">
                             <span class="setting-value">375ms</span>
                         </div>
-                        <div class="knob-row">
+                        <div class="knob-row motion-delay-knobs">
                             <div class="knob">
                                 <div class="knob-label">OFFSET</div>
                                 <div class="knob-dial"><div class="knob-indicator"></div></div>
@@ -961,6 +965,7 @@
 
                     <!-- Organ Tab -->
                     <div class="settings-panel" data-panel="organ">
+                        <div class="setting-section">ORGAN</div>
                         <div class="setting-section">FILTER</div>
                         <div class="setting-row setting-row-checkbox">
                             <label class="setting-checkbox-label">
@@ -1297,6 +1302,6 @@
 
     </div>
 
-    <script src="script.js?v=98"></script>
+    <script src="script.js?v=100"></script>
 </body>
 </html>

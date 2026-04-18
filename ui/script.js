@@ -2092,6 +2092,10 @@
                 updateAdsrCurve("osc2");
                 if (linkOscLevels) updateAdsrCurve("osc1");
             }
+            // Any LFO slider that affects the scope drawing → redraw
+            if (param && (param.indexOf("lfo_") === 0 || param.indexOf("lfo2_") === 0)) {
+                updateLfoScope();
+            }
             if (param && param.indexOf && param.indexOf("bus_comp_") === 0) {
                 markBusCompCustom();
             }
@@ -2344,6 +2348,9 @@
 
             updateIndepFilterVisibility();
             if (p && p.indexOf("bus_comp_") === 0) markBusCompCustom();
+            if (p && (p.indexOf("lfo_") === 0 || p.indexOf("lfo2_") === 0)) {
+                updateLfoScope();
+            }
             // GR LED: when bus_comp_enabled is flipped off, reset the LED + label
             // immediately so they drop to the "off" state without waiting for the
             // next 20Hz GR push.
@@ -2382,6 +2389,9 @@
                     lfoTwinSel.value = select.value;
                     send({ type: "setting", section: "synth_pad", param: lfoSelTwin, value: select.value });
                 }
+            }
+            if (p && (p.indexOf("lfo_") === 0 || p.indexOf("lfo2_") === 0)) {
+                updateLfoScope();
             }
         });
     });
@@ -2648,6 +2658,98 @@
     function syncKnobRotations() {
         document.querySelectorAll(".knob").forEach(updateKnobRotation);
         updateAdsrCurve();
+        updateLfoScope();
+    }
+
+    // ═══ LFO alignment scope (static preview of both LFO shapes) ═══
+    // Reads current lfo_* / lfo2_* settings from the slider/select/checkbox DOM
+    // and draws one cycle of each LFO with Offset (ms → phase fraction) + Invert
+    // applied. Phase-fraction math uses the LFO's own effective rate at current
+    // BPM, so visual alignment matches what you'll hear.
+    var _DELAY_DIVISIONS = {
+        "1/2": 2.0, "1/4.": 1.5, "1/4": 1.0, "1/4T": 2.0 / 3.0,
+        "1/8.": 0.75, "1/8": 0.5, "1/8T": 1.0 / 3.0, "1/16": 0.25,
+    };
+    function lfoEffectiveRateHz(prefix) {
+        var modeEl = document.querySelector('[data-param="' + prefix + '_rate_mode"]');
+        var rateEl = document.querySelector('[data-param="' + prefix + '_rate_hz"]');
+        var multEl = document.querySelector('[data-param="' + prefix + '_rate_multiplier"]');
+        var mode = modeEl ? modeEl.value : "FREE";
+        if (mode === "FREE") {
+            return rateEl ? parseFloat(rateEl.value) / 100 : 1.0;
+        }
+        var beats = _DELAY_DIVISIONS[mode] || 1.0;
+        var beatSec = 60.0 / Math.max(40, bpm);
+        var cycleSec = Math.max(0.05, beatSec * beats);
+        var mult = multEl ? parseFloat(multEl.value) : 1.0;
+        cycleSec /= Math.max(0.1, mult);
+        return 1.0 / cycleSec;
+    }
+    function lfoShapeEval(shape, phase) {
+        // phase in [0, 1) → output [-1, +1]
+        if (shape === "triangle") return 4.0 * Math.abs(phase - 0.5) - 1.0;
+        if (shape === "square") return phase < 0.5 ? 1.0 : -1.0;
+        if (shape === "saw") return 2.0 * phase - 1.0;
+        if (shape === "ramp") return 1.0 - 2.0 * phase;
+        if (shape === "peak") {
+            if (phase < 0.2) return (phase / 0.2) * 2.0 - 1.0;
+            return (1.0 - (phase - 0.2) / 0.8) * 2.0 - 1.0;
+        }
+        if (shape === "sh") {
+            // Deterministic pseudo-random-ish value per cycle position so the
+            // preview matches roughly what S&H sounds like (not block-accurate
+            // but visually stable).
+            return Math.sin(phase * 37.9) * Math.cos(phase * 23.3);
+        }
+        return Math.sin(phase * 2 * Math.PI);
+    }
+    function lfoOffsetFraction(prefix) {
+        // Read offset_ms and convert to phase fraction using this LFO's rate.
+        var offsetEl = document.querySelector('[data-param="' + prefix + '_offset_ms"]');
+        var haasEl = document.querySelector('[data-param="' + prefix + '_haas_compensate"]');
+        var offsetMs = offsetEl ? parseFloat(offsetEl.value) : 0;
+        if (haasEl && haasEl.checked) {
+            var haasSel = document.querySelector('[data-param="haas_delay_ms"]');
+            if (haasSel) offsetMs += parseFloat(haasSel.value);
+        }
+        var rate = lfoEffectiveRateHz(prefix);
+        return (offsetMs / 1000.0) * rate;
+    }
+    function updateLfoScope() {
+        var poly1 = document.getElementById("lfo-scope-path-1");
+        var poly2 = document.getElementById("lfo-scope-path-2");
+        if (!poly1 || !poly2) return;
+        var W = 400, H = 60, MID = H / 2, AMP = (H / 2) - 4;
+        var N = 200;
+        function tracePoints(prefix) {
+            var shapeEl = document.querySelector('[data-param="' + prefix + '_shape"]');
+            var invertEl = document.querySelector('[data-param="' + prefix + '_invert"]');
+            var enabledEl = document.querySelector('[data-param="' + prefix + '_enabled"]');
+            var depthEl = document.querySelector('[data-param="' + prefix + '_depth"]');
+            var shape = shapeEl ? shapeEl.value : "sine";
+            var invert = invertEl ? invertEl.checked : false;
+            var enabled = enabledEl ? enabledEl.checked : false;
+            var depth = depthEl ? parseFloat(depthEl.value) / 100 : 0;
+            var offFrac = lfoOffsetFraction(prefix);
+            // Scale amplitude by depth so disabled / zero-depth shows a flat
+            // line at center, and small depths draw proportionally.
+            var scale = enabled ? depth : 0.15;  // disabled → very faint trace so it's still there
+            var pts = [];
+            for (var i = 0; i <= N; i++) {
+                var x = (i / N) * W;
+                // Phase for scope's X: we show one full cycle across the scope,
+                // so phase = i/N. The offset shifts the trace horizontally.
+                var phase = ((i / N) + offFrac) % 1.0;
+                if (phase < 0) phase += 1.0;
+                var v = lfoShapeEval(shape, phase);
+                if (invert) v = -v;
+                var y = MID - v * AMP * scale;
+                pts.push(x.toFixed(1) + "," + y.toFixed(1));
+            }
+            return pts.join(" ");
+        }
+        poly1.setAttribute("points", tracePoints("lfo"));
+        poly2.setAttribute("points", tracePoints("lfo2"));
     }
 
     // ═══ ADSR envelope curves (per-OSC) ═══

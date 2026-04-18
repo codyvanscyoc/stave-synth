@@ -1406,20 +1406,51 @@ body.macro-learning .setting-row:active {
 }
 
 .setting-section {
-    font-size: clamp(8px, 1.2vw, 10px);
-    color: var(--text-green-dim);
-    letter-spacing: 0.15em;
-    padding: 0.7vh 0 0.3vh 0;
+    font-size: clamp(10px, 1.5vw, 13px);
+    color: var(--text-green);
+    letter-spacing: 0.25em;
+    font-weight: 600;
+    padding: 0.8vh 0 0.4vh 0;
     margin-top: 0.3vh;
     border-top: 1px solid rgba(0, 191, 99, 0.25);
 }
 
 /* Dual-column layouts — shared between MOTION (LFO 1/2) and OSC (OSC 1/2).
- * Each has a centered LINK/MIRROR row on top and two side-by-side panes. */
-.lfo-link-row, .osc-link-row {
+ * OSC has a centered MIRROR row. MOTION uses a single header row that
+ * combines LINK checkbox + title + alignment scope. */
+.osc-link-row {
     justify-content: center;
     border-bottom: 1px solid rgba(0, 191, 99, 0.25);
     padding-bottom: 0.8vh;
+}
+.lfo-header-row {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    gap: 1vw;
+    padding: 0.8vh 0 0.6vh 0;
+    border-bottom: 1px solid rgba(0, 191, 99, 0.25);
+    margin-bottom: 0.3vh;
+}
+.lfo-header-left {
+    display: flex;
+    align-items: center;
+    gap: 2.5vw;
+    justify-self: start;
+}
+.lfo-header-title {
+    font-size: clamp(10px, 1.5vw, 13px);
+    color: var(--text-green);
+    letter-spacing: 0.25em;
+    font-weight: 600;
+}
+.lfo-header-row .lfo-scope {
+    /* Dead-centered in col 2 of the 3-col grid */
+    justify-self: center;
+    margin: 0;
+}
+.lfo-header-spacer {
+    /* Empty col 3 — balances col 1 so the scope sits dead-center */
 }
 .lfo-dual, .osc-dual {
     display: flex;
@@ -1436,9 +1467,10 @@ body.macro-learning .setting-row:active {
     padding-left: 1vw;
 }
 .lfo-col-title, .osc-col-title {
-    font-size: clamp(9px, 1.5vw, 11px);
+    font-size: clamp(10px, 1.5vw, 13px);
     color: var(--text-green);
-    letter-spacing: 0.18em;
+    letter-spacing: 0.25em;
+    font-weight: 600;
     padding: 0.2vh 0 0.4vh 0;
     text-align: center;
     border-bottom: 1px solid rgba(0, 191, 99, 0.2);
@@ -1447,6 +1479,90 @@ body.macro-learning .setting-row:active {
 .lfo-col .setting-label,
 .osc-col .setting-label {
     flex: 0 0 35%;  /* narrower column → give labels more proportional room */
+}
+
+/* LFO knob-rows and DELAY knob-row sit in narrow contexts — shrink dials so
+ * they don't dominate. Keeps ADSR's knob-row-tight (on OSC tabs) at its
+ * current size since that's a roomier layout. */
+.lfo-col .knob-dial,
+.motion-delay-knobs .knob-dial {
+    width: clamp(32px, 5.5vw, 42px);
+    height: clamp(32px, 5.5vw, 42px);
+}
+.lfo-col .knob,
+.motion-delay-knobs .knob {
+    min-width: 0;
+    gap: 0.3vh;
+}
+.lfo-col .knob-label,
+.motion-delay-knobs .knob-label {
+    font-size: clamp(8px, 1.3vw, 10px);
+}
+.lfo-col .knob .setting-value,
+.motion-delay-knobs .knob .setting-value {
+    font-size: clamp(8px, 1.3vw, 10px);
+}
+.motion-delay-knobs {
+    padding: 0.6vh 0;
+    gap: 1.2vw;
+}
+
+/* LFO alignment scope — static preview of both LFO shapes over one cycle.
+ * LFO 1 = solid bright trace, LFO 2 = dashed dim trace. User sees the
+ * phase offset they've dialed in as a visible shift between the two.
+ * Narrow + centered so it reads as a "visualizer", not a full control. */
+.lfo-scope {
+    display: block;
+    width: 30vw;
+    max-width: 200px;
+    height: 5.5vh;
+    min-height: 52px;
+    margin: 0;
+    border: 1px solid rgba(0, 191, 99, 0.2);
+    background: rgba(0, 191, 99, 0.03);
+}
+.lfo-scope-mid {
+    stroke: rgba(0, 191, 99, 0.15);
+    stroke-width: 1;
+}
+.lfo-scope-trace {
+    fill: none;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+}
+.lfo-scope-trace-1 {
+    stroke: var(--text-green);
+    stroke-width: 1.5;
+}
+.lfo-scope-trace-2 {
+    stroke: rgba(0, 191, 99, 0.55);
+    stroke-width: 1.5;
+    stroke-dasharray: 4 3;
+}
+
+/* Delay inline row: Enabled checkbox + Time-mode dropdown + Free-time slider
+ * share one row. Slider is width-capped so it doesn't sprawl; ms readout
+ * sits right beside the slider bar. */
+.delay-row-inline {
+    gap: 1vw;
+}
+.delay-row-inline .setting-checkbox-label {
+    flex: 0 0 auto;
+}
+.delay-row-inline .compact-select {
+    flex: 0 0 auto;
+}
+.delay-row-inline .setting-slider {
+    flex: 0 1 auto;
+    width: 140px;
+    max-width: 160px;
+    min-width: 80px;
+    margin-left: auto;  /* push slider + value to the right end of the row */
+}
+.delay-row-inline .setting-value {
+    flex: 0 0 auto;
+    min-width: 3.5em;
+    margin-left: 0.4vw;
 }
 
 /* MIRROR indicator pill on OSC 1 / OSC 2 tabs — reflects LINK tab's MIRROR checkbox */
