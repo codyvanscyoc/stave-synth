@@ -1406,11 +1406,11 @@ body.macro-learning .setting-row:active {
 }
 
 .setting-section {
-    font-size: clamp(8px, 1.3vw, 10px);
+    font-size: clamp(8px, 1.2vw, 10px);
     color: var(--text-green-dim);
     letter-spacing: 0.15em;
-    padding: 1.2vh 0 0.4vh 0;
-    margin-top: 0.5vh;
+    padding: 0.7vh 0 0.3vh 0;
+    margin-top: 0.3vh;
     border-top: 1px solid rgba(0, 191, 99, 0.25);
 }
 
@@ -1418,21 +1418,21 @@ body.macro-learning .setting-row:active {
 .mirror-pill {
     display: inline-flex;
     align-items: center;
-    gap: 0.6vw;
-    margin: 0.6vh 0 0.4vh 0;
-    padding: 0.5vh 1vw;
-    border: 1px solid rgba(0, 191, 99, 0.25);
-    border-radius: 2vh;
-    font-size: clamp(8px, 1.3vw, 10px);
-    letter-spacing: 0.1em;
+    gap: 0.4vw;
+    margin: 0.3vh 0 0.2vh 0;
+    padding: 0.25vh 0.7vw;
+    border: 1px solid rgba(0, 191, 99, 0.2);
+    border-radius: 1.4vh;
+    font-size: clamp(7px, 1.1vw, 9px);
+    letter-spacing: 0.08em;
     color: var(--text-green-dim);
-    background: rgba(0, 191, 99, 0.04);
+    background: rgba(0, 191, 99, 0.03);
 }
 .mirror-pill .mirror-dot {
-    width: 0.8vh;
-    height: 0.8vh;
-    min-width: 8px;
-    min-height: 8px;
+    width: 0.6vh;
+    height: 0.6vh;
+    min-width: 6px;
+    min-height: 6px;
     border-radius: 50%;
     background: rgba(0, 191, 99, 0.2);
     border: 1px solid rgba(0, 191, 99, 0.3);
@@ -1441,12 +1441,12 @@ body.macro-learning .setting-row:active {
 .mirror-pill.active {
     color: var(--text-green);
     border-color: var(--border-green);
-    background: rgba(0, 191, 99, 0.12);
+    background: rgba(0, 191, 99, 0.1);
 }
 .mirror-pill.active .mirror-dot {
     background: var(--text-green);
     border-color: var(--text-green);
-    box-shadow: 0 0 6px rgba(0, 191, 99, 0.8);
+    box-shadow: 0 0 5px rgba(0, 191, 99, 0.8);
 }
 
 .setting-section:first-child {
@@ -1457,14 +1457,14 @@ body.macro-learning .setting-row:active {
 .setting-row {
     display: flex;
     align-items: center;
-    gap: 2vw;
-    padding: 1vh 0;
+    gap: 1.2vw;
+    padding: 0.6vh 0;
     border-bottom: 1px solid rgba(0, 191, 99, 0.1);
 }
 
 .setting-label {
-    flex: 0 0 30%;
-    font-size: clamp(9px, 1.6vw, 12px);
+    flex: 0 0 22%;
+    font-size: clamp(9px, 1.5vw, 11px);
     color: var(--text-green-dim);
 }
 
@@ -1476,6 +1476,17 @@ body.macro-learning .setting-row:active {
     background: var(--text-green-dim);
     outline: none;
     cursor: pointer;
+}
+
+/* Pan sliders: visible center-tick on the track so "C" is a marked detent.
+ * The tick is a 2px column at 50% of the track width drawn via linear-gradient. */
+.setting-slider[data-param$="_pan"] {
+    background: linear-gradient(to right,
+        var(--text-green-dim) calc(50% - 1px),
+        var(--text-green) calc(50% - 1px),
+        var(--text-green) calc(50% + 1px),
+        var(--text-green-dim) calc(50% + 1px)
+    );
 }
 
 .setting-slider::-webkit-slider-thumb {
@@ -1497,20 +1508,21 @@ body.macro-learning .setting-row:active {
 }
 
 .setting-value {
-    flex: 0 0 15%;
+    flex: 0 0 11%;
     text-align: right;
-    font-size: clamp(9px, 1.5vw, 11px);
+    font-size: clamp(9px, 1.4vw, 11px);
     color: var(--text-green);
 }
 
 .setting-select {
     flex: 1;
+    max-width: 14em;
     background: var(--bg);
     border: 1px solid var(--border-green);
     color: var(--text-green);
     font-family: var(--font);
-    font-size: clamp(9px, 1.5vw, 11px);
-    padding: 0.5vh 0.5vw;
+    font-size: clamp(9px, 1.4vw, 11px);
+    padding: 0.4vh 0.5vw;
     outline: none;
     cursor: pointer;
 }

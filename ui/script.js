@@ -1893,6 +1893,11 @@
             let sendValue;
 
             if (param === "osc1_pan" || param === "osc2_pan") {
+                // Snap to center within ±3 so "C" is a real detent, not luck.
+                if (value >= -3 && value <= 3) {
+                    value = 0;
+                    slider.value = 0;
+                }
                 sendValue = value / 100;
                 if (sendValue < -0.05) displayValue = "L" + Math.round(Math.abs(sendValue) * 100);
                 else if (sendValue > 0.05) displayValue = "R" + Math.round(sendValue * 100);
@@ -2136,8 +2141,54 @@
         document.querySelectorAll(".mirror-pill").forEach(function (pill) {
             pill.classList.toggle("active", linkOscLevels);
             var txt = pill.querySelector(".mirror-text");
-            if (txt) txt.textContent = linkOscLevels ? "MIRROR ON — linked to other OSC" : "MIRROR OFF";
+            if (txt) txt.textContent = linkOscLevels ? "MIRROR ON" : "MIRROR OFF";
         });
+    }
+
+    // Snap OSC2 per-OSC params to match OSC1 when MIRROR is enabled. Covers
+    // the same param set MIRROR watches on drag (reverb sends, fx bypass,
+    // ADSR knobs) plus the front-panel OSC1/OSC2 level faders. Other per-OSC
+    // params (waveform, pan, filter, trim) are left alone so deliberate
+    // cross-OSC differences survive toggling MIRROR.
+    function snapMirrorOsc2ToOsc1() {
+        // Menu sliders — dispatching 'input' re-runs the setting-slider handler,
+        // which sends to backend and (because linkOscLevels is on) mirrors to twin.
+        var sliderPairs = [
+            ["osc1_reverb_send", "osc2_reverb_send"],
+            ["adsr_osc1.attack_ms", "adsr_osc2.attack_ms"],
+            ["adsr_osc1.decay_ms", "adsr_osc2.decay_ms"],
+            ["adsr_osc1.sustain_percent", "adsr_osc2.sustain_percent"],
+            ["adsr_osc1.release_ms", "adsr_osc2.release_ms"],
+        ];
+        sliderPairs.forEach(function (pair) {
+            var src = document.querySelector('.setting-slider[data-param="' + pair[0] + '"]');
+            var dst = document.querySelector('.setting-slider[data-param="' + pair[1] + '"]');
+            if (src && dst && dst.value !== src.value) {
+                dst.value = src.value;
+                dst.dispatchEvent(new Event("input", { bubbles: true }));
+            }
+        });
+
+        // Menu checkboxes
+        var cbPairs = [["osc1_fx_bypass", "osc2_fx_bypass"]];
+        cbPairs.forEach(function (pair) {
+            var src = document.querySelector('.setting-checkbox[data-param="' + pair[0] + '"]');
+            var dst = document.querySelector('.setting-checkbox[data-param="' + pair[1] + '"]');
+            if (src && dst && dst.checked !== src.checked) {
+                dst.checked = src.checked;
+                dst.dispatchEvent(new Event("change", { bubbles: true }));
+            }
+        });
+
+        // Front-panel level fader: altFaderValues[0] (OSC2) snaps to faderValues[0] (OSC1).
+        if (altFaderValues[0] !== faderValues[0]) {
+            altFaderValues[0] = faderValues[0];
+            osc2Enabled = faderValues[0] > 0;
+            if (faderValues[0] > 0) osc2PreMute = faderValues[0];
+            updateOscButtons();
+            updateFader(0);
+            send({ type: "fader", id: 0, value: faderValues[0], alt: 1 });
+        }
     }
 
     // Settings checkboxes
@@ -2169,6 +2220,7 @@
             if (p === "osc_levels_linked") {
                 linkOscLevels = checkbox.checked;
                 updateMirrorIndicators();
+                if (linkOscLevels) snapMirrorOsc2ToOsc1();
             }
             if (linkOscLevels && (p === "osc1_fx_bypass" || p === "osc2_fx_bypass")) {
                 var twin = p === "osc1_fx_bypass" ? "osc2_fx_bypass" : "osc1_fx_bypass";
