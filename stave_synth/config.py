@@ -227,6 +227,16 @@ def load_state():
         if len(arr) < 10:
             arr = list(arr) + [filler] * (10 - len(arr))
             ui[key] = arr
+
+    # Migration: extend macros array to 8 if saved state had fewer (handles
+    # upgrading from the original 4-macro layout to the 4+4 A/B-layer design).
+    macros = state.get("macros", [])
+    if not isinstance(macros, list):
+        macros = []
+    if len(macros) < 8:
+        for idx in range(len(macros), 8):
+            macros.append({"name": f"M{idx+1}", "value": 0.0, "assignments": []})
+        state["macros"] = macros
     return state
 
 
