@@ -7,6 +7,8 @@ import logging
 import numpy as np
 from dataclasses import dataclass, field
 
+from .config import USE_FAUST_REVERB, USE_FAUST_PING_PONG, USE_FAUST_OSC_BANK, USE_FAUST_SYMPATHETIC
+
 try:
     from scipy.signal import lfilter
     HAS_SCIPY = True
@@ -1183,6 +1185,7 @@ class Voice:
     osc2_phases: list = field(default_factory=list)  # osc2 phase (with octave baked in)
     shimmer_phases: list = field(default_factory=list)  # shimmer phase (octave up)
     age: int = 0
+    faust_slot: int = -1  # index in FaustOscBank (0..15), -1 = unassigned / Python path
 
     def is_active(self):
         return self.adsr.is_active()
@@ -1250,7 +1253,16 @@ class SynthEngine:
         self._osc2_indep_cutoff_cur = 20000.0
 
         # Main reverb — long ambient wash
-        self.reverb = FeedbackDelayReverb(6.0, sample_rate)
+        if USE_FAUST_REVERB:
+            try:
+                from .faust_reverb import FaustReverb
+                self.reverb = FaustReverb(6.0, sample_rate)
+                logger.info("reverb: Faust native path (STAVE_FAUST_REVERB=1)")
+            except Exception as e:
+                logger.warning("reverb: Faust init failed (%s); falling back to numpy", e)
+                self.reverb = FeedbackDelayReverb(6.0, sample_rate)
+        else:
+            self.reverb = FeedbackDelayReverb(6.0, sample_rate)
         self._dry_wet_cur = 0.75  # smoothed dry_wet tracking
         self.reverb_filter_enabled = False  # route reverb wet through main filter
         self.reverb_filter_l = BiquadLowpass(8000.0, 0.707, sample_rate)
@@ -1299,7 +1311,17 @@ class SynthEngine:
         self.sympathetic_level = 0.035
         self._sympathetic_level_cur = 0.035
         self._sympathetic_suppress = False  # set during preset crossfade to silence resonance
-        self._sympathetic_state = {}  # note -> {phase_l, phase_r, gain, target}
+        self._sympathetic_state = {}  # note -> {phase_l, phase_r, gain, target, faust_slot?}
+        self._faust_sympathetic = None
+        self._faust_symp_slot_free: list[int] = []
+        if USE_FAUST_SYMPATHETIC:
+            try:
+                from .faust_sympathetic import FaustSympathetic, N_SLOTS as _SN
+                self._faust_sympathetic = FaustSympathetic(sample_rate)
+                self._faust_symp_slot_free = list(range(_SN))
+                logger.info("sympathetic: Faust native path (STAVE_FAUST_SYMPATHETIC=1)")
+            except Exception as e:
+                logger.warning("sympathetic: Faust init failed (%s); falling back", e)
 
         # Chord drone: sustained root+fifth an octave below
         self.drone_enabled = False
@@ -1350,6 +1372,14 @@ class SynthEngine:
         self._delay_buf_r = np.zeros(_delay_buf_len, dtype=np.float64)
         self._delay_buf_len = _delay_buf_len
         self._delay_write_pos = 0
+        self._faust_ping_pong = None
+        if USE_FAUST_PING_PONG:
+            try:
+                from .faust_ping_pong import FaustPingPong
+                self._faust_ping_pong = FaustPingPong(sample_rate)
+                logger.info("ping-pong: Faust native path (STAVE_FAUST_PING_PONG=1)")
+            except Exception as e:
+                logger.warning("ping-pong: Faust init failed (%s); falling back to numpy", e)
 
         # ═══ LFO (Motion tab) ═══
         # Single control-rate LFO. Cheap because it updates once per block, not per sample.
@@ -1369,6 +1399,24 @@ class SynthEngine:
 
         self.voices: list[Voice] = []
         self._age_counter = 0
+
+        # Faust 16-voice oscillator bank (opt-in via STAVE_FAUST_OSC_BANK=1).
+        # Python still owns voice allocation + ADSR + shimmer + Haas; Faust
+        # owns only wave gen + unison + per-osc pan + blend for all 16 voices.
+        self._faust_osc_bank = None
+        self._faust_slot_free: list[int] = []
+        self._faust_drone_out = None  # cached drone output from osc_bank.process()
+        if USE_FAUST_OSC_BANK:
+            try:
+                from .faust_osc_bank import FaustOscBank, NVOICES as _FN
+                self._faust_osc_bank = FaustOscBank(sample_rate)
+                self._faust_slot_free = list(range(_FN))
+                logger.info("osc bank: Faust native path (STAVE_FAUST_OSC_BANK=1)")
+                if self.unison_voices != 3:
+                    logger.warning("osc bank: Faust iteration only supports unison=3; "
+                                   "current unison_voices=%d will mismatch", self.unison_voices)
+            except Exception as e:
+                logger.warning("osc bank: Faust init failed (%s); falling back to numpy", e)
 
         self._sample_indices = np.arange(1, 513, dtype=np.float64)
 
@@ -1431,6 +1479,7 @@ class SynthEngine:
                 self._age_counter += 1
                 return
 
+        stolen_slot = -1
         if len(self.voices) >= self.max_voices:
             # Voice stealing: prefer an already-releasing voice (quietest),
             # fall back to oldest. Then trigger release + drop immediately.
@@ -1444,6 +1493,10 @@ class SynthEngine:
                 victim = min(self.voices, key=lambda v: v.age)
                 victim.adsr.level = 0.0    # zero so next block starts cleanly
             victim.adsr.stage = ADSREnvelope.OFF
+            # Transfer Faust slot to the replacement voice so the slot's phase
+            # accumulator keeps flowing without click (new freq is written
+            # first thing in render's Faust path).
+            stolen_slot = victim.faust_slot
             self.voices.remove(victim)
 
         # Randomize unison starting phases so detuned voices decorrelate from
@@ -1465,6 +1518,20 @@ class SynthEngine:
         )
         voice.adsr.trigger()
         self._age_counter += 1
+        # Faust slot assignment: steal if replacing a voice, else pop from pool.
+        if self._faust_osc_bank is not None:
+            if stolen_slot >= 0:
+                voice.faust_slot = stolen_slot
+            elif self._faust_slot_free:
+                voice.faust_slot = self._faust_slot_free.pop(0)
+            else:
+                voice.faust_slot = -1  # shouldn't happen; pool sized to max_voices
+                logger.warning("faust osc bank: no free slot at note_on (pool empty)")
+            if voice.faust_slot >= 0:
+                # Fresh random phase offsets — matches Python's np.random.uniform
+                # init of osc1/osc2 phase lists at note_on. Prevents osc1+osc2
+                # fundamentals from summing coherently (~2× gain overshoot).
+                self._faust_osc_bank.randomize_phase(voice.faust_slot)
         self.voices.append(voice)
 
     def note_off(self, note: int):
@@ -1481,6 +1548,11 @@ class SynthEngine:
         for v in self.voices:
             v.adsr.stage = ADSREnvelope.OFF
             v.adsr.level = 0.0
+        if self._faust_osc_bank is not None:
+            self._faust_osc_bank.panic()
+            self._faust_slot_free = list(range(16))
+            for v in self.voices:
+                v.faust_slot = -1
         self._drone_root_freq = 0.0
         self._drone_fifth_freq = 0.0
         self._drone_root_freq_cur = 0.0
@@ -1489,6 +1561,10 @@ class SynthEngine:
         self._drone_gain_target = 0.0
         self._drone_latched = False
         self._sympathetic_state.clear()
+        if self._faust_sympathetic is not None:
+            self._faust_sympathetic.clear_all()
+            from .faust_sympathetic import N_SLOTS as _SN
+            self._faust_symp_slot_free = list(range(_SN))
         self.freeze_enabled = False
         self.reverb.panic()
         self._haas_buf_l[:] = 0.0
@@ -1542,6 +1618,17 @@ class SynthEngine:
         Read happens before write so we never self-read within a block."""
         effective_wet = self.delay_wet * self.motion_mix
         if not self.delay_enabled or effective_wet < 0.001:
+            return
+        if self._faust_ping_pong is not None:
+            delay_samps = max(1, self._delay_time_samples())
+            off_samps = int(self.delay_offset_ms * 0.001 * self.sample_rate)
+            self._faust_ping_pong.set_params(
+                delay_l_samps=delay_samps,
+                delay_r_samps=delay_samps + off_samps,
+                feedback=self.delay_feedback,
+                wet=effective_wet,
+            )
+            self._faust_ping_pong.process_inplace(out_l, out_r)
             return
         n = out_l.shape[0]
         buf_l = self._delay_buf_l
@@ -1681,9 +1768,13 @@ class SynthEngine:
         """Update which piano notes resonate sympathetically (with fade envelopes)."""
         for n in notes:
             if n not in self._sympathetic_state:
+                slot = -1
+                if self._faust_sympathetic is not None and self._faust_symp_slot_free:
+                    slot = self._faust_symp_slot_free.pop(0)
                 self._sympathetic_state[n] = {
                     "phase_l": 0.0, "phase_r": 0.0,
                     "gain": 0.0, "target": 1.0,
+                    "faust_slot": slot,
                 }
             else:
                 self._sympathetic_state[n]["target"] = 1.0
@@ -1912,6 +2003,36 @@ class SynthEngine:
         osc1_oct_mult = 2.0 ** self.osc1_octave
         osc2_oct_mult = 2.0 ** self.osc2_octave
 
+        # ── Faust path: write per-block global osc params once ──
+        # Per-voice freq+gate get written inside the voice loop below.
+        # NOTE: osc1_b/osc2_b are the -24dB-curved amplitudes, NOT raw fader
+        # positions — Faust expects linear amplitude (it multiplies the wave
+        # by the passed value directly). Passing raw faders here would over-
+        # gain by ~2x (fader 0.6 = 0.331 linear on the dB curve).
+        use_faust = (self._faust_osc_bank is not None) and (not skip_voices)
+        if use_faust:
+            self._faust_osc_bank.set_osc_params(
+                osc1_wf=osc1_wf, osc2_wf=osc2_wf,
+                osc1_blend=osc1_b, osc2_blend=osc2_b,
+                osc1_octave=self.osc1_octave, osc2_octave=self.osc2_octave,
+                unison_detune=self.unison_detune, unison_spread=spread,
+                osc1_pan=o1_pan, osc2_pan=o2_pan,
+            )
+            self._faust_osc_bank.set_shimmer_params(
+                enabled=render_shimmer, high=self.shimmer_high,
+            )
+            # Drone params — written every block regardless of drone_enabled.
+            # gain_lvl=0 when disabled → Faust outputs silence for drone channel.
+            drone_lvl_combined = (
+                self._drone_gain * self.drone_level * self._drone_fade_scale
+                if self.drone_enabled or self._drone_gain > 0.001 else 0.0
+            )
+            self._faust_osc_bank.set_drone_params(
+                root_freq=self._drone_root_freq_cur,
+                fifth_freq=self._drone_fifth_freq_cur,
+                gain_lvl=drone_lvl_combined,
+            )
+
         voice_idx = 0
         for voice in self.voices:
             if not voice.is_active():
@@ -1930,14 +2051,6 @@ class SynthEngine:
 
             base_freq = 440.0 * (2.0 ** ((voice.note - 69) / 12.0))
             base_inc = TWO_PI * base_freq / self.sample_rate
-            osc1_l = self._voice_osc1_l[voice_idx, :n_samples]
-            osc1_l[:] = 0
-            osc1_r = self._voice_osc1_r[voice_idx, :n_samples]
-            osc1_r[:] = 0
-            osc2_l = self._voice_osc2_l[voice_idx, :n_samples]
-            osc2_l[:] = 0
-            osc2_r = self._voice_osc2_r[voice_idx, :n_samples]
-            osc2_r[:] = 0
             voice_shimmer = self._voice_shimmer[voice_idx, :n_samples]
             voice_shimmer[:] = 0
 
@@ -1948,26 +2061,44 @@ class SynthEngine:
             shim_mult = 4.0 if self.shimmer_high else 2.0
             shim_inc_per_u = base_inc * shim_mult * detune_mult
 
-            if render_osc1:
-                uni_starts = np.asarray(voice.osc1_phases[:n_uni], dtype=np.float64)
-                ph_2d = uni_starts[:, None] + osc1_inc_per_u[:, None] * indices[None, :]
-                wave_2d = generate_waveform(osc1_wf, ph_2d) * osc1_b
-                osc1_l += (wave_2d * o1_gl_arr[:, None]).sum(axis=0)
-                osc1_r += (wave_2d * o1_gr_arr[:, None]).sum(axis=0)
-                # Phase wrap-and-store
-                for u in range(n_uni):
-                    voice.osc1_phases[u] = float(ph_2d[u, -1]) % TWO_PI
+            # ── Oscillator generation: Faust writes slot, Python fills buffers ──
+            if use_faust:
+                # Write this voice's slot. Faust owns osc1/osc2 generation.
+                env_scalar = float(env) if np.isscalar(env) else float(env[-1])
+                gate_level = env_scalar * voice.velocity
+                self._faust_osc_bank.set_voice(voice.faust_slot, base_freq, gate_level)
+                osc1_l = osc1_r = osc2_l = osc2_r = None  # filled via Faust post-loop
+            else:
+                osc1_l = self._voice_osc1_l[voice_idx, :n_samples]
+                osc1_l[:] = 0
+                osc1_r = self._voice_osc1_r[voice_idx, :n_samples]
+                osc1_r[:] = 0
+                osc2_l = self._voice_osc2_l[voice_idx, :n_samples]
+                osc2_l[:] = 0
+                osc2_r = self._voice_osc2_r[voice_idx, :n_samples]
+                osc2_r[:] = 0
 
-            if render_osc2:
-                uni_starts = np.asarray(voice.osc2_phases[:n_uni], dtype=np.float64)
-                ph_2d = uni_starts[:, None] + osc2_inc_per_u[:, None] * indices[None, :]
-                wave_2d = generate_waveform(osc2_wf, ph_2d) * osc2_b
-                osc2_l += (wave_2d * o2_gl_arr[:, None]).sum(axis=0)
-                osc2_r += (wave_2d * o2_gr_arr[:, None]).sum(axis=0)
-                for u in range(n_uni):
-                    voice.osc2_phases[u] = float(ph_2d[u, -1]) % TWO_PI
+                if render_osc1:
+                    uni_starts = np.asarray(voice.osc1_phases[:n_uni], dtype=np.float64)
+                    ph_2d = uni_starts[:, None] + osc1_inc_per_u[:, None] * indices[None, :]
+                    wave_2d = generate_waveform(osc1_wf, ph_2d) * osc1_b
+                    osc1_l += (wave_2d * o1_gl_arr[:, None]).sum(axis=0)
+                    osc1_r += (wave_2d * o1_gr_arr[:, None]).sum(axis=0)
+                    for u in range(n_uni):
+                        voice.osc1_phases[u] = float(ph_2d[u, -1]) % TWO_PI
 
-            if render_shimmer:
+                if render_osc2:
+                    uni_starts = np.asarray(voice.osc2_phases[:n_uni], dtype=np.float64)
+                    ph_2d = uni_starts[:, None] + osc2_inc_per_u[:, None] * indices[None, :]
+                    wave_2d = generate_waveform(osc2_wf, ph_2d) * osc2_b
+                    osc2_l += (wave_2d * o2_gl_arr[:, None]).sum(axis=0)
+                    osc2_r += (wave_2d * o2_gr_arr[:, None]).sum(axis=0)
+                    for u in range(n_uni):
+                        voice.osc2_phases[u] = float(ph_2d[u, -1]) % TWO_PI
+
+            if render_shimmer and not use_faust:
+                # Faust path: shimmer generated in osc_bank.dsp (5th output channel),
+                # taken post-loop and assigned directly to shimmer_sines — skip here.
                 uni_starts = np.asarray(voice.shimmer_phases[:n_uni], dtype=np.float64)
                 shim_2d = uni_starts[:, None] + shim_inc_per_u[:, None] * indices[None, :]
                 voice_shimmer += np.sin(shim_2d).sum(axis=0)
@@ -1977,27 +2108,55 @@ class SynthEngine:
                     voice.shimmer_phases[u] = float(new_phases[u])
 
             scale = (1.0 / max(n_uni, 1)) * (1.0 + 0.15 * (n_uni - 1)) * env * voice.velocity
-            osc1_l *= scale
-            osc1_r *= scale
-            osc2_l *= scale
-            osc2_r *= scale
 
-            if render_shimmer:
+            if render_shimmer and not use_faust:
+                # Faust path: shimmer aggregation handled post-loop
                 shimmer_sines += voice_shimmer * scale * 0.30
 
-            # OSC1 goes directly to filter buffers
-            if self.osc1_filter_enabled:
-                filter_buf[0] += osc1_l
-                filter_buf[1] += osc1_r
-            else:
-                osc1_indep_buf[0] += osc1_l
-                osc1_indep_buf[1] += osc1_r
+            if not use_faust:
+                # Python path: apply env*vel scale and route osc1/osc2 by flag
+                osc1_l *= scale
+                osc1_r *= scale
+                osc2_l *= scale
+                osc2_r *= scale
 
-            # OSC2 accumulates separately for Haas delay
-            osc2_accum_l += osc2_l
-            osc2_accum_r += osc2_r
+                # OSC1 goes directly to filter buffers
+                if self.osc1_filter_enabled:
+                    filter_buf[0] += osc1_l
+                    filter_buf[1] += osc1_r
+                else:
+                    osc1_indep_buf[0] += osc1_l
+                    osc1_indep_buf[1] += osc1_r
+
+                # OSC2 accumulates separately for Haas delay
+                osc2_accum_l += osc2_l
+                osc2_accum_r += osc2_r
 
             voice_idx += 1
+
+        # ── Faust path: one call after loop, 4-channel output → routing ──
+        # Faust has env*vel baked in (via gate) and unison_scale baked in too.
+        if use_faust:
+            # Clear gates for unused slots (voices not in this block's active set)
+            active_slots = {v.faust_slot for v in self.voices if v.is_active() and v.faust_slot >= 0}
+            for slot in range(16):
+                if slot not in active_slots:
+                    self._faust_osc_bank.clear_voice(slot)
+
+            osc_out = self._faust_osc_bank.process(n_samples)  # (6, n)
+            if self.osc1_filter_enabled:
+                filter_buf[0] += osc_out[0]
+                filter_buf[1] += osc_out[1]
+            else:
+                osc1_indep_buf[0] += osc_out[0]
+                osc1_indep_buf[1] += osc_out[1]
+            osc2_accum_l += osc_out[2]
+            osc2_accum_r += osc_out[3]
+            if render_shimmer:
+                shimmer_sines += osc_out[4]
+            # Cache drone channel for _render_drone_voices — avoid calling
+            # Faust.process() twice (which would advance phasors 2× the rate).
+            self._faust_drone_out = osc_out[5].copy()
 
         # Apply Haas delay to OSC2 if pans are separated and osc2 is audible
         if haas_active and render_osc2:
@@ -2042,6 +2201,10 @@ class SynthEngine:
                 osc2_indep_buf[1] += osc2_accum_r
 
         for v in dead_voices:
+            if self._faust_osc_bank is not None and v.faust_slot >= 0:
+                self._faust_osc_bank.clear_voice(v.faust_slot)
+                self._faust_slot_free.append(v.faust_slot)
+                v.faust_slot = -1
             self.voices.remove(v)
 
         # Smooth filter cutoff in log space (~80ms time constant)
@@ -2102,8 +2265,14 @@ class SynthEngine:
         drone_low[:] = 0.0
 
         def _render_drone_voices():
-            """Emit root+fifth into drone_low using current smoothed freqs."""
+            """Emit root+fifth into drone_low. Faust path: add cached output[5]
+            from the osc_bank's one process() call this block. Drone params
+            were written upstream with the rest of the osc params."""
             lvl = self.drone_level * self._drone_fade_scale
+            if self._faust_osc_bank is not None:
+                if self._faust_drone_out is not None and self._faust_drone_out.shape[0] == n_samples:
+                    drone_low[:] += self._faust_drone_out
+                return
             inc1 = TWO_PI * self._drone_root_freq_cur / self.sample_rate
             ph1 = self._drone_root_phase + inc1 * indices
             drone_low[:] += generate_waveform(self.osc1_waveform, ph1) * self._drone_gain * 0.30 * lvl
@@ -2246,49 +2415,78 @@ class SynthEngine:
         if self.sympathetic_enabled and not self._sympathetic_suppress and self._sympathetic_state:
             self._sympathetic_level_cur += alpha_s * (self.sympathetic_level - self._sympathetic_level_cur)
             sym_level = self._sympathetic_level_cur
-            decay_rate = np.exp(-1.0 / (0.15 * self.sample_rate))
-            # Shared across all entries: exponential ramp factors over the block
-            ramp_factors = decay_rate ** indices
 
-            notes_list = list(self._sympathetic_state.keys())
-            N = len(notes_list)
-            freqs = np.empty(N, dtype=np.float64)
-            tgts = np.empty(N, dtype=np.float64)
-            g0s = np.empty(N, dtype=np.float64)
-            ph_l_init = np.empty(N, dtype=np.float64)
-            ph_r_init = np.empty(N, dtype=np.float64)
-            for i, note in enumerate(notes_list):
-                st = self._sympathetic_state[note]
-                freqs[i] = 440.0 * 2.0 ** ((note - 69) / 12.0)
-                tgts[i] = st["target"]
-                g0s[i] = st["gain"]
-                ph_l_init[i] = st["phase_l"]
-                ph_r_init[i] = st["phase_r"]
+            if self._faust_sympathetic is not None:
+                # ── Faust path: write per-slot freq + (target × rolloff) ──
+                self._faust_sympathetic.set_sym_level(sym_level)
+                dead_sym = []
+                for note, st in self._sympathetic_state.items():
+                    slot = st.get("faust_slot", -1)
+                    freq = 440.0 * 2.0 ** ((note - 69) / 12.0)
+                    rolloff = min(1.0, 523.0 / max(freq, 523.0))
+                    target = float(st["target"])
+                    if slot >= 0:
+                        self._faust_sympathetic.set_slot(slot, freq, target * rolloff)
+                    # Track a Python-side gain mirror for death detection.
+                    # Use same 150ms time constant as Faust's smoother.
+                    decay_rate = np.exp(-n_samples / (0.15 * self.sample_rate))
+                    st["gain"] += (1.0 - decay_rate) * (target - st["gain"])
+                    if st["gain"] < 0.001 and target <= 0:
+                        dead_sym.append(note)
+                sym_out = self._faust_sympathetic.process(n_samples)
+                reverb_in_l += sym_out[0]
+                reverb_in_r += sym_out[1]
+                for note in dead_sym:
+                    st = self._sympathetic_state[note]
+                    slot = st.get("faust_slot", -1)
+                    if slot >= 0:
+                        self._faust_sympathetic.clear_slot(slot)
+                        self._faust_symp_slot_free.append(slot)
+                    del self._sympathetic_state[note]
+            else:
+                decay_rate = np.exp(-1.0 / (0.15 * self.sample_rate))
+                # Shared across all entries: exponential ramp factors over the block
+                ramp_factors = decay_rate ** indices
 
-            rolloffs = np.minimum(1.0, 523.0 / np.maximum(freqs, 523.0))
-            gain_ramps = tgts[:, None] + (g0s - tgts)[:, None] * ramp_factors[None, :]
-            final_gains = gain_ramps[:, -1]
+                notes_list = list(self._sympathetic_state.keys())
+                N = len(notes_list)
+                freqs = np.empty(N, dtype=np.float64)
+                tgts = np.empty(N, dtype=np.float64)
+                g0s = np.empty(N, dtype=np.float64)
+                ph_l_init = np.empty(N, dtype=np.float64)
+                ph_r_init = np.empty(N, dtype=np.float64)
+                for i, note in enumerate(notes_list):
+                    st = self._sympathetic_state[note]
+                    freqs[i] = 440.0 * 2.0 ** ((note - 69) / 12.0)
+                    tgts[i] = st["target"]
+                    g0s[i] = st["gain"]
+                    ph_l_init[i] = st["phase_l"]
+                    ph_r_init[i] = st["phase_r"]
 
-            inc_l = TWO_PI * freqs / self.sample_rate
-            inc_r = TWO_PI * (freqs * 1.003) / self.sample_rate
-            ph_l_2d = ph_l_init[:, None] + inc_l[:, None] * indices[None, :]
-            ph_r_2d = ph_r_init[:, None] + inc_r[:, None] * indices[None, :]
-            g_scaled = gain_ramps * (sym_level * rolloffs)[:, None]
+                rolloffs = np.minimum(1.0, 523.0 / np.maximum(freqs, 523.0))
+                gain_ramps = tgts[:, None] + (g0s - tgts)[:, None] * ramp_factors[None, :]
+                final_gains = gain_ramps[:, -1]
 
-            reverb_in_l += (np.sin(ph_l_2d) * g_scaled).sum(axis=0)
-            reverb_in_r += (np.sin(ph_r_2d) * g_scaled).sum(axis=0)
+                inc_l = TWO_PI * freqs / self.sample_rate
+                inc_r = TWO_PI * (freqs * 1.003) / self.sample_rate
+                ph_l_2d = ph_l_init[:, None] + inc_l[:, None] * indices[None, :]
+                ph_r_2d = ph_r_init[:, None] + inc_r[:, None] * indices[None, :]
+                g_scaled = gain_ramps * (sym_level * rolloffs)[:, None]
 
-            dead_sym = []
-            for i, note in enumerate(notes_list):
-                st = self._sympathetic_state[note]
-                st["gain"] = float(final_gains[i])
-                if final_gains[i] < 0.001 and tgts[i] <= 0:
-                    dead_sym.append(note)
-                else:
-                    st["phase_l"] = float(ph_l_2d[i, -1]) % TWO_PI
-                    st["phase_r"] = float(ph_r_2d[i, -1]) % TWO_PI
-            for note in dead_sym:
-                del self._sympathetic_state[note]
+                reverb_in_l += (np.sin(ph_l_2d) * g_scaled).sum(axis=0)
+                reverb_in_r += (np.sin(ph_r_2d) * g_scaled).sum(axis=0)
+
+                dead_sym = []
+                for i, note in enumerate(notes_list):
+                    st = self._sympathetic_state[note]
+                    st["gain"] = float(final_gains[i])
+                    if final_gains[i] < 0.001 and tgts[i] <= 0:
+                        dead_sym.append(note)
+                    else:
+                        st["phase_l"] = float(ph_l_2d[i, -1]) % TWO_PI
+                        st["phase_r"] = float(ph_r_2d[i, -1]) % TWO_PI
+                for note in dead_sym:
+                    del self._sympathetic_state[note]
 
         np.tanh(reverb_in_l, out=reverb_in_l)
         np.tanh(reverb_in_r, out=reverb_in_r)

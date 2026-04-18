@@ -35,6 +35,21 @@ AUTOSAVE_INTERVAL = 30
 # Set False for normal audio interfaces.
 BTL_MODE = False
 
+# Route reverb through the Faust-compiled native DSP (faust/libstave_reverb.so)
+# instead of the numpy-based FeedbackDelayReverb. 8x faster but a fresh port —
+# A/B with the Python path by flipping STAVE_FAUST_REVERB in the environment.
+USE_FAUST_REVERB = os.environ.get("STAVE_FAUST_REVERB", "0") not in ("0", "", "false", "False")
+
+# Same story for the stereo ping-pong delay.
+USE_FAUST_PING_PONG = os.environ.get("STAVE_FAUST_PING_PONG", "0") not in ("0", "", "false", "False")
+
+# 16-voice Faust oscillator bank (wave gen + unison + pan + blend).
+# Current iteration: unison hardcoded to 3, ADSR stays Python-side.
+USE_FAUST_OSC_BANK = os.environ.get("STAVE_FAUST_OSC_BANK", "0") not in ("0", "", "false", "False")
+
+# Sympathetic resonance rendered in Faust (stereo bank of 16 slots).
+USE_FAUST_SYMPATHETIC = os.environ.get("STAVE_FAUST_SYMPATHETIC", "0") not in ("0", "", "false", "False")
+
 DEFAULT_STATE = {
     "synth_pad": {
         "osc1_blend": 0.6,

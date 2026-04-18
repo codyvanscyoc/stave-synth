@@ -47,7 +47,10 @@ sudo apt-get install -y \
     libgirepository1.0-dev \
     "$WEBKIT_PKG" \
     python3-gi \
-    python3-gi-cairo
+    python3-gi-cairo \
+    faust \
+    gcc \
+    libc6-dev
 
 # ── Step 2: Audio permissions ──
 echo -e "${ORANGE}[2/6]${NC} Configuring audio permissions..."
@@ -124,12 +127,18 @@ for dev in /sys/bus/usb/devices/*/power/control; do
 done 2>/dev/null
 echo -1 | sudo tee /sys/module/usbcore/parameters/autosuspend > /dev/null 2>&1 || true
 
-# ── Step 4: Build C audio bridge ──
+# ── Step 4: Build C audio bridge + Faust DSP modules ──
 echo -e "${ORANGE}[4/6]${NC} Building JACK audio bridge..."
 cd "$SCRIPT_DIR/stave_synth"
 gcc -shared -fPIC -O2 -o jack_bridge.so jack_bridge.c -ljack -lpthread
 cd "$SCRIPT_DIR"
 echo -e "${GREEN}  Built jack_bridge.so${NC}"
+
+echo -e "${ORANGE}[4/6]${NC} Building Faust DSP modules..."
+cd "$SCRIPT_DIR/faust"
+./build.sh > /dev/null
+cd "$SCRIPT_DIR"
+echo -e "${GREEN}  Built Faust modules (reverb, ping_pong, osc_bank, sympathetic, master_fx, bus_comp)${NC}"
 
 # ── Step 5: Python dependencies ──
 echo -e "${ORANGE}[5/6]${NC} Installing Python dependencies..."

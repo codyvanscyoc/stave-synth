@@ -19,6 +19,9 @@ from .synth_engine import (SynthEngine, BiquadLowpass, BiquadHighpass,
                            BusCompressor,
                            fader_to_amplitude, blend_to_amplitude)
 from .config import SAMPLE_RATE, BTL_MODE
+import os as _os
+USE_FAUST_MASTER_FX = _os.environ.get("STAVE_FAUST_MASTER_FX", "0") not in ("0", "", "false", "False")
+USE_FAUST_BUS_COMP  = _os.environ.get("STAVE_FAUST_BUS_COMP",  "0") not in ("0", "", "false", "False")
 from .recorder import Recorder
 
 logger = logging.getLogger(__name__)
@@ -115,6 +118,25 @@ class JackEngine:
         self.bus_comp_source = "self"
         self.bus_comp_fx_bypass = False  # if True, reverb/delay bypass the comp
         self.bus_comp_retrigger = False  # if True, pad note-on retriggers BPM pulse phase
+
+        self._faust_master_fx = None
+        if USE_FAUST_MASTER_FX:
+            try:
+                from .faust_master_fx import FaustMasterFX
+                self._faust_master_fx = FaustMasterFX(SAMPLE_RATE)
+                logger.info("master fx: Faust native path (STAVE_FAUST_MASTER_FX=1)")
+            except Exception as e:
+                logger.warning("master fx: Faust init failed (%s); falling back", e)
+
+        self._faust_bus_comp = None
+        if USE_FAUST_BUS_COMP:
+            try:
+                from .faust_bus_comp import FaustBusComp
+                self._faust_bus_comp = FaustBusComp(SAMPLE_RATE)
+                logger.info("bus comp: Faust native path (STAVE_FAUST_BUS_COMP=1) "
+                            "— self-sidechain only; piano/lfo/bpm modes fall back to Python")
+            except Exception as e:
+                logger.warning("bus comp: Faust init failed (%s); falling back", e)
         self._sc_scratch = np.empty(512, dtype=np.float64)
         # BPM pulse generator state
         self._bpm_beat_phase = 0.0     # 0..1 within current beat
@@ -554,42 +576,95 @@ class JackEngine:
                         stereo[0] = mid + side
                         stereo[1] = mid - side
 
-                    # Master EQ (configurable 3-band parametric)
-                    if self._master_eq_active:
-                        for eq_l, eq_r in zip(self._master_eq_l, self._master_eq_r):
-                            stereo[0] = eq_l.process(stereo[0])
-                            stereo[1] = eq_r.process(stereo[1])
-
-                    # Master low cut
-                    if self._master_hp_enabled:
-                        if self._master_hp_slope == 6:
-                            stereo[0] = self._master_hp6_l.process(stereo[0])
-                            stereo[1] = self._master_hp6_r.process(stereo[1])
-                        elif self._master_hp_slope == 24:
-                            for f in self._master_hp24_l:
-                                stereo[0] = f.process(stereo[0])
-                            for f in self._master_hp24_r:
-                                stereo[1] = f.process(stereo[1])
-                        else:
-                            stereo[0] = self._master_hp12_l.process(stereo[0])
-                            stereo[1] = self._master_hp12_r.process(stereo[1])
-
-                    # ═══ Bus compressor (SSL G-style) — pre-saturation, pre-limiter ═══
-                    if self.bus_comp.enabled:
-                        sc_l, sc_r = self._get_sidechain(self.bus_comp_source, bs, piano_for_sc)
-                        self.bus_comp.process(
-                            stereo[0], stereo[1], sc_l, sc_r,
-                            skip_hpf=(self.bus_comp_source == "bpm"),
+                    # Faust master FX path: bundles EQ + HP + pre-gain + sat
+                    # + limiter in one compute call. Only used when bus comp
+                    # is disabled (bus comp stays Python-side; its SSL G-style
+                    # ballistics are too load-bearing to port without a
+                    # dedicated session). Shuffler stays Python.
+                    use_faust_master = (
+                        self._faust_master_fx is not None
+                        and not self.bus_comp.enabled
+                    )
+                    if use_faust_master:
+                        # Push cached EQ/HP/tail params to Faust zones
+                        for idx, (freq, gain, q) in enumerate(
+                            getattr(self, "_master_eq_bands_cached", []), start=1
+                        ):
+                            self._faust_master_fx.set_eq_band(idx, freq, gain, q)
+                        self._faust_master_fx.set_hp(
+                            enabled=self._master_hp_enabled,
+                            freq_hz=80.0,  # matches Python — hardcoded cutoff
+                            slope_db_per_oct=self._master_hp_slope,
                         )
+                        self._faust_master_fx.set_tail(
+                            pre_gain=self.pre_gain,
+                            sat_enabled=self.saturation_enabled,
+                        )
+                        self._faust_master_fx.process_inplace(stereo)
+                        # Faust applied EQ, HP, pre_gain, sat, and tanh.
+                        # Skip to post-processing (recorder + bridge_write).
+                    else:
+                        # Master EQ (configurable 3-band parametric)
+                        if self._master_eq_active:
+                            for eq_l, eq_r in zip(self._master_eq_l, self._master_eq_r):
+                                stereo[0] = eq_l.process(stereo[0])
+                                stereo[1] = eq_r.process(stereo[1])
 
-                    # FX-bypass routing: sum the untouched FX bus back in post-comp
-                    # so the reverb/delay tail isn't ducked by the sidechain pump.
-                    if fx_bus is not None:
+                        # Master low cut
+                        if self._master_hp_enabled:
+                            if self._master_hp_slope == 6:
+                                stereo[0] = self._master_hp6_l.process(stereo[0])
+                                stereo[1] = self._master_hp6_r.process(stereo[1])
+                            elif self._master_hp_slope == 24:
+                                for f in self._master_hp24_l:
+                                    stereo[0] = f.process(stereo[0])
+                                for f in self._master_hp24_r:
+                                    stereo[1] = f.process(stereo[1])
+                            else:
+                                stereo[0] = self._master_hp12_l.process(stereo[0])
+                                stereo[1] = self._master_hp12_r.process(stereo[1])
+
+                    if not use_faust_master:
+                        # ═══ Bus compressor (SSL G-style) — pre-saturation, pre-limiter ═══
+                        if self.bus_comp.enabled:
+                            # Faust bus comp only handles self-sidechain mode;
+                            # external SC (piano/lfo/bpm) stays on Python path.
+                            if (self._faust_bus_comp is not None
+                                    and self.bus_comp_source == "self"):
+                                self._faust_bus_comp.set_params(
+                                    enabled=True,
+                                    threshold_db=self.bus_comp.threshold_db,
+                                    ratio=self.bus_comp.ratio,
+                                    attack_ms=self.bus_comp.attack_ms,
+                                    release_ms=self.bus_comp.release_ms,
+                                    knee_db=self.bus_comp.knee_db,
+                                    makeup_db=self.bus_comp.makeup_db,
+                                    mix=self.bus_comp.mix,
+                                    sc_hpf_hz=self.bus_comp.sidechain_hpf_hz,
+                                )
+                                self._faust_bus_comp.process_inplace(stereo)
+                            else:
+                                sc_l, sc_r = self._get_sidechain(self.bus_comp_source, bs, piano_for_sc)
+                                self.bus_comp.process(
+                                    stereo[0], stereo[1], sc_l, sc_r,
+                                    skip_hpf=(self.bus_comp_source == "bpm"),
+                                )
+
+                        # FX-bypass routing: sum the untouched FX bus back in post-comp
+                        # so the reverb/delay tail isn't ducked by the sidechain pump.
+                        if fx_bus is not None:
+                            stereo[0] += fx_bus[0]
+                            stereo[1] += fx_bus[1]
+
+                        # Pre-gain: boost into limiter for more headroom
+                        stereo *= self.pre_gain
+                    elif fx_bus is not None:
+                        # Faust master path: bus comp disabled, but if FX-bypass
+                        # was enabled in the UI we still need to sum the FX bus.
+                        # This happens AFTER Faust already limited — the bypass
+                        # can re-push us into clipping. Rare but documented.
                         stereo[0] += fx_bus[0]
                         stereo[1] += fx_bus[1]
-
-                    # Pre-gain: boost into limiter for more headroom
-                    stereo *= self.pre_gain
 
                     # Track pre-limiter peak for metering (shows how hard limiter is hit)
                     pre_peak = float(np.abs(stereo).max())
@@ -617,18 +692,19 @@ class JackEngine:
                                            loc, time.time())
                         self._prev_pre_peak = pre_peak
 
-                    # Optional asymmetric drive (SAT button) — injects 2nd
-                    # harmonic for tape/transformer-style warmth. Skipped when
-                    # off so the limiter stays purely clean tanh.
-                    if self.saturation_enabled:
-                        scratch = self._sat_scratch[:, :bs]
-                        np.abs(stereo, out=scratch)
-                        scratch *= 0.09
-                        stereo *= 1.01
-                        stereo += scratch
+                    if not use_faust_master:
+                        # Optional asymmetric drive (SAT button) — injects 2nd
+                        # harmonic for tape/transformer-style warmth. Skipped when
+                        # off so the limiter stays purely clean tanh.
+                        if self.saturation_enabled:
+                            scratch = self._sat_scratch[:, :bs]
+                            np.abs(stereo, out=scratch)
+                            scratch *= 0.09
+                            stereo *= 1.01
+                            stereo += scratch
 
-                    # Soft limiter (tanh) — clean when SAT is off
-                    np.tanh(stereo, out=stereo)
+                        # Soft limiter (tanh) — clean when SAT is off
+                        np.tanh(stereo, out=stereo)
 
                     left_f32 = stereo[0].astype(np.float32)
                     right_f32 = stereo[1].astype(np.float32)
@@ -897,6 +973,7 @@ class JackEngine:
 
     def set_master_eq(self, bands: list):
         """Update master EQ bands. Each band: {freq_hz, gain_db, q}"""
+        cached = []
         for i, band in enumerate(bands):
             if i < len(self._master_eq_l):
                 freq = float(band.get("freq_hz", 1000))
@@ -904,6 +981,8 @@ class JackEngine:
                 q = float(band.get("q", 1.5))
                 self._master_eq_l[i].set_params(freq, gain, q)
                 self._master_eq_r[i].set_params(freq, gain, q)
+                cached.append((freq, gain, q))
+        self._master_eq_bands_cached = cached  # read by the Faust master-fx path
         self._master_eq_active = any(
             abs(float(b.get("gain_db", 0.0))) > 0.01 for b in bands
         )
