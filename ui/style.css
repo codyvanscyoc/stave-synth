@@ -89,8 +89,9 @@ body.retro-amber {
     position: relative;
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: space-between;  /* evenly distribute gaps across all items */
     padding: 1vh 2vw;
+    margin-top: 5vh;  /* breathe away from the screen edge — shifts whole app down */
     border-bottom: 1px solid var(--border-green);
     height: 7vh;
     min-height: 32px;
@@ -102,12 +103,13 @@ body.retro-amber {
     background-size: contain;
     background-position: center;
     background-repeat: no-repeat;
+    margin-right: 1.2vw;  /* extra gap between logo and the transpose minus */
 }
 
 #transpose-controls {
     display: flex;
     align-items: center;
-    gap: 0.3vw;
+    gap: 0.3vw;  /* keep -, T0, + grouped tight */
 }
 
 #transpose-display {
@@ -285,6 +287,169 @@ body.retro-amber {
     color: var(--bg);
 }
 
+/* ═══ Record button + timer (top bar) ═══ */
+#record-box {
+    display: flex;
+    flex-direction: column;      /* button on top, timer label below */
+    align-items: center;
+    gap: 0.2vh;
+    line-height: 1;
+}
+#record-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;     /* center the dot in the button */
+    padding: 0.3vh 0.8vw;
+    min-width: 2.2em;
+    transition: background 120ms linear, border-color 120ms linear;
+}
+#record-btn {
+    /* Idle: red outline so the button reads as "armed / ready to record" */
+    border-color: #FF4D6A;
+}
+#record-btn .rec-dot {
+    display: inline-block;
+    width: 0.95em;
+    height: 0.95em;
+    border-radius: 50%;
+    /* Idle: solid red circle (to match the armed box). Flashes while recording. */
+    background: #FF4D6A;
+    border: 1.5px solid #FF4D6A;
+    transition: background 120ms linear, border-color 120ms linear;
+}
+/* Recording: whole box turns red, circle flashes red. */
+#record-box.recording #record-btn {
+    background: rgba(255, 77, 106, 0.18);
+    border-color: #FF4D6A;
+}
+#record-box.recording .rec-dot {
+    background: #FF4D6A;
+    border-color: #FF4D6A;
+    animation: rec-pulse 1.2s ease-in-out infinite;
+}
+@keyframes rec-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(255, 77, 106, 0.55); opacity: 1.0; }
+    50%      { box-shadow: 0 0 0 5px rgba(255, 77, 106, 0.0); opacity: 0.55; }
+}
+#rec-time {
+    font-size: clamp(8px, 1.1vw, 10px);
+    color: var(--text-muted);
+    letter-spacing: 0.05em;
+    min-height: 1em;
+    font-variant-numeric: tabular-nums;
+}
+#record-box.recording #rec-time { color: #FF4D6A; }
+
+/* ═══ Recordings list (Global tab) ═══ */
+.takes-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4vh;
+    max-height: 22vh;
+    overflow-y: auto;
+    padding: 0.3vh 0;
+}
+.takes-empty {
+    color: var(--text-muted);
+    font-style: italic;
+    padding: 0.6vh 0.4vw;
+    font-size: clamp(9px, 1.3vw, 11px);
+}
+.take-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6vw;
+    padding: 0.4vh 0.6vw;
+    border: 1px solid var(--border-green);
+    font-size: clamp(9px, 1.3vw, 11px);
+    color: var(--text-green-dim);
+}
+.take-row .take-name {
+    flex: 1;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text-green);
+}
+.take-row .take-meta {
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    min-width: 4em;
+    text-align: right;
+}
+.take-row audio {
+    height: 22px;
+    max-width: 30%;
+    min-width: 120px;
+    /* Dim the browser-default white playback bar so it blends with the theme */
+    filter: brightness(0.55) saturate(0.6) contrast(0.9);
+    opacity: 0.8;
+}
+.take-row button {
+    background: transparent;
+    border: 1px solid var(--border-green);
+    color: var(--text-green-dim);
+    padding: 0.2vh 0.6vw;
+    font-family: var(--font);
+    font-size: inherit;
+    cursor: pointer;
+    min-width: 2em;
+}
+.take-row button:hover { border-color: var(--text-green); color: var(--text-green); }
+.take-row button.delete:hover { border-color: #FF4D6A; color: #FF4D6A; }
+.take-row button.recall:disabled { opacity: 0.4; cursor: not-allowed; }
+.take-row select.pad-target {
+    background: transparent;
+    border: 1px solid var(--border-green);
+    color: var(--text-green-dim);
+    font-family: var(--font);
+    font-size: inherit;
+    padding: 0.2vh 0.4vw;
+}
+.take-row button.send-pad {
+    background: transparent;
+    border: 1px solid var(--border-orange);
+    color: var(--border-orange);
+    padding: 0.2vh 0.6vw;
+}
+.take-row button.send-pad:hover {
+    background: var(--border-orange);
+    color: var(--bg);
+}
+
+/* Pad slot library — a 6×2 grid of key labels */
+.pad-slots-list {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 0.4vh 0.5vw;
+    padding: 0.4vh 0;
+}
+.pad-slot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.3vw;
+    padding: 0.3vh 0.5vw;
+    border: 1px solid var(--border-green);
+    font-size: clamp(9px, 1.3vw, 11px);
+    color: var(--text-muted);
+}
+.pad-slot.loaded { color: var(--text-green); border-color: var(--text-green); }
+.pad-slot .slot-key { font-weight: bold; min-width: 1.8em; }
+.pad-slot .slot-dur { font-variant-numeric: tabular-nums; flex: 1; text-align: right; }
+.pad-slot button.clear {
+    background: transparent;
+    border: 1px solid var(--border-green);
+    color: var(--text-muted);
+    padding: 0.1vh 0.4vw;
+    cursor: pointer;
+    font-family: var(--font);
+    font-size: 0.9em;
+}
+.pad-slot:not(.loaded) button.clear { visibility: hidden; }
+.pad-slot button.clear:hover { border-color: #FF4D6A; color: #FF4D6A; }
+
 .sys-readout {
     display: flex;
     gap: 2vw;
@@ -396,7 +561,7 @@ body.retro-amber {
     padding: 1vh 1vw;
     gap: 1vw;
     min-height: 0;
-    max-height: 68vh;  /* scrunch whole area — keeps master's fader-row + level-dots in sync */
+    max-height: 56vh;  /* shorter faders — leave more room for preset/macro/pad rows */
 }
 
 .fader-column {
@@ -408,7 +573,9 @@ body.retro-amber {
 }
 
 .fader-label {
-    font-size: clamp(9px, 1.8vw, 12px);
+    font-size: clamp(10px, 1.9vw, 13px);
+    font-weight: 800;
+    letter-spacing: 0.08em;
     color: var(--text-green);
     text-align: center;
     white-space: nowrap;
@@ -763,7 +930,8 @@ body.retro-amber {
     min-height: 32px;
 }
 
-#macro-layer-btn {
+#macro-layer-btn,
+#macro-edit-btn {
     width: clamp(26px, 3.5vw, 34px);
     writing-mode: vertical-rl;
     text-orientation: mixed;
@@ -773,10 +941,40 @@ body.retro-amber {
     min-width: auto;
     flex: 0 0 auto;
 }
-#macro-layer-btn.active {
+#macro-layer-btn.active,
+#macro-edit-btn.active {
     background: var(--text-green);
     color: var(--bg);
     border-color: var(--text-green);
+}
+
+/* When editing macros, count badge becomes a clear-all ✕ */
+body.macros-editing .macro-slot .macro-count {
+    font-size: clamp(10px, 1.4vw, 13px);
+    font-weight: bold;
+    color: var(--bg);
+    background: var(--macro-color);
+    border-radius: 50%;
+    width: 1.5em;
+    height: 1.5em;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    top: 50%;
+    right: 6px;
+    transform: translateY(-50%);
+    cursor: pointer;
+    pointer-events: auto;
+}
+body.macros-editing .macro-slot .macro-count::before {
+    content: "✕";
+}
+body.macros-editing .macro-slot .macro-count {
+    /* Hide the numeric count — the ✕ pseudo replaces it */
+    font-size: 0;
+}
+body.macros-editing .macro-slot .macro-count::before {
+    font-size: clamp(11px, 1.5vw, 14px);
 }
 
 /* ═══ Pad Player (drone 12-key launcher) ═══ */
@@ -790,31 +988,50 @@ body.retro-amber {
 .pad-keys {
     display: flex;
     flex: 1;
-    gap: clamp(2px, 0.3vw, 4px);
+    gap: clamp(5px, 0.8vw, 10px);
 }
+/* Each key gets a unique pastel color via --key-hue (set inline 170°→280°).
+   Gradient from pastel teal-green through blue → purple. Blends with the
+   theme's cool greens. Active state saturates + brightens. */
 .pad-key {
+    --key-hue: 200;
     flex: 1;
-    background: transparent;
-    border: 1px solid var(--border-green);
-    color: var(--text-green-dim);
+    background: hsla(var(--key-hue), 42%, 66%, 0.78);
+    border: none;
+    color: rgba(0, 20, 10, 0.92);
     font-family: var(--font);
-    font-size: clamp(9px, 1.4vw, 12px);
+    font-size: clamp(10px, 1.7vw, 15px);
     letter-spacing: 0.05em;
     cursor: pointer;
-    padding: 0.2vh 0;
+    padding: 0.2vh 0.3vw;
     min-width: 0;
-    transition: background 60ms linear, border-color 60ms linear, color 60ms linear;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    line-height: 1.0;
+    transition: background 80ms linear, box-shadow 80ms linear, color 80ms linear;
 }
 .pad-key.sharp {
-    background: rgba(0, 32, 16, 0.6);
-    color: var(--text-muted);
-    flex: 0.75;  /* slightly narrower than naturals for visual distinction */
+    /* Slightly narrower + slightly deeper shade to echo the black-key feel */
+    flex: 0.75;
+    background: hsla(var(--key-hue), 38%, 58%, 0.82);
+}
+.pk-main {
+    font-size: 1.0em;
+    font-weight: 900;  /* extra bold / black weight */
+}
+.pk-alt {
+    font-size: 0.7em;
+    opacity: 0.72;
+    margin-top: 1px;
+    font-weight: 600;
 }
 .pad-key.active {
-    background: var(--text-green);
-    color: var(--bg);
-    border-color: var(--text-green);
-    box-shadow: 0 0 8px var(--text-green);
+    background: hsla(var(--key-hue), 80%, 72%, 1.0);
+    color: rgba(0, 0, 0, 0.95);
+    box-shadow: 0 0 10px hsla(var(--key-hue), 80%, 60%, 0.8),
+                inset 0 0 6px hsla(var(--key-hue), 100%, 85%, 0.6);
 }
 .pad-vol-wrap {
     display: flex;

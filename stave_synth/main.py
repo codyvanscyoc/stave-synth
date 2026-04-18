@@ -77,6 +77,15 @@ def ensure_jack_running():
         return False
 
 
+_NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+
+def _midi_to_note_label(midi: int) -> str:
+    """60 → 'C', 70 → 'A#', etc. Only used for UI labels in the pad slot list."""
+    idx = int(midi) % 12
+    return _NOTE_NAMES[idx]
+
+
 class StaveSynth:
     """Main application class — orchestrates all components."""
 
@@ -163,6 +172,20 @@ class StaveSynth:
             return self._handle_drone_off(msg)
         elif msg_type == "drone_fade":
             return self._handle_drone_fade(msg)
+        elif msg_type == "record_toggle":
+            return self._handle_record_toggle(msg)
+        elif msg_type == "list_recordings":
+            return self._handle_list_recordings(msg)
+        elif msg_type == "delete_recording":
+            return self._handle_delete_recording(msg)
+        elif msg_type == "recall_recording_params":
+            return self._handle_recall_recording_params(msg)
+        elif msg_type == "save_to_pad_slot":
+            return self._handle_save_to_pad_slot(msg)
+        elif msg_type == "list_pad_slots":
+            return self._handle_list_pad_slots(msg)
+        elif msg_type == "clear_pad_slot":
+            return self._handle_clear_pad_slot(msg)
         elif msg_type == "get_state":
             return {"type": "state", "state": self.state}
         elif msg_type == "debug":
@@ -634,32 +657,183 @@ class StaveSynth:
         },
     }
 
+    # ═══ Recorder (master-output capture) ═══
+
+    def _handle_record_toggle(self, msg: dict) -> dict:
+        """Toggle the master-output recorder. Starts a new take when idle,
+        stops + flushes when active. On start, snapshots the current state
+        to a sidecar JSON for later 'recall params'."""
+        if not self.jack or not self.jack.recorder:
+            return {"type": "record_ack", "recording": False, "error": "no recorder"}
+        rec = self.jack.recorder
+        if rec.is_recording():
+            meta = rec.stop()
+            return {"type": "record_ack", "recording": False, "take": meta}
+        # Start — deep-copy state so later edits don't mutate the snapshot
+        snapshot = json.loads(json.dumps(self.state, default=str))
+        meta = rec.start(state_snapshot=snapshot)
+        return {"type": "record_ack", "recording": True, "take": meta}
+
+    def _handle_list_recordings(self, msg: dict) -> dict:
+        from .recorder import Recorder as _R
+        return {"type": "recordings_list", "takes": _R.list_takes()}
+
+    def _handle_delete_recording(self, msg: dict) -> dict:
+        from .recorder import Recorder as _R
+        filename = str(msg.get("filename", ""))
+        ok = _R.delete_take(filename)
+        return {"type": "recording_deleted", "filename": filename, "ok": ok,
+                "takes": _R.list_takes()}
+
+    def _handle_recall_recording_params(self, msg: dict) -> dict:
+        """Load a take's sidecar state JSON and re-apply every setting so the
+        synth returns to the sound captured at record-start."""
+        from .recorder import Recorder as _R
+        filename = str(msg.get("filename", ""))
+        snap = _R.load_state_snapshot(filename)
+        if snap is None:
+            return {"type": "recall_params_ack", "filename": filename,
+                    "ok": False, "error": "no state snapshot"}
+        # Re-apply each section.param via _handle_setting (robust to schema drift)
+        count = 0
+        for section in ("synth_pad", "piano", "organ", "master"):
+            src = snap.get(section, {})
+            if not isinstance(src, dict):
+                continue
+            for param, value in src.items():
+                if isinstance(value, (dict, list)) and param != "eq_bands":
+                    continue  # skip nested / complex fields we can't easily re-apply
+                try:
+                    self._handle_setting({"section": section, "param": param, "value": value})
+                    count += 1
+                except Exception as e:
+                    logger.debug("recall_params skip %s.%s: %s", section, param, e)
+        # Broadcast the refreshed state so all UI clients re-sync
+        if self.ws_server:
+            self.ws_server.broadcast_sync({"type": "state", "state": self.state})
+        return {"type": "recall_params_ack", "filename": filename, "ok": True, "params_applied": count}
+
+    # ═══ Pad sample library (per-slot WAVs) ═══
+
+    _PAD_NOTE_FILENAMES = {
+        60: "pad_C.wav", 61: "pad_Cs.wav", 62: "pad_D.wav", 63: "pad_Ds.wav",
+        64: "pad_E.wav", 65: "pad_F.wav", 66: "pad_Fs.wav", 67: "pad_G.wav",
+        68: "pad_Gs.wav", 69: "pad_A.wav", 70: "pad_As.wav", 71: "pad_B.wav",
+    }
+
+    def _pad_dir(self):
+        from pathlib import Path
+        p = Path.home() / ".local" / "share" / "stave-synth" / "pad_samples"
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    def _handle_list_pad_slots(self, msg: dict) -> dict:
+        """List all 12 pad slots — which have a file loaded, filename, duration."""
+        import wave as _wave
+        pad_dir = self._pad_dir()
+        slots = []
+        for note in sorted(self._PAD_NOTE_FILENAMES.keys()):
+            fname = self._PAD_NOTE_FILENAMES[note]
+            path = pad_dir / fname
+            info = {"note": note, "filename": fname, "loaded": False,
+                    "duration_seconds": 0.0, "label": _midi_to_note_label(note)}
+            if path.exists():
+                info["loaded"] = True
+                try:
+                    with _wave.open(str(path), "rb") as w:
+                        info["duration_seconds"] = round(w.getnframes() / float(w.getframerate()), 2)
+                except Exception:
+                    pass
+            slots.append(info)
+        return {"type": "pad_slots", "slots": slots}
+
+    def _handle_save_to_pad_slot(self, msg: dict) -> dict:
+        """Copy a take from the recordings dir into a pad slot. Reloads that slot."""
+        import shutil
+        from pathlib import Path
+        source_filename = str(msg.get("source", ""))
+        note = int(msg.get("note", -1))
+        if note not in self._PAD_NOTE_FILENAMES:
+            return {"type": "error", "message": f"invalid pad slot {note}"}
+        # Path safety
+        if "/" in source_filename or "\\" in source_filename or ".." in source_filename:
+            return {"type": "error", "message": "bad source filename"}
+        src = Path.home() / ".local" / "share" / "stave-synth" / "recordings" / source_filename
+        if not src.exists():
+            return {"type": "error", "message": f"source not found: {source_filename}"}
+        dst = self._pad_dir() / self._PAD_NOTE_FILENAMES[note]
+        try:
+            shutil.copyfile(src, dst)
+        except Exception as e:
+            return {"type": "error", "message": f"copy failed: {e}"}
+        # Reload just this slot
+        if self.synth:
+            try:
+                self.synth.load_pad_samples(self._pad_dir())
+            except Exception as e:
+                logger.warning("pad reload failed: %s", e)
+        return {"type": "pad_slot_saved", "note": note,
+                "label": _midi_to_note_label(note),
+                "slots": self._handle_list_pad_slots({}).get("slots", [])}
+
+    def _handle_clear_pad_slot(self, msg: dict) -> dict:
+        """Delete the WAV for a pad slot → that key reverts to live synth."""
+        note = int(msg.get("note", -1))
+        if note not in self._PAD_NOTE_FILENAMES:
+            return {"type": "error", "message": f"invalid pad slot {note}"}
+        path = self._pad_dir() / self._PAD_NOTE_FILENAMES[note]
+        try:
+            if path.exists():
+                path.unlink()
+        except Exception as e:
+            logger.warning("clear_pad_slot: %s", e)
+        if self.synth:
+            self.synth.load_pad_samples(self._pad_dir())
+        return {"type": "pad_slot_cleared", "note": note,
+                "slots": self._handle_list_pad_slots({}).get("slots", [])}
+
     # ═══ Pad player (drone key triggers from touchscreen) ═══
 
     def _handle_drone_key(self, msg: dict) -> dict:
         """Force drone to a specific root note from the pad-player UI.
-        Tapping the same key while active toggles drone off."""
+        Tapping the same key while active toggles drone off.
+
+        Dispatch: sampler first — if a per-note pad WAV exists, play it and
+        silence the live drone. Else fall back to the live root+fifth synth
+        and silence any active sampler voice."""
         note = int(msg.get("note", 60))
         current_key = self.state["synth_pad"].get("drone_key")
         current_on = bool(self.state["synth_pad"].get("drone_enabled", False))
         if current_on and current_key == note:
-            # Tapping active key → turn off
             self.state["synth_pad"]["drone_enabled"] = False
             self.state["synth_pad"]["drone_key"] = None
             if self.synth:
                 self.synth.drone_off()
-            return {"type": "drone_key_ack", "note": None, "enabled": False}
+                self.synth.release_pad_samples()
+            return {"type": "drone_key_ack", "note": None, "enabled": False,
+                    "source": "off"}
         self.state["synth_pad"]["drone_enabled"] = True
         self.state["synth_pad"]["drone_key"] = note
+        source = "live"
         if self.synth:
-            self.synth.set_drone_key(note)
-        return {"type": "drone_key_ack", "note": note, "enabled": True}
+            used_sample = self.synth.trigger_pad_sample(note)
+            if used_sample:
+                # Sample took over — silence the live drone so we don't double up
+                self.synth.drone_off()
+                source = "sample"
+            else:
+                # No slot WAV for this key — fall through to live synth
+                self.synth.release_pad_samples()
+                self.synth.set_drone_key(note)
+        return {"type": "drone_key_ack", "note": note, "enabled": True,
+                "source": source}
 
     def _handle_drone_off(self, msg: dict) -> dict:
         self.state["synth_pad"]["drone_enabled"] = False
         self.state["synth_pad"]["drone_key"] = None
         if self.synth:
             self.synth.drone_off()
+            self.synth.release_pad_samples()
         return {"type": "drone_key_ack", "note": None, "enabled": False}
 
     def _handle_drone_fade(self, msg: dict) -> dict:
@@ -974,6 +1148,12 @@ class StaveSynth:
             elif param in self.state["synth_pad"]:
                 self.state["synth_pad"][param] = value
                 self.synth.update_params({param: value})
+                # Drone octave offset changes while a key is held → re-apply
+                # so the new offset takes effect live (no need to re-tap).
+                if param == "drone_octave_offset":
+                    cur_key = self.state["synth_pad"].get("drone_key")
+                    if cur_key is not None and self.state["synth_pad"].get("drone_enabled"):
+                        self.synth.set_drone_key(int(cur_key))
             elif param.startswith("adsr."):
                 adsr_key = param.split(".", 1)[1]
                 self.state["synth_pad"]["adsr"][adsr_key] = value
@@ -1331,6 +1511,13 @@ class StaveSynth:
         # Start WebSocket + HTTP server
         self.ws_server = WebSocketServer(message_handler=self._handle_ws_message)
         self.ws_server.start()
+
+        # Load pad samples (per-note WAVs) — any slot without a file falls
+        # back to the live synth drone automatically.
+        try:
+            self.synth.load_pad_samples()
+        except Exception as e:
+            logger.warning("pad sample load failed: %s", e)
 
         # Start autosave
         self._autosave_thread = threading.Thread(target=self._autosave_loop, daemon=True)

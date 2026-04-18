@@ -77,7 +77,7 @@
     const clipIndicator = document.getElementById("clip-indicator");
     const levelDots = document.querySelectorAll(".level-dot");
     const bpmVal = document.getElementById("bpm-val");
-    const tapBtn = document.getElementById("tap-btn");
+    const tapBtn = null;  // removed — BPM number itself is now the tap target
     const panicBtn = document.getElementById("panic-btn");
     let bpm = 120;
     let tapTimes = [];
@@ -283,6 +283,20 @@
             midiLearnWaiting = false;
             updateMidiLearnUI();
             updateCCIndicators();
+        } else if (msg.type === "record_ack") {
+            setRecordingState(!!msg.recording);
+            // Refresh takes list after a recording finishes so it appears
+            if (!msg.recording) send({ type: "list_recordings" });
+        } else if (msg.type === "recordings_list") {
+            renderTakes(msg.takes || []);
+        } else if (msg.type === "recording_deleted") {
+            renderTakes(msg.takes || []);
+        } else if (msg.type === "pad_slots") {
+            renderPadSlots(msg.slots || []);
+        } else if (msg.type === "pad_slot_saved" || msg.type === "pad_slot_cleared") {
+            renderPadSlots(msg.slots || []);
+        } else if (msg.type === "recall_params_ack") {
+            // Backend broadcasts a state message too — that'll re-sync sliders.
         } else if (msg.type === "drone_key_ack") {
             padActiveNote = (msg.enabled && typeof msg.note === "number") ? msg.note : null;
             if (typeof updatePadKeyVisuals === "function") updatePadKeyVisuals();
@@ -792,7 +806,7 @@
             var cnt = slot.querySelector(".macro-count");
             if (cnt) cnt.textContent = (m.assignments || []).length;
             var lbl = slot.querySelector(".macro-label");
-            if (lbl) lbl.textContent = "M" + (idx + 1);
+            if (lbl) lbl.textContent = "MACRO " + (idx + 1);
             slot.classList.toggle("learn", idx === macroLearnIdx);
         });
         document.body.classList.toggle("macro-learning", macroLearnIdx >= 0);
@@ -809,6 +823,32 @@
             applyMacroVisuals();
         });
     }
+
+    // Macro EDIT button — toggles macros-editing mode where tapping the count
+    // badge on a macro clears that macro's assignments.
+    var macroEditBtn = document.getElementById("macro-edit-btn");
+    var macroEditMode = false;
+    if (macroEditBtn) {
+        macroEditBtn.addEventListener("click", function (e) {
+            e.stopPropagation();
+            macroEditMode = !macroEditMode;
+            macroEditBtn.classList.toggle("active", macroEditMode);
+            document.body.classList.toggle("macros-editing", macroEditMode);
+            // Exit learn mode if entering edit mode (avoid conflicting state)
+            if (macroEditMode && macroLearnIdx >= 0) setMacroLearn(macroLearnIdx);
+        });
+    }
+    // Click on a count badge in editing mode → clear that macro
+    macroSlots.forEach(function (slot) {
+        var cnt = slot.querySelector(".macro-count");
+        if (!cnt) return;
+        cnt.addEventListener("click", function (e) {
+            if (!macroEditMode) return;
+            e.stopPropagation();
+            var idx = parseInt(slot.dataset.macro || "0", 10);
+            send({ type: "macro_assign", idx: idx, action: "clear" });
+        });
+    });
 
     function setMacroLearn(idx) {
         macroLearnIdx = (macroLearnIdx === idx) ? -1 : idx;
@@ -1390,29 +1430,28 @@
         }
     }
 
-    tapBtn.addEventListener("click", function () {
+    function registerTap() {
         var now = performance.now();
-        // Drop taps older than 2s — treat as a new tap sequence
         if (tapTimes.length && (now - tapTimes[tapTimes.length - 1]) > 2000) {
             tapTimes = [];
         }
         tapTimes.push(now);
-        // Keep only the last 6 taps for rolling average
         if (tapTimes.length > 6) tapTimes.shift();
         if (tapTimes.length >= 2) {
             var avgInterval = (tapTimes[tapTimes.length - 1] - tapTimes[0]) / (tapTimes.length - 1);
             setBpm(60000 / avgInterval);
         }
-        tapBtn.classList.add("pulse");
-        setTimeout(function () { tapBtn.classList.remove("pulse"); }, 100);
-    });
+    }
 
-    // Drag the BPM number up/down to change (pointer-based, works on touch)
+    // BPM number is both tap target (short press, no drag) AND drag-to-adjust.
     if (bpmVal) {
         var bpmDragStartY = 0, bpmDragStartVal = 120, bpmDragging = false;
+        var bpmPressTime = 0, bpmMoved = false;
         bpmVal.addEventListener("pointerdown", function (e) {
             e.preventDefault();
             bpmDragging = true;
+            bpmMoved = false;
+            bpmPressTime = performance.now();
             bpmDragStartY = e.clientY;
             bpmDragStartVal = bpm;
             try { bpmVal.setPointerCapture(e.pointerId); } catch (err) {}
@@ -1420,12 +1459,18 @@
         bpmVal.addEventListener("pointermove", function (e) {
             if (!bpmDragging) return;
             var dy = bpmDragStartY - e.clientY;
-            setBpm(bpmDragStartVal + Math.round(dy / 3));
+            if (Math.abs(dy) > 3) bpmMoved = true;
+            if (bpmMoved) setBpm(bpmDragStartVal + Math.round(dy / 3));
         });
         function bpmEndDrag(e) {
             if (!bpmDragging) return;
             bpmDragging = false;
             try { bpmVal.releasePointerCapture(e.pointerId); } catch (err) {}
+            var held = performance.now() - bpmPressTime;
+            if (!bpmMoved && held < 350) {
+                // Treated as a tap — contributes to BPM average
+                registerTap();
+            }
         }
         bpmVal.addEventListener("pointerup", bpmEndDrag);
         bpmVal.addEventListener("pointercancel", bpmEndDrag);
@@ -1483,6 +1528,167 @@
             send({ type: "drone_fade" });
         });
     }
+
+    // ═══ Recorder (record button + takes list) ═══
+    var recordBtn = document.getElementById("record-btn");
+    var recTimeEl = document.getElementById("rec-time");
+    var takesListEl = document.getElementById("takes-list");
+    var recording = false;
+    var recStartMs = 0;
+    var recTimer = null;
+
+    function fmtDur(sec) {
+        sec = Math.max(0, Math.floor(sec));
+        var m = Math.floor(sec / 60);
+        var s = sec % 60;
+        return m + ":" + (s < 10 ? "0" + s : s);
+    }
+
+    function setRecordingState(on) {
+        recording = !!on;
+        var recBox = document.getElementById("record-box");
+        if (recBox) recBox.classList.toggle("recording", recording);
+        if (recording) {
+            recStartMs = performance.now();
+            if (recTimer) clearInterval(recTimer);
+            recTimer = setInterval(function () {
+                if (!recording) return;
+                var elapsed = (performance.now() - recStartMs) / 1000;
+                if (recTimeEl) recTimeEl.textContent = fmtDur(elapsed);
+            }, 500);
+        } else {
+            if (recTimer) clearInterval(recTimer);
+            recTimer = null;
+            if (recTimeEl) recTimeEl.textContent = "";
+        }
+    }
+
+    if (recordBtn) {
+        recordBtn.addEventListener("click", function () {
+            send({ type: "record_toggle" });
+        });
+    }
+
+    var PAD_NOTES = [
+        { note: 60, label: "C" }, { note: 61, label: "C#" }, { note: 62, label: "D" },
+        { note: 63, label: "D#" }, { note: 64, label: "E" }, { note: 65, label: "F" },
+        { note: 66, label: "F#" }, { note: 67, label: "G" }, { note: 68, label: "G#" },
+        { note: 69, label: "A" }, { note: 70, label: "A#" }, { note: 71, label: "B" },
+    ];
+
+    function renderTakes(takes) {
+        if (!takesListEl) return;
+        takesListEl.innerHTML = "";
+        if (!takes || takes.length === 0) {
+            var empty = document.createElement("div");
+            empty.className = "takes-empty";
+            empty.textContent = "No recordings yet. Tap ● on the top bar to start one.";
+            takesListEl.appendChild(empty);
+            return;
+        }
+        takes.forEach(function (t) {
+            var row = document.createElement("div");
+            row.className = "take-row";
+
+            var name = document.createElement("span");
+            name.className = "take-name";
+            name.textContent = t.filename.replace(/\.wav$/, "");
+            row.appendChild(name);
+
+            var meta = document.createElement("span");
+            meta.className = "take-meta";
+            meta.textContent = fmtDur(t.duration_seconds);
+            row.appendChild(meta);
+
+            var audio = document.createElement("audio");
+            audio.controls = true;
+            audio.preload = "none";
+            audio.src = t.url;
+            row.appendChild(audio);
+
+            // Pad-target dropdown + SEND button
+            var sel = document.createElement("select");
+            sel.className = "pad-target";
+            sel.title = "Pad slot to copy into";
+            PAD_NOTES.forEach(function (n) {
+                var opt = document.createElement("option");
+                opt.value = n.note;
+                opt.textContent = n.label;
+                sel.appendChild(opt);
+            });
+            row.appendChild(sel);
+
+            var send2pad = document.createElement("button");
+            send2pad.className = "send-pad";
+            send2pad.textContent = "→ PAD";
+            send2pad.title = "Copy this recording into the selected pad slot";
+            send2pad.addEventListener("click", function () {
+                var note = parseInt(sel.value, 10);
+                send({ type: "save_to_pad_slot", source: t.filename, note: note });
+            });
+            row.appendChild(send2pad);
+
+            var recall = document.createElement("button");
+            recall.className = "recall";
+            recall.textContent = "⟲";
+            recall.title = "Recall parameters from record-start";
+            recall.disabled = !t.has_state;
+            recall.addEventListener("click", function () {
+                send({ type: "recall_recording_params", filename: t.filename });
+            });
+            row.appendChild(recall);
+
+            var del = document.createElement("button");
+            del.className = "delete";
+            del.textContent = "✕";
+            del.title = "Delete this take";
+            del.addEventListener("click", function () {
+                if (!confirm("Delete " + t.filename + "?")) return;
+                send({ type: "delete_recording", filename: t.filename });
+            });
+            row.appendChild(del);
+
+            takesListEl.appendChild(row);
+        });
+    }
+
+    function renderPadSlots(slots) {
+        var el = document.getElementById("pad-slots-list");
+        if (!el) return;
+        el.innerHTML = "";
+        slots.forEach(function (s) {
+            var slot = document.createElement("div");
+            slot.className = "pad-slot" + (s.loaded ? " loaded" : "");
+            var key = document.createElement("span");
+            key.className = "slot-key";
+            key.textContent = s.label;
+            slot.appendChild(key);
+            var dur = document.createElement("span");
+            dur.className = "slot-dur";
+            dur.textContent = s.loaded ? fmtDur(s.duration_seconds) : "—";
+            slot.appendChild(dur);
+            var clr = document.createElement("button");
+            clr.className = "clear";
+            clr.textContent = "✕";
+            clr.title = "Remove this slot (reverts to live synth for this key)";
+            clr.addEventListener("click", function () {
+                if (!confirm("Clear pad slot " + s.label + "?")) return;
+                send({ type: "clear_pad_slot", note: s.note });
+            });
+            slot.appendChild(clr);
+            el.appendChild(slot);
+        });
+    }
+
+    // Refresh takes + pad slots whenever the Record tab is opened.
+    var recordTabBtn = document.querySelector('.settings-tab[data-tab="record"]');
+    function refreshTakes() {
+        send({ type: "list_recordings" });
+        send({ type: "list_pad_slots" });
+    }
+    if (recordTabBtn) recordTabBtn.addEventListener("click", refreshTakes);
+    // Initial populate once on load
+    setTimeout(refreshTakes, 500);
 
     // ═══ Sympathetic Resonance (RES button) ═══
     var resBtn = document.getElementById("res-btn");
@@ -1566,6 +1772,7 @@
         "eq_low_freq": true, "eq_mid_freq": true, "eq_high_freq": true,
         "eq_lowcut_hz": true,
         "bus_comp_sc_hpf_hz": true,
+        "drone_cutoff_hz": true,
     };
 
     var EQ_GAIN_PARAMS = {
@@ -1605,7 +1812,8 @@
                 param === "reverb_space" || param === "unison_spread" ||
                 param === "osc1_max" || param === "osc2_max" ||
                 param === "leslie_depth" || param === "click_level" ||
-                param === "drive") {
+                param === "drive" || param === "drone_wash_mix" ||
+                param === "drone_air_mix" || param === "drone_double_mix") {
                 sendValue = value / 100;
                 displayValue = Math.round(sendValue * 100) + "%";
             } else if (param === "reverb_predelay_ms" || param === "haas_delay_ms" ||
@@ -1869,7 +2077,8 @@
                 param === "reverb_space" || param === "unison_spread" ||
                 param === "osc1_max" || param === "osc2_max" ||
                 param === "leslie_depth" || param === "click_level" ||
-                param === "drive") {
+                param === "drive" || param === "drone_wash_mix" ||
+                param === "drone_air_mix" || param === "drone_double_mix") {
                 slider.value = value * 100;
             } else if (param === "reverb_predelay_ms" || param === "haas_delay_ms" ||
                 param === "attack_ms" || param === "release_ms" ||

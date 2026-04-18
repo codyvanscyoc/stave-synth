@@ -19,6 +19,7 @@ from .synth_engine import (SynthEngine, BiquadLowpass, BiquadHighpass,
                            BusCompressor,
                            fader_to_amplitude, blend_to_amplitude)
 from .config import SAMPLE_RATE, BTL_MODE
+from .recorder import Recorder
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +126,10 @@ class JackEngine:
         self._pad_peak = 0.0
         self._piano_peak = 0.0
         self._piano_renders = 0
+
+        # Recorder — master-output WAV writer. Audio thread calls
+        # self.recorder.feed(l, r) each render block while recording.
+        self.recorder = Recorder(sample_rate=SAMPLE_RATE)
         self._last_error = None
         self._last_traceback = None
         self._midi_events_seen = 0
@@ -388,14 +393,50 @@ class JackEngine:
 
     def _render_loop(self):
         """Continuously render synth audio and keep the ring buffer full."""
+        import gc
         bs = self._bridge.bridge_get_buffer_size()
         sr = self._bridge.bridge_get_sample_rate()
         block_time = bs / sr
         consecutive_errors = 0
         MAX_CONSECUTIVE_ERRORS = 20
+        # Starvation detector: if the C-bridge ring buffer runs dry, the bridge
+        # outputs silence until Python catches up — audible as a gap/click.
+        _in_starvation = False
+        _starvation_count = 0
+        # Slow-block detector: threshold at 2× budget now (was 3×) so even
+        # short GC stalls are visible.
+        _slow_threshold_s = block_time * 2.0
 
+        # Audio-thread hardening:
+        #   1. Disable Python cyclic GC so generational collections don't fire
+        #      unpredictably in the middle of a render. Reference-counting still
+        #      works; we mostly hold numpy arrays which don't form cycles.
+        #   2. Ask the kernel for SCHED_FIFO real-time scheduling so this thread
+        #      gets CPU preferentially over regular work. Needs rtprio limit in
+        #      /etc/security/limits.d/audio.conf (installer sets this up).
+        try:
+            gc.disable()
+            logger.info("render thread: Python GC disabled")
+        except Exception as e:
+            logger.warning("gc.disable failed: %s", e)
+        try:
+            os.sched_setscheduler(0, os.SCHED_FIFO, os.sched_param(80))
+            logger.info("render thread: SCHED_FIFO priority 80")
+        except Exception as e:
+            logger.warning("couldn't set realtime priority: %s", e)
+
+        _last_iter_ts = time.perf_counter()
         while self.running:
             try:
+                # Per-iteration gap detector: if the time since last loop start
+                # exceeds ~15 ms, something paused us (not just our sleep).
+                _now = time.perf_counter()
+                _iter_gap = _now - _last_iter_ts
+                _last_iter_ts = _now
+                if _iter_gap > 0.015:  # > 15 ms between iterations = stall
+                    logger.warning("iter gap %.1fms (expected ~%.1fms) at %.3f",
+                                   _iter_gap * 1000, block_time * 500, time.time())
+
                 # Exit if JACK server disappeared — systemd will restart us
                 if self._bridge.bridge_is_shutdown():
                     logger.critical("JACK server shut down — exiting for systemd restart")
@@ -404,23 +445,61 @@ class JackEngine:
                 # Check ring buffer fill level
                 fill = self._bridge.bridge_get_ring_fill()
 
-                if fill < 4:
+                # STARVATION: ring dropped to 0 or 1 → C bridge is producing
+                # (or about to produce) silence. Log the event.
+                if fill <= 1:
+                    if not _in_starvation:
+                        _starvation_count += 1
+                        logger.warning("ring starved #%d fill=%d at %.3f",
+                                       _starvation_count, fill, time.time())
+                        _in_starvation = True
+                elif fill >= 4:
+                    _in_starvation = False
+
+                # Render whenever ring has less than 10 slots filled (was 6).
+                # With a 24-slot ring, steady-state fill is ~10 (~53 ms latency).
+                # A 50 ms Python stall drains 10→0 (gap), but most GC/FFI pauses
+                # under RT priority are <20 ms, so we stay safe. Bigger ring +
+                # higher threshold is the buffer-starvation safety margin.
+                if fill < 10:
                     # Snapshot note sets — the MIDI thread mutates these
                     # concurrently, and iterating live sets would raise a
                     # RuntimeError mid-render that gets swallowed silently.
                     if self.synth.sympathetic_enabled and not self.synth._sympathetic_suppress:
                         self.synth.set_sympathetic_notes(self._piano_notes_active.copy())
-                    if self.synth.drone_enabled and self._pad_notes_active:
-                        self.synth.set_drone_chord(list(self._pad_notes_active.copy()))
+                    # Drone is now UI-triggered only (pad-player keys). Render-loop
+                    # auto-latch to held MIDI notes was removed in 2026-04-17 when the
+                    # top-bar DRONE button was replaced with the 12-key pad player.
 
                     # Ring is getting low — render and push a block.
                     # If bus comp's FX-bypass mode is on, ask synth for dry + fx
                     # separately so we can route fx around the comp.
+                    _render_t0 = time.perf_counter()
                     fx_bus = None
                     if self.bus_comp.enabled and self.bus_comp_fx_bypass:
                         stereo, fx_bus = self.synth.render(bs, separate_fx=True)
                     else:
                         stereo = self.synth.render(bs)  # (2, n) stereo
+                    _render_dt = time.perf_counter() - _render_t0
+                    if _render_dt > _slow_threshold_s:
+                        logger.warning("slow render %.1fms (budget %.1fms) fill=%d at %.3f",
+                                       _render_dt * 1000, block_time * 1000, fill, time.time())
+                    # SYNTH-level peak check — catches clicks at the voice
+                    # engine / drone / reverb output, before bus-comp can mask them.
+                    if isinstance(stereo, np.ndarray) and stereo.size:
+                        synth_peak = float(np.abs(stereo).max())
+                        if synth_peak > 4.0 or not np.isfinite(synth_peak):
+                            loc = int(np.argmax(np.abs(stereo))) % bs
+                            logger.warning("SYNTH_SPIKE synth_peak=%.2f idx=%d at %.3f",
+                                           synth_peak, loc, time.time())
+                        prev_sp = getattr(self, "_prev_synth_peak", 0.0)
+                        if prev_sp > 0.3 and synth_peak > prev_sp * 2.5 and synth_peak > 0.8:
+                            loc = int(np.argmax(np.abs(stereo))) % bs
+                            logger.warning("SYNTH_JUMP prev=%.3f now=%.3f (%.1fx) idx=%d at %.3f",
+                                           prev_sp, synth_peak,
+                                           synth_peak / max(prev_sp, 0.001),
+                                           loc, time.time())
+                        self._prev_synth_peak = synth_peak
 
                     # Pad/synth bus level (pre-piano, pre-FX) for fader meters
                     pp = float(np.abs(stereo).max()) if stereo.size else 0.0
@@ -511,6 +590,27 @@ class JackEngine:
                     pre_peak = float(np.abs(stereo).max())
                     if pre_peak > self._peak_output:
                         self._peak_output = pre_peak
+                    # Pop-diagnostic: catch amplitude spikes + block-to-block
+                    # jumps (suggests a click) + NaN/Inf.
+                    if not np.isfinite(pre_peak):
+                        logger.warning("NON-FINITE peak (NaN/Inf) in stereo at %.3f", time.time())
+                        np.nan_to_num(stereo, copy=False, nan=0.0, posinf=1.0, neginf=-1.0)
+                    else:
+                        # Log absolute spikes above ~+14 dB (peak 5.0+)
+                        if pre_peak > 5.0:
+                            loc = int(np.argmax(np.abs(stereo))) % bs
+                            logger.warning("SPIKE pre-limiter peak=%.2f bs=%d idx=%d at %.3f",
+                                           pre_peak, bs, loc, time.time())
+                        # Block-to-block peak jump ≥3× when already audible
+                        # often correlates with an audible click/pop. Reset
+                        # baseline after each log so we don't spam.
+                        prev_peak = getattr(self, "_prev_pre_peak", 0.0)
+                        if prev_peak > 0.3 and pre_peak > prev_peak * 3.0 and pre_peak > 1.0:
+                            loc = int(np.argmax(np.abs(stereo))) % bs
+                            logger.warning("JUMP prev=%.2f now=%.2f (%.1fx) idx=%d at %.3f",
+                                           prev_peak, pre_peak, pre_peak/max(prev_peak, 0.001),
+                                           loc, time.time())
+                        self._prev_pre_peak = pre_peak
 
                     # Optional asymmetric drive (SAT button) — injects 2nd
                     # harmonic for tape/transformer-style warmth. Skipped when
@@ -527,6 +627,10 @@ class JackEngine:
 
                     left_f32 = stereo[0].astype(np.float32)
                     right_f32 = stereo[1].astype(np.float32)
+
+                    # Tap for the recorder (no-op when not recording).
+                    if self.recorder.is_recording():
+                        self.recorder.feed(left_f32, right_f32)
 
                     self._bridge.bridge_write_stereo(
                         left_f32.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),

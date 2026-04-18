@@ -21,7 +21,7 @@
  */
 
 #define MAX_BLOCK   2048   /* max samples per JACK block */
-#define RING_SLOTS  8      /* number of blocks buffered ahead */
+#define RING_SLOTS  24     /* number of blocks buffered ahead (was 8) */
 
 static float ring_l[RING_SLOTS][MAX_BLOCK];
 static float ring_r[RING_SLOTS][MAX_BLOCK];

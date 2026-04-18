@@ -15,6 +15,7 @@ from .config import WEBSOCKET_HOST, WEBSOCKET_PORT, HTTP_PORT
 logger = logging.getLogger(__name__)
 
 UI_DIR = Path(__file__).parent.parent / "ui"
+RECORDINGS_DIR = Path.home() / ".local" / "share" / "stave-synth" / "recordings"
 
 
 class WebSocketServer:
@@ -91,11 +92,25 @@ class WebSocketServer:
         await self._ws_server.wait_closed()
 
     def _run_http(self):
-        """Run a simple HTTP server to serve the UI files."""
+        """Run a simple HTTP server to serve the UI files + recordings dir."""
+
+        recordings_dir = RECORDINGS_DIR
+        recordings_dir.mkdir(parents=True, exist_ok=True)
+        ui_dir = UI_DIR
 
         class Handler(SimpleHTTPRequestHandler):
             def __init__(self, *args, **kwargs):
-                super().__init__(*args, directory=str(UI_DIR), **kwargs)
+                # default directory = UI; /recordings/* is rerouted in translate_path
+                super().__init__(*args, directory=str(ui_dir), **kwargs)
+
+            def translate_path(self, path):
+                # Serve WAVs from recordings dir under the /recordings/ prefix
+                if path.startswith("/recordings/"):
+                    rel = path[len("/recordings/"):].split("?", 1)[0].split("#", 1)[0]
+                    # Strip any traversal shenanigans
+                    rel = rel.replace("..", "").lstrip("/")
+                    return str(recordings_dir / rel)
+                return super().translate_path(path)
 
             def log_message(self, format, *args):
                 logger.debug("HTTP: " + format, *args)

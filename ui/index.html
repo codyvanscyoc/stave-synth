@@ -13,7 +13,7 @@
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="logo.png">
     <!-- Keep style.css and script.js cache-bust versions in sync -->
-    <link rel="stylesheet" href="style.css?v=52">
+    <link rel="stylesheet" href="style.css?v=74">
 </head>
 <body>
     <div id="app">
@@ -32,10 +32,15 @@
             <button id="freeze-btn" class="ctrl-btn ctrl-btn-sm hidden">FRZ</button>
             <button id="panic-btn" class="ctrl-btn panic-btn">STOP</button>
             <button id="menu-btn" class="ctrl-btn">MENU</button>
+            <div id="record-box">
+                <button id="record-btn" class="ctrl-btn ctrl-btn-sm" title="Record master output">
+                    <span class="rec-dot"></span>
+                </button>
+                <span id="rec-time" class="rec-time"></span>
+            </div>
             <div id="tempo-box">
-                <span id="bpm-val">120</span>
+                <span id="bpm-val" title="Tap or drag vertically">120</span>
                 <span class="tempo-unit">BPM</span>
-                <button id="tap-btn" class="ctrl-btn ctrl-btn-sm">TAP</button>
             </div>
             <div id="limit-midi-stack">
                 <div id="clip-indicator">LIMIT</div>
@@ -144,45 +149,46 @@
                 <button id="macro-layer-btn" class="ctrl-btn">A</button>
                 <div class="macro-slot" data-macro="0" style="--macro-color: #00D4AA">
                     <div class="macro-fill"></div>
-                    <span class="macro-label">M1</span>
+                    <span class="macro-label">MACRO 1</span>
                     <span class="macro-count">0</span>
                 </div>
                 <div class="macro-slot" data-macro="1" style="--macro-color: #FFB020">
                     <div class="macro-fill"></div>
-                    <span class="macro-label">M2</span>
+                    <span class="macro-label">MACRO 2</span>
                     <span class="macro-count">0</span>
                 </div>
                 <div class="macro-slot" data-macro="2" style="--macro-color: #B06EFF">
                     <div class="macro-fill"></div>
-                    <span class="macro-label">M3</span>
+                    <span class="macro-label">MACRO 3</span>
                     <span class="macro-count">0</span>
                 </div>
                 <div class="macro-slot" data-macro="3" style="--macro-color: #FF4D6A">
                     <div class="macro-fill"></div>
-                    <span class="macro-label">M4</span>
+                    <span class="macro-label">MACRO 4</span>
                     <span class="macro-count">0</span>
                 </div>
+                <button id="macro-edit-btn" class="ctrl-btn">EDIT</button>
             </div>
             <div id="pad-player">
                 <div class="pad-keys">
-                    <button class="pad-key" data-note="60">C</button>
-                    <button class="pad-key sharp" data-note="61">C#</button>
-                    <button class="pad-key" data-note="62">D</button>
-                    <button class="pad-key sharp" data-note="63">D#</button>
-                    <button class="pad-key" data-note="64">E</button>
-                    <button class="pad-key" data-note="65">F</button>
-                    <button class="pad-key sharp" data-note="66">F#</button>
-                    <button class="pad-key" data-note="67">G</button>
-                    <button class="pad-key sharp" data-note="68">G#</button>
-                    <button class="pad-key" data-note="69">A</button>
-                    <button class="pad-key sharp" data-note="70">A#</button>
-                    <button class="pad-key" data-note="71">B</button>
+                    <!-- Cool gradient: pastel teal → blue → purple across the octave. -->
+                    <button class="pad-key" data-note="60" style="--key-hue: 170"><span class="pk-main">C</span></button>
+                    <button class="pad-key sharp" data-note="61" style="--key-hue: 180"><span class="pk-main">C#</span><span class="pk-alt">Db</span></button>
+                    <button class="pad-key" data-note="62" style="--key-hue: 190"><span class="pk-main">D</span></button>
+                    <button class="pad-key sharp" data-note="63" style="--key-hue: 200"><span class="pk-main">D#</span><span class="pk-alt">Eb</span></button>
+                    <button class="pad-key" data-note="64" style="--key-hue: 210"><span class="pk-main">E</span></button>
+                    <button class="pad-key" data-note="65" style="--key-hue: 220"><span class="pk-main">F</span></button>
+                    <button class="pad-key sharp" data-note="66" style="--key-hue: 230"><span class="pk-main">F#</span><span class="pk-alt">Gb</span></button>
+                    <button class="pad-key" data-note="67" style="--key-hue: 240"><span class="pk-main">G</span></button>
+                    <button class="pad-key sharp" data-note="68" style="--key-hue: 250"><span class="pk-main">G#</span><span class="pk-alt">Ab</span></button>
+                    <button class="pad-key" data-note="69" style="--key-hue: 260"><span class="pk-main">A</span></button>
+                    <button class="pad-key sharp" data-note="70" style="--key-hue: 270"><span class="pk-main">A#</span><span class="pk-alt">Bb</span></button>
+                    <button class="pad-key" data-note="71" style="--key-hue: 280"><span class="pk-main">B</span></button>
                 </div>
                 <div class="pad-vol-wrap">
                     <span class="pad-vol-label">VOL</span>
                     <input type="range" id="pad-vol" min="0" max="100" value="100">
                 </div>
-                <button id="pad-fade-btn" class="ctrl-btn ctrl-btn-sm">FADE</button>
             </div>
         </div>
 
@@ -256,6 +262,7 @@
                     <button class="settings-tab" data-tab="reverb">REVERB</button>
                     <button class="settings-tab" data-tab="motion">MOTION</button>
                     <button class="settings-tab" data-tab="organ">ORGAN</button>
+                    <button class="settings-tab" data-tab="record">RECORD</button>
                     <button class="settings-tab" data-tab="global">GLOBAL</button>
                     <button id="settings-close" class="ctrl-btn">X</button>
                 </div>
@@ -740,6 +747,21 @@
                         </div>
                     </div>
 
+                    <!-- Record Tab -->
+                    <div class="settings-panel" data-panel="record">
+                        <div class="setting-section">RECORDINGS</div>
+                        <div class="help-text">Master-output takes saved to <code>~/.local/share/stave-synth/recordings/</code>. Each take also saves a JSON snapshot of the sound at record-start — tap ⟲ to recall that exact state. Tap → PAD to copy into a pad-player slot.</div>
+                        <div id="takes-list" class="takes-list">
+                            <div class="takes-empty">No recordings yet. Tap ● on the top bar to start one.</div>
+                        </div>
+
+                        <div class="setting-section">PAD SLOTS</div>
+                        <div class="help-text">One WAV per key. Loaded at startup from <code>~/.local/share/stave-synth/pad_samples/</code>. Any key without a sample falls back to the live synth drone.</div>
+                        <div id="pad-slots-list" class="pad-slots-list">
+                            <div class="takes-empty">Loading…</div>
+                        </div>
+                    </div>
+
                     <!-- Global Tab -->
                     <div class="settings-panel" data-panel="global">
                         <div class="setting-section">BUS COMPRESSOR</div>
@@ -973,6 +995,6 @@
 
     </div>
 
-    <script src="script.js?v=52"></script>
+    <script src="script.js?v=71"></script>
 </body>
 </html>

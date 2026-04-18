@@ -3,6 +3,7 @@
 Performance-critical: all audio processing uses vectorized NumPy.
 """
 
+import logging
 import numpy as np
 from dataclasses import dataclass, field
 
@@ -11,6 +12,8 @@ try:
     HAS_SCIPY = True
 except ImportError:
     HAS_SCIPY = False
+
+logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 48000
 TWO_PI = 2.0 * np.pi
@@ -850,6 +853,182 @@ class FeedbackDelayReverb:
         return np.array([out_l, out_r])
 
 
+class SamplePlayer:
+    """Single-slot WAV playback with attack/release envelope and seamless
+    loop crossfade. NO pitch-shift — each pad note has its own native-pitch
+    recording. Fully vectorized per block.
+
+    Load via ``load(path)``. Trigger via ``trigger()``; fade out via
+    ``release()``. Mix into output with ``process(n, out_l, out_r)``.
+    """
+
+    ATTACK_S = 4.0     # 4 s — linear ramp 0→1
+    RELEASE_S = 4.0    # 4 s — linear ramp 1→0
+    XFADE_MS = 500     # 500 ms — generous loop crossfade hides any seam
+
+    def __init__(self, sample_rate: int = SAMPLE_RATE):
+        self.sample_rate = int(sample_rate)
+        self.samples_l = None   # np.ndarray float64 or None when unloaded
+        self.samples_r = None
+        self.length = 0
+        self.loaded = False
+        self.active = False
+        self.read_pos = 0.0
+        self.env = 0.0
+        self.env_target = 0.0
+        self.xfade_len = int(self.XFADE_MS * sample_rate / 1000.0)
+
+    def load(self, path) -> bool:
+        try:
+            from scipy.io import wavfile
+            sr, data = wavfile.read(str(path))
+        except Exception as e:
+            logger.warning("SamplePlayer.load(%s): %s", path, e)
+            self.loaded = False
+            return False
+        # Normalize to float64 in [-1, 1]
+        if data.dtype == np.int16:
+            f = data.astype(np.float64) / 32768.0
+        elif data.dtype == np.int32:
+            f = data.astype(np.float64) / 2147483648.0
+        elif data.dtype == np.uint8:
+            f = (data.astype(np.float64) - 128.0) / 128.0
+        elif data.dtype in (np.float32, np.float64):
+            f = data.astype(np.float64)
+        else:
+            logger.warning("SamplePlayer: unsupported dtype %s", data.dtype)
+            return False
+        # Mono or stereo split
+        if f.ndim == 1:
+            left = f
+            right = f
+        else:
+            left = f[:, 0]
+            right = f[:, 1] if f.shape[1] > 1 else f[:, 0]
+        # Resample if the file sample rate differs from our engine's
+        if sr != self.sample_rate:
+            try:
+                from scipy.signal import resample_poly
+                import math
+                g = math.gcd(int(sr), int(self.sample_rate))
+                up = int(self.sample_rate) // g
+                down = int(sr) // g
+                left = resample_poly(left, up, down)
+                right = resample_poly(right, up, down)
+                logger.info("SamplePlayer: resampled %d→%d Hz for %s",
+                            sr, self.sample_rate, path)
+            except Exception as e:
+                logger.warning("SamplePlayer: resample failed (%s); playing at "
+                               "native rate — pitch will be off", e)
+        self.samples_l = np.ascontiguousarray(left, dtype=np.float64)
+        self.samples_r = np.ascontiguousarray(right, dtype=np.float64)
+        self.length = self.samples_l.shape[0]
+        # Xfade length can't exceed a quarter of the sample (safety for tiny files)
+        self.xfade_len = max(1, min(int(self.XFADE_MS * self.sample_rate / 1000.0),
+                                    self.length // 4))
+        self.loaded = True
+        self.active = False
+        self.read_pos = 0.0
+        self.env = 0.0
+        self.env_target = 0.0
+        return True
+
+    def trigger(self):
+        """Start playback (or re-trigger). Resets read position if idle."""
+        if not self.loaded:
+            return
+        if not self.active:
+            self.read_pos = 0.0
+            self.env = 0.0
+        self.env_target = 1.0
+        self.active = True
+
+    def release(self):
+        """Begin fade-out. Voice deactivates when envelope hits ~0."""
+        self.env_target = 0.0
+
+    def process(self, n: int, out_l: np.ndarray, out_r: np.ndarray):
+        """Additively mix (enveloped) playback into out_l / out_r. No-op
+        when idle."""
+        if not self.active or not self.loaded:
+            return
+        sr = self.sample_rate
+        # Envelope — LINEAR ramp (predictable AR, unlike exp-approach which
+        # reaches only 63% by its "time" point). Attack ramps env 0→1 over
+        # ATTACK_S seconds; release ramps env→0 over RELEASE_S seconds.
+        if self.env_target > self.env:
+            step = n / (self.ATTACK_S * sr)
+            new_env = min(self.env_target, self.env + step)
+        elif self.env_target < self.env:
+            step = n / (self.RELEASE_S * sr)
+            new_env = max(self.env_target, self.env - step)
+        else:
+            new_env = self.env
+        if self.env_target < 0.001 and new_env <= 0.0001:
+            # Fully faded out — stop rendering this voice
+            self.active = False
+            self.env = 0.0
+            return
+        env_ramp = np.linspace(self.env, new_env, n, dtype=np.float64)
+        self.env = new_env
+
+        # Read positions (speed = 1.0 by design). Playback goes 0..length-1 on
+        # the first pass; when a position would pass `length`, we wrap by
+        # subtracting loop_size (= length - xfade_len). That puts the next
+        # iteration at position xfade_len, so samples [0..xfade_len) are only
+        # heard during the crossfade's fade-in — never doubled.
+        loop_size = max(1, self.length - self.xfade_len)
+        raw_positions = self.read_pos + np.arange(n, dtype=np.float64)
+        positions = raw_positions.copy()
+        # Up to 2 wraps per block (defensive; one is the normal case)
+        mask = positions >= self.length
+        positions[mask] -= loop_size
+        mask = positions >= self.length
+        positions[mask] -= loop_size
+        idx = np.clip(positions.astype(np.int64), 0, self.length - 1)
+
+        primary_l = self.samples_l[idx]
+        primary_r = self.samples_r[idx]
+
+        # Crossfade zone: last xfade_len samples blend with sample head. Primary
+        # fades out, secondary (the head) fades in — equal-power (cos/sin).
+        xfade_start = self.length - self.xfade_len
+        in_xf = idx >= xfade_start
+        if np.any(in_xf):
+            sec_idx = np.clip(idx - xfade_start, 0, self.length - 1)
+            t = np.zeros(n, dtype=np.float64)
+            t[in_xf] = (idx[in_xf] - xfade_start) / float(self.xfade_len)
+            angle = t * (np.pi * 0.5)
+            fade_out = np.cos(angle)
+            fade_in = np.sin(angle)
+            sec_l = self.samples_l[sec_idx]
+            sec_r = self.samples_r[sec_idx]
+            out_l_block = np.where(in_xf,
+                                   primary_l * fade_out + sec_l * fade_in,
+                                   primary_l)
+            out_r_block = np.where(in_xf,
+                                   primary_r * fade_out + sec_r * fade_in,
+                                   primary_r)
+        else:
+            out_l_block = primary_l
+            out_r_block = primary_r
+
+        out_l += out_l_block * env_ramp
+        out_r += out_r_block * env_ramp
+        # Advance: next block's first position = last position + 1 (speed=1),
+        # wrapped through loop_size exactly like the per-sample wrap above.
+        next_pos = positions[-1] + 1.0
+        if next_pos >= self.length:
+            next_pos -= loop_size
+        self.read_pos = next_pos
+
+    def reset(self):
+        self.active = False
+        self.read_pos = 0.0
+        self.env = 0.0
+        self.env_target = 0.0
+
+
 class BusCompressor:
     """SSL G-style stereo bus compressor.
 
@@ -1126,6 +1305,18 @@ class SynthEngine:
         self.drone_enabled = False
         self.drone_level = 1.0           # user volume multiplier (pad-player fader)
         self._drone_fade_scale = 1.0     # 0..1, ramped by FADE button (master-fade style)
+        # Key-change crossfade: when switching keys, fade OUT to near-silence,
+        # swap freqs, fade IN. Pending freqs queue the next-key target.
+        self._drone_pending_root_freq = None
+        self._drone_pending_fifth_freq = None
+        # Pad sample library: MIDI note (60..71) → SamplePlayer if a WAV exists
+        # in ~/.local/share/stave-synth/pad_samples/. Populated by load_pad_samples().
+        self._pad_samples: dict = {}
+        self._pad_samples_dir = None   # set by load_pad_samples()
+        # Drone DSP (filter/reverb/air/double) is intentionally GONE — the pad
+        # player will be fed by pre-recorded sample playback in the next pass.
+        # Until then, the drone renders as a simple root+fifth bed straight
+        # into stereo_out (no FX). Keeps CPU minimal and settings UI clean.
         self._drone_root_freq = 0.0
         self._drone_fifth_freq = 0.0
         self._drone_root_freq_cur = 0.0
@@ -1241,8 +1432,19 @@ class SynthEngine:
                 return
 
         if len(self.voices) >= self.max_voices:
-            oldest = min(self.voices, key=lambda v: v.age)
-            self.voices.remove(oldest)
+            # Voice stealing: prefer an already-releasing voice (quietest),
+            # fall back to oldest. Then trigger release + drop immediately.
+            # For the fallback-oldest case, set ADSR level to 0 before removal
+            # so the freed voice buffer won't cause a waveform discontinuity
+            # when its slot gets re-used by the new voice below.
+            releasing = [v for v in self.voices if v.adsr.stage == ADSREnvelope.RELEASE]
+            if releasing:
+                victim = min(releasing, key=lambda v: v.adsr.level)
+            else:
+                victim = min(self.voices, key=lambda v: v.age)
+                victim.adsr.level = 0.0    # zero so next block starts cleanly
+            victim.adsr.stage = ADSREnvelope.OFF
+            self.voices.remove(victim)
 
         # Randomize unison starting phases so detuned voices decorrelate from
         # the first sample — classic supersaw trick. Aligned phases (all 0)
@@ -1503,17 +1705,41 @@ class SynthEngine:
         self._drone_latched = True
 
     def set_drone_key(self, root_note: int):
-        """Force the drone to a specific root note (used by the pad-player UI).
-        Unlike set_drone_chord, this bypasses the latch so the user can switch
-        keys freely. Root is placed an octave below + fifth above that, matching
-        the organic-pad feel of the MIDI-triggered drone."""
+        """Force the drone to a specific root note (pad-player UI).
+
+        Behavior:
+          * First trigger or re-tap after fade-out → set freqs immediately and
+            ramp gain in.
+          * Switching keys while drone is audibly playing → queue the new
+            freqs as 'pending', ramp gain to 0 (fade out). Once silent, the
+            render loop swaps in the new freqs and ramps gain back up.
+            Net effect: slow cross-fade (fade out → silent swap → fade in),
+            no portamento, no click.
+        """
         self.drone_enabled = True
-        drone_root = max(24, int(root_note) - 12)
-        drone_fifth = max(24, int(root_note) - 12 + 7)
-        self._drone_root_freq = 440.0 * (2.0 ** ((drone_root - 69) / 12.0))
-        self._drone_fifth_freq = 440.0 * (2.0 ** ((drone_fifth - 69) / 12.0))
-        self._drone_gain_target = 0.5
         self._drone_latched = True
+        new_root_midi = max(24, int(root_note) - 12)
+        new_fifth_midi = max(24, int(root_note) - 12 + 7)
+        new_root_freq = 440.0 * (2.0 ** ((new_root_midi - 69) / 12.0))
+        new_fifth_freq = 440.0 * (2.0 ** ((new_fifth_midi - 69) / 12.0))
+
+        same_freq = (abs(self._drone_root_freq - new_root_freq) < 0.5)
+        audibly_playing = self._drone_gain > 0.05
+
+        if audibly_playing and not same_freq:
+            # Queue the swap; gain ramps to 0 then render loop snaps and ramps back up.
+            self._drone_pending_root_freq = new_root_freq
+            self._drone_pending_fifth_freq = new_fifth_freq
+            self._drone_gain_target = 0.0
+        else:
+            # Fresh start or re-tap while near-silent → set immediately, fade in.
+            self._drone_root_freq = new_root_freq
+            self._drone_fifth_freq = new_fifth_freq
+            self._drone_root_freq_cur = new_root_freq
+            self._drone_fifth_freq_cur = new_fifth_freq
+            self._drone_pending_root_freq = None
+            self._drone_pending_fifth_freq = None
+            self._drone_gain_target = 0.5
 
     def drone_off(self):
         """Fade out the drone and clear latch so next enable re-picks the root.
@@ -1522,6 +1748,76 @@ class SynthEngine:
         self._drone_latched = False
         self._drone_root_freq_cur = 0.0
         self._drone_fifth_freq_cur = 0.0
+
+    # ═══ Pad sample library ═══
+    #
+    # On startup, scan ~/.local/share/stave-synth/pad_samples/ for per-note WAVs.
+    # Filename convention: pad_<NOTE>.wav where NOTE is C, Cs, D, Ds, E, F, Fs,
+    # G, Gs, A, As, B (MIDI 60..71).
+    #
+    # When the pad-player UI sends a key, JackEngine / main.py calls
+    # trigger_pad_sample(note) first — if that returns True, the sampler
+    # produced the drone for that key. If False (no WAV for this slot), the
+    # caller falls back to the live root+fifth oscillator bed.
+
+    _PAD_NOTE_FILENAMES = {
+        60: "pad_C.wav", 61: "pad_Cs.wav", 62: "pad_D.wav", 63: "pad_Ds.wav",
+        64: "pad_E.wav", 65: "pad_F.wav", 66: "pad_Fs.wav", 67: "pad_G.wav",
+        68: "pad_Gs.wav", 69: "pad_A.wav", 70: "pad_As.wav", 71: "pad_B.wav",
+    }
+
+    def load_pad_samples(self, pad_dir=None) -> int:
+        """Load any pad-slot WAVs found in pad_dir. Returns the count loaded.
+        Creates the directory if it doesn't exist so users can drop files in."""
+        from pathlib import Path
+        if pad_dir is None:
+            pad_dir = Path.home() / ".local" / "share" / "stave-synth" / "pad_samples"
+        pad_dir = Path(pad_dir)
+        pad_dir.mkdir(parents=True, exist_ok=True)
+        self._pad_samples_dir = pad_dir
+        loaded = 0
+        for note, fname in self._PAD_NOTE_FILENAMES.items():
+            path = pad_dir / fname
+            if not path.exists():
+                # Leave the slot empty — caller will fall back to live synth
+                self._pad_samples.pop(note, None)
+                continue
+            player = self._pad_samples.get(note)
+            if player is None:
+                player = SamplePlayer(self.sample_rate)
+                self._pad_samples[note] = player
+            if player.load(path):
+                loaded += 1
+            else:
+                self._pad_samples.pop(note, None)
+        logger.info("Pad samples loaded: %d / 12 from %s", loaded, pad_dir)
+        return loaded
+
+    def trigger_pad_sample(self, note: int) -> bool:
+        """Trigger the pad slot for this MIDI note. Returns True if a sample
+        was available and triggered. False means no slot file — caller should
+        fall back to the live synth drone."""
+        note = int(note)
+        player = self._pad_samples.get(note)
+        if player is None or not player.loaded:
+            return False
+        # Release any other active slots so we don't stack notes
+        for n, p in self._pad_samples.items():
+            if n != note and p.active:
+                p.release()
+        player.trigger()
+        return True
+
+    def release_pad_samples(self):
+        """Fade out all active pad samples (e.g., when switching to live mode)."""
+        for p in self._pad_samples.values():
+            if p.active:
+                p.release()
+
+    def pad_sample_slot_loaded(self, note: int) -> bool:
+        """True if a WAV is loaded for this MIDI note slot."""
+        p = self._pad_samples.get(int(note))
+        return p is not None and p.loaded
 
     def render(self, n_samples: int, separate_fx: bool = False):
         if n_samples == 0:
@@ -1797,39 +2093,50 @@ class SynthEngine:
             self.osc2_indep_filter_l.set_params(self._osc2_indep_cutoff_cur, 0.707)
             self.osc2_indep_filter_r.set_params(self._osc2_indep_cutoff_cur, 0.707)
 
-        # Chord drone: root+fifth an octave below, through filter+reverb
+        # Chord drone — simple root + fifth mono bed, no FX. Added straight
+        # into stereo_out at the end of render. The recorder pipeline will
+        # replace this with sampled playback in a future session.
+        if not hasattr(self, "_drone_low") or self._drone_low.shape[0] < n_samples:
+            self._drone_low = np.zeros(max(n_samples, self._buf_size), dtype=np.float64)
+        drone_low = self._drone_low[:n_samples]
+        drone_low[:] = 0.0
+
+        def _render_drone_voices():
+            """Emit root+fifth into drone_low using current smoothed freqs."""
+            lvl = self.drone_level * self._drone_fade_scale
+            inc1 = TWO_PI * self._drone_root_freq_cur / self.sample_rate
+            ph1 = self._drone_root_phase + inc1 * indices
+            drone_low[:] += generate_waveform(self.osc1_waveform, ph1) * self._drone_gain * 0.30 * lvl
+            self._drone_root_phase = ph1[-1] % TWO_PI
+            inc2 = TWO_PI * self._drone_fifth_freq_cur / self.sample_rate
+            ph2 = self._drone_fifth_phase + inc2 * indices
+            drone_low[:] += generate_waveform(self.osc1_waveform, ph2) * self._drone_gain * 0.22 * lvl
+            self._drone_fifth_phase = ph2[-1] % TWO_PI
+
         if self.drone_enabled and self._drone_root_freq > 0:
             drone_alpha = 1.0 - np.exp(-n_samples / (0.5 * self.sample_rate))
             self._drone_gain += drone_alpha * (self._drone_gain_target - self._drone_gain)
-            # Smooth frequency glide in log space (~300ms)
-            freq_alpha = 1.0 - np.exp(-n_samples / (0.3 * self.sample_rate))
+            # Key-change swap: once fade-out reaches near-silence, snap pending
+            # freqs in and start ramping gain back up.
+            if self._drone_pending_root_freq is not None and self._drone_gain < 0.01:
+                self._drone_root_freq = self._drone_pending_root_freq
+                self._drone_fifth_freq = self._drone_pending_fifth_freq
+                self._drone_root_freq_cur = self._drone_root_freq
+                self._drone_fifth_freq_cur = self._drone_fifth_freq
+                self._drone_pending_root_freq = None
+                self._drone_pending_fifth_freq = None
+                self._drone_gain_target = 0.5
             if self._drone_root_freq_cur < 20.0:
                 self._drone_root_freq_cur = self._drone_root_freq
                 self._drone_fifth_freq_cur = self._drone_fifth_freq
-            else:
-                lr = np.log(self._drone_root_freq_cur)
-                lr += freq_alpha * (np.log(self._drone_root_freq) - lr)
-                self._drone_root_freq_cur = np.exp(lr)
-                lf = np.log(self._drone_fifth_freq_cur)
-                lf += freq_alpha * (np.log(self._drone_fifth_freq) - lf)
-                self._drone_fifth_freq_cur = np.exp(lf)
             if self._drone_gain > 0.001:
-                level = self.drone_level * self._drone_fade_scale
-                inc1 = TWO_PI * self._drone_root_freq_cur / self.sample_rate
-                ph1 = self._drone_root_phase + inc1 * indices
-                root_tone = generate_waveform(self.osc1_waveform, ph1) * self._drone_gain * 0.30 * level
-                self._drone_root_phase = ph1[-1] % TWO_PI
-                inc2 = TWO_PI * self._drone_fifth_freq_cur / self.sample_rate
-                ph2 = self._drone_fifth_phase + inc2 * indices
-                fifth_tone = generate_waveform(self.osc1_waveform, ph2) * self._drone_gain * 0.22 * level
-                self._drone_fifth_phase = ph2[-1] % TWO_PI
-                drone_mix = root_tone + fifth_tone
-                filter_buf[0] += drone_mix
-                filter_buf[1] += drone_mix
+                _render_drone_voices()
         elif not self.drone_enabled and self._drone_gain > 0.001:
-            # Fading out
+            # Fading out — keep rendering with decaying gain (no click)
             drone_alpha = 1.0 - np.exp(-n_samples / (0.5 * self.sample_rate))
             self._drone_gain += drone_alpha * (0.0 - self._drone_gain)
+            if self._drone_gain > 0.001 and self._drone_root_freq_cur > 20.0:
+                _render_drone_voices()
 
         # Apply stereo filters and combine
         # Filter gain compensation: reduces volume as filter opens to prevent brightness = loudness
@@ -2011,14 +2318,32 @@ class SynthEngine:
         stereo_out[0] = output_l * dry_gain + reverb_out[0] * wet_gain_val
         stereo_out[1] = output_r * dry_gain + reverb_out[1] * wet_gain_val
 
+        # Pad sample playback → dedicated stereo scratch so we can also add it
+        # to dry_bus in fx-bypass mode. Each SamplePlayer applies its own
+        # attack/release envelope + loop crossfade.
+        if not hasattr(self, "_pad_sample_l") or self._pad_sample_l.shape[0] < n_samples:
+            self._pad_sample_l = np.zeros(max(n_samples, self._buf_size), dtype=np.float64)
+            self._pad_sample_r = np.zeros(max(n_samples, self._buf_size), dtype=np.float64)
+        pad_l = self._pad_sample_l[:n_samples]
+        pad_r = self._pad_sample_r[:n_samples]
+        pad_l[:] = 0.0
+        pad_r[:] = 0.0
+        for _player in self._pad_samples.values():
+            if _player.active:
+                _player.process(n_samples, pad_l, pad_r)
+
+        # Drone bus — live synth root+fifth (when no sample) + any active pad
+        # samples. VOL fader (drone_level) scales both paths uniformly.
+        pad_vol = self.drone_level * self._drone_fade_scale
+        stereo_out[0] += drone_low + pad_l * pad_vol
+        stereo_out[1] += drone_low + pad_r * pad_vol
+
         if separate_fx:
-            # dry bus = pre-FX pad × dry_gain.
+            # dry bus = pre-FX pad × dry_gain + drone + pad samples
             # fx bus = final − dry = delay taps × dry_gain + reverb wet × wet_gain_val.
-            # Summing dry + fx post-comp reconstructs the same total mix as the
-            # single-return path, but the comp only sees the dry bus.
             dry_bus = np.empty((2, n_samples), dtype=np.float64)
-            dry_bus[0] = _pre_fx_dry_l * dry_gain
-            dry_bus[1] = _pre_fx_dry_r * dry_gain
+            dry_bus[0] = _pre_fx_dry_l * dry_gain + drone_low + pad_l * pad_vol
+            dry_bus[1] = _pre_fx_dry_r * dry_gain + drone_low + pad_r * pad_vol
             fx_bus = np.empty((2, n_samples), dtype=np.float64)
             fx_bus[0] = stereo_out[0] - dry_bus[0]
             fx_bus[1] = stereo_out[1] - dry_bus[1]
