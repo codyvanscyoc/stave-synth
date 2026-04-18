@@ -16,6 +16,21 @@ high_cut_hz  = hslider("high_cut_hz", 7000.0,  500.0, 20000.0,    1.0)  : si.smo
 freeze_in    = hslider("freeze_input",   1.0,   0.0,     1.0,   0.001) : si.smoo;
 er_scale     = hslider("er_scale",       0.4,   0.0,     1.0,   0.001);
 
+// ═══════════════════════════════════════════════════════════════════════
+// Type-variant params — zero for WASH/HALL/ROOM/DRONE (params-only presets);
+// non-zero enables BLOOM (shimmer_fb) and GHOST (noise_mod). PLATE uses a
+// different .so entirely. At both=0 these reduce to the original WASH FDN
+// as a mathematical identity (no sonic change).
+//
+//   shimmer_fb — pitch-shifted tail re-injected into FDN input via a self-
+//   feeding outer loop. Each loop cycle adds +12 st → ethereal bloom.
+//
+//   noise_mod — slow filtered noise added to the per-line damp coefficient,
+//   producing a breathing/modulated tail density.
+// ═══════════════════════════════════════════════════════════════════════
+shimmer_fb = hslider("shimmer_fb", 0.0, 0.0, 1.0, 0.001) : si.smoo;
+noise_mod  = hslider("noise_mod",  0.0, 0.0, 1.0, 0.001) : si.smoo;
+
 SR_K        = ma.SR / 1000.0;   // samples per ms
 MAX_PREDEL  = 8192;             // >150 ms at 48k
 MAX_ER      = 4096;             // >80 ms at 48k
@@ -70,7 +85,14 @@ line_delay(i) = de.fdelayltv(3, MAX_FDN, delay_samp)
 
 // Per-line feedback filter: one-pole damping LP → Butterworth hi/lo cut → fb gain
 // Python form: y[n] = (1-damp)*x[n] + damp*y[n-1]  ⇔  ((1-damp)*x) : fi.pole(damp)
-damp_lp = _ * (1.0 - damp) : + ~ *(damp);
+//
+// damp_eff folds in the optional GHOST noise modulation. When noise_mod=0,
+// damp_eff == damp exactly (identity), so WASH behavior is preserved.
+// Slow-filtered noise is shared across all 8 lines for a unified breathing
+// tail — per-line noise would feel like shimmer/phasing, not ghost.
+slow_noise = no.noise : fi.lowpass(2, 2.5);
+damp_eff   = max(0.01, min(0.95, damp + noise_mod * slow_noise * 0.25));
+damp_lp    = _ * (1.0 - damp_eff) : + ~ *(damp_eff);
 
 line_fb =
       damp_lp
@@ -123,9 +145,41 @@ with {
 };
 
 // ═══════════════════════════════════════════════════════════════════════
-// Full wet path: stereo (L,R) → stereo wet (ER + FDN tail).
-// Dry/wet mix is handled in Python (same as current behaviour).
+// BLOOM shimmer — a pitch-up +12 ST copy of the wet tail fed back into the
+// FDN input. Creates the classic self-feeding octave bloom: each pass through
+// the FDN transposes again, tail rises forever (until damp catches it).
+//
+// ef.transpose(w, x, s) is a crossfaded-delay pitch shifter. At s=0 it's a
+// mathematical passthrough (both delay taps have d=0), so multiplying s by
+// shimmer_fb means shimmer_fb=0 is a TRUE identity — no comb artifacts.
+//
+// The outer `~` adds a 1-sample feedback delay, which is imperceptible
+// against the pitch-shifter's own ~100ms window.
 // ═══════════════════════════════════════════════════════════════════════
-stave_reverb = _,_ <: fdn_wet, er_wet :> _,_;
+// +7 semitones (perfect fifth) instead of +12 — delay-line pitch-shift at a
+// fifth produces a harmonically musical rise that sits inside the chord
+// instead of drifting off-key over many feedback cycles. Multiplying the
+// shift by shimmer_fb keeps shimmer_fb=0 as a true mathematical passthrough.
+pitch_up_sh(sig) = ef.transpose(2048, 256, 7.0 * shimmer_fb, sig);
+
+shimmer_fb_path(wet_l, wet_r) = shim_l, shim_r
+with {
+    wet_mono = (wet_l + wet_r) * 0.5;
+    shim_l   = pitch_up_sh(wet_mono) * shimmer_fb;
+    shim_r   = pitch_up_sh(wet_mono) * shimmer_fb;
+};
+
+// Inner fdn-with-shim: 4 inputs (in + shim_fb) → 2 outputs (wet L/R).
+fdn_wet_inner(in_l, in_r, shim_l, shim_r) = fdn_wet(in_l + shim_l, in_r + shim_r);
+
+// Outer recursion. At shimmer_fb=0 the feedback signal is 0, so this is
+// mathematically identical to fdn_wet alone.
+fdn_wet_shimmered = fdn_wet_inner ~ shimmer_fb_path;
+
+// ═══════════════════════════════════════════════════════════════════════
+// Full wet path: stereo (L,R) → stereo wet (ER + FDN tail with optional
+// BLOOM shimmer + optional GHOST damp noise). Dry/wet mix in Python.
+// ═══════════════════════════════════════════════════════════════════════
+stave_reverb = _,_ <: fdn_wet_shimmered, er_wet :> _,_;
 
 process = stave_reverb;

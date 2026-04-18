@@ -1428,7 +1428,7 @@ body.macro-learning .setting-row:active {
 }
 
 .setting-label {
-    flex: 0 0 35%;
+    flex: 0 0 30%;
     font-size: clamp(9px, 1.6vw, 12px);
     color: var(--text-green-dim);
 }
@@ -1483,6 +1483,46 @@ body.macro-learning .setting-row:active {
 .setting-select option {
     background: var(--bg);
     color: var(--text-green);
+}
+
+/* Reset button — piggybacks on .ctrl-btn + .ctrl-btn-sm so it inherits the
+ * theme's bg/border/color exactly, matching every other button in the app.
+ * Only override what's different: tighter square proportions and a cursor. */
+.preset-reset-btn {
+    min-width: 2.2em;
+    padding: 0.3vh 0.6vw;
+    margin-left: 0.5vw;
+    flex: 0 0 auto;
+}
+
+/* Text-label variant (e.g. "PERFECT") — a little wider than the ↻ variant
+ * so the label has breathing room. Same theme/classes apply. */
+.preset-reset-btn:not(:empty) {
+    padding-left: 1vw;
+    padding-right: 1vw;
+}
+
+/* Preset-type row: narrow the select so the description has room to wrap
+ * into the remaining space. Scoped via :has() so it only affects rows that
+ * actually contain a reset button. */
+.setting-row:has(.preset-reset-btn) .setting-select {
+    flex: 0 0 auto;
+    min-width: 6em;
+}
+
+/* Dim description to the right of the reset button — wraps across lines
+ * when text exceeds row width. Smaller size than .help-text to sit closer
+ * to the inputs without competing for attention. */
+.preset-desc {
+    flex: 1 1 auto;
+    min-width: 0;
+    color: var(--text-green-dim);
+    font-size: clamp(8px, 1.2vw, 10px);
+    font-weight: 400;
+    line-height: 1.4;
+    margin-left: 0.6vw;
+    white-space: normal;
+    word-wrap: break-word;
 }
 
 /* Knob row — compact circular controls, terminal theme */

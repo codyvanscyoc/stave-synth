@@ -13,7 +13,7 @@
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="logo.png">
     <!-- Keep style.css and script.js cache-bust versions in sync -->
-    <link rel="stylesheet" href="style.css?v=75">
+    <link rel="stylesheet" href="style.css?v=87">
 </head>
 <body>
     <div id="app">
@@ -493,12 +493,23 @@
                                 <span>Compressor Enabled</span>
                             </label>
                         </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Restore</span>
+                            <button class="ctrl-btn ctrl-btn-sm preset-reset-btn" id="piano-comp-perfect" title="Apply the smooth optical-style preset (threshold/ratio/attack/release/knee all at musical defaults)">PERFECT</button>
+                            <span class="preset-desc">Optical-style glue — slow attack, soft knee, musical release. Good starting point.</span>
+                        </div>
                         <div class="knob-row">
+                            <div class="knob">
+                                <div class="knob-label">DRIVE</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="comp_drive_db" min="-12" max="12" value="0">
+                                <span class="setting-value">0dB</span>
+                            </div>
                             <div class="knob">
                                 <div class="knob-label">THRESH</div>
                                 <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="comp_threshold_db" min="-30" max="0" value="-12">
-                                <span class="setting-value">-12dB</span>
+                                <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="comp_threshold_db" min="-30" max="0" value="-20">
+                                <span class="setting-value">-20dB</span>
                             </div>
                             <div class="knob">
                                 <div class="knob-label">RATIO</div>
@@ -512,12 +523,38 @@
                                 <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="comp_makeup_db" min="0" max="12" value="0">
                                 <span class="setting-value">0dB</span>
                             </div>
+                            <div class="knob">
+                                <div class="knob-label">KNEE</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="comp_knee_db" min="0" max="24" value="12">
+                                <span class="setting-value">12dB</span>
+                            </div>
+                            <div class="knob">
+                                <div class="knob-label">MIX</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="comp_wet" min="0" max="100" value="100">
+                                <span class="setting-value">100%</span>
+                            </div>
                         </div>
                     </div>
 
                     <!-- Reverb Tab -->
                     <div class="settings-panel" data-panel="reverb">
                         <div class="setting-section">REVERB</div>
+                        <div class="setting-row">
+                            <span class="setting-label">Type</span>
+                            <select class="setting-select compact-select" data-section="synth_pad" data-param="reverb_type">
+                                <option value="wash">Wash</option>
+                                <option value="hall">Hall</option>
+                                <option value="room">Room</option>
+                                <option value="plate">Plate</option>
+                                <option value="bloom">Bloom</option>
+                                <option value="drone">Drone</option>
+                                <option value="ghost">Ghost</option>
+                            </select>
+                            <button class="ctrl-btn ctrl-btn-sm preset-reset-btn" id="reverb-type-reset" title="Reset to preset defaults">↻</button>
+                            <span class="preset-desc" id="reverb-type-desc"></span>
+                        </div>
                         <div class="setting-row">
                             <span class="setting-label">Decay (s)</span>
                             <input type="range" class="setting-slider" data-section="synth_pad" data-param="reverb_decay_seconds" min="5" max="200" value="30">
@@ -543,6 +580,51 @@
                             <input type="range" class="setting-slider" data-section="synth_pad" data-param="reverb_high_cut" min="0" max="1000" value="700" data-hz-min="1000" data-hz-max="16000">
                             <span class="setting-value">7000</span>
                         </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Damp</span>
+                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="reverb_damp" min="0" max="100" value="50">
+                            <span class="setting-value">50%</span>
+                        </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Shimmer FB</span>
+                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="reverb_shimmer_fb" min="0" max="100" value="0">
+                            <span class="setting-value">0%</span>
+                        </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Noise Mod</span>
+                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="reverb_noise_mod" min="0" max="100" value="0">
+                            <span class="setting-value">0%</span>
+                        </div>
+
+                        <div class="setting-section">SENDS</div>
+                        <div class="help-text">How much of each source to tap into this reverb. 0 = fully dry (no tail). Per-OSC sends let you keep one oscillator dry while the other drenches in the wash. Piano/Organ defaults dry so FluidSynth's internal room stays the default piano color.</div>
+                        <div class="setting-row">
+                            <span class="setting-label">OSC 1 Send</span>
+                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc1_reverb_send" min="0" max="100" value="100">
+                            <span class="setting-value">100%</span>
+                        </div>
+                        <div class="setting-row setting-row-checkbox">
+                            <label class="setting-checkbox-label">
+                                <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc1_fx_bypass">
+                                <span>OSC 1 FX Bypass</span>
+                            </label>
+                        </div>
+                        <div class="setting-row">
+                            <span class="setting-label">OSC 2 Send</span>
+                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc2_reverb_send" min="0" max="100" value="100">
+                            <span class="setting-value">100%</span>
+                        </div>
+                        <div class="setting-row setting-row-checkbox">
+                            <label class="setting-checkbox-label">
+                                <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc2_fx_bypass">
+                                <span>OSC 2 FX Bypass</span>
+                            </label>
+                        </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Piano/Organ</span>
+                            <input type="range" class="setting-slider" data-section="master" data-param="piano_reverb_send" min="0" max="100" value="0">
+                            <span class="setting-value">0%</span>
+                        </div>
 
                         <div class="setting-row setting-row-checkbox">
                             <label class="setting-checkbox-label">
@@ -551,6 +633,8 @@
                             </label>
                         </div>
 
+                        <div class="setting-section">CHARACTER &amp; SENDS</div>
+                        <div class="help-text">SPACE widens the stereo image via low-band shuffler. SHIMMER mixes a pitch-up layer into the wet signal. RESO controls piano-driven sympathetic resonance through the reverb. CLOUD scales the pre-reverb multi-tap delay feeding shimmer.</div>
                         <div class="knob-row">
                             <div class="knob">
                                 <div class="knob-label">SPACE</div>
@@ -748,14 +832,20 @@
                             <div class="knob knob-small">
                                 <div class="knob-label">ATTACK</div>
                                 <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                <input type="range" class="setting-slider knob-slider" data-section="organ" data-param="attack_ms" min="0" max="200" value="0">
+                                <input type="range" class="setting-slider knob-slider" data-section="organ" data-param="attack_ms" min="0" max="1000" value="0">
                                 <span class="setting-value">0ms</span>
                             </div>
                             <div class="knob knob-small">
                                 <div class="knob-label">RELEASE</div>
                                 <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                <input type="range" class="setting-slider knob-slider" data-section="organ" data-param="release_ms" min="5" max="500" value="10">
+                                <input type="range" class="setting-slider knob-slider" data-section="organ" data-param="release_ms" min="5" max="1000" value="10">
                                 <span class="setting-value">10ms</span>
+                            </div>
+                            <div class="knob knob-small">
+                                <div class="knob-label">WIDTH</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="organ" data-param="width" min="0" max="100" value="70">
+                                <span class="setting-value">70%</span>
                             </div>
                         </div>
                     </div>
@@ -1008,6 +1098,6 @@
 
     </div>
 
-    <script src="script.js?v=73"></script>
+    <script src="script.js?v=87"></script>
 </body>
 </html>

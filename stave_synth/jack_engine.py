@@ -52,6 +52,11 @@ class JackEngine:
         self.transpose = 0
         self.piano_octave = 0  # -3 to +3 octaves for piano
 
+        # Reverb send for piano/organ bus — 0..1. At 0, piano/organ stays dry
+        # (current default). Above 0, a copy is mixed into the pad's reverb
+        # input so the selected reverb type tails out the piano/organ too.
+        self.piano_reverb_send = 0.0
+
         # MIDI filtering
         self.min_velocity = 10
 
@@ -499,14 +504,67 @@ class JackEngine:
                     # top-bar DRONE button was replaced with the 12-key pad player.
 
                     # Ring is getting low — render and push a block.
+                    # Piano/organ must render BEFORE the synth so their output
+                    # can be tapped into the synth's reverb bus via the
+                    # external_reverb_send path.
+                    piano_pre = None
+                    if self.piano_player:
+                        piano_pre = self.piano_player.render_block(bs)
+                        self._piano_renders += 1
+                        # Piano bus level (for meter)
+                        pkp = float(np.abs(piano_pre).max()) if piano_pre.size else 0.0
+                        if pkp > self._piano_peak:
+                            self._piano_peak = pkp
+                        # Route through main filter if shared-filter is enabled
+                        # (matches the downstream dry-path behaviour below).
+                        if self.organ_filter_enabled:
+                            cutoff = self.synth._filter_cutoff_cur
+                            res = self.synth.filter_resonance
+                            self._organ_filter_l.set_params(cutoff, res)
+                            self._organ_filter_r.set_params(cutoff, res)
+                            piano_pre[0] = self._organ_filter_l.process(piano_pre[0])
+                            piano_pre[1] = self._organ_filter_r.process(piano_pre[1])
+                            if self.synth.filter_slope == 24:
+                                self._organ_filter2_l.set_params(cutoff, res)
+                                self._organ_filter2_r.set_params(cutoff, res)
+                                piano_pre[0] = self._organ_filter2_l.process(piano_pre[0])
+                                piano_pre[1] = self._organ_filter2_r.process(piano_pre[1])
+
+                        # Soft-clip piano bus: linear below 0.85, asymptotes
+                        # to 1.0 above. Prevents FluidSynth note-start
+                        # hammer-strike transients (briefly 1.2–1.8 at high
+                        # velocity) from slamming the master tanh limiter
+                        # downstream — audible as a tick/glitch on heavy
+                        # attacks. Held notes sit below the knee so they
+                        # pass through untouched.
+                        if piano_pre.size:
+                            _THR = 0.85
+                            _HEAD = 1.0 - _THR  # 0.15
+                            _abs = np.abs(piano_pre)
+                            _over = _abs > _THR
+                            if _over.any():
+                                _abs[_over] = _THR + _HEAD * np.tanh(
+                                    (_abs[_over] - _THR) / _HEAD
+                                )
+                                np.multiply(np.sign(piano_pre), _abs, out=piano_pre)
+
+                    # Build external reverb send from piano/organ output.
+                    reverb_send_ext = None
+                    if piano_pre is not None and self.piano_reverb_send > 0.001:
+                        reverb_send_ext = piano_pre * self.piano_reverb_send
+
                     # If bus comp's FX-bypass mode is on, ask synth for dry + fx
                     # separately so we can route fx around the comp.
                     _render_t0 = time.perf_counter()
                     fx_bus = None
                     if self.bus_comp.enabled and self.bus_comp_fx_bypass:
-                        stereo, fx_bus = self.synth.render(bs, separate_fx=True)
+                        stereo, fx_bus = self.synth.render(
+                            bs, separate_fx=True, external_reverb_send=reverb_send_ext
+                        )
                     else:
-                        stereo = self.synth.render(bs)  # (2, n) stereo
+                        stereo = self.synth.render(
+                            bs, external_reverb_send=reverb_send_ext
+                        )
                     _render_dt = time.perf_counter() - _render_t0
                     if _render_dt > _slow_threshold_s:
                         logger.warning("slow render %.1fms (budget %.1fms) fill=%d at %.3f",
@@ -533,34 +591,13 @@ class JackEngine:
                     if pp > self._pad_peak:
                         self._pad_peak = pp
 
-                    # Mix in piano/organ audio (stereo). Keep a reference to
-                    # the piano buffer for bus-compressor sidechain use.
+                    # Mix the pre-rendered piano/organ dry into the master bus
+                    # (the reverb-send copy was already fed to synth.render()).
                     piano_for_sc = None
-                    if self.piano_player:
-                        piano = self.piano_player.render_block(bs)
-                        self._piano_renders += 1
-                        # Piano bus level
-                        pkp = float(np.abs(piano).max()) if piano.size else 0.0
-                        if pkp > self._piano_peak:
-                            self._piano_peak = pkp
-
-                        # Optionally route through main filter
-                        if self.organ_filter_enabled:
-                            cutoff = self.synth._filter_cutoff_cur
-                            res = self.synth.filter_resonance
-                            self._organ_filter_l.set_params(cutoff, res)
-                            self._organ_filter_r.set_params(cutoff, res)
-                            piano[0] = self._organ_filter_l.process(piano[0])
-                            piano[1] = self._organ_filter_r.process(piano[1])
-                            if self.synth.filter_slope == 24:
-                                self._organ_filter2_l.set_params(cutoff, res)
-                                self._organ_filter2_r.set_params(cutoff, res)
-                                piano[0] = self._organ_filter2_l.process(piano[0])
-                                piano[1] = self._organ_filter2_r.process(piano[1])
-
-                        stereo[0] += piano[0]
-                        stereo[1] += piano[1]
-                        piano_for_sc = piano
+                    if piano_pre is not None:
+                        stereo[0] += piano_pre[0]
+                        stereo[1] += piano_pre[1]
+                        piano_for_sc = piano_pre
 
                     # ── SSL-style stereo shuffler (pre-EQ/pre-cut) ──
                     # Split into mid/side, boost side below 800Hz with low-shelf.

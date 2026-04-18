@@ -1270,6 +1270,20 @@ class SynthEngine:
         self.reverb_filter2_l = BiquadLowpass(8000.0, 0.707, sample_rate)
         self.reverb_filter2_r = BiquadLowpass(8000.0, 0.707, sample_rate)
 
+        # Per-OSC reverb send + fx-bypass state. Default sends=1.0 preserves
+        # the original behavior (reverb_in tracks the full pad). When sends
+        # differ from 1, a dedicated reverb-path filter (`_rev_send_filter_*`)
+        # processes a weighted sum of pre-filter osc signals so the reverb
+        # tail still matches the master filter cutoff.
+        self.osc1_reverb_send = 1.0
+        self.osc2_reverb_send = 1.0
+        self.osc1_fx_bypass = False
+        self.osc2_fx_bypass = False
+        self._rev_send_filter_l = BiquadLowpass(8000.0, 0.707, sample_rate)
+        self._rev_send_filter_r = BiquadLowpass(8000.0, 0.707, sample_rate)
+        self._rev_send_filter2_l = BiquadLowpass(8000.0, 0.707, sample_rate)
+        self._rev_send_filter2_r = BiquadLowpass(8000.0, 0.707, sample_rate)
+
         # Synthesized shimmer: octave-up sines fed into reverb input
         self.shimmer_enabled = False
         self.shimmer_mix = 0.5
@@ -1425,6 +1439,11 @@ class SynthEngine:
         self._filter_buf = np.zeros((2, self._buf_size), dtype=np.float64)
         self._osc1_indep_buf = np.zeros((2, self._buf_size), dtype=np.float64)
         self._osc2_indep_buf = np.zeros((2, self._buf_size), dtype=np.float64)
+        # Per-OSC pre-filter stereo accumulators for the reverb-send tap.
+        self._osc1_pre_l = np.zeros(self._buf_size, dtype=np.float64)
+        self._osc1_pre_r = np.zeros(self._buf_size, dtype=np.float64)
+        self._osc2_pre_l = np.zeros(self._buf_size, dtype=np.float64)
+        self._osc2_pre_r = np.zeros(self._buf_size, dtype=np.float64)
         self._shimmer_buf = np.zeros(self._buf_size, dtype=np.float64)
         self._output_l = np.zeros(self._buf_size, dtype=np.float64)
         self._output_r = np.zeros(self._buf_size, dtype=np.float64)
@@ -1454,6 +1473,10 @@ class SynthEngine:
             self._filter_buf = np.zeros((2, n_samples), dtype=np.float64)
             self._osc1_indep_buf = np.zeros((2, n_samples), dtype=np.float64)
             self._osc2_indep_buf = np.zeros((2, n_samples), dtype=np.float64)
+            self._osc1_pre_l = np.zeros(n_samples, dtype=np.float64)
+            self._osc1_pre_r = np.zeros(n_samples, dtype=np.float64)
+            self._osc2_pre_l = np.zeros(n_samples, dtype=np.float64)
+            self._osc2_pre_r = np.zeros(n_samples, dtype=np.float64)
             self._shimmer_buf = np.zeros(n_samples, dtype=np.float64)
             self._output_l = np.zeros(n_samples, dtype=np.float64)
             self._output_r = np.zeros(n_samples, dtype=np.float64)
@@ -1910,7 +1933,12 @@ class SynthEngine:
         p = self._pad_samples.get(int(note))
         return p is not None and p.loaded
 
-    def render(self, n_samples: int, separate_fx: bool = False):
+    def render(self, n_samples: int, separate_fx: bool = False,
+               external_reverb_send: np.ndarray = None):
+        """Render the pad bus. `external_reverb_send` is an optional stereo
+        (2, n) float64 buffer that gets summed into the reverb input before
+        reverb.process() — lets jack_engine feed piano/organ sends into the
+        pad's reverb bus without changing the dry mix."""
         if n_samples == 0:
             return np.zeros((2, 0), dtype=np.float64)
 
@@ -1940,6 +1968,11 @@ class SynthEngine:
         both_filtered = self.osc1_filter_enabled and self.osc2_filter_enabled
 
         # Re-use pre-allocated buffers (zero and slice to current block size)
+        # Per-OSC pre-filter accumulators for reverb-send tapping.
+        self._osc1_pre_l[:n_samples] = 0.0
+        self._osc1_pre_r[:n_samples] = 0.0
+        self._osc2_pre_l[:n_samples] = 0.0
+        self._osc2_pre_r[:n_samples] = 0.0
         filter_buf = self._filter_buf[:, :n_samples]
         filter_buf[:] = 0
         if not self.osc1_filter_enabled:
@@ -2120,13 +2153,15 @@ class SynthEngine:
                 osc2_l *= scale
                 osc2_r *= scale
 
-                # OSC1 goes directly to filter buffers
+                # OSC1 goes directly to filter buffers + pre-filter accumulator
                 if self.osc1_filter_enabled:
                     filter_buf[0] += osc1_l
                     filter_buf[1] += osc1_r
                 else:
                     osc1_indep_buf[0] += osc1_l
                     osc1_indep_buf[1] += osc1_r
+                self._osc1_pre_l[:n_samples] += osc1_l
+                self._osc1_pre_r[:n_samples] += osc1_r
 
                 # OSC2 accumulates separately for Haas delay
                 osc2_accum_l += osc2_l
@@ -2150,6 +2185,9 @@ class SynthEngine:
             else:
                 osc1_indep_buf[0] += osc_out[0]
                 osc1_indep_buf[1] += osc_out[1]
+            # OSC1 pre-filter snapshot for the reverb-send tap.
+            self._osc1_pre_l[:n_samples] += osc_out[0]
+            self._osc1_pre_r[:n_samples] += osc_out[1]
             osc2_accum_l += osc_out[2]
             osc2_accum_r += osc_out[3]
             if render_shimmer:
@@ -2190,6 +2228,12 @@ class SynthEngine:
                     self._haas_buf_r[:n_samples - first]
                 ])
             self._haas_pos = end % bs
+
+        # Snapshot OSC2 post-Haas for the reverb-send tap BEFORE routing into
+        # shared or indep filter (we want this signal with Haas applied but
+        # before any filter stage).
+        np.copyto(self._osc2_pre_l[:n_samples], osc2_accum_l)
+        np.copyto(self._osc2_pre_r[:n_samples], osc2_accum_r)
 
         # Route OSC2 (possibly delayed) to filter buffers
         if render_osc2:
@@ -2240,6 +2284,16 @@ class SynthEngine:
                 if self.filter_slope == 24:
                     self.reverb_filter2_l.set_params(effective_cutoff, self.filter_resonance)
                     self.reverb_filter2_r.set_params(effective_cutoff, self.filter_resonance)
+            # Reverb-send path filter tracks master cutoff so the weighted
+            # pre-filter osc sum reaches the reverb with the same tonal shape
+            # the dry signal has. Only bites when sends differ from 1.0, but
+            # keeping the instance warm avoids a cold-filter click the first
+            # time a user moves a send slider.
+            self._rev_send_filter_l.set_params(effective_cutoff, self.filter_resonance)
+            self._rev_send_filter_r.set_params(effective_cutoff, self.filter_resonance)
+            if self.filter_slope == 24:
+                self._rev_send_filter2_l.set_params(effective_cutoff, self.filter_resonance)
+                self._rev_send_filter2_r.set_params(effective_cutoff, self.filter_resonance)
 
         if not self.osc1_filter_enabled:
             lc = np.log(max(self._osc1_indep_cutoff_cur, 20.0))
@@ -2385,11 +2439,33 @@ class SynthEngine:
         # ─── Ping-pong delay (pre-reverb so taps get cathedral treatment) ───
         self._process_ping_pong(output_l, output_r)
 
-        # Reverb gets stereo input — preserves stereo image in tail
+        # Reverb gets stereo input — preserves stereo image in tail.
+        # Per-OSC reverb send: when both sends are 1.0 and neither osc is
+        # fx-bypassed, reverb_in mirrors output exactly (fast path, matches
+        # legacy behaviour). When sends diverge OR an osc is bypassed, build
+        # a weighted sum from pre-filter osc signals and push it through a
+        # dedicated reverb-path filter tracking the master cutoff.
+        s1 = 0.0 if self.osc1_fx_bypass else float(self.osc1_reverb_send)
+        s2 = 0.0 if self.osc2_fx_bypass else float(self.osc2_reverb_send)
         reverb_in_l = self._reverb_in_l[:n_samples]
-        np.copyto(reverb_in_l, output_l)
         reverb_in_r = self._reverb_in_r[:n_samples]
-        np.copyto(reverb_in_r, output_r)
+        if abs(s1 - 1.0) < 1e-6 and abs(s2 - 1.0) < 1e-6:
+            np.copyto(reverb_in_l, output_l)
+            np.copyto(reverb_in_r, output_r)
+        else:
+            osc1_pre_l = self._osc1_pre_l[:n_samples]
+            osc1_pre_r = self._osc1_pre_r[:n_samples]
+            osc2_pre_l = self._osc2_pre_l[:n_samples]
+            osc2_pre_r = self._osc2_pre_r[:n_samples]
+            weighted_l = osc1_pre_l * s1 + osc2_pre_l * s2
+            weighted_r = osc1_pre_r * s1 + osc2_pre_r * s2
+            filtered_l = self._rev_send_filter_l.process(weighted_l) * filter_comp
+            filtered_r = self._rev_send_filter_r.process(weighted_r) * filter_comp
+            if self.filter_slope == 24:
+                filtered_l = self._rev_send_filter2_l.process(filtered_l)
+                filtered_r = self._rev_send_filter2_r.process(filtered_r)
+            np.copyto(reverb_in_l, filtered_l)
+            np.copyto(reverb_in_r, filtered_r)
 
         if render_shimmer and voice_idx > 0:
             shimmer_filtered = self._shimmer_hp.process(shimmer_sines)
@@ -2487,6 +2563,13 @@ class SynthEngine:
                         st["phase_r"] = float(ph_r_2d[i, -1]) % TWO_PI
                 for note in dead_sym:
                     del self._sympathetic_state[note]
+
+        # Sum in external reverb send (piano + organ contributions from
+        # jack_engine). Happens BEFORE the tanh so external content gets the
+        # same soft-limit behavior as pad sources.
+        if external_reverb_send is not None and external_reverb_send.shape[1] >= n_samples:
+            reverb_in_l += external_reverb_send[0, :n_samples]
+            reverb_in_r += external_reverb_send[1, :n_samples]
 
         np.tanh(reverb_in_l, out=reverb_in_l)
         np.tanh(reverb_in_r, out=reverb_in_r)
@@ -2641,8 +2724,33 @@ class SynthEngine:
             self.reverb.dry_wet = float(params["reverb_dry_wet"])
         if "reverb_wet_gain" in params:
             self.reverb.wet_gain = max(0.5, min(3.0, float(params["reverb_wet_gain"])))
+        if "reverb_type" in params and hasattr(self.reverb, "set_type"):
+            self.reverb.set_type(str(params["reverb_type"]))
+        if "osc1_reverb_send" in params:
+            self.osc1_reverb_send = max(0.0, min(1.0, float(params["osc1_reverb_send"])))
+        if "osc2_reverb_send" in params:
+            self.osc2_reverb_send = max(0.0, min(1.0, float(params["osc2_reverb_send"])))
+        if "osc1_fx_bypass" in params:
+            self.osc1_fx_bypass = bool(params["osc1_fx_bypass"])
+        if "osc2_fx_bypass" in params:
+            self.osc2_fx_bypass = bool(params["osc2_fx_bypass"])
         if "reverb_decay_seconds" in params:
             self.reverb.set_decay(float(params["reverb_decay_seconds"]))
+        # Direct zone writes for expert reverb sliders — only applies when the
+        # Faust backend is active (Python fallback silently ignores them).
+        if "reverb_damp" in params and hasattr(self.reverb, "_zones"):
+            damp = max(0.0, min(0.99, float(params["reverb_damp"])))
+            self.reverb._damp_target = damp
+            if not getattr(self.reverb, "frozen", False):
+                z = self.reverb._zones.get("damp")
+                if z is not None:
+                    z[0] = damp
+        if "reverb_shimmer_fb" in params and hasattr(self.reverb, "_zones"):
+            z = self.reverb._zones.get("shimmer_fb")
+            if z is not None: z[0] = max(0.0, min(1.0, float(params["reverb_shimmer_fb"])))
+        if "reverb_noise_mod" in params and hasattr(self.reverb, "_zones"):
+            z = self.reverb._zones.get("noise_mod")
+            if z is not None: z[0] = max(0.0, min(1.0, float(params["reverb_noise_mod"])))
         if "reverb_low_cut" in params:
             self.reverb.set_low_cut(float(params["reverb_low_cut"]))
         if "reverb_high_cut" in params:
@@ -2741,6 +2849,7 @@ class SynthEngine:
             "reverb_dry_wet": self.reverb.dry_wet,
             "reverb_wet_gain": self.reverb.wet_gain,
             "reverb_decay_seconds": self.reverb.decay_seconds,
+            "reverb_type": getattr(self.reverb, "type", "wash"),
             "reverb_low_cut": self.reverb.low_cut_hz,
             "reverb_high_cut": self.reverb.high_cut_hz,
             "reverb_space": self.reverb.space,

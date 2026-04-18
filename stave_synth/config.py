@@ -50,6 +50,9 @@ USE_FAUST_OSC_BANK = os.environ.get("STAVE_FAUST_OSC_BANK", "0") not in ("0", ""
 # Sympathetic resonance rendered in Faust (stereo bank of 16 slots).
 USE_FAUST_SYMPATHETIC = os.environ.get("STAVE_FAUST_SYMPATHETIC", "0") not in ("0", "", "false", "False")
 
+# B3 organ engine rendered in Faust (tonewheel bank + Leslie).
+USE_FAUST_ORGAN = os.environ.get("STAVE_FAUST_ORGAN", "0") not in ("0", "", "false", "False")
+
 DEFAULT_STATE = {
     "synth_pad": {
         "osc1_blend": 0.6,
@@ -82,6 +85,17 @@ DEFAULT_STATE = {
         "osc2_filter_enabled": True,
         "osc1_indep_cutoff": 20000,
         "osc2_indep_cutoff": 20000,
+        "reverb_type": "wash",
+        "reverb_damp": 0.50,
+        "reverb_shimmer_fb": 0.0,
+        "reverb_noise_mod": 0.0,
+        # Per-OSC reverb send (0..1). Default 1.0 matches the legacy pad sound
+        # exactly (fast-path copy). fx_bypass forces the send to 0 regardless
+        # of the slider, so checking the box is a one-tap "dry only" move.
+        "osc1_reverb_send": 1.0,
+        "osc2_reverb_send": 1.0,
+        "osc1_fx_bypass": False,
+        "osc2_fx_bypass": False,
         "reverb_dry_wet": 0.45,
         "reverb_wet_gain": 1.0,
         "reverb_decay_seconds": 6.0,
@@ -128,9 +142,12 @@ DEFAULT_STATE = {
         "volume": 0.5,
         "reverb_dry_wet": 0.4,
         "comp_enabled": False,
-        "comp_threshold_db": -12,
+        "comp_threshold_db": -20,
         "comp_ratio": 3.0,
         "comp_makeup_db": 0,
+        "comp_knee_db": 18.0,
+        "comp_drive_db": 0.0,
+        "comp_wet": 1.0,
     },
     "organ": {
         "enabled": False,
@@ -147,6 +164,8 @@ DEFAULT_STATE = {
         "filter_lowcut_hz": 40,
         "volume": 0.5,
         "shared_filter_enabled": False,
+        "tone_tilt": 0.5,
+        "width": 0.7,
     },
     "master": {
         "volume": 0.85,
@@ -177,6 +196,11 @@ DEFAULT_STATE = {
         "bus_comp_fx_bypass": False,
         "bus_comp_retrigger": False,
         "bus_comp_sc_hpf_hz": 100.0,
+        # Reverb send from piano/organ bus into the pad reverb (0..1).
+        # Default 0 = piano/organ stays dry (backward-compatible). Raising
+        # routes a copy into whichever reverb type is active, so BLOOM on
+        # piano or PLATE on organ is a one-knob choice.
+        "piano_reverb_send": 0.0,
     },
     "midi_cc_map": {},
     "macros": [

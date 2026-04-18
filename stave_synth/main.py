@@ -239,6 +239,8 @@ class StaveSynth:
             return self._handle_instrument_cycle()
         elif msg_type == "setting":
             return self._handle_setting(msg)
+        elif msg_type == "piano_comp_preset":
+            return self._handle_piano_comp_preset(msg)
         elif msg_type == "midi_learn_start":
             return self._handle_midi_learn_start()
         elif msg_type == "midi_learn_cancel":
@@ -292,10 +294,11 @@ class StaveSynth:
                     self.state["organ"]["volume"] = value
                     self.organ.set_volume(value)
                 elif alt_state == 1:
-                    # Organ tone: map to highcut (200Hz - 8kHz range)
-                    freq = 200.0 * ((8000.0 / 200.0) ** value)
-                    self.state["organ"]["filter_highcut_hz"] = freq
-                    self.organ.set_highcut(freq)
+                    # Organ tone: balanced tilt EQ (volume-neutral).
+                    # 0 = warm (low boost, high cut), 0.5 = flat, 1 = bright.
+                    self.state["organ"]["tone_tilt"] = value
+                    if hasattr(self.organ, "set_tone_tilt"):
+                        self.organ.set_tone_tilt(value)
                 elif alt_state == 2:
                     # Leslie depth: 0=none, 1=full
                     self.state["organ"]["leslie_depth"] = value
@@ -315,17 +318,19 @@ class StaveSynth:
                     if self.piano:
                         self.piano.set_highcut(freq)
                 elif alt_state == 2:
-                    # Compressor amount: 0=off, 1=heavy compression
-                    if value > 0.01:
-                        self.state["piano"]["comp_enabled"] = True
-                        self.state["piano"]["comp_threshold_db"] = -30.0 * value
-                        self.state["piano"]["comp_makeup_db"] = 6.0 * value
-                    else:
-                        self.state["piano"]["comp_enabled"] = False
+                    # Compressor amount = parallel wet/dry blend. Fader
+                    # maps DIRECTLY to `comp_wet` (0 = dry bypass, 1 = fully
+                    # compressed), leaving threshold/ratio/attack/release/
+                    # knee at whatever the user dialled in the settings menu
+                    # (or the LA-2A-ish defaults). This mirrors the LA-2A
+                    # workflow where the musical "character" is fixed and
+                    # the user just rides the drive/amount.
+                    wet = float(value)
+                    self.state["piano"]["comp_wet"] = wet
+                    self.state["piano"]["comp_enabled"] = wet > 0.01
                     if self.piano:
-                        self.piano.comp_enabled = self.state["piano"]["comp_enabled"]
-                        self.piano.comp_threshold_db = self.state["piano"].get("comp_threshold_db", -12)
-                        self.piano.comp_makeup_db = self.state["piano"].get("comp_makeup_db", 0)
+                        self.piano.comp_wet = wet
+                        self.piano.comp_enabled = wet > 0.01
 
         elif fader_id == 2:  # Filter: normal = highcut, ALT = lowcut
             alt_state = int(alt) if isinstance(alt, (int, float)) else (1 if alt else 0)
@@ -1122,6 +1127,45 @@ class StaveSynth:
             logger.error("Failed to set audio output: %s", e)
             return {"type": "audio_output_set", "name": target, "success": False}
 
+    # Canonical "perfect" piano compressor preset — the optical-tube-style
+    # settings that give the piano that smooth, musical, slow-onset glue.
+    # Kept in one place so the UI button and the defaults file stay in sync.
+    # Ratio 3:1 matches the traditional "Compress" mode measurement on real
+    # optical-tube units — 4:1 is the often-cited "spec sheet" number but
+    # the T4 cell's program-dependent response usually lands closer to 3:1
+    # at nominal input levels. Threshold sits low because the optical ratio
+    # naturally scales with signal, so the wide soft knee makes the whole
+    # thing feel gentle.
+    PERFECT_PIANO_COMP = {
+        "comp_enabled": True,
+        "comp_threshold_db": -20.0,
+        "comp_ratio": 3.0,
+        "comp_attack_ms": 10.0,
+        "comp_release_ms": 80.0,
+        "comp_knee_db": 18.0,
+        "comp_makeup_db": 0.0,
+        "comp_drive_db": 0.0,
+        "comp_wet": 1.0,
+    }
+
+    def _handle_piano_comp_preset(self, msg: dict) -> dict:
+        """Apply a named piano-compressor preset. Currently only 'perfect'
+        (optical-style glue) is defined; adding more is just a dict entry."""
+        preset_name = str(msg.get("preset", "perfect")).lower()
+        preset = self.PERFECT_PIANO_COMP if preset_name == "perfect" else None
+        if not preset:
+            return {"type": "piano_comp_preset_ack", "preset": preset_name, "applied": False}
+        # Merge preset into state and push to the live piano object.
+        for k, v in preset.items():
+            self.state["piano"][k] = v
+        if self.piano:
+            self.piano.update_params(preset)
+        # Broadcast the new state so open settings tabs reflect the preset
+        # values in every knob simultaneously.
+        if self.ws_server:
+            self.ws_server.broadcast_sync({"type": "state", "state": self.state})
+        return {"type": "piano_comp_preset_ack", "preset": preset_name, "applied": True}
+
     def _handle_setting(self, msg: dict) -> dict:
         """Handle deep settings changes from the settings menu."""
         section = msg.get("section", "")
@@ -1154,6 +1198,34 @@ class StaveSynth:
                     cur_key = self.state["synth_pad"].get("drone_key")
                     if cur_key is not None and self.state["synth_pad"].get("drone_enabled"):
                         self.synth.set_drone_key(int(cur_key))
+                # Reverb type change applies a full preset — mirror the preset's
+                # decay/predelay/cuts into state so the UI and save file stay in
+                # sync, and a subsequent state reload doesn't clobber the preset.
+                elif param == "reverb_type":
+                    try:
+                        from .faust_reverb import REVERB_PRESETS
+                        preset = REVERB_PRESETS.get(str(value))
+                    except ImportError:
+                        preset = None
+                    if preset:
+                        _sync = {
+                            "decay_seconds": "reverb_decay_seconds",
+                            "predelay_ms":   "reverb_predelay_ms",
+                            "low_cut_hz":    "reverb_low_cut",
+                            "high_cut_hz":   "reverb_high_cut",
+                            "damp":          "reverb_damp",
+                            "shimmer_fb":    "reverb_shimmer_fb",
+                            "noise_mod":     "reverb_noise_mod",
+                        }
+                        for src, dst in _sync.items():
+                            if dst in self.state["synth_pad"]:
+                                # Default non-FDN / plate-ignored params to 0 so
+                                # stale slider values from the previous type
+                                # don't carry over visually.
+                                self.state["synth_pad"][dst] = preset.get(src, 0.0)
+                        # Broadcast so the open reverb tab's sliders update live.
+                        if self.ws_server:
+                            self.ws_server.broadcast_sync({"type": "state", "state": self.state})
             elif param.startswith("adsr."):
                 adsr_key = param.split(".", 1)[1]
                 self.state["synth_pad"]["adsr"][adsr_key] = value
@@ -1190,6 +1262,11 @@ class StaveSynth:
                 self.state["master"][param] = value
                 if self.jack:
                     self.jack.pre_gain = max(0.5, min(3.0, float(value)))
+            elif param == "piano_reverb_send":
+                v = max(0.0, min(1.0, float(value)))
+                self.state["master"][param] = v
+                if self.jack:
+                    self.jack.piano_reverb_send = v
             elif param == "saturation_enabled":
                 self.state["master"][param] = bool(value)
                 if self.jack:
@@ -1460,8 +1537,20 @@ class StaveSynth:
             logger.warning("FluidSynth not available: %s (piano disabled)", e)
             self.piano = None
 
-        # Start organ engine (lightweight, no external deps)
-        self.organ = OrganEngine()
+        # Start organ engine (lightweight, no external deps).
+        # STAVE_FAUST_ORGAN=1 routes through libstave_organ.so (native tonewheel
+        # + Leslie); fallback is the numpy OrganEngine.
+        from . import config as _cfg
+        if _cfg.USE_FAUST_ORGAN:
+            try:
+                from .faust_organ import FaustOrganEngine
+                self.organ = FaustOrganEngine()
+                logger.info("Organ: Faust backend (libstave_organ.so)")
+            except Exception as e:
+                logger.warning("Faust organ load failed (%s) — falling back to Python", e)
+                self.organ = OrganEngine()
+        else:
+            self.organ = OrganEngine()
         self.organ.update_params(self.state.get("organ", {}))
         self.instrument_mode = self.state.get("master", {}).get("instrument_mode", "piano")
 
@@ -1479,6 +1568,7 @@ class StaveSynth:
             self.jack.transpose = self.state.get("master", {}).get("transpose_semitones", 0)
             self.jack.piano_octave = self.state.get("master", {}).get("piano_octave", 0)
             self.jack.pre_gain = float(self.state.get("master", {}).get("pre_limiter_trim", 2.0))
+            self.jack.piano_reverb_send = float(self.state.get("master", {}).get("piano_reverb_send", 0.0))
             self.jack.saturation_enabled = bool(self.state.get("master", {}).get("saturation_enabled", False))
             self.jack.set_bpm(float(self.state.get("master", {}).get("bpm", 120)))
             # Push all bus_comp_* keys at startup so the compressor matches saved state

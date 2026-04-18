@@ -469,9 +469,9 @@ class OrganEngine:
         if "click_level" in params:
             self.click_level = max(0.0, min(1.0, float(params["click_level"])))
         if "attack_ms" in params:
-            self.attack_ms = max(0.0, min(200.0, float(params["attack_ms"])))
+            self.attack_ms = max(0.0, min(1000.0, float(params["attack_ms"])))
         if "release_ms" in params:
-            self.release_ms = max(5.0, min(500.0, float(params["release_ms"])))
+            self.release_ms = max(5.0, min(1000.0, float(params["release_ms"])))
         if "drive" in params:
             self.drive = max(0.0, min(1.0, float(params["drive"])))
         if "filter_highcut_hz" in params:

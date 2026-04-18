@@ -16,7 +16,11 @@ SR      = ma.SR;
 // Python writes freq when note_on, gate every block from its ADSR path.
 // ═══════════════════════════════════════════════════════════════════════
 voice_freq(i) = hslider("freq_v%i",   0, 0, 12000, 0.01);
-voice_gate(i) = hslider("gate_v%i",   0, 0, 1,     0.001) : si.smoo;
+// 1 ms smoothing — just enough to de-click the block-rate gate step
+// (256-sample blocks = ~5.3ms, so sub-sample jitter at 1ms tau is inaudible)
+// while leaving attack_ms=0 feeling truly snappy. Default si.smoo (~30ms)
+// rounded off short attacks audibly; 2ms was close but not punchy.
+voice_gate(i) = hslider("gate_v%i",   0, 0, 1,     0.001) : si.smooth(ba.tau2pole(0.001));
 
 // ═══════════════════════════════════════════════════════════════════════
 // Global oscillator params (apply to all voices)

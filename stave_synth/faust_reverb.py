@@ -72,6 +72,52 @@ except OSError as e:
     raise RuntimeError(f"Failed to load {_LIB}: {e}. Run stave-synth/faust/build.sh.")
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# Reverb type presets. Keys are semantic user-facing params; set_type()
+# maps them onto whichever backend is active (FDN or plate). When both
+# shimmer_fb and noise_mod are 0 the FDN sound is mathematically identical
+# to the original WASH.
+# ═══════════════════════════════════════════════════════════════════════
+REVERB_PRESETS = {
+    # Classic FDN wash — the sound we shipped. Don't touch these values.
+    "wash":  {"backend": "fdn",   "decay_seconds": 6.0,  "predelay_ms": 25.0, "low_cut_hz": 80,  "high_cut_hz": 7000,  "damp": 0.50, "er_scale": 0.4, "shimmer_fb": 0.0, "noise_mod": 0.0},
+    "hall":  {"backend": "fdn",   "decay_seconds": 9.0,  "predelay_ms": 45.0, "low_cut_hz": 120, "high_cut_hz": 8500,  "damp": 0.35, "er_scale": 0.6, "shimmer_fb": 0.0, "noise_mod": 0.0},
+    "room":  {"backend": "fdn",   "decay_seconds": 1.5,  "predelay_ms": 8.0,  "low_cut_hz": 200, "high_cut_hz": 10000, "damp": 0.70, "er_scale": 0.8, "shimmer_fb": 0.0, "noise_mod": 0.0},
+    "plate": {"backend": "plate", "decay_seconds": 3.0,  "predelay_ms": 5.0,  "low_cut_hz": 150, "high_cut_hz": 11000, "damp": 0.30},
+    "bloom": {"backend": "fdn",   "decay_seconds": 7.0,  "predelay_ms": 30.0, "low_cut_hz": 150, "high_cut_hz": 7000,  "damp": 0.55, "er_scale": 0.3, "shimmer_fb": 0.35, "noise_mod": 0.0},
+    # DRONE — dedicated resonator topology (4 tuned high-Q bandpasses in
+    # parallel, no cross-feedback, no FDN modulation). Root at A2 (110Hz) so
+    # the drone sits as a bass pedal; low_cut dropped to 50Hz to let the
+    # fundamental through. decay_seconds maps via _drone_fb_from_seconds.
+    "drone": {"backend": "drone", "decay_seconds": 10.0, "predelay_ms": 15.0, "low_cut_hz": 50, "high_cut_hz": 4000, "damp": 0.30, "drone_key": 0},
+    # GHOST: heavier noise mod than initially shipped so the tail clearly
+    # "breathes" — differentiates it from DRONE (which is a pitched drone
+    # now, not a modulated wash).
+    "ghost": {"backend": "fdn",   "decay_seconds": 8.0,  "predelay_ms": 20.0, "low_cut_hz": 100, "high_cut_hz": 6500,  "damp": 0.50, "er_scale": 0.3, "shimmer_fb": 0.0, "noise_mod": 0.70},
+}
+
+
+def _plate_decay_from_seconds(seconds: float) -> float:
+    """Map decay_seconds (shared UI param) → Dattorro plate decay coefficient
+    (0..0.97). Not the same mapping as FDN feedback because plate topology
+    has a fundamentally different loop gain structure. Tuned by ear: seconds
+    value roughly matches subjective RT60."""
+    return float(max(0.0, min(0.97, 0.35 + seconds * 0.08)))
+
+
+def _drone_fb_from_seconds(seconds: float) -> float:
+    """Map decay_seconds → per-resonator feedback for the drone topology.
+    Reference: at the root freq (110 Hz A2), sustain_seconds ≈
+    -3 / (log10(fb) × freq). Capped at ~0.999 so the longest sustain tops
+    out around 13 s — long enough to feel infinite musically, short enough
+    that notes can clear without panic/freeze. (Lower ref freq ⇒ slower
+    cycles ⇒ fb needs to be a touch higher for same sustain time.)"""
+    if seconds <= 0.05:
+        return 0.0
+    fb = 10.0 ** (-3.0 / (seconds * 110.0))
+    return float(min(fb, 0.999))
+
+
 class FaustReverb:
     """Public API mirrors FeedbackDelayReverb. Internally backed by the Faust DSP."""
 
@@ -115,6 +161,14 @@ class FaustReverb:
         self._damp_target = 0.5
         self._freeze_capture_remaining = 0
 
+        # Type switching (v1: hard-swap backend, no crossfade). Plate + drone
+        # are lazy — first time each is selected, the .so loads.
+        # Must initialise before the set_*() calls below because they read
+        # self._plate / self._drone.
+        self.type = "wash"
+        self._plate: "FaustPlate | None" = None
+        self._drone: "FaustDrone | None" = None
+
         self.set_decay(decay_seconds)
         self.set_low_cut(self.low_cut_hz)
         self.set_high_cut(self.high_cut_hz)
@@ -150,12 +204,20 @@ class FaustReverb:
             avg_delay = sum(delay_times_ms) * self.sample_rate / 1000.0 / len(delay_times_ms)
             loops_per_sec = self.sample_rate / avg_delay
             fb = 10.0 ** (-3.0 / (seconds * loops_per_sec))
-            fb = min(fb, 0.985)
+            # DRONE type intentionally runs near self-oscillation for sustained
+            # resonance. Cap higher (0.9985) when drone is active so decay_seconds
+            # actually translates to perceptible multi-second tails.
+            fb_cap = 0.9985 if getattr(self, "type", "wash") == "drone" else 0.985
+            fb = min(fb, fb_cap)
         else:
             fb = 0.0
         self._feedback_target = fb
         if not self.frozen:
             _set_zone(self._zones, "feedback", fb)
+        # Drone backend uses its own fb mapping (resonator topology, not FDN
+        # delay-loop math). Sync whenever the user moves the Decay slider.
+        if self._drone is not None:
+            self._drone.set_zone("feedback", _drone_fb_from_seconds(seconds))
 
     def set_low_cut(self, freq_hz: float):
         self.low_cut_hz = max(20.0, float(freq_hz))
@@ -168,6 +230,76 @@ class FaustReverb:
     def set_predelay(self, ms: float):
         self.predelay_ms = max(0.0, min(150.0, float(ms)))
         _set_zone(self._zones, "predelay_ms", self.predelay_ms)
+        if self._plate is not None:
+            self._plate.set_zone("predelay_ms", self.predelay_ms)
+        if self._drone is not None:
+            self._drone.set_zone("predelay_ms", self.predelay_ms)
+
+    def set_type(self, name: str):
+        """Apply a reverb-type preset. 'plate' and 'drone' lazy-load dedicated
+        .so files and process() routes through them. Other types stay on the
+        FDN with param variants (shimmer_fb/noise_mod pick up BLOOM/GHOST)."""
+        preset = REVERB_PRESETS.get(name)
+        if preset is None:
+            logger.warning("Unknown reverb type %r — keeping %r", name, self.type)
+            return
+
+        backend = preset["backend"]
+
+        # Canonical shared params (all backends understand these zones).
+        self.set_predelay(preset["predelay_ms"])
+        self.set_low_cut(preset["low_cut_hz"])
+        self.set_high_cut(preset["high_cut_hz"])
+
+        damp = preset.get("damp", 0.5)
+        self._damp_target = damp
+        if not self.frozen:
+            _set_zone(self._zones, "damp", damp)
+
+        # FDN-only modifiers. Plate/drone ignore them (zones exist for parity).
+        _set_zone(self._zones, "er_scale", preset.get("er_scale", 0.4))
+        _set_zone(self._zones, "shimmer_fb", preset.get("shimmer_fb", 0.0))
+        _set_zone(self._zones, "noise_mod", preset.get("noise_mod", 0.0))
+
+        # Feedback / decay handling splits by backend:
+        #   FDN  → compute feedback from decay_seconds via loop formula
+        #   Plate → compute Dattorro decay via plate-specific mapping
+        #   Drone → use preset's direct `feedback` (resonator loop gain)
+        if backend == "drone":
+            # Lazy-load drone engine on first selection.
+            if self._drone is None:
+                from .faust_drone import FaustDrone
+                self._drone = FaustDrone(self.sample_rate)
+                logger.info("drone reverb lazy-loaded (libstave_drone.so)")
+            self._drone.set_zone("drone_key", float(preset.get("drone_key", 0)))
+            self._drone.set_zone("predelay_ms", self.predelay_ms)
+            self._drone.set_zone("low_cut_hz", self.low_cut_hz)
+            self._drone.set_zone("high_cut_hz", self.high_cut_hz)
+            self._drone.set_zone("damp", damp)
+            # set_decay owns the fb mapping; track the preset's seconds value.
+            self.set_decay(preset["decay_seconds"])
+        else:
+            # FDN / plate variants take decay_seconds.
+            self.set_decay(preset["decay_seconds"])
+
+        if backend == "plate":
+            if self._plate is None:
+                from .faust_plate import FaustPlate
+                self._plate = FaustPlate(self.sample_rate)
+                logger.info("plate reverb lazy-loaded (libstave_plate.so)")
+
+        # Mirror common params into plate so switching back feels instant.
+        if self._plate is not None:
+            self._plate.set_zone("predelay_ms", self.predelay_ms)
+            self._plate.set_zone("low_cut_hz", self.low_cut_hz)
+            self._plate.set_zone("high_cut_hz", self.high_cut_hz)
+            self._plate.set_zone("damp", damp)
+            if "decay_seconds" in preset:
+                self._plate.set_zone("feedback",
+                                     _plate_decay_from_seconds(preset["decay_seconds"]))
+
+        self.type = name
+        logger.info("reverb type: %s (backend=%s)", name, backend)
 
     def set_space(self, value: float):
         self.space = max(0.0, min(1.0, float(value)))
@@ -226,6 +358,13 @@ class FaustReverb:
             self._out_ptrs[0] = _ffi.cast("float*", self._out_l_f32.ctypes.data)
             self._out_ptrs[1] = _ffi.cast("float*", self._out_r_f32.ctypes.data)
             self._buf_n = n
+
+        # Route to plate or drone if active; the FDN always runs but we don't
+        # use its output during those types (keeps switching back instant).
+        if self.type == "plate" and self._plate is not None:
+            return self._plate.process(samples)
+        if self.type == "drone" and self._drone is not None:
+            return self._drone.process(samples)
 
         np.copyto(self._in_l_f32, input_l, casting="unsafe")
         np.copyto(self._in_r_f32, input_r, casting="unsafe")

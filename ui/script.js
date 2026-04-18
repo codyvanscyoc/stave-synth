@@ -410,6 +410,9 @@
             var hcFreq = s.piano.filter_highcut_hz ?? 20000;
             altFaderValues[1] = Math.log(hcFreq / tMin) / Math.log(tMax / tMin);
             altFaderValues[1] = Math.max(0, Math.min(1, altFaderValues[1]));
+            // Sync fader1 COMP-mode value from piano.comp_wet so reload / state
+            // broadcast (e.g. after PERFECT preset) updates the fader visual.
+            fader1CompValue = s.piano.comp_wet ?? 1.0;
             pianoEnabled = s.piano.enabled !== false;
             pianoBtn.classList.toggle("active", pianoEnabled);
             pianoBtn.classList.toggle("off", !pianoEnabled);
@@ -586,6 +589,19 @@
                     updateKnobRotation(knob);
                     applyWarmthToKnob(knob, trim);
                 }
+            }
+        }
+
+        // Mirror piano ALT=COMP (MIX) back into the menu knob + slider so
+        // the piano settings panel stays in sync when user rides the fader.
+        if (id === 1 && fader1AltState === 2) {
+            var compSlider = document.querySelector('[data-param="comp_wet"]');
+            if (compSlider) {
+                compSlider.value = normalizedValue * 100;
+                var cValEl = compSlider.parentElement.querySelector(".setting-value");
+                if (cValEl) cValEl.textContent = Math.round(normalizedValue * 100) + "%";
+                var cKnob = compSlider.closest(".knob");
+                if (cKnob) updateKnobRotation(cKnob);
             }
         }
 
@@ -1885,14 +1901,27 @@
                 param === "osc1_max" || param === "osc2_max" ||
                 param === "leslie_depth" || param === "click_level" ||
                 param === "drive" || param === "drone_wash_mix" ||
-                param === "drone_air_mix" || param === "drone_double_mix") {
+                param === "drone_air_mix" || param === "drone_double_mix" ||
+                param === "width" || param === "tone_tilt" ||
+                param === "reverb_damp" || param === "reverb_shimmer_fb" ||
+                param === "reverb_noise_mod" || param === "piano_reverb_send" ||
+                param === "comp_wet" || param === "osc1_reverb_send" ||
+                param === "osc2_reverb_send") {
                 sendValue = value / 100;
                 displayValue = Math.round(sendValue * 100) + "%";
+                // MIX knob ↔ fader1-ALT-COMP live sync. Any time the menu
+                // knob moves, reflect the new value into the front-panel
+                // fader state so flipping to COMP mode shows the right bar.
+                if (param === "comp_wet") {
+                    fader1CompValue = sendValue;
+                    if (fader1AltState === 2) updateFader(1);
+                }
             } else if (param === "reverb_predelay_ms" || param === "haas_delay_ms" ||
                 param === "attack_ms" || param === "release_ms") {
                 sendValue = value;
                 displayValue = Math.round(value) + "ms";
-            } else if (param === "comp_threshold_db" || param === "comp_makeup_db") {
+            } else if (param === "comp_threshold_db" || param === "comp_makeup_db" ||
+                       param === "comp_drive_db" || param === "comp_knee_db") {
                 sendValue = value;
                 var sign = value > 0 ? "+" : "";
                 displayValue = sign + Math.round(value) + "dB";
@@ -2121,6 +2150,58 @@
         });
     });
 
+    // One-line description of each reverb type, shown to the right of the
+    // reset button. Kept tight enough to fit on a single row at typical UI
+    // widths; updated whenever the dropdown changes or state loads.
+    var REVERB_TYPE_DESC = {
+        wash:  "Long ambient wash — the default pad texture",
+        hall:  "Wide diffuse concert hall — piano + pad glue",
+        room:  "Tight bright room — intimate close-mic feel",
+        plate: "Metallic 70s plate — cuts through on vocals",
+        bloom: "Self-rising perfect fifths — ethereal worship swell",
+        drone: "Chord-tone bass pedal — strongest at A2–A3",
+        ghost: "Breathing modulated tail — subtle motion under chords",
+    };
+    function updateReverbTypeDesc() {
+        var desc = document.getElementById("reverb-type-desc");
+        var sel = document.querySelector('[data-param="reverb_type"]');
+        if (!desc || !sel) return;
+        desc.textContent = REVERB_TYPE_DESC[sel.value] || "";
+    }
+
+    // Reverb type ↻ reset — re-sends the currently selected type so the
+    // backend re-applies the preset dict (damp/shimmer_fb/noise_mod back to
+    // defaults). Browsers don't fire `change` when you re-click the same
+    // option, so this button covers "reset my tweaks" intent.
+    var reverbResetBtn = document.getElementById("reverb-type-reset");
+    if (reverbResetBtn) {
+        reverbResetBtn.addEventListener("click", function () {
+            var sel = document.querySelector('[data-param="reverb_type"]');
+            if (!sel) return;
+            send({
+                type: "setting",
+                section: "synth_pad",
+                param: "reverb_type",
+                value: sel.value,
+            });
+        });
+    }
+
+    // Piano compressor "PERFECT" preset button — restores the LA-2A-style
+    // musical defaults (threshold/ratio/attack/release/knee/makeup/wet all
+    // in one action). Server broadcasts new state so every knob visually
+    // snaps to the preset values.
+    var pianoCompPerfect = document.getElementById("piano-comp-perfect");
+    if (pianoCompPerfect) {
+        pianoCompPerfect.addEventListener("click", function () {
+            send({ type: "piano_comp_preset", preset: "perfect" });
+        });
+    }
+    var reverbTypeSel = document.querySelector('[data-param="reverb_type"]');
+    if (reverbTypeSel) {
+        reverbTypeSel.addEventListener("change", updateReverbTypeDesc);
+    }
+
     function updateSettingsSliders() {
         if (!state) return;
 
@@ -2150,12 +2231,18 @@
                 param === "osc1_max" || param === "osc2_max" ||
                 param === "leslie_depth" || param === "click_level" ||
                 param === "drive" || param === "drone_wash_mix" ||
-                param === "drone_air_mix" || param === "drone_double_mix") {
+                param === "drone_air_mix" || param === "drone_double_mix" ||
+                param === "width" || param === "tone_tilt" ||
+                param === "reverb_damp" || param === "reverb_shimmer_fb" ||
+                param === "reverb_noise_mod" || param === "piano_reverb_send" ||
+                param === "comp_wet" || param === "osc1_reverb_send" ||
+                param === "osc2_reverb_send") {
                 slider.value = value * 100;
             } else if (param === "reverb_predelay_ms" || param === "haas_delay_ms" ||
                 param === "attack_ms" || param === "release_ms" ||
                 param === "comp_threshold_db" || param === "comp_makeup_db" ||
-                param === "comp_ratio") {
+                param === "comp_ratio" || param === "comp_drive_db" ||
+                param === "comp_knee_db") {
                 slider.value = value;
             } else if (param === "reverb_wet_gain") {
                 slider.value = value * 100;
@@ -2200,12 +2287,17 @@
                     param === "reverb_space" || param === "unison_spread" ||
                     param === "osc1_max" || param === "osc2_max" ||
                     param === "leslie_depth" || param === "click_level" ||
-                param === "drive") {
+                param === "drive" || param === "width" || param === "tone_tilt" ||
+                param === "reverb_damp" || param === "reverb_shimmer_fb" ||
+                param === "reverb_noise_mod" || param === "piano_reverb_send" ||
+                param === "comp_wet" || param === "osc1_reverb_send" ||
+                param === "osc2_reverb_send") {
                     valueEl.textContent = Math.round(value * 100) + "%";
                 } else if (param === "reverb_predelay_ms" || param === "haas_delay_ms" ||
                     param === "attack_ms" || param === "release_ms") {
                     valueEl.textContent = Math.round(value) + "ms";
-                } else if (param === "comp_threshold_db" || param === "comp_makeup_db") {
+                } else if (param === "comp_threshold_db" || param === "comp_makeup_db" ||
+                           param === "comp_drive_db" || param === "comp_knee_db") {
                     var sign2 = value > 0 ? "+" : "";
                     valueEl.textContent = sign2 + Math.round(value) + "dB";
                 } else if (param === "comp_ratio") {
@@ -2275,6 +2367,9 @@
             }
         });
 
+        // Sync the reverb type description after the select value updates.
+        if (typeof updateReverbTypeDesc === "function") updateReverbTypeDesc();
+
         // Refresh pre-limiter warmth class from current value
         var warmSlider = document.querySelector('[data-param="pre_limiter_trim"]');
         if (warmSlider) {
@@ -2318,7 +2413,9 @@
         var d = Math.min(1, getAdsrSliderVal("decay_ms") / 2000);
         var s = Math.max(0, Math.min(1, getAdsrSliderVal("sustain_percent") / 100));
         var r = Math.min(1, getAdsrSliderVal("release_ms") / 3000);
-        var ax = 5 + a * 45;
+        // attack starts at x=0 (no hardcoded offset) so attack_ms=0 draws a
+        // true vertical rise; any offset misleads at the bottom of the knob.
+        var ax = a * 45;
         var dx = ax + 10 + d * 35;
         var sx = 140;
         var rx = sx + 15 + r * 40;
