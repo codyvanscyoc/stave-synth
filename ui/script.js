@@ -2014,6 +2014,18 @@
                 value: sendValue,
             });
 
+            // MIRROR: when OSC level-mirror is on, also mirror per-OSC reverb sends
+            if (linkOscLevels && (param === "osc1_reverb_send" || param === "osc2_reverb_send")) {
+                var twin = param === "osc1_reverb_send" ? "osc2_reverb_send" : "osc1_reverb_send";
+                var twinSlider = document.querySelector('.setting-slider[data-param="' + twin + '"]');
+                if (twinSlider && twinSlider.value !== slider.value) {
+                    twinSlider.value = slider.value;
+                    var twinValEl = twinSlider.parentElement.querySelector(".setting-value");
+                    if (twinValEl) twinValEl.textContent = displayValue;
+                    send({ type: "setting", section: "synth_pad", param: twin, value: sendValue });
+                }
+            }
+
             if (param && param.indexOf && param.indexOf("adsr.") === 0) {
                 updateAdsrCurve();
             }
@@ -2131,6 +2143,20 @@
                 param: p,
                 value: checkbox.checked,
             });
+
+            // MIRROR: when OSC level-mirror is on, also mirror per-OSC FX bypass
+            if (p === "osc_levels_linked") {
+                linkOscLevels = checkbox.checked;
+            }
+            if (linkOscLevels && (p === "osc1_fx_bypass" || p === "osc2_fx_bypass")) {
+                var twin = p === "osc1_fx_bypass" ? "osc2_fx_bypass" : "osc1_fx_bypass";
+                var twinCb = document.querySelector('.setting-checkbox[data-param="' + twin + '"]');
+                if (twinCb && twinCb.checked !== checkbox.checked) {
+                    twinCb.checked = checkbox.checked;
+                    send({ type: "setting", section: "synth_pad", param: twin, value: checkbox.checked });
+                }
+            }
+
             updateIndepFilterVisibility();
             if (p && p.indexOf("bus_comp_") === 0) markBusCompCustom();
         });
