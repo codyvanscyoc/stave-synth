@@ -1422,6 +1422,24 @@ class SynthEngine:
         self._lfo_mod_a_last = 0.0     # previous block's end mod value (for per-sample ramp)
         self._lfo_mod_b_last = 0.0
 
+        # LFO 2 — independent second modulator. Can target filter/amp/pan same
+        # as LFO 1; outputs stack additively at each target. Keeps its own
+        # phase + tempo-sync + key-sync state so the two LFOs don't interlock.
+        self.lfo2_enabled = False
+        self.lfo2_rate_hz = 1.0
+        self.lfo2_rate_mode = "FREE"
+        self.lfo2_rate_multiplier = 1.0
+        self.lfo2_depth = 0.0
+        self.lfo2_shape = "sine"
+        self.lfo2_target = "pan"       # default pan so a "second LFO on" feels different from LFO 1
+        self.lfo2_spread = 0.0
+        self.lfo2_key_sync = False
+        self._lfo2_phase = 0.0
+        self._lfo2_sh_value = 0.0
+        self._lfo2_sh_value_r = 0.0
+        self._lfo2_mod_a_last = 0.0
+        self._lfo2_mod_b_last = 0.0
+
         self.voices: list[Voice] = []
         self._age_counter = 0
 
@@ -1505,14 +1523,21 @@ class SynthEngine:
             self._voice_shimmer = np.zeros((self.max_voices, n_samples), dtype=np.float64)
 
     def note_on(self, note: int, velocity: float = 1.0):
-        # Key-synced LFO: reset phase on every note_on so modulation sweeps are
-        # reproducible per note. Matches classic analog-synth behavior.
+        # Key-synced LFOs: each independently resets phase on note_on so
+        # modulation sweeps are reproducible per note. Matches classic
+        # analog-synth behavior.
         if self.lfo_key_sync:
             self._lfo_phase = 0.0
             self._lfo_sh_value = 0.0
             self._lfo_sh_value_r = 0.0
             self._lfo_mod_a_last = 0.0
             self._lfo_mod_b_last = 0.0
+        if self.lfo2_key_sync:
+            self._lfo2_phase = 0.0
+            self._lfo2_sh_value = 0.0
+            self._lfo2_sh_value_r = 0.0
+            self._lfo2_mod_a_last = 0.0
+            self._lfo2_mod_b_last = 0.0
 
         for v in self.voices:
             # "Still held" = neither envelope has been user-released. release()
@@ -1733,40 +1758,53 @@ class SynthEngine:
         out_l += tap_l * effective_wet
         out_r += tap_r * effective_wet
 
-    def _advance_lfo(self, n_samples: int):
-        """Advance LFO phase by one block; return (mod_a, mod_b) bipolar, pre-scaled by
-        effective depth (user depth × motion_mix bus). mod_b is phase-offset by spread.
-        Control rate — cheap because it runs once per block, not per sample."""
-        effective_depth = self.lfo_depth * self.motion_mix
-        if not self.lfo_enabled or effective_depth < 0.001:
+    def _advance_lfo(self, n_samples: int, which: int = 1):
+        """Advance one LFO's phase by one block; return (mod_a, mod_b) bipolar,
+        pre-scaled by effective depth (user depth × motion_mix bus). mod_b is
+        phase-offset by spread. Control rate — runs once per block.
+
+        `which` = 1 or 2; reads/writes state via a prefix ("lfo"/"lfo2") so
+        the same body handles both LFOs."""
+        pfx = "lfo" if which == 1 else "lfo2"
+        ipfx = "_lfo" if which == 1 else "_lfo2"
+
+        depth = getattr(self, pfx + "_depth")
+        effective_depth = depth * self.motion_mix
+        if not getattr(self, pfx + "_enabled") or effective_depth < 0.001:
             return 0.0, 0.0
         block_sec = n_samples / self.sample_rate
         # Tempo-synced rate: beats-per-cycle derived from the same subdivision
         # table the ping-pong delay uses. FREE mode keeps the user's Hz slider.
-        if self.lfo_rate_mode == "FREE":
-            effective_rate_hz = self.lfo_rate_hz
+        rate_mode = getattr(self, pfx + "_rate_mode")
+        if rate_mode == "FREE":
+            effective_rate_hz = getattr(self, pfx + "_rate_hz")
         else:
-            beats_per_cycle = self._DELAY_DIVISIONS.get(self.lfo_rate_mode, 1.0)
+            beats_per_cycle = self._DELAY_DIVISIONS.get(rate_mode, 1.0)
             beat_sec = 60.0 / max(40.0, self.bpm)
             cycle_sec = max(0.05, beat_sec * beats_per_cycle)  # clamp: no runaway at tiny bpm
-            cycle_sec /= max(0.1, self.lfo_rate_multiplier)     # >1 = faster, <1 = slower
+            cycle_sec /= max(0.1, getattr(self, pfx + "_rate_multiplier"))
             effective_rate_hz = 1.0 / cycle_sec
-        prev_phase = self._lfo_phase
-        self._lfo_phase = (self._lfo_phase + effective_rate_hz * block_sec) % 1.0
+        shape = getattr(self, pfx + "_shape")
+        spread = getattr(self, pfx + "_spread")
+        prev_phase = getattr(self, ipfx + "_phase")
+        new_phase = (prev_phase + effective_rate_hz * block_sec) % 1.0
+        setattr(self, ipfx + "_phase", new_phase)
         # Sample & Hold regenerates on every phase wrap
-        if self.lfo_shape == "sh" and self._lfo_phase < prev_phase:
-            self._lfo_sh_value = float(np.random.uniform(-1.0, 1.0))
-            self._lfo_sh_value_r = float(np.random.uniform(-1.0, 1.0))
-        phase_a = self._lfo_phase
-        phase_b = (self._lfo_phase + 0.5 * self.lfo_spread) % 1.0
+        if shape == "sh" and new_phase < prev_phase:
+            setattr(self, ipfx + "_sh_value", float(np.random.uniform(-1.0, 1.0)))
+            setattr(self, ipfx + "_sh_value_r", float(np.random.uniform(-1.0, 1.0)))
+        phase_a = new_phase
+        phase_b = (new_phase + 0.5 * spread) % 1.0
+        sh_a = getattr(self, ipfx + "_sh_value")
+        sh_b = getattr(self, ipfx + "_sh_value_r")
 
         def _eval(phase, is_b):
-            if self.lfo_shape == "triangle":
+            if shape == "triangle":
                 return 4.0 * abs(phase - 0.5) - 1.0
-            if self.lfo_shape == "square":
+            if shape == "square":
                 return 1.0 if phase < 0.5 else -1.0
-            if self.lfo_shape == "sh":
-                return self._lfo_sh_value_r if is_b else self._lfo_sh_value
+            if shape == "sh":
+                return sh_b if is_b else sh_a
             # default: sine
             return float(np.sin(phase * TWO_PI))
 
@@ -2320,11 +2358,22 @@ class SynthEngine:
         self._filter_cutoff_cur = np.exp(log_cur)
 
         # ─── LFO compute (once per block) + filter modulation ───
-        lfo_a, lfo_b = self._advance_lfo(n_samples)
-        effective_cutoff = self._filter_cutoff_cur
+        # Both LFOs advance every block. Each has its own target; their mod
+        # contributions sum at the target (filter/amp/pan). Zero-cost when
+        # disabled — _advance_lfo returns (0, 0) early.
+        lfo1_a, lfo1_b = self._advance_lfo(n_samples, which=1)
+        lfo2_a, lfo2_b = self._advance_lfo(n_samples, which=2)
+
+        filter_mod = 0.0
         if self.lfo_enabled and self.lfo_target == "filter" and self.lfo_depth > 0.001:
-            # ±2 octaves at depth=1 (lfo_a is already scaled by depth)
-            effective_cutoff = self._filter_cutoff_cur * (2.0 ** (lfo_a * 2.0))
+            filter_mod += lfo1_a
+        if self.lfo2_enabled and self.lfo2_target == "filter" and self.lfo2_depth > 0.001:
+            filter_mod += lfo2_a
+
+        effective_cutoff = self._filter_cutoff_cur
+        if abs(filter_mod) > 0.001:
+            # ±2 octaves at combined depth = 1
+            effective_cutoff = self._filter_cutoff_cur * (2.0 ** (filter_mod * 2.0))
             effective_cutoff = max(20.0, min(20000.0, effective_cutoff))
 
         # Only recalculate filter coefficients if cutoff or resonance actually changed
@@ -2464,23 +2513,40 @@ class SynthEngine:
                 output_r = self.filter_hp_r.process(output_r)
 
         # ─── LFO amp/pan modulation on pad bus ───
-        # Ramp mod values linearly from last block's end-value to this block's new
-        # value. That avoids the 10ms-block-sized discontinuity that would
-        # otherwise click on every render — particularly audible in the reverb tail.
-        if (self.lfo_enabled and self.lfo_depth * self.motion_mix > 0.001
-                and self.lfo_target in ("amp", "pan")):
-            ramp_a = np.linspace(self._lfo_mod_a_last, lfo_a, n_samples, dtype=np.float64)
+        # Each LFO's contribution ramps linearly from its own previous block's
+        # end value to its new value (block-rate step → audible click otherwise,
+        # especially in reverb tail). The two ramp contributions sum per target.
+        amp_ramp_l = None
+        amp_ramp_r = None
+        pan_ramp = None
+        if self.lfo_enabled and self.lfo_depth * self.motion_mix > 0.001:
+            r1a = np.linspace(self._lfo_mod_a_last, lfo1_a, n_samples, dtype=np.float64)
+            r1b = np.linspace(self._lfo_mod_b_last, lfo1_b, n_samples, dtype=np.float64)
             if self.lfo_target == "amp":
-                ramp_b = np.linspace(self._lfo_mod_b_last, lfo_b, n_samples, dtype=np.float64)
-                # Tremolo: ±50% swing at depth=1
-                output_l *= (1.0 + ramp_a * 0.5)
-                output_r *= (1.0 + ramp_b * 0.5)
-            else:  # pan — opposite scale on L vs R (uses mod_a on both sides)
-                output_l *= (1.0 + ramp_a * 0.5)
-                output_r *= (1.0 - ramp_a * 0.5)
+                amp_ramp_l = r1a
+                amp_ramp_r = r1b
+            elif self.lfo_target == "pan":
+                pan_ramp = r1a
+        if self.lfo2_enabled and self.lfo2_depth * self.motion_mix > 0.001:
+            r2a = np.linspace(self._lfo2_mod_a_last, lfo2_a, n_samples, dtype=np.float64)
+            r2b = np.linspace(self._lfo2_mod_b_last, lfo2_b, n_samples, dtype=np.float64)
+            if self.lfo2_target == "amp":
+                amp_ramp_l = r2a if amp_ramp_l is None else amp_ramp_l + r2a
+                amp_ramp_r = r2b if amp_ramp_r is None else amp_ramp_r + r2b
+            elif self.lfo2_target == "pan":
+                pan_ramp = r2a if pan_ramp is None else pan_ramp + r2a
+        if amp_ramp_l is not None:
+            # Tremolo: ±50% swing at combined depth=1
+            output_l *= (1.0 + amp_ramp_l * 0.5)
+            output_r *= (1.0 + amp_ramp_r * 0.5)
+        if pan_ramp is not None:
+            output_l *= (1.0 + pan_ramp * 0.5)
+            output_r *= (1.0 - pan_ramp * 0.5)
         # Remember this block's end values for the next block's ramp start
-        self._lfo_mod_a_last = lfo_a
-        self._lfo_mod_b_last = lfo_b
+        self._lfo_mod_a_last = lfo1_a
+        self._lfo_mod_b_last = lfo1_b
+        self._lfo2_mod_a_last = lfo2_a
+        self._lfo2_mod_b_last = lfo2_b
 
         # Snapshot dry pad (post-LFO, pre-FX) so callers asking for FX-bypass
         # routing can subtract and extract a clean dry bus for the bus comp.
@@ -2871,6 +2937,33 @@ class SynthEngine:
                 self._filter_cutoff_last_set = -1.0
         if "lfo_spread" in params:
             self.lfo_spread = max(0.0, min(1.0, float(params["lfo_spread"])))
+
+        # LFO 2 — parallel routing
+        if "lfo2_enabled" in params:
+            self.lfo2_enabled = bool(params["lfo2_enabled"])
+        if "lfo2_rate_hz" in params:
+            self.lfo2_rate_hz = max(0.05, min(20.0, float(params["lfo2_rate_hz"])))
+        if "lfo2_rate_mode" in params:
+            m = str(params["lfo2_rate_mode"])
+            if m == "FREE" or m in self._DELAY_DIVISIONS:
+                self.lfo2_rate_mode = m
+        if "lfo2_rate_multiplier" in params:
+            self.lfo2_rate_multiplier = max(0.1, min(10.0, float(params["lfo2_rate_multiplier"])))
+        if "lfo2_key_sync" in params:
+            self.lfo2_key_sync = bool(params["lfo2_key_sync"])
+        if "lfo2_depth" in params:
+            self.lfo2_depth = max(0.0, min(1.0, float(params["lfo2_depth"])))
+        if "lfo2_shape" in params:
+            s = str(params["lfo2_shape"])
+            if s in ("sine", "triangle", "square", "sh"):
+                self.lfo2_shape = s
+        if "lfo2_target" in params:
+            t = str(params["lfo2_target"])
+            if t in ("filter", "amp", "pan"):
+                self.lfo2_target = t
+                self._filter_cutoff_last_set = -1.0
+        if "lfo2_spread" in params:
+            self.lfo2_spread = max(0.0, min(1.0, float(params["lfo2_spread"])))
         if "delay_enabled" in params:
             self.delay_enabled = bool(params["delay_enabled"])
         if "delay_time_mode" in params:
@@ -2954,6 +3047,15 @@ class SynthEngine:
             "lfo_target": self.lfo_target,
             "lfo_spread": self.lfo_spread,
             "lfo_key_sync": self.lfo_key_sync,
+            "lfo2_enabled": self.lfo2_enabled,
+            "lfo2_rate_hz": self.lfo2_rate_hz,
+            "lfo2_rate_mode": self.lfo2_rate_mode,
+            "lfo2_rate_multiplier": self.lfo2_rate_multiplier,
+            "lfo2_depth": self.lfo2_depth,
+            "lfo2_shape": self.lfo2_shape,
+            "lfo2_target": self.lfo2_target,
+            "lfo2_spread": self.lfo2_spread,
+            "lfo2_key_sync": self.lfo2_key_sync,
             "delay_enabled": self.delay_enabled,
             "delay_time_mode": self.delay_time_mode,
             "delay_time_ms": self.delay_time_ms,

@@ -74,6 +74,7 @@
     let midiFlashTimeout = null;
     let clipTimeout = null;
     let linkOscLevels = false;
+    let lfoLink = false;
     const clipIndicator = document.getElementById("clip-indicator");
     const levelDots = document.querySelectorAll(".level-dot");
     const bpmVal = document.getElementById("bpm-val");
@@ -384,6 +385,8 @@
             // Sync OSC level link state
             linkOscLevels = s.synth_pad.osc_levels_linked ?? false;
             updateMirrorIndicators();
+            // Sync LFO link state
+            lfoLink = s.synth_pad.lfo_link ?? false;
             // Sync OSC octave displays — state persists but UI var was init-only
             osc1Octave = s.synth_pad.osc1_octave ?? 0;
             osc2Octave = s.synth_pad.osc2_octave ?? 0;
@@ -1965,11 +1968,12 @@
             } else if (param === "pre_limiter_trim" || param === "shimmer_send") {
                 sendValue = value / 100;
                 displayValue = sendValue.toFixed(2) + "x";
-            } else if (param === "lfo_rate_hz") {
+            } else if (param === "lfo_rate_hz" || param === "lfo2_rate_hz") {
                 // slider 5..2000 → 0.05..20 Hz (log-ish via linear /100)
                 sendValue = value / 100;
                 displayValue = sendValue.toFixed(2) + "Hz";
             } else if (param === "lfo_depth" || param === "lfo_spread" ||
+                param === "lfo2_depth" || param === "lfo2_spread" ||
                 param === "delay_wet" || param === "delay_feedback") {
                 sendValue = value / 100;
                 displayValue = Math.round(value) + "%";
@@ -2020,8 +2024,8 @@
                 value: sendValue,
             });
 
-            // MIRROR: when OSC level-mirror is on, mirror per-OSC sliders to the twin.
-            // Covers reverb sends + per-OSC ADSR knobs.
+            // MIRROR (OSC): when OSC level-mirror is on, mirror per-OSC sliders
+            // to their twin. Covers reverb sends + per-OSC ADSR knobs.
             var mirrorTwin = null;
             if (param === "osc1_reverb_send") mirrorTwin = "osc2_reverb_send";
             else if (param === "osc2_reverb_send") mirrorTwin = "osc1_reverb_send";
@@ -2036,6 +2040,26 @@
                     var twinKnob = twinSlider.closest(".knob");
                     if (twinKnob && typeof updateKnobRotation === "function") updateKnobRotation(twinKnob);
                     send({ type: "setting", section: "synth_pad", param: mirrorTwin, value: sendValue });
+                }
+            }
+
+            // LINK (LFO): mirror lfo_*  ↔ lfo2_* slider edits when LINK LFOs is on.
+            var lfoTwin = null;
+            if (param === "lfo_rate_hz") lfoTwin = "lfo2_rate_hz";
+            else if (param === "lfo_depth") lfoTwin = "lfo2_depth";
+            else if (param === "lfo_spread") lfoTwin = "lfo2_spread";
+            else if (param === "lfo2_rate_hz") lfoTwin = "lfo_rate_hz";
+            else if (param === "lfo2_depth") lfoTwin = "lfo_depth";
+            else if (param === "lfo2_spread") lfoTwin = "lfo_spread";
+            if (lfoLink && lfoTwin) {
+                var lfoTwinSlider = document.querySelector('.setting-slider[data-param="' + lfoTwin + '"]');
+                if (lfoTwinSlider && lfoTwinSlider.value !== slider.value) {
+                    lfoTwinSlider.value = slider.value;
+                    var lfoTwinValEl = lfoTwinSlider.parentElement.querySelector(".setting-value");
+                    if (lfoTwinValEl) lfoTwinValEl.textContent = displayValue;
+                    var lfoTwinKnob = lfoTwinSlider.closest(".knob");
+                    if (lfoTwinKnob && typeof updateKnobRotation === "function") updateKnobRotation(lfoTwinKnob);
+                    send({ type: "setting", section: "synth_pad", param: lfoTwin, value: sendValue });
                 }
             }
 
@@ -2145,6 +2169,50 @@
         });
     }
 
+    // Snap LFO 2 params to match LFO 1 when LINK LFOs is enabled. Covers all
+    // user-facing LFO state: toggles, dropdowns, and continuous knobs.
+    function snapLfo2ToLfo1() {
+        var sliderPairs = [
+            ["lfo_rate_hz", "lfo2_rate_hz"],
+            ["lfo_depth", "lfo2_depth"],
+            ["lfo_spread", "lfo2_spread"],
+        ];
+        sliderPairs.forEach(function (pair) {
+            var src = document.querySelector('.setting-slider[data-param="' + pair[0] + '"]');
+            var dst = document.querySelector('.setting-slider[data-param="' + pair[1] + '"]');
+            if (src && dst && dst.value !== src.value) {
+                dst.value = src.value;
+                dst.dispatchEvent(new Event("input", { bubbles: true }));
+            }
+        });
+        var selectPairs = [
+            ["lfo_shape", "lfo2_shape"],
+            ["lfo_target", "lfo2_target"],
+            ["lfo_rate_mode", "lfo2_rate_mode"],
+            ["lfo_rate_multiplier", "lfo2_rate_multiplier"],
+        ];
+        selectPairs.forEach(function (pair) {
+            var src = document.querySelector('.setting-select[data-param="' + pair[0] + '"]');
+            var dst = document.querySelector('.setting-select[data-param="' + pair[1] + '"]');
+            if (src && dst && dst.value !== src.value) {
+                dst.value = src.value;
+                dst.dispatchEvent(new Event("change", { bubbles: true }));
+            }
+        });
+        var cbPairs = [
+            ["lfo_enabled", "lfo2_enabled"],
+            ["lfo_key_sync", "lfo2_key_sync"],
+        ];
+        cbPairs.forEach(function (pair) {
+            var src = document.querySelector('.setting-checkbox[data-param="' + pair[0] + '"]');
+            var dst = document.querySelector('.setting-checkbox[data-param="' + pair[1] + '"]');
+            if (src && dst && dst.checked !== src.checked) {
+                dst.checked = src.checked;
+                dst.dispatchEvent(new Event("change", { bubbles: true }));
+            }
+        });
+    }
+
     // Snap OSC2 per-OSC params to match OSC1 when MIRROR is enabled. Covers
     // the same param set MIRROR watches on drag (reverb sends, fx bypass,
     // ADSR knobs) plus the front-panel OSC1/OSC2 level faders. Other per-OSC
@@ -2231,6 +2299,24 @@
                 }
             }
 
+            // LINK (LFO): toggle snapshot + twin-mirror for lfo/lfo2 checkboxes
+            if (p === "lfo_link") {
+                lfoLink = checkbox.checked;
+                if (lfoLink) snapLfo2ToLfo1();
+            }
+            var lfoCbTwin = null;
+            if (p === "lfo_enabled") lfoCbTwin = "lfo2_enabled";
+            else if (p === "lfo_key_sync") lfoCbTwin = "lfo2_key_sync";
+            else if (p === "lfo2_enabled") lfoCbTwin = "lfo_enabled";
+            else if (p === "lfo2_key_sync") lfoCbTwin = "lfo_key_sync";
+            if (lfoLink && lfoCbTwin) {
+                var lfoTwinCb = document.querySelector('.setting-checkbox[data-param="' + lfoCbTwin + '"]');
+                if (lfoTwinCb && lfoTwinCb.checked !== checkbox.checked) {
+                    lfoTwinCb.checked = checkbox.checked;
+                    send({ type: "setting", section: "synth_pad", param: lfoCbTwin, value: checkbox.checked });
+                }
+            }
+
             updateIndepFilterVisibility();
             if (p && p.indexOf("bus_comp_") === 0) markBusCompCustom();
         });
@@ -2247,6 +2333,24 @@
                 value: select.value,
             });
             if (p && p.indexOf("bus_comp_") === 0) markBusCompCustom();
+
+            // LINK (LFO): mirror lfo_*  ↔ lfo2_* dropdown edits
+            var lfoSelTwin = null;
+            if (p === "lfo_shape") lfoSelTwin = "lfo2_shape";
+            else if (p === "lfo_target") lfoSelTwin = "lfo2_target";
+            else if (p === "lfo_rate_mode") lfoSelTwin = "lfo2_rate_mode";
+            else if (p === "lfo_rate_multiplier") lfoSelTwin = "lfo2_rate_multiplier";
+            else if (p === "lfo2_shape") lfoSelTwin = "lfo_shape";
+            else if (p === "lfo2_target") lfoSelTwin = "lfo_target";
+            else if (p === "lfo2_rate_mode") lfoSelTwin = "lfo_rate_mode";
+            else if (p === "lfo2_rate_multiplier") lfoSelTwin = "lfo_rate_multiplier";
+            if (lfoLink && lfoSelTwin) {
+                var lfoTwinSel = document.querySelector('.setting-select[data-param="' + lfoSelTwin + '"]');
+                if (lfoTwinSel && lfoTwinSel.value !== select.value) {
+                    lfoTwinSel.value = select.value;
+                    send({ type: "setting", section: "synth_pad", param: lfoSelTwin, value: select.value });
+                }
+            }
         });
     });
 
@@ -2355,8 +2459,9 @@
             } else if (param === "pre_limiter_trim" || param === "shimmer_send") {
                 slider.value = value * 100;
             } else if (param === "lfo_rate_hz" || param === "lfo_depth" ||
-                param === "lfo_spread" || param === "delay_wet" ||
-                param === "delay_feedback") {
+                param === "lfo_spread" || param === "lfo2_rate_hz" ||
+                param === "lfo2_depth" || param === "lfo2_spread" ||
+                param === "delay_wet" || param === "delay_feedback") {
                 slider.value = value * 100;
             } else if (param === "delay_time_ms" || param === "delay_offset_ms") {
                 slider.value = value;
@@ -2425,9 +2530,10 @@
                     valueEl.textContent = value.toFixed(1) + "x";
                 } else if (param === "pre_limiter_trim" || param === "shimmer_send") {
                     valueEl.textContent = value.toFixed(2) + "x";
-                } else if (param === "lfo_rate_hz") {
+                } else if (param === "lfo_rate_hz" || param === "lfo2_rate_hz") {
                     valueEl.textContent = value.toFixed(2) + "Hz";
                 } else if (param === "lfo_depth" || param === "lfo_spread" ||
+                    param === "lfo2_depth" || param === "lfo2_spread" ||
                     param === "delay_wet" || param === "delay_feedback") {
                     valueEl.textContent = Math.round(value * 100) + "%";
                 } else if (param === "delay_time_ms") {

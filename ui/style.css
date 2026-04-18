@@ -1414,6 +1414,38 @@ body.macro-learning .setting-row:active {
     border-top: 1px solid rgba(0, 191, 99, 0.25);
 }
 
+/* Dual LFO layout — two side-by-side columns with a shared LINK row on top */
+.lfo-link-row {
+    justify-content: center;
+    border-bottom: 1px solid rgba(0, 191, 99, 0.25);
+    padding-bottom: 0.8vh;
+}
+.lfo-dual {
+    display: flex;
+    gap: 1.5vw;
+    align-items: flex-start;
+}
+.lfo-col {
+    flex: 1 1 0;
+    min-width: 0;
+}
+.lfo-col + .lfo-col {
+    border-left: 1px solid rgba(0, 191, 99, 0.15);
+    padding-left: 1vw;
+}
+.lfo-col-title {
+    font-size: clamp(9px, 1.5vw, 11px);
+    color: var(--text-green);
+    letter-spacing: 0.18em;
+    padding: 0.2vh 0 0.4vh 0;
+    text-align: center;
+    border-bottom: 1px solid rgba(0, 191, 99, 0.2);
+    margin-bottom: 0.3vh;
+}
+.lfo-col .setting-label {
+    flex: 0 0 35%;  /* narrower column → give labels more proportional room */
+}
+
 /* MIRROR indicator pill on OSC 1 / OSC 2 tabs — reflects LINK tab's MIRROR checkbox */
 .mirror-pill {
     display: inline-flex;
