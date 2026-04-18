@@ -1415,6 +1415,15 @@ class SynthEngine:
         self.lfo_target = "filter"     # filter, amp, pan
         self.lfo_spread = 0.0          # 0..1, 180° R/L offset at max
         self.lfo_key_sync = False      # reset LFO phase on every note_on for repeatable sweeps
+        self.lfo_invert = False        # flip output polarity (peak becomes trough)
+        # Phase offset expressed in absolute milliseconds — translates to a phase
+        # fraction at eval time based on the effective rate. Bipolar ±200ms so
+        # user can align LFO timing with Haas-style delays intuitively. Does NOT
+        # mirror via LINK — lets linked LFOs sit counter-phase.
+        self.lfo_offset_ms = 0.0
+        # When on, the current haas_delay_ms is added to the effective offset at
+        # render time. Lets LFO follow Haas changes live without manual re-sync.
+        self.lfo_haas_compensate = False
         self._lfo_phase = 0.0
         self._lfo_sh_value = 0.0       # current sample&hold held value
         self._lfo_sh_value_r = 0.0
@@ -1434,6 +1443,9 @@ class SynthEngine:
         self.lfo2_target = "pan"       # default pan so a "second LFO on" feels different from LFO 1
         self.lfo2_spread = 0.0
         self.lfo2_key_sync = False
+        self.lfo2_invert = False
+        self.lfo2_offset_ms = 0.0
+        self.lfo2_haas_compensate = False
         self._lfo2_phase = 0.0
         self._lfo2_sh_value = 0.0
         self._lfo2_sh_value_r = 0.0
@@ -1759,9 +1771,10 @@ class SynthEngine:
         out_r += tap_r * effective_wet
 
     def _advance_lfo(self, n_samples: int, which: int = 1):
-        """Advance one LFO's phase by one block; return (mod_a, mod_b) bipolar,
-        pre-scaled by effective depth (user depth × motion_mix bus). mod_b is
-        phase-offset by spread. Control rate — runs once per block.
+        """Advance one LFO's phase by one block; return (mod_a, mod_b) bipolar
+        **normalized** in [-1, +1]. Depth + motion_mix scaling happens at each
+        application site so targets can apply target-specific formulas (e.g.
+        amp needs a gate formula, not symmetric swing).
 
         `which` = 1 or 2; reads/writes state via a prefix ("lfo"/"lfo2") so
         the same body handles both LFOs."""
@@ -1793,8 +1806,17 @@ class SynthEngine:
         if shape == "sh" and new_phase < prev_phase:
             setattr(self, ipfx + "_sh_value", float(np.random.uniform(-1.0, 1.0)))
             setattr(self, ipfx + "_sh_value_r", float(np.random.uniform(-1.0, 1.0)))
-        phase_a = new_phase
-        phase_b = (new_phase + 0.5 * spread) % 1.0
+        # Phase offset in ms → phase fraction via the current effective rate.
+        # Applied to eval phases only — the running _lfo_phase advances
+        # unchanged, so LINK still sees the two LFOs at the same
+        # "rate/position" but with a fixed time-lag between them. Haas-comp
+        # adds the current haas_delay_ms so the LFO tracks Haas changes live.
+        offset_ms = getattr(self, pfx + "_offset_ms")
+        if getattr(self, pfx + "_haas_compensate"):
+            offset_ms += self.haas_delay_ms
+        phase_off = (offset_ms / 1000.0) * effective_rate_hz
+        phase_a = (new_phase + phase_off) % 1.0
+        phase_b = (new_phase + phase_off + 0.5 * spread) % 1.0
         sh_a = getattr(self, ipfx + "_sh_value")
         sh_b = getattr(self, ipfx + "_sh_value_r")
 
@@ -1803,12 +1825,30 @@ class SynthEngine:
                 return 4.0 * abs(phase - 0.5) - 1.0
             if shape == "square":
                 return 1.0 if phase < 0.5 else -1.0
+            if shape == "saw":
+                # Ramp up 0..1 → bipolar -1..1, resets at phase wrap
+                return 2.0 * phase - 1.0
+            if shape == "ramp":
+                # Reverse saw: drops 1→-1 across the cycle
+                return 1.0 - 2.0 * phase
+            if shape == "peak":
+                # Asymmetric spike: fast rise (0-0.2), longer fall (0.2-1.0).
+                # Output sweeps -1 → +1 → -1, with the peak near 20% of the cycle.
+                if phase < 0.2:
+                    return (phase / 0.2) * 2.0 - 1.0
+                return (1.0 - (phase - 0.2) / 0.8) * 2.0 - 1.0
             if shape == "sh":
                 return sh_b if is_b else sh_a
             # default: sine
             return float(np.sin(phase * TWO_PI))
 
-        return _eval(phase_a, False) * effective_depth, _eval(phase_b, True) * effective_depth
+        invert = getattr(self, pfx + "_invert")
+        mod_a = _eval(phase_a, False)
+        mod_b = _eval(phase_b, True)
+        if invert:
+            mod_a = -mod_a
+            mod_b = -mod_b
+        return mod_a, mod_b
 
     def _process_shimmer_cloud(self, shimmer_sig: np.ndarray, out_l: np.ndarray, out_r: np.ndarray):
         """Multi-tap pre-reverb cloud: writes shimmer_sig into a ring buffer and
@@ -2364,11 +2404,15 @@ class SynthEngine:
         lfo1_a, lfo1_b = self._advance_lfo(n_samples, which=1)
         lfo2_a, lfo2_b = self._advance_lfo(n_samples, which=2)
 
+        # Depth × motion_mix scales raw LFO into its modulation contribution.
+        lfo1_d = self.lfo_depth * self.motion_mix
+        lfo2_d = self.lfo2_depth * self.motion_mix
+
         filter_mod = 0.0
-        if self.lfo_enabled and self.lfo_target == "filter" and self.lfo_depth > 0.001:
-            filter_mod += lfo1_a
-        if self.lfo2_enabled and self.lfo2_target == "filter" and self.lfo2_depth > 0.001:
-            filter_mod += lfo2_a
+        if self.lfo_enabled and self.lfo_target == "filter" and lfo1_d > 0.001:
+            filter_mod += lfo1_a * lfo1_d
+        if self.lfo2_enabled and self.lfo2_target == "filter" and lfo2_d > 0.001:
+            filter_mod += lfo2_a * lfo2_d
 
         effective_cutoff = self._filter_cutoff_cur
         if abs(filter_mod) > 0.001:
@@ -2514,35 +2558,54 @@ class SynthEngine:
 
         # ─── LFO amp/pan modulation on pad bus ───
         # Each LFO's contribution ramps linearly from its own previous block's
-        # end value to its new value (block-rate step → audible click otherwise,
-        # especially in reverb tail). The two ramp contributions sum per target.
-        amp_ramp_l = None
-        amp_ramp_r = None
-        pan_ramp = None
-        if self.lfo_enabled and self.lfo_depth * self.motion_mix > 0.001:
+        # normalized end value to its new normalized value — avoids the block-rate
+        # step that would otherwise click (audible in reverb tail).
+        #
+        # AMP uses a gate-style formula so depth=1 = full cut at trough:
+        #   gate = 1 - d + d * (1 + lfo_norm) / 2   ∈ [0, 1] at d=1, centered at 1 at d=0
+        # Makeup gain 1/(1-d/2) restores unity average loudness — otherwise the
+        # asymmetric cut would drop perceived volume by up to 6dB at d=1. Peaks
+        # then exceed 1.0 but the master tanh limiter catches them cleanly.
+        # Two amp LFOs compose multiplicatively (both must be "open" for sound through).
+        #
+        # PAN stays with the symmetric ±(d/2) swing on L (+) / R (−), which stacks
+        # additively across multiple LFOs targeting pan.
+        amp_mul_l = None
+        amp_mul_r = None
+        pan_mod_l_add = None
+        pan_mod_r_add = None
+        if self.lfo_enabled and lfo1_d > 0.001:
             r1a = np.linspace(self._lfo_mod_a_last, lfo1_a, n_samples, dtype=np.float64)
             r1b = np.linspace(self._lfo_mod_b_last, lfo1_b, n_samples, dtype=np.float64)
             if self.lfo_target == "amp":
-                amp_ramp_l = r1a
-                amp_ramp_r = r1b
+                makeup1 = 1.0 / max(1.0 - lfo1_d * 0.5, 0.1)
+                amp_mul_l = (1.0 - lfo1_d + lfo1_d * (1.0 + r1a) * 0.5) * makeup1
+                amp_mul_r = (1.0 - lfo1_d + lfo1_d * (1.0 + r1b) * 0.5) * makeup1
             elif self.lfo_target == "pan":
-                pan_ramp = r1a
-        if self.lfo2_enabled and self.lfo2_depth * self.motion_mix > 0.001:
+                pan_mod_l_add = r1a * lfo1_d * 0.5
+                pan_mod_r_add = -r1a * lfo1_d * 0.5
+        if self.lfo2_enabled and lfo2_d > 0.001:
             r2a = np.linspace(self._lfo2_mod_a_last, lfo2_a, n_samples, dtype=np.float64)
             r2b = np.linspace(self._lfo2_mod_b_last, lfo2_b, n_samples, dtype=np.float64)
             if self.lfo2_target == "amp":
-                amp_ramp_l = r2a if amp_ramp_l is None else amp_ramp_l + r2a
-                amp_ramp_r = r2b if amp_ramp_r is None else amp_ramp_r + r2b
+                makeup2 = 1.0 / max(1.0 - lfo2_d * 0.5, 0.1)
+                g2_l = (1.0 - lfo2_d + lfo2_d * (1.0 + r2a) * 0.5) * makeup2
+                g2_r = (1.0 - lfo2_d + lfo2_d * (1.0 + r2b) * 0.5) * makeup2
+                # Compose two gates: both must be open for signal to pass
+                amp_mul_l = g2_l if amp_mul_l is None else amp_mul_l * g2_l
+                amp_mul_r = g2_r if amp_mul_r is None else amp_mul_r * g2_r
             elif self.lfo2_target == "pan":
-                pan_ramp = r2a if pan_ramp is None else pan_ramp + r2a
-        if amp_ramp_l is not None:
-            # Tremolo: ±50% swing at combined depth=1
-            output_l *= (1.0 + amp_ramp_l * 0.5)
-            output_r *= (1.0 + amp_ramp_r * 0.5)
-        if pan_ramp is not None:
-            output_l *= (1.0 + pan_ramp * 0.5)
-            output_r *= (1.0 - pan_ramp * 0.5)
-        # Remember this block's end values for the next block's ramp start
+                add_l = r2a * lfo2_d * 0.5
+                add_r = -r2a * lfo2_d * 0.5
+                pan_mod_l_add = add_l if pan_mod_l_add is None else pan_mod_l_add + add_l
+                pan_mod_r_add = add_r if pan_mod_r_add is None else pan_mod_r_add + add_r
+        if amp_mul_l is not None:
+            output_l *= amp_mul_l
+            output_r *= amp_mul_r
+        if pan_mod_l_add is not None:
+            output_l *= (1.0 + pan_mod_l_add)
+            output_r *= (1.0 + pan_mod_r_add)
+        # Remember this block's end values (normalized) for the next block's ramp start
         self._lfo_mod_a_last = lfo1_a
         self._lfo_mod_b_last = lfo1_b
         self._lfo2_mod_a_last = lfo2_a
@@ -2927,8 +2990,14 @@ class SynthEngine:
             self.lfo_depth = max(0.0, min(1.0, float(params["lfo_depth"])))
         if "lfo_shape" in params:
             s = str(params["lfo_shape"])
-            if s in ("sine", "triangle", "square", "sh"):
+            if s in ("sine", "triangle", "square", "saw", "ramp", "peak", "sh"):
                 self.lfo_shape = s
+        if "lfo_invert" in params:
+            self.lfo_invert = bool(params["lfo_invert"])
+        if "lfo_offset_ms" in params:
+            self.lfo_offset_ms = max(-500.0, min(500.0, float(params["lfo_offset_ms"])))
+        if "lfo_haas_compensate" in params:
+            self.lfo_haas_compensate = bool(params["lfo_haas_compensate"])
         if "lfo_target" in params:
             t = str(params["lfo_target"])
             if t in ("filter", "amp", "pan"):
@@ -2955,8 +3024,14 @@ class SynthEngine:
             self.lfo2_depth = max(0.0, min(1.0, float(params["lfo2_depth"])))
         if "lfo2_shape" in params:
             s = str(params["lfo2_shape"])
-            if s in ("sine", "triangle", "square", "sh"):
+            if s in ("sine", "triangle", "square", "saw", "ramp", "peak", "sh"):
                 self.lfo2_shape = s
+        if "lfo2_invert" in params:
+            self.lfo2_invert = bool(params["lfo2_invert"])
+        if "lfo2_offset_ms" in params:
+            self.lfo2_offset_ms = max(-500.0, min(500.0, float(params["lfo2_offset_ms"])))
+        if "lfo2_haas_compensate" in params:
+            self.lfo2_haas_compensate = bool(params["lfo2_haas_compensate"])
         if "lfo2_target" in params:
             t = str(params["lfo2_target"])
             if t in ("filter", "amp", "pan"):
@@ -3047,6 +3122,9 @@ class SynthEngine:
             "lfo_target": self.lfo_target,
             "lfo_spread": self.lfo_spread,
             "lfo_key_sync": self.lfo_key_sync,
+            "lfo_invert": self.lfo_invert,
+            "lfo_offset_ms": self.lfo_offset_ms,
+            "lfo_haas_compensate": self.lfo_haas_compensate,
             "lfo2_enabled": self.lfo2_enabled,
             "lfo2_rate_hz": self.lfo2_rate_hz,
             "lfo2_rate_mode": self.lfo2_rate_mode,
@@ -3056,6 +3134,9 @@ class SynthEngine:
             "lfo2_target": self.lfo2_target,
             "lfo2_spread": self.lfo2_spread,
             "lfo2_key_sync": self.lfo2_key_sync,
+            "lfo2_invert": self.lfo2_invert,
+            "lfo2_offset_ms": self.lfo2_offset_ms,
+            "lfo2_haas_compensate": self.lfo2_haas_compensate,
             "delay_enabled": self.delay_enabled,
             "delay_time_mode": self.delay_time_mode,
             "delay_time_ms": self.delay_time_ms,

@@ -1492,6 +1492,19 @@
     var grLabelHoldTicks = 0;
     function updateBusCompGr(grDb) {
         if (!busCompGrLed) return;
+        // When bus comp is disabled, force LED + label back to the "off" state
+        // so stale GR values from before disable don't linger on the LED.
+        if (state && state.master && state.master.bus_comp_enabled === false) {
+            grLedPeakDb = 0.0;
+            grLabelPeakDb = 0.0;
+            grLabelHoldTicks = 0;
+            var off = grLedColor(0);
+            busCompGrLed.style.background = off.color;
+            busCompGrLed.style.boxShadow = "none";
+            busCompGrLed.style.borderColor = off.color;
+            if (busCompGrLabel) busCompGrLabel.textContent = "0.0";
+            return;
+        }
         // LED: fast-attack / gentle decay for beat-pulse readability
         if (grDb > grLedPeakDb) grLedPeakDb = grDb;
         else grLedPeakDb = Math.max(grDb, grLedPeakDb - 0.6);
@@ -1977,6 +1990,15 @@
                 param === "delay_wet" || param === "delay_feedback") {
                 sendValue = value / 100;
                 displayValue = Math.round(value) + "%";
+            } else if (param === "lfo_offset_ms" || param === "lfo2_offset_ms") {
+                // Bipolar ms offset. Snap to 0 within ±3ms so "0ms" is a real detent.
+                if (value >= -3 && value <= 3) {
+                    value = 0;
+                    slider.value = 0;
+                }
+                sendValue = value;
+                var sgn = value > 0 ? "+" : "";
+                displayValue = sgn + Math.round(value) + "ms";
             } else if (param === "delay_time_ms") {
                 sendValue = value;
                 displayValue = Math.round(value) + "ms";
@@ -2202,6 +2224,7 @@
         var cbPairs = [
             ["lfo_enabled", "lfo2_enabled"],
             ["lfo_key_sync", "lfo2_key_sync"],
+            ["lfo_invert", "lfo2_invert"],
         ];
         cbPairs.forEach(function (pair) {
             var src = document.querySelector('.setting-checkbox[data-param="' + pair[0] + '"]');
@@ -2307,8 +2330,10 @@
             var lfoCbTwin = null;
             if (p === "lfo_enabled") lfoCbTwin = "lfo2_enabled";
             else if (p === "lfo_key_sync") lfoCbTwin = "lfo2_key_sync";
+            else if (p === "lfo_invert") lfoCbTwin = "lfo2_invert";
             else if (p === "lfo2_enabled") lfoCbTwin = "lfo_enabled";
             else if (p === "lfo2_key_sync") lfoCbTwin = "lfo_key_sync";
+            else if (p === "lfo2_invert") lfoCbTwin = "lfo_invert";
             if (lfoLink && lfoCbTwin) {
                 var lfoTwinCb = document.querySelector('.setting-checkbox[data-param="' + lfoCbTwin + '"]');
                 if (lfoTwinCb && lfoTwinCb.checked !== checkbox.checked) {
@@ -2319,6 +2344,13 @@
 
             updateIndepFilterVisibility();
             if (p && p.indexOf("bus_comp_") === 0) markBusCompCustom();
+            // GR LED: when bus_comp_enabled is flipped off, reset the LED + label
+            // immediately so they drop to the "off" state without waiting for the
+            // next 20Hz GR push.
+            if (p === "bus_comp_enabled" && !checkbox.checked) {
+                if (state && state.master) state.master.bus_comp_enabled = false;
+                updateBusCompGr(0);
+            }
         });
     });
 
@@ -2463,6 +2495,9 @@
                 param === "lfo2_depth" || param === "lfo2_spread" ||
                 param === "delay_wet" || param === "delay_feedback") {
                 slider.value = value * 100;
+            } else if (param === "lfo_offset_ms" || param === "lfo2_offset_ms") {
+                // Raw ms — no scaling.
+                slider.value = value;
             } else if (param === "delay_time_ms" || param === "delay_offset_ms") {
                 slider.value = value;
             } else if (param === "bus_comp_mix") {
@@ -2536,6 +2571,9 @@
                     param === "lfo2_depth" || param === "lfo2_spread" ||
                     param === "delay_wet" || param === "delay_feedback") {
                     valueEl.textContent = Math.round(value * 100) + "%";
+                } else if (param === "lfo_offset_ms" || param === "lfo2_offset_ms") {
+                    var _sgn = value > 0 ? "+" : "";
+                    valueEl.textContent = _sgn + Math.round(value) + "ms";
                 } else if (param === "delay_time_ms") {
                     valueEl.textContent = Math.round(value) + "ms";
                 } else if (param === "delay_offset_ms") {

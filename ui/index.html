@@ -13,7 +13,7 @@
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="logo.png">
     <!-- Keep style.css and script.js cache-bust versions in sync -->
-    <link rel="stylesheet" href="style.css?v=95">
+    <link rel="stylesheet" href="style.css?v=98">
 </head>
 <body>
     <div id="app">
@@ -271,8 +271,7 @@
             <div id="settings-box">
                 <div id="settings-header">
                     <button class="settings-tab active" data-tab="link">LINK</button>
-                    <button class="settings-tab" data-tab="osc1">OSC 1</button>
-                    <button class="settings-tab" data-tab="osc2">OSC 2</button>
+                    <button class="settings-tab" data-tab="osc">OSC</button>
                     <button class="settings-tab" data-tab="reverb">REVERB</button>
                     <button class="settings-tab" data-tab="motion">MOTION</button>
                     <button class="settings-tab" data-tab="piano">PIANO</button>
@@ -306,10 +305,6 @@
                                 <label class="setting-checkbox-label">
                                     <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc_hard_pan">
                                     <span>WIDE</span>
-                                </label>
-                                <label class="setting-checkbox-label">
-                                    <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc_levels_linked">
-                                    <span>MIRROR</span>
                                 </label>
                             </div>
                             <div class="setting-row stereo-haas">
@@ -345,181 +340,185 @@
 
                     </div>
 
-                    <!-- OSC 1 Tab -->
-                    <div class="settings-panel" data-panel="osc1">
-                        <div class="help-text">OSC 1 voice controls. MIRROR (on LINK tab) will mirror these to OSC 2.</div>
-                        <div class="mirror-pill" id="osc1-mirror-pill">
-                            <span class="mirror-dot"></span><span class="mirror-text">MIRROR OFF</span>
+                    <!-- OSC Tab — two columns (OSC 1 / OSC 2), mirrors MOTION's layout -->
+                    <div class="settings-panel" data-panel="osc">
+                        <div class="setting-row setting-row-checkbox osc-link-row">
+                            <label class="setting-checkbox-label">
+                                <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc_levels_linked">
+                                <span>MIRROR OSCs — link OSC 2 to OSC 1</span>
+                            </label>
                         </div>
 
-                        <div class="setting-section">TONE</div>
-                        <div class="setting-row">
-                            <span class="setting-label">Trim</span>
-                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc1_max" min="0" max="100" value="100">
-                            <span class="setting-value">100%</span>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">Wave</span>
-                            <select class="setting-select" data-section="synth_pad" data-param="osc1_waveform">
-                                <option value="sine" selected>Sine</option>
-                                <option value="square">Square</option>
-                                <option value="saw">Sawtooth</option>
-                                <option value="triangle">Triangle</option>
-                                <option value="saturated">Saturated</option>
-                            </select>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">Pan</span>
-                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc1_pan" min="-100" max="100" value="0">
-                            <span class="setting-value">C</span>
-                        </div>
+                        <div class="osc-dual">
+                            <div class="osc-col">
+                                <div class="osc-col-title">OSC 1</div>
 
-                        <div class="setting-section">ENVELOPE</div>
-                        <div class="adsr-block">
-                            <svg class="adsr-curve" viewBox="0 0 200 60" preserveAspectRatio="none">
-                                <polyline id="adsr-path-osc1" points="0,60 40,2 80,15 140,15 200,60" />
-                            </svg>
-                            <div class="knob-row knob-row-tight">
-                                <div class="knob">
-                                    <div class="knob-label">ATTACK</div>
-                                    <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                    <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr_osc1.attack_ms" min="0" max="1000" value="200">
-                                    <span class="setting-value">200ms</span>
+                                <div class="setting-section">TONE</div>
+                                <div class="setting-row">
+                                    <span class="setting-label">Trim</span>
+                                    <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc1_max" min="0" max="100" value="100">
+                                    <span class="setting-value">100%</span>
                                 </div>
-                                <div class="knob">
-                                    <div class="knob-label">DECAY</div>
-                                    <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                    <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr_osc1.decay_ms" min="0" max="2000" value="1500">
-                                    <span class="setting-value">1500ms</span>
+                                <div class="setting-row">
+                                    <span class="setting-label">Wave</span>
+                                    <select class="setting-select" data-section="synth_pad" data-param="osc1_waveform">
+                                        <option value="sine" selected>Sine</option>
+                                        <option value="square">Square</option>
+                                        <option value="saw">Sawtooth</option>
+                                        <option value="triangle">Triangle</option>
+                                        <option value="saturated">Saturated</option>
+                                    </select>
                                 </div>
-                                <div class="knob">
-                                    <div class="knob-label">SUSTAIN</div>
-                                    <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                    <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr_osc1.sustain_percent" min="0" max="100" value="80">
-                                    <span class="setting-value">80%</span>
+                                <div class="setting-row">
+                                    <span class="setting-label">Pan</span>
+                                    <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc1_pan" min="-100" max="100" value="0">
+                                    <span class="setting-value">C</span>
                                 </div>
-                                <div class="knob">
-                                    <div class="knob-label">RELEASE</div>
-                                    <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                    <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr_osc1.release_ms" min="0" max="3000" value="500">
-                                    <span class="setting-value">500ms</span>
+
+                                <div class="setting-section">ENVELOPE</div>
+                                <div class="adsr-block">
+                                    <svg class="adsr-curve" viewBox="0 0 200 60" preserveAspectRatio="none">
+                                        <polyline id="adsr-path-osc1" points="0,60 40,2 80,15 140,15 200,60" />
+                                    </svg>
+                                    <div class="knob-row knob-row-tight">
+                                        <div class="knob">
+                                            <div class="knob-label">ATTACK</div>
+                                            <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                            <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr_osc1.attack_ms" min="0" max="1000" value="200">
+                                            <span class="setting-value">200ms</span>
+                                        </div>
+                                        <div class="knob">
+                                            <div class="knob-label">DECAY</div>
+                                            <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                            <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr_osc1.decay_ms" min="0" max="2000" value="1500">
+                                            <span class="setting-value">1500ms</span>
+                                        </div>
+                                        <div class="knob">
+                                            <div class="knob-label">SUSTAIN</div>
+                                            <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                            <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr_osc1.sustain_percent" min="0" max="100" value="80">
+                                            <span class="setting-value">80%</span>
+                                        </div>
+                                        <div class="knob">
+                                            <div class="knob-label">RELEASE</div>
+                                            <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                            <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr_osc1.release_ms" min="0" max="3000" value="500">
+                                            <span class="setting-value">500ms</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="setting-section">FILTER</div>
+                                <div class="setting-row setting-row-checkbox">
+                                    <label class="setting-checkbox-label">
+                                        <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc1_filter_enabled" checked>
+                                        <span>Use shared filter (LINK tab)</span>
+                                    </label>
+                                </div>
+                                <div class="setting-row indep-filter-row" id="osc1-indep-filter" style="display:none">
+                                    <span class="setting-label">Cutoff (Hz)</span>
+                                    <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc1_indep_cutoff" min="0" max="1000" value="1000" data-hz-min="20" data-hz-max="20000">
+                                    <span class="setting-value">20kHz</span>
+                                </div>
+
+                                <div class="setting-section">REVERB</div>
+                                <div class="setting-row">
+                                    <span class="setting-label">Send</span>
+                                    <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc1_reverb_send" min="0" max="100" value="100">
+                                    <span class="setting-value">100%</span>
+                                </div>
+                                <div class="setting-row setting-row-checkbox">
+                                    <label class="setting-checkbox-label">
+                                        <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc1_fx_bypass">
+                                        <span>FX Bypass</span>
+                                    </label>
                                 </div>
                             </div>
-                        </div>
 
-                        <div class="setting-section">FILTER</div>
-                        <div class="setting-row setting-row-checkbox">
-                            <label class="setting-checkbox-label">
-                                <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc1_filter_enabled" checked>
-                                <span>Use shared filter (LINK tab)</span>
-                            </label>
-                        </div>
-                        <div class="setting-row indep-filter-row" id="osc1-indep-filter" style="display:none">
-                            <span class="setting-label">Cutoff (Hz)</span>
-                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc1_indep_cutoff" min="0" max="1000" value="1000" data-hz-min="20" data-hz-max="20000">
-                            <span class="setting-value">20kHz</span>
-                        </div>
+                            <div class="osc-col">
+                                <div class="osc-col-title">OSC 2</div>
 
-                        <div class="setting-section">REVERB</div>
-                        <div class="setting-row">
-                            <span class="setting-label">Send</span>
-                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc1_reverb_send" min="0" max="100" value="100">
-                            <span class="setting-value">100%</span>
-                        </div>
-                        <div class="setting-row setting-row-checkbox">
-                            <label class="setting-checkbox-label">
-                                <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc1_fx_bypass">
-                                <span>FX Bypass (force send to 0)</span>
-                            </label>
-                        </div>
-                    </div>
-
-                    <!-- OSC 2 Tab -->
-                    <div class="settings-panel" data-panel="osc2">
-                        <div class="help-text">OSC 2 voice controls. MIRROR (on LINK tab) will mirror these to OSC 1.</div>
-                        <div class="mirror-pill" id="osc2-mirror-pill">
-                            <span class="mirror-dot"></span><span class="mirror-text">MIRROR OFF</span>
-                        </div>
-
-                        <div class="setting-section">TONE</div>
-                        <div class="setting-row">
-                            <span class="setting-label">Trim</span>
-                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc2_max" min="0" max="100" value="100">
-                            <span class="setting-value">100%</span>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">Wave</span>
-                            <select class="setting-select" data-section="synth_pad" data-param="osc2_waveform">
-                                <option value="sine">Sine</option>
-                                <option value="square" selected>Square</option>
-                                <option value="saw">Sawtooth</option>
-                                <option value="triangle">Triangle</option>
-                                <option value="saturated">Saturated</option>
-                            </select>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">Pan</span>
-                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc2_pan" min="-100" max="100" value="0">
-                            <span class="setting-value">C</span>
-                        </div>
-
-                        <div class="setting-section">ENVELOPE</div>
-                        <div class="adsr-block">
-                            <svg class="adsr-curve" viewBox="0 0 200 60" preserveAspectRatio="none">
-                                <polyline id="adsr-path-osc2" points="0,60 40,2 80,15 140,15 200,60" />
-                            </svg>
-                            <div class="knob-row knob-row-tight">
-                                <div class="knob">
-                                    <div class="knob-label">ATTACK</div>
-                                    <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                    <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr_osc2.attack_ms" min="0" max="1000" value="200">
-                                    <span class="setting-value">200ms</span>
+                                <div class="setting-section">TONE</div>
+                                <div class="setting-row">
+                                    <span class="setting-label">Trim</span>
+                                    <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc2_max" min="0" max="100" value="100">
+                                    <span class="setting-value">100%</span>
                                 </div>
-                                <div class="knob">
-                                    <div class="knob-label">DECAY</div>
-                                    <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                    <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr_osc2.decay_ms" min="0" max="2000" value="1500">
-                                    <span class="setting-value">1500ms</span>
+                                <div class="setting-row">
+                                    <span class="setting-label">Wave</span>
+                                    <select class="setting-select" data-section="synth_pad" data-param="osc2_waveform">
+                                        <option value="sine">Sine</option>
+                                        <option value="square" selected>Square</option>
+                                        <option value="saw">Sawtooth</option>
+                                        <option value="triangle">Triangle</option>
+                                        <option value="saturated">Saturated</option>
+                                    </select>
                                 </div>
-                                <div class="knob">
-                                    <div class="knob-label">SUSTAIN</div>
-                                    <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                    <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr_osc2.sustain_percent" min="0" max="100" value="80">
-                                    <span class="setting-value">80%</span>
+                                <div class="setting-row">
+                                    <span class="setting-label">Pan</span>
+                                    <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc2_pan" min="-100" max="100" value="0">
+                                    <span class="setting-value">C</span>
                                 </div>
-                                <div class="knob">
-                                    <div class="knob-label">RELEASE</div>
-                                    <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                    <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr_osc2.release_ms" min="0" max="3000" value="500">
-                                    <span class="setting-value">500ms</span>
+
+                                <div class="setting-section">ENVELOPE</div>
+                                <div class="adsr-block">
+                                    <svg class="adsr-curve" viewBox="0 0 200 60" preserveAspectRatio="none">
+                                        <polyline id="adsr-path-osc2" points="0,60 40,2 80,15 140,15 200,60" />
+                                    </svg>
+                                    <div class="knob-row knob-row-tight">
+                                        <div class="knob">
+                                            <div class="knob-label">ATTACK</div>
+                                            <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                            <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr_osc2.attack_ms" min="0" max="1000" value="200">
+                                            <span class="setting-value">200ms</span>
+                                        </div>
+                                        <div class="knob">
+                                            <div class="knob-label">DECAY</div>
+                                            <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                            <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr_osc2.decay_ms" min="0" max="2000" value="1500">
+                                            <span class="setting-value">1500ms</span>
+                                        </div>
+                                        <div class="knob">
+                                            <div class="knob-label">SUSTAIN</div>
+                                            <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                            <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr_osc2.sustain_percent" min="0" max="100" value="80">
+                                            <span class="setting-value">80%</span>
+                                        </div>
+                                        <div class="knob">
+                                            <div class="knob-label">RELEASE</div>
+                                            <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                            <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="adsr_osc2.release_ms" min="0" max="3000" value="500">
+                                            <span class="setting-value">500ms</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="setting-section">FILTER</div>
+                                <div class="setting-row setting-row-checkbox">
+                                    <label class="setting-checkbox-label">
+                                        <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc2_filter_enabled" checked>
+                                        <span>Use shared filter (LINK tab)</span>
+                                    </label>
+                                </div>
+                                <div class="setting-row indep-filter-row" id="osc2-indep-filter" style="display:none">
+                                    <span class="setting-label">Cutoff (Hz)</span>
+                                    <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc2_indep_cutoff" min="0" max="1000" value="1000" data-hz-min="20" data-hz-max="20000">
+                                    <span class="setting-value">20kHz</span>
+                                </div>
+
+                                <div class="setting-section">REVERB</div>
+                                <div class="setting-row">
+                                    <span class="setting-label">Send</span>
+                                    <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc2_reverb_send" min="0" max="100" value="100">
+                                    <span class="setting-value">100%</span>
+                                </div>
+                                <div class="setting-row setting-row-checkbox">
+                                    <label class="setting-checkbox-label">
+                                        <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc2_fx_bypass">
+                                        <span>FX Bypass</span>
+                                    </label>
                                 </div>
                             </div>
-                        </div>
-
-                        <div class="setting-section">FILTER</div>
-                        <div class="setting-row setting-row-checkbox">
-                            <label class="setting-checkbox-label">
-                                <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc2_filter_enabled" checked>
-                                <span>Use shared filter (LINK tab)</span>
-                            </label>
-                        </div>
-                        <div class="setting-row indep-filter-row" id="osc2-indep-filter" style="display:none">
-                            <span class="setting-label">Cutoff (Hz)</span>
-                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc2_indep_cutoff" min="0" max="1000" value="1000" data-hz-min="20" data-hz-max="20000">
-                            <span class="setting-value">20kHz</span>
-                        </div>
-
-                        <div class="setting-section">REVERB</div>
-                        <div class="setting-row">
-                            <span class="setting-label">Send</span>
-                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc2_reverb_send" min="0" max="100" value="100">
-                            <span class="setting-value">100%</span>
-                        </div>
-                        <div class="setting-row setting-row-checkbox">
-                            <label class="setting-checkbox-label">
-                                <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc2_fx_bypass">
-                                <span>FX Bypass (force send to 0)</span>
-                            </label>
                         </div>
                     </div>
 
@@ -740,6 +739,10 @@
                                         <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="lfo_key_sync">
                                         <span>Key Sync</span>
                                     </label>
+                                    <label class="setting-checkbox-label">
+                                        <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="lfo_invert">
+                                        <span>Invert</span>
+                                    </label>
                                 </div>
                                 <div class="setting-row">
                                     <span class="setting-label">Shape</span>
@@ -747,8 +750,22 @@
                                         <option value="sine" selected>Sine</option>
                                         <option value="triangle">Triangle</option>
                                         <option value="square">Square</option>
+                                        <option value="saw">Saw ↗</option>
+                                        <option value="ramp">Ramp ↘</option>
+                                        <option value="peak">Peak</option>
                                         <option value="sh">S &amp; H</option>
                                     </select>
+                                </div>
+                                <div class="setting-row">
+                                    <span class="setting-label">Offset</span>
+                                    <input type="range" class="setting-slider" data-section="synth_pad" data-param="lfo_offset_ms" min="-200" max="200" value="0">
+                                    <span class="setting-value">0ms</span>
+                                </div>
+                                <div class="setting-row setting-row-checkbox">
+                                    <label class="setting-checkbox-label">
+                                        <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="lfo_haas_compensate">
+                                        <span>Haas Comp — track WIDE delay</span>
+                                    </label>
                                 </div>
                                 <div class="setting-row">
                                     <span class="setting-label">Target</span>
@@ -813,6 +830,10 @@
                                         <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="lfo2_key_sync">
                                         <span>Key Sync</span>
                                     </label>
+                                    <label class="setting-checkbox-label">
+                                        <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="lfo2_invert">
+                                        <span>Invert</span>
+                                    </label>
                                 </div>
                                 <div class="setting-row">
                                     <span class="setting-label">Shape</span>
@@ -820,8 +841,22 @@
                                         <option value="sine" selected>Sine</option>
                                         <option value="triangle">Triangle</option>
                                         <option value="square">Square</option>
+                                        <option value="saw">Saw ↗</option>
+                                        <option value="ramp">Ramp ↘</option>
+                                        <option value="peak">Peak</option>
                                         <option value="sh">S &amp; H</option>
                                     </select>
+                                </div>
+                                <div class="setting-row">
+                                    <span class="setting-label">Offset</span>
+                                    <input type="range" class="setting-slider" data-section="synth_pad" data-param="lfo2_offset_ms" min="-200" max="200" value="0">
+                                    <span class="setting-value">0ms</span>
+                                </div>
+                                <div class="setting-row setting-row-checkbox">
+                                    <label class="setting-checkbox-label">
+                                        <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="lfo2_haas_compensate">
+                                        <span>Haas Comp — track WIDE delay</span>
+                                    </label>
                                 </div>
                                 <div class="setting-row">
                                     <span class="setting-label">Target</span>
@@ -1262,6 +1297,6 @@
 
     </div>
 
-    <script src="script.js?v=95"></script>
+    <script src="script.js?v=98"></script>
 </body>
 </html>
