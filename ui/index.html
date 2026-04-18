@@ -13,7 +13,7 @@
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="logo.png">
     <!-- Keep style.css and script.js cache-bust versions in sync -->
-    <link rel="stylesheet" href="style.css?v=91">
+    <link rel="stylesheet" href="style.css?v=93">
 </head>
 <body>
     <div id="app">
@@ -273,9 +273,9 @@
                     <button class="settings-tab active" data-tab="link">LINK</button>
                     <button class="settings-tab" data-tab="osc1">OSC 1</button>
                     <button class="settings-tab" data-tab="osc2">OSC 2</button>
-                    <button class="settings-tab" data-tab="piano">PIANO</button>
                     <button class="settings-tab" data-tab="reverb">REVERB</button>
                     <button class="settings-tab" data-tab="motion">MOTION</button>
+                    <button class="settings-tab" data-tab="piano">PIANO</button>
                     <button class="settings-tab" data-tab="organ">ORGAN</button>
                     <button class="settings-tab" data-tab="record">RECORD</button>
                     <button class="settings-tab" data-tab="global">GLOBAL</button>
@@ -726,6 +726,18 @@
                                 <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="lfo_enabled">
                                 <span>LFO Enabled</span>
                             </label>
+                            <label class="setting-checkbox-label">
+                                <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="lfo_key_sync">
+                                <span>Key Sync</span>
+                            </label>
+                        </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Speed</span>
+                            <select class="setting-select compact-select" data-section="synth_pad" data-param="lfo_rate_multiplier">
+                                <option value="1" selected>1x — normal</option>
+                                <option value="2">2x — faster</option>
+                                <option value="0.5">½x — slower</option>
+                            </select>
                         </div>
                         <div class="two-col">
                             <div class="setting-row">
@@ -745,6 +757,20 @@
                                     <option value="pan">Pan</option>
                                 </select>
                             </div>
+                        </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Rate Mode</span>
+                            <select class="setting-select compact-select" data-section="synth_pad" data-param="lfo_rate_mode">
+                                <option value="FREE" selected>FREE (Hz)</option>
+                                <option value="1/2">1/2 — half</option>
+                                <option value="1/4.">1/4. — dotted</option>
+                                <option value="1/4">1/4 — quarter</option>
+                                <option value="1/4T">1/4T — triplet</option>
+                                <option value="1/8.">1/8. — dotted eighth</option>
+                                <option value="1/8">1/8 — eighth</option>
+                                <option value="1/8T">1/8T — triplet</option>
+                                <option value="1/16">1/16 — sixteenth</option>
+                            </select>
                         </div>
                         <div class="knob-row">
                             <div class="knob">
@@ -1153,6 +1179,6 @@
 
     </div>
 
-    <script src="script.js?v=91"></script>
+    <script src="script.js?v=93"></script>
 </body>
 </html>

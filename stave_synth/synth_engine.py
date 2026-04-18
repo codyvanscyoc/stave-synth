@@ -1407,11 +1407,14 @@ class SynthEngine:
         # Single control-rate LFO. Cheap because it updates once per block, not per sample.
         # Targets: filter / amp / pan. (Pitch target deferred — needs voice-level wiring.)
         self.lfo_enabled = False
-        self.lfo_rate_hz = 1.0         # 0.05-20 Hz
+        self.lfo_rate_hz = 1.0         # 0.05-20 Hz (used when lfo_rate_mode == "FREE")
+        self.lfo_rate_mode = "FREE"    # "FREE" or subdivision ("1/4", "1/8", "1/8T", ...)
+        self.lfo_rate_multiplier = 1.0  # tempo-sync rate multiplier: >1 = faster, <1 = slower
         self.lfo_depth = 0.0           # 0..1
         self.lfo_shape = "sine"        # sine, triangle, square, sh
         self.lfo_target = "filter"     # filter, amp, pan
         self.lfo_spread = 0.0          # 0..1, 180° R/L offset at max
+        self.lfo_key_sync = False      # reset LFO phase on every note_on for repeatable sweeps
         self._lfo_phase = 0.0
         self._lfo_sh_value = 0.0       # current sample&hold held value
         self._lfo_sh_value_r = 0.0
@@ -1502,6 +1505,15 @@ class SynthEngine:
             self._voice_shimmer = np.zeros((self.max_voices, n_samples), dtype=np.float64)
 
     def note_on(self, note: int, velocity: float = 1.0):
+        # Key-synced LFO: reset phase on every note_on so modulation sweeps are
+        # reproducible per note. Matches classic analog-synth behavior.
+        if self.lfo_key_sync:
+            self._lfo_phase = 0.0
+            self._lfo_sh_value = 0.0
+            self._lfo_sh_value_r = 0.0
+            self._lfo_mod_a_last = 0.0
+            self._lfo_mod_b_last = 0.0
+
         for v in self.voices:
             # "Still held" = neither envelope has been user-released. release()
             # is called on both simultaneously at note_off, so checking OSC1 is
@@ -1729,8 +1741,18 @@ class SynthEngine:
         if not self.lfo_enabled or effective_depth < 0.001:
             return 0.0, 0.0
         block_sec = n_samples / self.sample_rate
+        # Tempo-synced rate: beats-per-cycle derived from the same subdivision
+        # table the ping-pong delay uses. FREE mode keeps the user's Hz slider.
+        if self.lfo_rate_mode == "FREE":
+            effective_rate_hz = self.lfo_rate_hz
+        else:
+            beats_per_cycle = self._DELAY_DIVISIONS.get(self.lfo_rate_mode, 1.0)
+            beat_sec = 60.0 / max(40.0, self.bpm)
+            cycle_sec = max(0.05, beat_sec * beats_per_cycle)  # clamp: no runaway at tiny bpm
+            cycle_sec /= max(0.1, self.lfo_rate_multiplier)     # >1 = faster, <1 = slower
+            effective_rate_hz = 1.0 / cycle_sec
         prev_phase = self._lfo_phase
-        self._lfo_phase = (self._lfo_phase + self.lfo_rate_hz * block_sec) % 1.0
+        self._lfo_phase = (self._lfo_phase + effective_rate_hz * block_sec) % 1.0
         # Sample & Hold regenerates on every phase wrap
         if self.lfo_shape == "sh" and self._lfo_phase < prev_phase:
             self._lfo_sh_value = float(np.random.uniform(-1.0, 1.0))
@@ -2827,6 +2849,14 @@ class SynthEngine:
             self.lfo_enabled = bool(params["lfo_enabled"])
         if "lfo_rate_hz" in params:
             self.lfo_rate_hz = max(0.05, min(20.0, float(params["lfo_rate_hz"])))
+        if "lfo_rate_mode" in params:
+            m = str(params["lfo_rate_mode"])
+            if m == "FREE" or m in self._DELAY_DIVISIONS:
+                self.lfo_rate_mode = m
+        if "lfo_rate_multiplier" in params:
+            self.lfo_rate_multiplier = max(0.1, min(10.0, float(params["lfo_rate_multiplier"])))
+        if "lfo_key_sync" in params:
+            self.lfo_key_sync = bool(params["lfo_key_sync"])
         if "lfo_depth" in params:
             self.lfo_depth = max(0.0, min(1.0, float(params["lfo_depth"])))
         if "lfo_shape" in params:
@@ -2917,10 +2947,13 @@ class SynthEngine:
             "shimmer_send": self.shimmer_send,
             "lfo_enabled": self.lfo_enabled,
             "lfo_rate_hz": self.lfo_rate_hz,
+            "lfo_rate_mode": self.lfo_rate_mode,
+            "lfo_rate_multiplier": self.lfo_rate_multiplier,
             "lfo_depth": self.lfo_depth,
             "lfo_shape": self.lfo_shape,
             "lfo_target": self.lfo_target,
             "lfo_spread": self.lfo_spread,
+            "lfo_key_sync": self.lfo_key_sync,
             "delay_enabled": self.delay_enabled,
             "delay_time_mode": self.delay_time_mode,
             "delay_time_ms": self.delay_time_ms,
