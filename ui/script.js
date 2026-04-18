@@ -383,6 +383,10 @@
             if (resBtn) resBtn.classList.toggle("active", resEnabled);
             // Sync OSC level link state
             linkOscLevels = s.synth_pad.osc_levels_linked ?? false;
+            // Sync OSC octave displays — state persists but UI var was init-only
+            osc1Octave = s.synth_pad.osc1_octave ?? 0;
+            osc2Octave = s.synth_pad.osc2_octave ?? 0;
+            if (typeof updatePadOctaveDisplay === "function") updatePadOctaveDisplay();
             updateFreezeDisplay();
             updateDroneDisplay();
 
@@ -419,6 +423,10 @@
             bpm = Math.round(s.master.bpm ?? 120);
             if (bpmVal) bpmVal.textContent = bpm;
             transposeValue = s.master.transpose_semitones ?? 0;
+            // Sync piano octave display — state persists but UI var was init-only
+            pianoOctave = s.master.piano_octave ?? 0;
+            var pianoOctDisp = document.querySelector('.oct-display[data-inst="piano"]');
+            if (pianoOctDisp) pianoOctDisp.textContent = pianoOctave;
             instrumentMode = s.master.instrument_mode ?? "piano";
             updateInstrumentButton();
             // Flatten eq_bands into master section for slider sync

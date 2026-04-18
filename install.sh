@@ -203,6 +203,9 @@ ExecStartPre=-/bin/bash -c 'for c in /proc/asound/card*/id; do n=\$\$(dirname \$
 ExecStart=/usr/bin/pw-jack ${SCRIPT_DIR}/venv/bin/python -m stave_synth.main --no-gui
 WorkingDirectory=${SCRIPT_DIR}
 Environment=XDG_RUNTIME_DIR=/run/user/$(id -u)
+# Cap glibc malloc arenas to reduce fragmentation for 24/7 operation.
+# Combined with malloc_trim() in the idle GC thread, this keeps RSS stable.
+Environment=MALLOC_ARENA_MAX=2
 Restart=on-failure
 RestartSec=5
 

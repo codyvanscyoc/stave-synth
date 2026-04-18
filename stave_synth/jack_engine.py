@@ -391,6 +391,11 @@ class JackEngine:
         self._midi_thread = threading.Thread(target=self._midi_loop, daemon=True)
         self._midi_thread.start()
 
+        # Start idle-GC thread — render thread has GC disabled for pop safety,
+        # so cyclic garbage accumulates. This thread sweeps it during lulls.
+        self._gc_thread = threading.Thread(target=self._gc_loop, daemon=True)
+        self._gc_thread.start()
+
     def _render_loop(self):
         """Continuously render synth audio and keep the ring buffer full."""
         import gc
@@ -661,6 +666,74 @@ class JackEngine:
                         consecutive_errors, e,
                     )
                     os._exit(1)
+
+    def _gc_loop(self):
+        """Idle-triggered cyclic GC + malloc arena trim.
+
+        The render thread disables Python's cyclic collector so it can't
+        fire mid-callback and cause pops; this thread catches up the sweep
+        during lulls, then asks glibc to return freed arena memory to the
+        OS (so RSS actually drops for 24/7 operation).
+
+        Strategy: every 30 s, if no voices and no piano notes are held,
+        run gen-0 gc + malloc_trim(0). gen-0 is fast (~7 ms). malloc_trim
+        walks arenas and madvise-releases free pages — typically <5 ms on
+        our 2-arena config (MALLOC_ARENA_MAX=2 in the unit file). Both fit
+        well inside the ring's 127 ms headroom.
+        """
+        import gc
+        CHECK_INTERVAL_S = 30.0
+
+        # Resolve glibc's malloc_trim() via ctypes. If it's not glibc
+        # (musl, alternate libc) we just skip the trim; gen-0 GC still runs.
+        _malloc_trim = None
+        try:
+            _libc = ctypes.CDLL("libc.so.6", use_errno=False)
+            _libc.malloc_trim.argtypes = [ctypes.c_size_t]
+            _libc.malloc_trim.restype = ctypes.c_int
+            _malloc_trim = _libc.malloc_trim
+        except Exception as e:
+            logger.info("malloc_trim unavailable (not glibc?): %s", e)
+
+        def _rss_kb():
+            try:
+                with open("/proc/self/status") as f:
+                    for line in f:
+                        if line.startswith("VmRSS:"):
+                            return int(line.split()[1])
+            except Exception:
+                pass
+            return 0
+
+        while self.running:
+            time.sleep(CHECK_INTERVAL_S)
+            if not self.running:
+                return
+            idle = (len(self.synth.voices) == 0
+                    and len(self._piano_notes_active) == 0)
+            if not idle:
+                continue
+            rss_before = _rss_kb()
+            t0 = time.perf_counter()
+            try:
+                collected = gc.collect(0)
+            except Exception as e:
+                logger.warning("gc.collect failed: %s", e)
+                continue
+            gc_ms = (time.perf_counter() - t0) * 1000.0
+            trim_ms = 0.0
+            if _malloc_trim is not None:
+                t1 = time.perf_counter()
+                try:
+                    _malloc_trim(0)
+                except Exception as e:
+                    logger.warning("malloc_trim failed: %s", e)
+                trim_ms = (time.perf_counter() - t1) * 1000.0
+            rss_after = _rss_kb()
+            freed_kb = rss_before - rss_after
+            logger.info("idle GC gen0: collected=%d freed=%dKB rss=%dKB "
+                        "gc=%.1fms trim=%.1fms",
+                        collected, freed_kb, rss_after, gc_ms, trim_ms)
 
     def _midi_loop(self):
         """Read MIDI events from the C bridge and dispatch.

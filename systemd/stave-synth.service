@@ -10,6 +10,7 @@ ExecStartPre=-/bin/bash -c 'for c in /proc/asound/card*/id; do n=$$(dirname $$c 
 ExecStart=/usr/bin/pw-jack %h/stave-synth/venv/bin/python -m stave_synth.main --no-gui
 WorkingDirectory=%h/stave-synth
 Environment=XDG_RUNTIME_DIR=/run/user/%U
+Environment=MALLOC_ARENA_MAX=2
 Restart=on-failure
 RestartSec=5
 
