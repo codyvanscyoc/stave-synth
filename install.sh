@@ -1,8 +1,22 @@
 #!/bin/bash
 # Stave Synth — Installation Script for Raspberry Pi
-# Run: ./install.sh
+# Run: ./install.sh               — full install with auto-start on boot
+# Run: ./install.sh --no-autostart — casual use; no systemd service installed
 
 set -e
+
+AUTOSTART=1
+for arg in "$@"; do
+    case "$arg" in
+        --no-autostart) AUTOSTART=0 ;;
+        -h|--help)
+            echo "Usage: ./install.sh [--no-autostart]"
+            echo "  --no-autostart   Skip the systemd user service install."
+            echo "                   Launch on demand with ./stave-synth.sh instead."
+            exit 0
+            ;;
+    esac
+done
 
 GREEN='\033[0;32m'
 ORANGE='\033[0;33m'
@@ -12,6 +26,10 @@ echo -e "${GREEN}═════════════════════
 echo -e "${GREEN}  STAVE SYNTH — Installer${NC}"
 echo -e "${GREEN}══════════════════════════════════════${NC}"
 echo ""
+if [ "$AUTOSTART" = "0" ]; then
+    echo -e "${ORANGE}  Mode: casual (no auto-start — run ./stave-synth.sh to play)${NC}"
+    echo ""
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SOUNDFONT_DIR="$HOME/.local/share/stave-synth/soundfonts"
@@ -194,12 +212,13 @@ if [ ! -f "$SOUNDFONT_DIR/TimGM6mb.sf2" ]; then
 fi
 
 # ── Install systemd service ──
-echo "  Installing systemd service..."
-mkdir -p "$HOME/.config/systemd/user"
+if [ "$AUTOSTART" = "1" ]; then
+    echo "  Installing systemd service..."
+    mkdir -p "$HOME/.config/systemd/user"
 
-# Generate service file with correct paths.
-# Amixer PCM/Master probe is wrapped: some USB DACs only expose Master.
-cat > "$HOME/.config/systemd/user/stave-synth.service" << EOF
+    # Generate service file with correct paths.
+    # Amixer PCM/Master probe is wrapped: some USB DACs only expose Master.
+    cat > "$HOME/.config/systemd/user/stave-synth.service" << EOF
 [Unit]
 Description=Stave Synth — Live MIDI Synthesizer
 After=pipewire.service pipewire-pulse.service wireplumber.service
@@ -222,11 +241,15 @@ RestartSec=5
 WantedBy=default.target
 EOF
 
-systemctl --user daemon-reload
-systemctl --user enable stave-synth.service
+    systemctl --user daemon-reload
+    systemctl --user enable stave-synth.service
 
-# Enable linger so user services start at boot without login
-loginctl enable-linger "$USER" 2>/dev/null || true
+    # Enable linger so user services start at boot without login
+    loginctl enable-linger "$USER" 2>/dev/null || true
+else
+    echo -e "${GREEN}  Skipping systemd service (--no-autostart).${NC}"
+    echo -e "${GREEN}  Launch on demand with: ./stave-synth.sh${NC}"
+fi
 
 echo ""
 echo -e "${GREEN}══════════════════════════════════════${NC}"
@@ -270,17 +293,27 @@ else
 fi
 
 # Service enabled
-if systemctl --user is-enabled stave-synth.service >/dev/null 2>&1; then
-    check ok "Auto-start on boot: enabled"
+if [ "$AUTOSTART" = "1" ]; then
+    if systemctl --user is-enabled stave-synth.service >/dev/null 2>&1; then
+        check ok "Auto-start on boot: enabled"
+    else
+        check no "Auto-start on boot: not enabled (run: systemctl --user enable stave-synth)"
+    fi
 else
-    check no "Auto-start on boot: not enabled (run: systemctl --user enable stave-synth)"
+    check ok "Auto-start on boot: skipped (--no-autostart mode)"
 fi
 
 echo ""
-echo "  To start now:    systemctl --user start stave-synth"
-echo "  Open the UI:     http://localhost:8080  (or http://<pi-ip>:8080 from another device)"
-echo "  Logs:            journalctl --user -u stave-synth -f"
-echo "  Run manually:    pw-jack $SCRIPT_DIR/venv/bin/python -m stave_synth.main"
-echo ""
-echo "  On next boot, Stave Synth will start automatically."
+if [ "$AUTOSTART" = "1" ]; then
+    echo "  To start now:    systemctl --user start stave-synth"
+    echo "  Open the UI:     http://localhost:8080  (or http://<pi-ip>:8080 from another device)"
+    echo "  Logs:            journalctl --user -u stave-synth -f"
+    echo "  Run manually:    pw-jack $SCRIPT_DIR/venv/bin/python -m stave_synth.main"
+    echo ""
+    echo "  On next boot, Stave Synth will start automatically."
+else
+    echo "  To play:         ./stave-synth.sh"
+    echo "  Open the UI:     http://localhost:8080  (or http://<pi-ip>:8080 from another device)"
+    echo "  Stop it:         Ctrl-C in the terminal, or pkill -f stave_synth.main"
+fi
 echo ""

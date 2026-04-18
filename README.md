@@ -4,23 +4,49 @@ Live MIDI synthesizer for Raspberry Pi 5 — worship ambient pad with piano laye
 
 ## Install
 
+There are two install modes depending on how you plan to use the synth:
+
+### Casual / "just want to try it" — no auto-start
+
+```bash
+git clone https://github.com/codyvanscyoc/stave-synth.git
+cd stave-synth
+./install.sh --no-autostart
+```
+
+When you want to play, launch it manually from the repo:
+
+```bash
+./stave-synth.sh
+```
+
+The UI opens at `http://localhost:8080` — or `http://<pi-ip>:8080` from any other device on the network. Stop it with Ctrl-C in the terminal (or `pkill -f stave_synth.main`).
+
+### Live performance / kiosk — auto-start on boot
+
 ```bash
 git clone https://github.com/codyvanscyoc/stave-synth.git
 cd stave-synth
 ./install.sh
 ```
 
-That's it. Reboot and the synth auto-starts. Plug in a USB MIDI keyboard and play.
+Reboot and the synth starts automatically. Plug in a USB MIDI keyboard and play.
+
+### Hardware you need
+
+- **Raspberry Pi 5** (Bookworm or Trixie, 64-bit). 4 GB works; 8 GB is comfier.
+- **USB MIDI keyboard** (Akai MPKmini, Launchkey, any class-compliant USB MIDI controller).
+- **Audio out** — any USB audio interface, or the Pi's HDMI / Bluetooth. Built-in analog is not recommended.
 
 ### What install.sh does
 
-- Installs JACK2, FluidSynth, Python deps, WebKit (auto-detects Bookworm vs Trixie)
+- Installs JACK2, PipeWire, FluidSynth, Python deps, WebKit (auto-detects Bookworm vs Trixie), Faust compiler
 - Sets up real-time audio permissions + audio group
 - Locks CPU governor to performance (prevents audio stutter)
 - Disables screen blanking + USB autosuspend (prevents dropouts)
 - Copies the bundled TimGM6mb soundfont for piano (offline-proof)
-- Builds the C audio bridge
-- Creates a systemd user service that auto-starts on boot (no login needed)
+- Builds the C audio bridge + Faust DSP modules
+- Creates a systemd user service that auto-starts on boot *(skipped with `--no-autostart`)*
 - Prints a summary of detected audio/MIDI devices at the end
 
 ## First 60 seconds
@@ -99,6 +125,21 @@ That's it. Reboot and the synth auto-starts. Plug in a USB MIDI keyboard and pla
 
 ## Manual control
 
+### If installed with `--no-autostart` (casual mode)
+
+```bash
+cd stave-synth
+./stave-synth.sh      # starts the synth (Ctrl-C to stop)
+```
+
+Or run directly for debugging:
+
+```bash
+pw-jack ./venv/bin/python -m stave_synth.main --no-gui
+```
+
+### If installed with auto-start (live / kiosk mode)
+
 ```bash
 # Start / stop / restart
 systemctl --user start stave-synth
@@ -109,31 +150,38 @@ systemctl --user restart stave-synth
 journalctl --user -u stave-synth -f
 
 # Run directly (for debugging)
-cd stave-synth
 pw-jack ./venv/bin/python -m stave_synth.main --no-gui
 ```
 
 ## Features
 
-- **Dual Oscillators** — OSC1 + OSC2 with 5 waveforms (sine/square/saw/triangle/saturated), independent octave (-3 to +3), independent or shared filters, hard-pan WIDE mode with Haas delay, LINK levels
-- **Unison** — 1–5 voices per OSC with tunable detune
+- **Dual Oscillators** — OSC1 + OSC2 with 5 waveforms (sine / square / saw / triangle / saturated), independent octave (−3 to +3), independent or shared filters, hard-pan WIDE mode with Haas delay, MIRROR to mirror per-OSC params
+- **Per-OSC ADSR envelopes** — OSC1 and OSC2 each carry their own ADSR, so plucky top + sustained pad within the same note is native. MIRROR extends to ADSR knobs.
+- **Unison** — 1–5 voices per OSC with tunable detune + stereo spread
 - **Lowpass Filter** — 12 or 24 dB/oct, smooth log-space sweep, per-osc or shared, ALT-flipped to highpass (low cut)
-- **Cathedral Reverb** — 8-line FDN with Hadamard mixing, stereo early reflections, all-pass diffusion, modulated delays, hi/lo cut on feedback, SPACE control
-- **Shimmer** — Octave-up sines into reverb, 1.2kHz highpass, `+12` toggle adds another octave (+24 total)
+- **7 Reverb Types** — WASH / HALL / ROOM / PLATE / BLOOM / DRONE / GHOST. Plate (Dattorro) and drone (tuned-resonator topology) are dedicated Faust modules; the rest share a 8-line FDN with Hadamard mixing, stereo early reflections, modulated delays, hi/lo cut on feedback
+- **Per-OSC reverb sends + FX bypass** — OSC1 dry while OSC2 drenches in the tail (and vice versa)
+- **Shimmer** — Octave-up sines into reverb, 1.2 kHz highpass, `+12` toggle adds another octave (+24 total)
 - **CLOUD** — Pre-reverb multi-tap stereo bouncing delay on shimmer for atmospheric motion
 - **Sympathetic Resonance (RESO)** — Piano notes subtly excite the pad through the reverb, cubic-curve level control
 - **Chord Drone** — Sustained root + fifth one octave below with portamento
 - **Freeze** — Infinite reverb tail sustain
-- **Piano Layer** — FluidSynth GM soundfont, 24dB/oct hi/lo cut EQ, compressor, sound selector
-- **B3 Organ Engine** — Tonewheel drawbars + split Leslie (chorale/fast)
-- **Master EQ** — 3-band parametric + configurable low cut (6/12/24 dB)
+- **Dual LFO with LINK** — Two independent control-rate LFOs (sine / triangle / square / saw / ramp / peak / S&H) with Invert flip per LFO. Targets: filter / amp / pan. Tempo-synced to BPM or free-Hz. Speed multiplier (½x / 1x / 2x). Key Sync resets phase on note-on. Bipolar ms offset with Haas Comp. Visual alignment scope shows both shapes overlaid
+- **AMP target** uses a gate formula that delivers full 0..1 mute at depth=1 (sidechain-pump flavor) with unity-average makeup
+- **Tempo-synced Ping-Pong Delay** — 1/2 through 1/16, triplet + dotted, or FREE-ms; stereo offset, feedback, wet control
+- **Piano Layer** — FluidSynth GM soundfont, 24 dB/oct hi/lo cut EQ, authentic LA-2A–style compressor (soft knee, DRIVE input, parallel wet/dry, PERFECT preset), plus FluidSynth's internal room reverb and an optional send to the global reverb bus
+- **B3 Organ Engine** — Tonewheel drawbars + split Leslie (chorale/fast), Faust-native
+- **SSL G-style Bus Compressor** — feedback-flavor, self / piano / LFO / BPM sidechain, GLUE / PUNCH / PUMP presets, ∞-ratio brickwall mode, GR LED with peak hold
+- **Master EQ** — 3-band parametric + configurable low cut (6 / 12 / 24 dB)
 - **Saturation (SAT)** — Asymmetric soft drive pre-limiter
 - **Sustain Pedal** — CC64, transpose-safe note tracking
 - **Preset Crossfade** — 800 ms musical morphing between 10 color-coded slots (2 layers of 5)
 - **MIDI Learn** — Map any CC to any fader
+- **Macros (4 slots)** — Learn any parameter, ride via macro fader
 - **Master FADE** — 5-second musical fade out/in for song endings
 - **True Stereo** — Full stereo pipeline, pre-limiter trim, tanh soft limiter
 - **Audio Output Selector** — Switch USB / Bluetooth / HDMI from the UI
+- **Faust-native DSP** on hot paths (reverb, osc bank, sympathetic, ping-pong, master FX, bus comp, organ, plate, drone) for stable CPU under full load on the Pi 5
 
 ## Hardware
 
