@@ -13,7 +13,7 @@
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="logo.png">
     <!-- Keep style.css and script.js cache-bust versions in sync -->
-    <link rel="stylesheet" href="style.css?v=88">
+    <link rel="stylesheet" href="style.css?v=89">
 </head>
 <body>
     <div id="app">
@@ -270,7 +270,9 @@
         <div id="settings-modal" class="hidden">
             <div id="settings-box">
                 <div id="settings-header">
-                    <button class="settings-tab active" data-tab="synth">SYNTH PAD</button>
+                    <button class="settings-tab active" data-tab="link">LINK</button>
+                    <button class="settings-tab" data-tab="osc1">OSC 1</button>
+                    <button class="settings-tab" data-tab="osc2">OSC 2</button>
                     <button class="settings-tab" data-tab="piano">PIANO</button>
                     <button class="settings-tab" data-tab="reverb">REVERB</button>
                     <button class="settings-tab" data-tab="motion">MOTION</button>
@@ -280,79 +282,9 @@
                     <button id="settings-close" class="ctrl-btn">X</button>
                 </div>
                 <div id="settings-content">
-                    <!-- Synth Pad Tab -->
-                    <div class="settings-panel active" data-panel="synth">
-                        <div class="setting-section">OSCILLATORS</div>
-                        <div class="osc-grid">
-                            <div class="osc-col">
-                                <div class="osc-title">OSC 1</div>
-                                <div class="setting-row">
-                                    <span class="setting-label">Trim</span>
-                                    <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc1_max" min="0" max="100" value="100">
-                                    <span class="setting-value">100%</span>
-                                </div>
-                                <div class="setting-row">
-                                    <span class="setting-label">Wave</span>
-                                    <select class="setting-select" data-section="synth_pad" data-param="osc1_waveform">
-                                        <option value="sine" selected>Sine</option>
-                                        <option value="square">Square</option>
-                                        <option value="saw">Sawtooth</option>
-                                        <option value="triangle">Triangle</option>
-                                        <option value="saturated">Saturated</option>
-                                    </select>
-                                </div>
-                                <div class="setting-row setting-row-checkbox">
-                                    <label class="setting-checkbox-label">
-                                        <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc1_filter_enabled" checked>
-                                        <span>Shared filter</span>
-                                    </label>
-                                </div>
-                                <div class="setting-row indep-filter-row" id="osc1-indep-filter" style="display:none">
-                                    <span class="setting-label">Filter (Hz)</span>
-                                    <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc1_indep_cutoff" min="0" max="1000" value="1000" data-hz-min="20" data-hz-max="20000">
-                                    <span class="setting-value">20kHz</span>
-                                </div>
-                                <div class="setting-row">
-                                    <span class="setting-label">Pan</span>
-                                    <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc1_pan" min="-100" max="100" value="0">
-                                    <span class="setting-value">C</span>
-                                </div>
-                            </div>
-                            <div class="osc-col">
-                                <div class="osc-title">OSC 2</div>
-                                <div class="setting-row">
-                                    <span class="setting-label">Trim</span>
-                                    <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc2_max" min="0" max="100" value="100">
-                                    <span class="setting-value">100%</span>
-                                </div>
-                                <div class="setting-row">
-                                    <span class="setting-label">Wave</span>
-                                    <select class="setting-select" data-section="synth_pad" data-param="osc2_waveform">
-                                        <option value="sine">Sine</option>
-                                        <option value="square" selected>Square</option>
-                                        <option value="saw">Sawtooth</option>
-                                        <option value="triangle">Triangle</option>
-                                        <option value="saturated">Saturated</option>
-                                    </select>
-                                </div>
-                                <div class="setting-row setting-row-checkbox">
-                                    <label class="setting-checkbox-label">
-                                        <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc2_filter_enabled" checked>
-                                        <span>Shared filter</span>
-                                    </label>
-                                </div>
-                                <div class="setting-row indep-filter-row" id="osc2-indep-filter" style="display:none">
-                                    <span class="setting-label">Filter (Hz)</span>
-                                    <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc2_indep_cutoff" min="0" max="1000" value="1000" data-hz-min="20" data-hz-max="20000">
-                                    <span class="setting-value">20kHz</span>
-                                </div>
-                                <div class="setting-row">
-                                    <span class="setting-label">Pan</span>
-                                    <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc2_pan" min="-100" max="100" value="0">
-                                    <span class="setting-value">C</span>
-                                </div>
-                            </div>
-                        </div>
+                    <!-- LINK Tab — shared pad controls (both OSCs) -->
+                    <div class="settings-panel active" data-panel="link">
+                        <div class="help-text">Shared pad controls that apply to both oscillators. Per-OSC tone/send/bypass live on their own OSC 1 / OSC 2 tabs.</div>
 
                         <div class="setting-section">ENVELOPE</div>
                         <div class="adsr-block">
@@ -444,6 +376,118 @@
                             </div>
                         </div>
 
+                    </div>
+
+                    <!-- OSC 1 Tab -->
+                    <div class="settings-panel" data-panel="osc1">
+                        <div class="help-text">OSC 1 voice controls. MIRROR (on LINK tab) will mirror these to OSC 2.</div>
+                        <div class="mirror-pill" id="osc1-mirror-pill">
+                            <span class="mirror-dot"></span><span class="mirror-text">MIRROR OFF</span>
+                        </div>
+
+                        <div class="setting-section">TONE</div>
+                        <div class="setting-row">
+                            <span class="setting-label">Trim</span>
+                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc1_max" min="0" max="100" value="100">
+                            <span class="setting-value">100%</span>
+                        </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Wave</span>
+                            <select class="setting-select" data-section="synth_pad" data-param="osc1_waveform">
+                                <option value="sine" selected>Sine</option>
+                                <option value="square">Square</option>
+                                <option value="saw">Sawtooth</option>
+                                <option value="triangle">Triangle</option>
+                                <option value="saturated">Saturated</option>
+                            </select>
+                        </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Pan</span>
+                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc1_pan" min="-100" max="100" value="0">
+                            <span class="setting-value">C</span>
+                        </div>
+
+                        <div class="setting-section">FILTER</div>
+                        <div class="setting-row setting-row-checkbox">
+                            <label class="setting-checkbox-label">
+                                <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc1_filter_enabled" checked>
+                                <span>Use shared filter (LINK tab)</span>
+                            </label>
+                        </div>
+                        <div class="setting-row indep-filter-row" id="osc1-indep-filter" style="display:none">
+                            <span class="setting-label">Cutoff (Hz)</span>
+                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc1_indep_cutoff" min="0" max="1000" value="1000" data-hz-min="20" data-hz-max="20000">
+                            <span class="setting-value">20kHz</span>
+                        </div>
+
+                        <div class="setting-section">REVERB</div>
+                        <div class="setting-row">
+                            <span class="setting-label">Send</span>
+                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc1_reverb_send" min="0" max="100" value="100">
+                            <span class="setting-value">100%</span>
+                        </div>
+                        <div class="setting-row setting-row-checkbox">
+                            <label class="setting-checkbox-label">
+                                <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc1_fx_bypass">
+                                <span>FX Bypass (force send to 0)</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- OSC 2 Tab -->
+                    <div class="settings-panel" data-panel="osc2">
+                        <div class="help-text">OSC 2 voice controls. MIRROR (on LINK tab) will mirror these to OSC 1.</div>
+                        <div class="mirror-pill" id="osc2-mirror-pill">
+                            <span class="mirror-dot"></span><span class="mirror-text">MIRROR OFF</span>
+                        </div>
+
+                        <div class="setting-section">TONE</div>
+                        <div class="setting-row">
+                            <span class="setting-label">Trim</span>
+                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc2_max" min="0" max="100" value="100">
+                            <span class="setting-value">100%</span>
+                        </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Wave</span>
+                            <select class="setting-select" data-section="synth_pad" data-param="osc2_waveform">
+                                <option value="sine">Sine</option>
+                                <option value="square" selected>Square</option>
+                                <option value="saw">Sawtooth</option>
+                                <option value="triangle">Triangle</option>
+                                <option value="saturated">Saturated</option>
+                            </select>
+                        </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Pan</span>
+                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc2_pan" min="-100" max="100" value="0">
+                            <span class="setting-value">C</span>
+                        </div>
+
+                        <div class="setting-section">FILTER</div>
+                        <div class="setting-row setting-row-checkbox">
+                            <label class="setting-checkbox-label">
+                                <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc2_filter_enabled" checked>
+                                <span>Use shared filter (LINK tab)</span>
+                            </label>
+                        </div>
+                        <div class="setting-row indep-filter-row" id="osc2-indep-filter" style="display:none">
+                            <span class="setting-label">Cutoff (Hz)</span>
+                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc2_indep_cutoff" min="0" max="1000" value="1000" data-hz-min="20" data-hz-max="20000">
+                            <span class="setting-value">20kHz</span>
+                        </div>
+
+                        <div class="setting-section">REVERB</div>
+                        <div class="setting-row">
+                            <span class="setting-label">Send</span>
+                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc2_reverb_send" min="0" max="100" value="100">
+                            <span class="setting-value">100%</span>
+                        </div>
+                        <div class="setting-row setting-row-checkbox">
+                            <label class="setting-checkbox-label">
+                                <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc2_fx_bypass">
+                                <span>FX Bypass (force send to 0)</span>
+                            </label>
+                        </div>
                     </div>
 
                     <!-- Piano Tab -->
@@ -597,29 +641,7 @@
                         </div>
 
                         <div class="setting-section">SENDS</div>
-                        <div class="help-text">How much of each source to tap into this reverb. 0 = fully dry (no tail). Per-OSC sends let you keep one oscillator dry while the other drenches in the wash. Piano/Organ defaults dry so FluidSynth's internal room stays the default piano color.</div>
-                        <div class="setting-row">
-                            <span class="setting-label">OSC 1 Send</span>
-                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc1_reverb_send" min="0" max="100" value="100">
-                            <span class="setting-value">100%</span>
-                        </div>
-                        <div class="setting-row setting-row-checkbox">
-                            <label class="setting-checkbox-label">
-                                <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc1_fx_bypass">
-                                <span>OSC 1 FX Bypass</span>
-                            </label>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">OSC 2 Send</span>
-                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="osc2_reverb_send" min="0" max="100" value="100">
-                            <span class="setting-value">100%</span>
-                        </div>
-                        <div class="setting-row setting-row-checkbox">
-                            <label class="setting-checkbox-label">
-                                <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc2_fx_bypass">
-                                <span>OSC 2 FX Bypass</span>
-                            </label>
-                        </div>
+                        <div class="help-text">Piano/Organ tap into this reverb bus here. Per-OSC reverb sends live on the OSC 1 / OSC 2 tabs. Piano/Organ defaults dry so FluidSynth's internal room stays the default piano color.</div>
                         <div class="setting-row">
                             <span class="setting-label">Piano/Organ</span>
                             <input type="range" class="setting-slider" data-section="master" data-param="piano_reverb_send" min="0" max="100" value="0">
@@ -1098,6 +1120,6 @@
 
     </div>
 
-    <script src="script.js?v=88"></script>
+    <script src="script.js?v=89"></script>
 </body>
 </html>

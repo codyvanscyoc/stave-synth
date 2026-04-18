@@ -383,6 +383,7 @@
             if (resBtn) resBtn.classList.toggle("active", resEnabled);
             // Sync OSC level link state
             linkOscLevels = s.synth_pad.osc_levels_linked ?? false;
+            updateMirrorIndicators();
             // Sync OSC octave displays — state persists but UI var was init-only
             osc1Octave = s.synth_pad.osc1_octave ?? 0;
             osc2Octave = s.synth_pad.osc2_octave ?? 0;
@@ -2119,6 +2120,15 @@
         if (knob) applyWarmthToKnob(knob, value);
     }
 
+    // MIRROR indicator pill on OSC 1 / OSC 2 tabs — reflects linkOscLevels
+    function updateMirrorIndicators() {
+        document.querySelectorAll(".mirror-pill").forEach(function (pill) {
+            pill.classList.toggle("active", linkOscLevels);
+            var txt = pill.querySelector(".mirror-text");
+            if (txt) txt.textContent = linkOscLevels ? "MIRROR ON — linked to other OSC" : "MIRROR OFF";
+        });
+    }
+
     // Settings checkboxes
     function updateIndepFilterVisibility() {
         var osc1cb = document.querySelector('[data-param="osc1_filter_enabled"]');
@@ -2147,6 +2157,7 @@
             // MIRROR: when OSC level-mirror is on, also mirror per-OSC FX bypass
             if (p === "osc_levels_linked") {
                 linkOscLevels = checkbox.checked;
+                updateMirrorIndicators();
             }
             if (linkOscLevels && (p === "osc1_fx_bypass" || p === "osc2_fx_bypass")) {
                 var twin = p === "osc1_fx_bypass" ? "osc2_fx_bypass" : "osc1_fx_bypass";
