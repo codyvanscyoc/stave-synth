@@ -76,13 +76,17 @@ shimmer_enable = hslider("shimmer_enable", 0.0, 0.0, 1.0, 1.0);
 // a different point in the cycle. That's the whole sonic point of poly:
 // mod across notes is decorrelated, not lockstep.
 // ═══════════════════════════════════════════════════════════════════════
+// Skipping si.smoo on rate/depth — Python writes block-end values every
+// block (~5ms) and any audible step is masked by the per-voice phasor's
+// continuous flow + the gate's own si.smooth on note transitions. Saves
+// ~12 ops/sample of redundant smoothing.
 lfo1_active = hslider("lfo1_active",  0,    0,    1,     1);
-lfo1_rate   = hslider("lfo1_rate",    1.0,  0.05, 20.0,  0.001) : si.smoo;
-lfo1_depth  = hslider("lfo1_depth",   0.0,  0.0,  1.0,   0.001) : si.smoo;
+lfo1_rate   = hslider("lfo1_rate",    1.0,  0.05, 20.0,  0.001);
+lfo1_depth  = hslider("lfo1_depth",   0.0,  0.0,  1.0,   0.001);
 lfo1_shape  = hslider("lfo1_shape",   0,    0,    6,     1);
 lfo2_active = hslider("lfo2_active",  0,    0,    1,     1);
-lfo2_rate   = hslider("lfo2_rate",    1.0,  0.05, 20.0,  0.001) : si.smoo;
-lfo2_depth  = hslider("lfo2_depth",   0.0,  0.0,  1.0,   0.001) : si.smoo;
+lfo2_rate   = hslider("lfo2_rate",    1.0,  0.05, 20.0,  0.001);
+lfo2_depth  = hslider("lfo2_depth",   0.0,  0.0,  1.0,   0.001);
 lfo2_shape  = hslider("lfo2_shape",   0,    0,    6,     1);
 voice_lfo1_phase_off(i) = hslider("lfo1_phase_v%i", 0, 0, 1, 0.001);
 voice_lfo2_phase_off(i) = hslider("lfo2_phase_v%i", 0, 0, 1, 0.001);

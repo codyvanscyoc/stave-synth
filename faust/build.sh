@@ -29,6 +29,9 @@ build_module() {
         return
     fi
     echo "─── $name → $out ───"
+    # NOTE: tried `faust -vec` for SIMD vectorization but gcc's optimizer
+    # OOMed the Pi 5 trying to compile the unrolled 16-voice osc_bank code
+    # (5+ min, 1.3GB RAM, didn't finish). Sticking with scalar.
     faust -lang c -cn "$cname" -o "${name}.c" "${name}.dsp"
     gcc $CFLAGS -o "$out" "${name}.c"
     ls -la "$out"
