@@ -17,6 +17,16 @@ logger = logging.getLogger(__name__)
 UI_DIR = Path(__file__).parent.parent / "ui"
 RECORDINGS_DIR = Path.home() / ".local" / "share" / "stave-synth" / "recordings"
 
+# Acks that are per-client request/response only — no point broadcasting them.
+# (Most _ack messages reflect a state change worth syncing; these are the
+# exceptions.)
+_ACK_NO_BROADCAST = frozenset({
+    "panic_ack",            # client-local UX feedback
+    "midi_learn_active",    # learn-mode is per-client
+    "recall_params_ack",    # already triggers a state broadcast
+    "macro_assign_ack",     # already triggers a state broadcast
+})
+
 
 class WebSocketServer:
     """Bidirectional WebSocket server + HTTP server for serving the UI."""
@@ -48,11 +58,13 @@ class WebSocketServer:
                     response = self.message_handler(msg)
                     if response:
                         await websocket.send(json.dumps(response))
-                        # Broadcast state changes to all other clients
-                        if msg.get("type") in (
-                            "fader", "alt_toggle", "preset_load",
-                            "transpose", "shimmer_toggle", "freeze_toggle",
-                        ):
+                        # Broadcast UI-visible state changes to other clients so
+                        # multi-screen setups (phone + tablet + pywebview) stay
+                        # in sync without waiting for reconnect. Skip pure-data
+                        # responses (peak meters, midi activity) and one-shot
+                        # request/response acks that don't change UI state.
+                        rtype = response.get("type", "") if isinstance(response, dict) else ""
+                        if rtype.endswith("_ack") and rtype not in _ACK_NO_BROADCAST:
                             await self._broadcast(response, exclude=websocket)
 
         except websockets.ConnectionClosed:

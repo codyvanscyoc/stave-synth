@@ -169,10 +169,42 @@ class FaustReverb:
         self._plate: "FaustPlate | None" = None
         self._drone: "FaustDrone | None" = None
 
+        # Probe plate/drone .so availability up-front so set_type() can fall
+        # back gracefully without crashing the audio thread on first user-tap.
+        # We import the modules but don't instantiate (saves RAM until used);
+        # an OSError from dlopen happens at module-import time so a successful
+        # import here means the .so loaded.
+        self.plate_available = False
+        self.drone_available = False
+        try:
+            from . import faust_plate  # noqa: F401
+            self.plate_available = True
+        except Exception as e:
+            logger.warning("plate reverb unavailable (%s); PLATE will fall back to WASH", e)
+        try:
+            from . import faust_drone  # noqa: F401
+            self.drone_available = True
+        except Exception as e:
+            logger.warning("drone reverb unavailable (%s); DRONE will fall back to WASH", e)
+
         self.set_decay(decay_seconds)
         self.set_low_cut(self.low_cut_hz)
         self.set_high_cut(self.high_cut_hz)
         self.set_predelay(self.predelay_ms)
+
+    def available_types(self) -> dict[str, bool]:
+        """Return availability map for every reverb type. main.py broadcasts
+        this so the UI can grey-out PLATE / DRONE when their .so failed to
+        load. WASH/HALL/ROOM/BLOOM/GHOST always run on the FDN backend."""
+        return {
+            "wash": True,
+            "hall": True,
+            "room": True,
+            "bloom": True,
+            "ghost": True,
+            "plate": self.plate_available,
+            "drone": self.drone_available,
+        }
 
     # ─────────────── lifecycle ───────────────
     def __del__(self):
@@ -238,13 +270,28 @@ class FaustReverb:
     def set_type(self, name: str):
         """Apply a reverb-type preset. 'plate' and 'drone' lazy-load dedicated
         .so files and process() routes through them. Other types stay on the
-        FDN with param variants (shimmer_fb/noise_mod pick up BLOOM/GHOST)."""
+        FDN with param variants (shimmer_fb/noise_mod pick up BLOOM/GHOST).
+
+        If the requested type's .so is unavailable, falls back to WASH and
+        logs a warning rather than crashing the audio thread."""
         preset = REVERB_PRESETS.get(name)
         if preset is None:
             logger.warning("Unknown reverb type %r — keeping %r", name, self.type)
             return
 
         backend = preset["backend"]
+
+        # Guard plate/drone against missing .so — fall back to WASH.
+        if backend == "plate" and not self.plate_available:
+            logger.warning("PLATE reverb unavailable — falling back to WASH")
+            name = "wash"
+            preset = REVERB_PRESETS["wash"]
+            backend = preset["backend"]
+        elif backend == "drone" and not self.drone_available:
+            logger.warning("DRONE reverb unavailable — falling back to WASH")
+            name = "wash"
+            preset = REVERB_PRESETS["wash"]
+            backend = preset["backend"]
 
         # Canonical shared params (all backends understand these zones).
         self.set_predelay(preset["predelay_ms"])
@@ -268,14 +315,22 @@ class FaustReverb:
         if backend == "drone":
             # Lazy-load drone engine on first selection.
             if self._drone is None:
-                from .faust_drone import FaustDrone
-                self._drone = FaustDrone(self.sample_rate)
-                logger.info("drone reverb lazy-loaded (libstave_drone.so)")
-            self._drone.set_zone("drone_key", float(preset.get("drone_key", 0)))
-            self._drone.set_zone("predelay_ms", self.predelay_ms)
-            self._drone.set_zone("low_cut_hz", self.low_cut_hz)
-            self._drone.set_zone("high_cut_hz", self.high_cut_hz)
-            self._drone.set_zone("damp", damp)
+                try:
+                    from .faust_drone import FaustDrone
+                    self._drone = FaustDrone(self.sample_rate)
+                    logger.info("drone reverb lazy-loaded (libstave_drone.so)")
+                except Exception as e:
+                    logger.warning("drone reverb load failed (%s) — falling back to WASH", e)
+                    self.drone_available = False
+                    name = "wash"
+                    preset = REVERB_PRESETS["wash"]
+                    backend = preset["backend"]
+            if self._drone is not None:
+                self._drone.set_zone("drone_key", float(preset.get("drone_key", 0)))
+                self._drone.set_zone("predelay_ms", self.predelay_ms)
+                self._drone.set_zone("low_cut_hz", self.low_cut_hz)
+                self._drone.set_zone("high_cut_hz", self.high_cut_hz)
+                self._drone.set_zone("damp", damp)
             # set_decay owns the fb mapping; track the preset's seconds value.
             self.set_decay(preset["decay_seconds"])
         else:
@@ -284,9 +339,15 @@ class FaustReverb:
 
         if backend == "plate":
             if self._plate is None:
-                from .faust_plate import FaustPlate
-                self._plate = FaustPlate(self.sample_rate)
-                logger.info("plate reverb lazy-loaded (libstave_plate.so)")
+                try:
+                    from .faust_plate import FaustPlate
+                    self._plate = FaustPlate(self.sample_rate)
+                    logger.info("plate reverb lazy-loaded (libstave_plate.so)")
+                except Exception as e:
+                    logger.warning("plate reverb load failed (%s) — falling back to WASH", e)
+                    self.plate_available = False
+                    name = "wash"
+                    backend = "fdn"
 
         # Mirror common params into plate so switching back feels instant.
         if self._plate is not None:

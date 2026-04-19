@@ -203,6 +203,12 @@ class FluidSynthPlayer:
         with self._lock:
             for note in range(128):
                 self.fs.noteoff(0, note)
+        # Reset comp state so the first hard chord after silence doesn't
+        # ramp from a stale gain (LA-2A linear-interp between blocks would
+        # otherwise pop). Cheap; only fires on panic / instrument-cycle.
+        self._comp_envelope = 0.0
+        if hasattr(self, "_prev_comp_gain"):
+            self._prev_comp_gain = 1.0
 
     def midi_callback(self, event_type: str, note: int, velocity: float):
         """Callback to be registered with JackEngine for MIDI forwarding."""

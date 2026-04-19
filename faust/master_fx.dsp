@@ -46,6 +46,10 @@ eq_chain = fi.peak_eq_cq(eq1_gain, eq1_freq, eq1_q)
 // Variable-slope HP — all three run in parallel, `select2` picks one.
 // Small CPU waste (~2 extra biquads); keeps topology simple, avoids
 // state-clear clicks on slope changes.
+// KNOWN: when slope changes, the newly-selected biquad's state has been
+// running on silence-from-other-paths-output but the input is still hot
+// → minor click on switch. Fix would require a state reset on the active
+// chain (zi clears) which is banned by the project's filter-state rule.
 hp_chain(x) =
     select2(hp_enable < 0.5,
         select2(hp_slope < 9,

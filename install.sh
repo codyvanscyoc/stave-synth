@@ -219,34 +219,29 @@ if [ ! -f "$SOUNDFONT_DIR/TimGM6mb.sf2" ]; then
 fi
 
 # ── Install systemd service ──
+# The tracked unit file (systemd/stave-synth.service) is the single source of
+# truth — `git pull` always picks up edits. The drop-in (systemd/stave-synth.
+# service.d/faust.conf) is what actually toggles the Faust DSP backends on;
+# without it, the synth runs the slower Python fallback and quietly loses
+# Faust-only features (organ width/tone-tilt, etc).
 if [ "$AUTOSTART" = "1" ]; then
     echo "  Installing systemd service..."
-    mkdir -p "$HOME/.config/systemd/user"
+    mkdir -p "$HOME/.config/systemd/user/stave-synth.service.d"
 
-    # Generate service file with correct paths.
-    # Amixer PCM/Master probe is wrapped: some USB DACs only expose Master.
-    cat > "$HOME/.config/systemd/user/stave-synth.service" << EOF
-[Unit]
-Description=Stave Synth — Live MIDI Synthesizer
-After=pipewire.service pipewire-pulse.service wireplumber.service
-Wants=pipewire.service wireplumber.service
+    # Copy unit. Tracked file uses %h/stave-synth as WorkingDirectory; if the
+    # user cloned somewhere else, sed-substitute on the way in.
+    if [ "$SCRIPT_DIR" = "$HOME/stave-synth" ]; then
+        cp "$SCRIPT_DIR/systemd/stave-synth.service" "$HOME/.config/systemd/user/stave-synth.service"
+    else
+        sed -e "s|%h/stave-synth|${SCRIPT_DIR}|g" \
+            "$SCRIPT_DIR/systemd/stave-synth.service" \
+            > "$HOME/.config/systemd/user/stave-synth.service"
+    fi
 
-[Service]
-Type=simple
-ExecStartPre=/bin/sleep 3
-ExecStartPre=-/bin/bash -c 'for c in /proc/asound/card*/id; do n=\$\$(dirname \$\$c | grep -o "[0-9]*"); if grep -qi usb "\$\$c" 2>/dev/null; then if amixer -c \$\$n sget PCM >/dev/null 2>&1; then amixer -c \$\$n set PCM 100%% >/dev/null 2>&1; elif amixer -c \$\$n sget Master >/dev/null 2>&1; then amixer -c \$\$n set Master 100%% >/dev/null 2>&1; fi; fi; done; true'
-ExecStart=/usr/bin/pw-jack ${SCRIPT_DIR}/venv/bin/python -m stave_synth.main --no-gui
-WorkingDirectory=${SCRIPT_DIR}
-Environment=XDG_RUNTIME_DIR=/run/user/$(id -u)
-# Cap glibc malloc arenas to reduce fragmentation for 24/7 operation.
-# Combined with malloc_trim() in the idle GC thread, this keeps RSS stable.
-Environment=MALLOC_ARENA_MAX=2
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-EOF
+    # Faust env-var drop-in. Without this, STAVE_FAUST_* are unset and every
+    # module falls back to the Python implementation.
+    cp "$SCRIPT_DIR/systemd/stave-synth.service.d/faust.conf" \
+       "$HOME/.config/systemd/user/stave-synth.service.d/faust.conf"
 
     systemctl --user daemon-reload
     systemctl --user enable stave-synth.service
@@ -256,6 +251,7 @@ EOF
 else
     echo -e "${GREEN}  Skipping systemd service (--no-autostart).${NC}"
     echo -e "${GREEN}  Launch on demand with: ./stave-synth.sh${NC}"
+    echo -e "${GREEN}  (Faust DSP envs are exported by stave-synth.sh — no drop-in needed)${NC}"
 fi
 
 echo ""

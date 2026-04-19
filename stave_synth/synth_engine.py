@@ -654,12 +654,18 @@ class FeedbackDelayReverb:
         if seconds > 0:
             avg_delay = sum(self.delays) / len(self.delays)
             loops_per_sec = self.sample_rate / avg_delay
-            self.feedback = 10.0 ** (-3.0 / (seconds * loops_per_sec))
-            self.feedback = min(self.feedback, 0.985)
+            new_fb = min(10.0 ** (-3.0 / (seconds * loops_per_sec)), 0.985)
         else:
-            self.feedback = 0.0
-        if hasattr(self, 'frozen') and not self.frozen:
-            self._feedback_target = self.feedback
+            new_fb = 0.0
+        # When frozen, don't yank live feedback (we're holding ~0.999) — only
+        # update the captured "normal" value so unfreezing later honors the
+        # user's new decay knob position. When not frozen, normal-path: write
+        # both live and target.
+        if getattr(self, "frozen", False):
+            self._normal_feedback = new_fb
+        else:
+            self.feedback = new_fb
+            self._feedback_target = new_fb
 
     def set_low_cut(self, freq_hz: float):
         new_hz = max(20.0, freq_hz)
@@ -1680,6 +1686,26 @@ class SynthEngine:
         self._shimmer_delay_r[:] = 0.0
         self._delay_buf_l[:] = 0.0
         self._delay_buf_r[:] = 0.0
+        # Reverb-send filters (used by per-OSC sends split-path)
+        self._rev_send_filter_l.reset()
+        self._rev_send_filter_r.reset()
+        self._rev_send_filter2_l.reset()
+        self._rev_send_filter2_r.reset()
+        # LFO state — both phases and the per-block mod_last values.
+        # Without this a hard chord right after panic re-engages the LFO
+        # from whatever value it was riding when the panic landed, causing
+        # a one-block ramp from a stale offset.
+        self._lfo_phase = 0.0
+        self._lfo2_phase = 0.0
+        self._lfo_mod_a_last = 0.0
+        self._lfo_mod_b_last = 0.0
+        self._lfo2_mod_a_last = 0.0
+        self._lfo2_mod_b_last = 0.0
+        # Drone phase accumulators (audible if user hits panic mid-drone-fade)
+        for attr in ("_drone_root_phase", "_drone_fifth_phase", "_drone_third_phase",
+                     "_drone_oct_phase", "_drone_broad_phase"):
+            if hasattr(self, attr):
+                setattr(self, attr, 0.0)
 
     # Subdivision → beat multiplier (fraction of a quarter note)
     _DELAY_DIVISIONS = {
@@ -1784,6 +1810,11 @@ class SynthEngine:
         depth = getattr(self, pfx + "_depth")
         effective_depth = depth * self.motion_mix
         if not getattr(self, pfx + "_enabled") or effective_depth < 0.001:
+            # Zero the per-block "last" mod values so a downstream consumer
+            # (e.g. bus comp with sidechain="lfo") doesn't get a frozen
+            # constant pump from whatever was here when the LFO was last on.
+            setattr(self, ipfx + "_mod_a_last", 0.0)
+            setattr(self, ipfx + "_mod_b_last", 0.0)
             return 0.0, 0.0
         block_sec = n_samples / self.sample_rate
         # Tempo-synced rate: beats-per-cycle derived from the same subdivision
@@ -2162,7 +2193,12 @@ class SynthEngine:
         # positions — Faust expects linear amplitude (it multiplies the wave
         # by the passed value directly). Passing raw faders here would over-
         # gain by ~2x (fader 0.6 = 0.331 linear on the dB curve).
-        use_faust = (self._faust_osc_bank is not None) and (not skip_voices)
+        # Faust osc_bank.dsp hardcodes UNI=3 — route to Python path for any
+        # other unison count so users picking 1 or 5 don't silently get 3.
+        unison_ok = True
+        if self._faust_osc_bank is not None and hasattr(self._faust_osc_bank, "supports_unison"):
+            unison_ok = self._faust_osc_bank.supports_unison(self.unison_voices)
+        use_faust = (self._faust_osc_bank is not None) and (not skip_voices) and unison_ok
         if use_faust:
             self._faust_osc_bank.set_osc_params(
                 osc1_wf=osc1_wf, osc2_wf=osc2_wf,
@@ -2760,6 +2796,13 @@ class SynthEngine:
             reverb_in_l += external_reverb_send[0, :n_samples]
             reverb_in_r += external_reverb_send[1, :n_samples]
 
+        # Pre-trim before the soft limit. With piano + organ + shimmer +
+        # sympathetic + dry pad all summed in, reverb_in routinely peaked
+        # past ±2 and tanh squashed hard, dirtying the reverb tail. 0.6
+        # gives ~4dB headroom while keeping body — limiter still catches
+        # the rest.
+        reverb_in_l *= 0.6
+        reverb_in_r *= 0.6
         np.tanh(reverb_in_l, out=reverb_in_l)
         np.tanh(reverb_in_r, out=reverb_in_r)
 

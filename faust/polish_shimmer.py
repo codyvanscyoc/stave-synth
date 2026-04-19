@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, "/home/codyvanscyoc/stave-synth")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from stave_synth.synth_engine import SynthEngine
 

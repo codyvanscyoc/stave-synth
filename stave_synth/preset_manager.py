@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 from pathlib import Path
 
 from .config import PRESETS_DIR, DEFAULT_STATE, ensure_dirs
@@ -26,13 +27,24 @@ class PresetManager:
             return False
 
         path = self._slot_path(slot)
+        # Atomic write: serialize to a sibling tempfile, fsync, then rename
+        # over the target. Power loss mid-write leaves the prior preset intact
+        # instead of zeroing the slot. Mirrors config.save_state().
+        tmp = path.with_suffix(path.suffix + ".tmp")
         try:
-            with open(path, "w") as f:
+            with open(tmp, "w") as f:
                 json.dump(state, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
             logger.info("Saved preset to slot %d: %s", slot, path)
             return True
         except OSError as e:
             logger.error("Failed to save preset %d: %s", slot, e)
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
             return False
 
     def load(self, slot: int) -> dict | None:

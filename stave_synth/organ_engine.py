@@ -18,7 +18,10 @@ try:
 except ImportError:
     HAS_SCIPY = False
 
-from .synth_engine import OnePole6dBLowpass, OnePole6dBHighpass, BiquadLowpass, BiquadHighpass
+from .synth_engine import (
+    OnePole6dBLowpass, OnePole6dBHighpass,
+    BiquadLowpass, BiquadHighpass, BiquadPeakingEQ,
+)
 
 SAMPLE_RATE = 48000
 TWO_PI = 2.0 * np.pi
@@ -142,6 +145,23 @@ class OrganEngine:
         self.lowcut_filter_l = OnePole6dBHighpass(40.0, sample_rate)
         self.lowcut_filter_r = OnePole6dBHighpass(40.0, sample_rate)
 
+        # Tone tilt (fader TONE in UI): 0=warm, 0.5=flat, 1=bright. Volume-
+        # neutral. Mirrors faust/organ.dsp tilt_amount = (tone_tilt-0.5)*2:
+        # one peak EQ at 250 Hz (low), one at 3 kHz (high), gains ±4 dB.
+        self.tone_tilt = 0.5
+        self._tilt_eq_low_l = BiquadPeakingEQ(250.0, 0.0, 1.0, sample_rate)
+        self._tilt_eq_low_r = BiquadPeakingEQ(250.0, 0.0, 1.0, sample_rate)
+        self._tilt_eq_high_l = BiquadPeakingEQ(3000.0, 0.0, 1.0, sample_rate)
+        self._tilt_eq_high_r = BiquadPeakingEQ(3000.0, 0.0, 1.0, sample_rate)
+
+        # Keyboard stereo width — mid/side scaling on the post-Leslie stereo
+        # bus. 0=mono (side collapsed), 1=full preserved stereo. Matches the
+        # Faust organ's `width` 0..1 semantic so the UI fader behaves
+        # identically across backends. (Faust scales per-voice keyboard pan;
+        # Python applies M/S scaling to the post-Leslie stereo bus — different
+        # mechanism, same audible direction.)
+        self.width = 1.0
+
         # Voices
         self.voices: dict[int, OrganVoice] = {}
         self._lock = threading.Lock()
@@ -224,6 +244,22 @@ class OrganEngine:
         self.lowcut_hz = max(20.0, min(500.0, freq_hz))
         self.lowcut_filter_l.set_params(self.lowcut_hz)
         self.lowcut_filter_r.set_params(self.lowcut_hz)
+
+    def set_tone_tilt(self, t: float):
+        """0=warm (lows up, highs down), 0.5=flat, 1=bright. Volume-neutral.
+        Maps to two peak EQs at 250 Hz and 3 kHz with complementary gains."""
+        self.tone_tilt = max(0.0, min(1.0, float(t)))
+        tilt_amount = (self.tone_tilt - 0.5) * 2.0  # -1..+1
+        low_db = -tilt_amount * 4.0
+        high_db = tilt_amount * 4.0
+        self._tilt_eq_low_l.set_params(250.0, low_db, 1.0)
+        self._tilt_eq_low_r.set_params(250.0, low_db, 1.0)
+        self._tilt_eq_high_l.set_params(3000.0, high_db, 1.0)
+        self._tilt_eq_high_r.set_params(3000.0, high_db, 1.0)
+
+    def set_width(self, w: float):
+        """Stereo width scaler on the master bus. 0=mono, 1=normal."""
+        self.width = max(0.0, min(1.0, float(w)))
 
     def set_preset(self, name: str):
         if name in ORGAN_PRESETS:
@@ -429,6 +465,16 @@ class OrganEngine:
         left = horn_l_out + drum_l_out
         right = horn_r_out + drum_r_out
 
+        # ── Tone tilt EQ (matches faust/organ.dsp tone_tilt_eq) ──
+        # Applied pre-volume so it shapes the source spectrum, not the master
+        # gain. Even at 0/1 it stays roughly volume-neutral (push/pull is
+        # symmetric ±4 dB at 250 Hz / 3 kHz).
+        if abs(self.tone_tilt - 0.5) > 1e-3:
+            left = self._tilt_eq_low_l.process(left)
+            right = self._tilt_eq_low_r.process(right)
+            left = self._tilt_eq_high_l.process(left)
+            right = self._tilt_eq_high_r.process(right)
+
         # Volume (dB curve: -40dB to 0dB)
         if self.volume <= 0.0:
             return np.zeros((2, n_samples), dtype=np.float64)
@@ -443,6 +489,17 @@ class OrganEngine:
         if self.highcut_hz < 11000.0:
             left = self.highcut_filter_l.process(left)
             right = self.highcut_filter_r.process(right)
+
+        # ── Mid/side stereo width ──
+        # Standard mid/side scaling: width=1 leaves stereo unchanged, width=0
+        # collapses to mono. Faust organ scales per-voice keyboard pan; this
+        # post-Leslie M/S approach is the closest equivalent in the mono-
+        # tonewheel-then-stereo-Leslie Python pipeline. 0..1 range matches UI.
+        if abs(self.width - 1.0) > 1e-3:
+            mid = (left + right) * 0.5
+            side = (left - right) * 0.5
+            left = mid + side * self.width
+            right = mid - side * self.width
 
         return np.array([left, right])
 
@@ -478,6 +535,10 @@ class OrganEngine:
             self.set_highcut(float(params["filter_highcut_hz"]))
         if "filter_lowcut_hz" in params:
             self.set_lowcut(float(params["filter_lowcut_hz"]))
+        if "tone_tilt" in params:
+            self.set_tone_tilt(float(params["tone_tilt"]))
+        if "width" in params:
+            self.set_width(float(params["width"]))
 
     def get_params(self) -> dict:
         return {
@@ -494,4 +555,6 @@ class OrganEngine:
             "filter_highcut_hz": self.highcut_hz,
             "filter_lowcut_hz": self.lowcut_hz,
             "volume": self.volume,
+            "tone_tilt": self.tone_tilt,
+            "width": self.width,
         }

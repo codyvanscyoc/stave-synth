@@ -314,6 +314,20 @@
             }
             // Refresh sliders because assigned params just changed on the backend
             updateSettingsSliders();
+        } else if (msg.type === "reverb_types_available") {
+            // Engine reports which reverb types have working .so backends.
+            // Disable PLATE / DRONE in the selector if their .so is missing
+            // so the user can't pick a type that would crash mid-perf.
+            var avail = msg.available || {};
+            var rsel = document.querySelector('[data-param="reverb_type"]');
+            if (rsel) {
+                Array.prototype.forEach.call(rsel.options, function (opt) {
+                    var v = (opt.value || "").toLowerCase();
+                    if (v === "plate" || v === "drone") {
+                        opt.disabled = (avail[v] === false);
+                    }
+                });
+            }
         } else if (msg.type === "audio_outputs") {
             showOutputMenu(msg.outputs);
         } else if (msg.type === "audio_output_set") {
@@ -384,9 +398,15 @@
             if (resBtn) resBtn.classList.toggle("active", resEnabled);
             // Sync OSC level link state
             linkOscLevels = s.synth_pad.osc_levels_linked ?? false;
-            updateMirrorIndicators();
             // Sync LFO link state
             lfoLink = s.synth_pad.lfo_link ?? false;
+            // Re-snap twins so a freshly-loaded preset where LINK was on but
+            // values diverged on disk doesn't leave the UI/engine drifting
+            // until the user touches a knob.
+            try {
+                if (linkOscLevels) snapMirrorOsc2ToOsc1();
+                if (lfoLink) snapLfo2ToLfo1();
+            } catch (e) { /* snap helpers defined later in scope; benign on first call */ }
             // Sync OSC octave displays — state persists but UI var was init-only
             osc1Octave = s.synth_pad.osc1_octave ?? 0;
             osc2Octave = s.synth_pad.osc2_octave ?? 0;
@@ -1533,6 +1553,7 @@
         if (sendUpdate !== false) {
             send({ type: "setting", section: "master", param: "bpm", value: bpm });
         }
+        if (typeof updateLfoScope === "function") updateLfoScope();
     }
 
     function registerTap() {
@@ -1939,9 +1960,13 @@
                     if (fader1AltState === 2) updateFader(1);
                 }
             } else if (param === "reverb_predelay_ms" || param === "haas_delay_ms" ||
-                param === "attack_ms" || param === "release_ms") {
+                ((param.endsWith("attack_ms") || param.endsWith("release_ms") ||
+                  param.endsWith("decay_ms")) && !param.startsWith("bus_comp_"))) {
                 sendValue = value;
                 displayValue = Math.round(value) + "ms";
+            } else if (param.endsWith("sustain_percent")) {
+                sendValue = value;
+                displayValue = Math.round(value) + "%";
             } else if (param === "comp_threshold_db" || param === "comp_makeup_db" ||
                        param === "comp_drive_db" || param === "comp_knee_db") {
                 sendValue = value;
@@ -1949,7 +1974,7 @@
                 displayValue = sign + Math.round(value) + "dB";
             } else if (param === "comp_ratio") {
                 sendValue = value;
-                displayValue = value.toFixed(1) + ":1";
+                displayValue = (Number.isInteger(value) ? value : value.toFixed(1)) + ":1";
             } else if (param === "bus_comp_threshold_db" || param === "bus_comp_makeup_db") {
                 sendValue = value;
                 var bsgn = value > 0 ? "+" : "";
@@ -2070,9 +2095,11 @@
             if (param === "lfo_rate_hz") lfoTwin = "lfo2_rate_hz";
             else if (param === "lfo_depth") lfoTwin = "lfo2_depth";
             else if (param === "lfo_spread") lfoTwin = "lfo2_spread";
+            else if (param === "lfo_offset_ms") lfoTwin = "lfo2_offset_ms";
             else if (param === "lfo2_rate_hz") lfoTwin = "lfo_rate_hz";
             else if (param === "lfo2_depth") lfoTwin = "lfo_depth";
             else if (param === "lfo2_spread") lfoTwin = "lfo_spread";
+            else if (param === "lfo2_offset_ms") lfoTwin = "lfo_offset_ms";
             if (lfoLink && lfoTwin) {
                 var lfoTwinSlider = document.querySelector('.setting-slider[data-param="' + lfoTwin + '"]');
                 if (lfoTwinSlider && lfoTwinSlider.value !== slider.value) {
@@ -2092,9 +2119,15 @@
                 updateAdsrCurve("osc2");
                 if (linkOscLevels) updateAdsrCurve("osc1");
             }
-            // Any LFO slider that affects the scope drawing → redraw
+            // Any LFO slider that affects the scope drawing → redraw.
+            // Also redraw when haas_delay_ms moves while either LFO has
+            // haas_compensate on, since offset math reads it live.
             if (param && (param.indexOf("lfo_") === 0 || param.indexOf("lfo2_") === 0)) {
                 updateLfoScope();
+            } else if (param === "haas_delay_ms") {
+                var hcb1 = document.querySelector('[data-param="lfo_haas_compensate"]');
+                var hcb2 = document.querySelector('[data-param="lfo2_haas_compensate"]');
+                if ((hcb1 && hcb1.checked) || (hcb2 && hcb2.checked)) updateLfoScope();
             }
             if (param && param.indexOf && param.indexOf("bus_comp_") === 0) {
                 markBusCompCustom();
@@ -2186,15 +2219,6 @@
         if (knob) applyWarmthToKnob(knob, value);
     }
 
-    // MIRROR indicator pill on OSC 1 / OSC 2 tabs — reflects linkOscLevels
-    function updateMirrorIndicators() {
-        document.querySelectorAll(".mirror-pill").forEach(function (pill) {
-            pill.classList.toggle("active", linkOscLevels);
-            var txt = pill.querySelector(".mirror-text");
-            if (txt) txt.textContent = linkOscLevels ? "MIRROR ON" : "MIRROR OFF";
-        });
-    }
-
     // Snap LFO 2 params to match LFO 1 when LINK LFOs is enabled. Covers all
     // user-facing LFO state: toggles, dropdowns, and continuous knobs.
     function snapLfo2ToLfo1() {
@@ -2202,6 +2226,7 @@
             ["lfo_rate_hz", "lfo2_rate_hz"],
             ["lfo_depth", "lfo2_depth"],
             ["lfo_spread", "lfo2_spread"],
+            ["lfo_offset_ms", "lfo2_offset_ms"],
         ];
         sliderPairs.forEach(function (pair) {
             var src = document.querySelector('.setting-slider[data-param="' + pair[0] + '"]');
@@ -2229,6 +2254,7 @@
             ["lfo_enabled", "lfo2_enabled"],
             ["lfo_key_sync", "lfo2_key_sync"],
             ["lfo_invert", "lfo2_invert"],
+            ["lfo_haas_compensate", "lfo2_haas_compensate"],
         ];
         cbPairs.forEach(function (pair) {
             var src = document.querySelector('.setting-checkbox[data-param="' + pair[0] + '"]');
@@ -2314,7 +2340,6 @@
             // MIRROR: when OSC level-mirror is on, also mirror per-OSC FX bypass
             if (p === "osc_levels_linked") {
                 linkOscLevels = checkbox.checked;
-                updateMirrorIndicators();
                 if (linkOscLevels) snapMirrorOsc2ToOsc1();
             }
             if (linkOscLevels && (p === "osc1_fx_bypass" || p === "osc2_fx_bypass")) {
@@ -2335,9 +2360,11 @@
             if (p === "lfo_enabled") lfoCbTwin = "lfo2_enabled";
             else if (p === "lfo_key_sync") lfoCbTwin = "lfo2_key_sync";
             else if (p === "lfo_invert") lfoCbTwin = "lfo2_invert";
+            else if (p === "lfo_haas_compensate") lfoCbTwin = "lfo2_haas_compensate";
             else if (p === "lfo2_enabled") lfoCbTwin = "lfo_enabled";
             else if (p === "lfo2_key_sync") lfoCbTwin = "lfo_key_sync";
             else if (p === "lfo2_invert") lfoCbTwin = "lfo_invert";
+            else if (p === "lfo2_haas_compensate") lfoCbTwin = "lfo_haas_compensate";
             if (lfoLink && lfoCbTwin) {
                 var lfoTwinCb = document.querySelector('.setting-checkbox[data-param="' + lfoCbTwin + '"]');
                 if (lfoTwinCb && lfoTwinCb.checked !== checkbox.checked) {
@@ -2491,7 +2518,9 @@
                 param === "osc2_reverb_send") {
                 slider.value = value * 100;
             } else if (param === "reverb_predelay_ms" || param === "haas_delay_ms" ||
-                param === "attack_ms" || param === "release_ms" ||
+                ((param.endsWith("attack_ms") || param.endsWith("release_ms") ||
+                  param.endsWith("decay_ms") || param.endsWith("sustain_percent")) &&
+                 !param.startsWith("bus_comp_")) ||
                 param === "comp_threshold_db" || param === "comp_makeup_db" ||
                 param === "comp_ratio" || param === "comp_drive_db" ||
                 param === "comp_knee_db") {
@@ -2550,14 +2579,17 @@
                 param === "osc2_reverb_send") {
                     valueEl.textContent = Math.round(value * 100) + "%";
                 } else if (param === "reverb_predelay_ms" || param === "haas_delay_ms" ||
-                    param === "attack_ms" || param === "release_ms") {
+                    ((param.endsWith("attack_ms") || param.endsWith("release_ms") ||
+                      param.endsWith("decay_ms")) && !param.startsWith("bus_comp_"))) {
                     valueEl.textContent = Math.round(value) + "ms";
+                } else if (param.endsWith("sustain_percent")) {
+                    valueEl.textContent = Math.round(value) + "%";
                 } else if (param === "comp_threshold_db" || param === "comp_makeup_db" ||
                            param === "comp_drive_db" || param === "comp_knee_db") {
                     var sign2 = value > 0 ? "+" : "";
                     valueEl.textContent = sign2 + Math.round(value) + "dB";
                 } else if (param === "comp_ratio") {
-                    valueEl.textContent = value.toFixed(1) + ":1";
+                    valueEl.textContent = (Number.isInteger(value) ? value : value.toFixed(1)) + ":1";
                 } else if (param === "bus_comp_threshold_db" || param === "bus_comp_makeup_db") {
                     var s4 = value > 0 ? "+" : "";
                     valueEl.textContent = s4 + value.toFixed(1) + "dB";
@@ -2715,7 +2747,19 @@
         var rate = lfoEffectiveRateHz(prefix);
         return (offsetMs / 1000.0) * rate;
     }
+    var _lfoScopePending = false;
     function updateLfoScope() {
+        // Coalesce bursts of redraws (knob drags fire ~60Hz × 200pts × 2 traces)
+        // into one frame via requestAnimationFrame.
+        if (_lfoScopePending) return;
+        _lfoScopePending = true;
+        var schedule = (typeof requestAnimationFrame === "function") ? requestAnimationFrame : function (fn) { setTimeout(fn, 16); };
+        schedule(function () {
+            _lfoScopePending = false;
+            _updateLfoScopeNow();
+        });
+    }
+    function _updateLfoScopeNow() {
         var poly1 = document.getElementById("lfo-scope-path-1");
         var poly2 = document.getElementById("lfo-scope-path-2");
         if (!poly1 || !poly2) return;

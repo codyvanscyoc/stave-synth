@@ -212,6 +212,34 @@ soundfonts/
   TimGM6mb.sf2         — Bundled GM soundfont (public domain, ~6MB)
 ```
 
+## DSP backend (Faust vs Python)
+
+Hot DSP paths ship as both compiled Faust C modules (`faust/*.so`) and pure-Python
+fallbacks. Faust is meaningfully faster on the Pi 5 and is what the daily-use
+target ships against — it's enabled by default for both install modes:
+
+- **Auto-start install** turns it on via the systemd drop-in
+  `~/.config/systemd/user/stave-synth.service.d/faust.conf` (copied from
+  `systemd/stave-synth.service.d/faust.conf` in the repo).
+- **`--no-autostart` install** turns it on via env-var defaults exported at the
+  top of `stave-synth.sh`.
+
+To disable a single Faust module (e.g. for A/B testing), set the matching env
+var to `0` — e.g. `STAVE_FAUST_REVERB=0`. Or for the systemd path:
+`systemctl --user edit stave-synth` and add an `Environment=` override.
+
+Some features are Faust-only — currently organ `width` (mid-side spread) and
+`tone_tilt` (tilt EQ) are also implemented in the Python fallback, but parity
+across paths is not guaranteed for every knob. If you can't compile Faust on
+your platform, the synth still runs with the Python fallbacks.
+
+To rebuild after editing a `.dsp`:
+
+```bash
+cd faust && ./build.sh        # skips up-to-date modules
+cd faust && ./build.sh --force # rebuild everything
+```
+
 ## Config & data paths
 
 - Presets: `~/.config/stave-synth/presets/`

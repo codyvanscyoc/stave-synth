@@ -6,10 +6,14 @@ Wants=pipewire.service wireplumber.service
 [Service]
 Type=simple
 ExecStartPre=/bin/sleep 3
+# Some USB DACs only expose Master (no PCM control) — probe with sget first
+# and skip silently if neither is present so the unit still starts.
 ExecStartPre=-/bin/bash -c 'for c in /proc/asound/card*/id; do n=$$(dirname $$c | grep -o "[0-9]*"); if grep -qi usb "$$c" 2>/dev/null; then if amixer -c $$n sget PCM >/dev/null 2>&1; then amixer -c $$n set PCM 100%% >/dev/null 2>&1; elif amixer -c $$n sget Master >/dev/null 2>&1; then amixer -c $$n set Master 100%% >/dev/null 2>&1; fi; fi; done; true'
 ExecStart=/usr/bin/pw-jack %h/stave-synth/venv/bin/python -m stave_synth.main --no-gui
 WorkingDirectory=%h/stave-synth
 Environment=XDG_RUNTIME_DIR=/run/user/%U
+# Cap glibc malloc arenas to reduce fragmentation for 24/7 operation.
+# Combined with malloc_trim() in the idle GC thread, this keeps RSS stable.
 Environment=MALLOC_ARENA_MAX=2
 Restart=on-failure
 RestartSec=5

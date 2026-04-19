@@ -26,6 +26,12 @@ NVOICES = 16  # must match NVOICES in osc_bank.dsp
 # Waveform index: matches DEFAULT_STATE / generate_waveform names
 _WF_INDEX = {"sine": 0, "square": 1, "saw": 2, "triangle": 3, "saturated": 4}
 
+# Hard-coded unison count baked into osc_bank.dsp (UNI = 3). Other counts
+# require either a Faust rebuild with a new UNI constant or a topology
+# rewrite that exposes UNI as a runtime parameter; until then any voice
+# count != 3 must route through the Python oscillator path.
+SUPPORTED_UNISON = 3
+
 
 _ffi = FFI()
 _ffi.cdef("""
@@ -122,10 +128,24 @@ class FaustOscBank:
             self._gate_osc1_zones[i][0] = 0.0
             self._gate_osc2_zones[i][0] = 0.0
 
+    @staticmethod
+    def supports_unison(n: int) -> bool:
+        """Return True if the given unison voice count can run on the Faust
+        path. osc_bank.dsp hard-codes UNI=3; the engine must route to the
+        Python oscillator path for any other value (currently 1 or 5)."""
+        return int(n) == SUPPORTED_UNISON
+
     # ─── Per-voice setters (hot path — called every block per active voice) ───
     def set_voice(self, slot: int, freq_hz: float, g_osc1: float, g_osc2: float):
         """Per-OSC gate levels = ADSR envelope × velocity. The combined
-        voice-alive gate (used by shimmer) is set to max(g_osc1, g_osc2)."""
+        voice-alive gate (used by shimmer) is set to max(g_osc1, g_osc2).
+
+        LIMITATION: We write block-end scalar values; the 1 ms `si.smooth`
+        in osc_bank.dsp is the actual attack shape Faust hears, so UI
+        attacks shorter than ~5 ms (one block) get rounded to that floor.
+        TODO: Lift the limitation by writing per-voice ADSR coefficients
+        from Python and removing the gate smoothing (requires Faust topology
+        change — see comment near voice_gate in osc_bank.dsp)."""
         self._freq_zones[slot][0] = float(freq_hz)
         g1 = float(max(0.0, min(1.0, g_osc1)))
         g2 = float(max(0.0, min(1.0, g_osc2)))

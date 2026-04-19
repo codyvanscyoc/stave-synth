@@ -187,6 +187,14 @@ class StaveSynth:
         elif msg_type == "clear_pad_slot":
             return self._handle_clear_pad_slot(msg)
         elif msg_type == "get_state":
+            # Piggy-back the reverb-types availability map so the UI can
+            # grey out PLATE / DRONE if their .so didn't build.
+            try:
+                avail = self.synth.reverb.available_types() if hasattr(self.synth.reverb, "available_types") else None
+                if avail and self.ws_server:
+                    self.ws_server.broadcast_sync({"type": "reverb_types_available", "available": avail})
+            except Exception as e:
+                logger.debug("reverb_types_available probe failed: %s", e)
             return {"type": "state", "state": self.state}
         elif msg_type == "debug":
             # Piano diagnostics
@@ -706,7 +714,7 @@ class StaveSynth:
             if not isinstance(src, dict):
                 continue
             for param, value in src.items():
-                if isinstance(value, (dict, list)) and param != "eq_bands":
+                if isinstance(value, (dict, list)) and param not in ("eq_bands", "adsr_osc1", "adsr_osc2"):
                     continue  # skip nested / complex fields we can't easily re-apply
                 try:
                     self._handle_setting({"section": section, "param": param, "value": value})
@@ -952,6 +960,10 @@ class StaveSynth:
         for p, v in preset.items():
             self.state["master"][p] = v
             self._handle_setting({"section": "master", "param": p, "value": v})
+        # Push the full state so a second open client (phone next to tablet)
+        # picks up the new knob positions immediately, not on next reconnect.
+        if self.ws_server:
+            self.ws_server.broadcast_sync({"type": "state", "state": self.state})
         return {"type": "bus_comp_preset_ack", "name": name, "values": preset}
 
     def _handle_fade_toggle(self, msg: dict) -> dict:
@@ -1192,16 +1204,10 @@ class StaveSynth:
             elif param in self.state["synth_pad"]:
                 self.state["synth_pad"][param] = value
                 self.synth.update_params({param: value})
-                # Drone octave offset changes while a key is held → re-apply
-                # so the new offset takes effect live (no need to re-tap).
-                if param == "drone_octave_offset":
-                    cur_key = self.state["synth_pad"].get("drone_key")
-                    if cur_key is not None and self.state["synth_pad"].get("drone_enabled"):
-                        self.synth.set_drone_key(int(cur_key))
                 # Reverb type change applies a full preset — mirror the preset's
                 # decay/predelay/cuts into state so the UI and save file stay in
                 # sync, and a subsequent state reload doesn't clobber the preset.
-                elif param == "reverb_type":
+                if param == "reverb_type":
                     try:
                         from .faust_reverb import REVERB_PRESETS
                         preset = REVERB_PRESETS.get(str(value))

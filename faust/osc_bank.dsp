@@ -7,6 +7,12 @@ import("stdfaust.lib");
 // Config constants
 // ═══════════════════════════════════════════════════════════════════════
 NVOICES = 16;
+// LIMITATION: UNI is a compile-time constant — the unison count is baked
+// into the Faust topology (par(u, UNI, ...) iterates statically). The UI
+// lets the user pick 1, 3, or 5 unison voices; only 3 runs on this Faust
+// path. faust_osc_bank.py exposes `FaustOscBank.supports_unison(n)` so
+// synth_engine.py can route 1/5 cases to the Python oscillator path.
+// Changing this requires a full rebuild (faust/build.sh).
 UNI     = 3;           // fixed unison count for this iteration (default)
 TWO_PI  = 2.0 * ma.PI;
 SR      = ma.SR;
@@ -26,6 +32,12 @@ voice_freq(i) = hslider("freq_v%i",   0, 0, 12000, 0.01);
 // (256-sample blocks = ~5.3ms, so sub-sample jitter at 1ms tau is inaudible)
 // while leaving attack_ms=0 feeling truly snappy. Default si.smoo (~30ms)
 // rounded off short attacks audibly; 2ms was close but not punchy.
+//
+// LIMITATION: Python writes block-end scalar gates (synth_engine.py
+// ~line 2226), so this 1 ms one-pole IS the actual attack shape Faust
+// hears. Any UI attack < ~5 ms (one block) gets rounded to this floor.
+// Fix path: refactor to write per-voice attack/decay/release coefficients
+// from Python rather than scalar gates — bigger change, deferred.
 voice_gate(i)      = hslider("gate_v%i",      0, 0, 1, 0.001) : si.smooth(ba.tau2pole(0.001));
 voice_gate_osc1(i) = hslider("gate_osc1_v%i", 0, 0, 1, 0.001) : si.smooth(ba.tau2pole(0.001));
 voice_gate_osc2(i) = hslider("gate_osc2_v%i", 0, 0, 1, 0.001) : si.smooth(ba.tau2pole(0.001));

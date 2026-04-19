@@ -15,9 +15,14 @@ setup(
         "scipy>=1.11.0",
         "websockets>=11.0",
         "pyfluidsynth>=1.3.0",
-        "pywebview>=4.0",
         "psutil>=5.9.0",
+        "cffi>=1.16",
     ],
+    extras_require={
+        # Native fullscreen window via WebKit. Skip on headless installs —
+        # the browser UI at http://<host>:8080 works without it.
+        "gui": ["pywebview>=4.0"],
+    },
     entry_points={
         "console_scripts": [
             "stave-synth=stave_synth.main:main",

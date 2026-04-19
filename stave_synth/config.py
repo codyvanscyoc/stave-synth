@@ -173,6 +173,8 @@ DEFAULT_STATE = {
         "comp_knee_db": 18.0,
         "comp_drive_db": 0.0,
         "comp_wet": 1.0,
+        "comp_attack_ms": 10.0,
+        "comp_release_ms": 80.0,
     },
     "organ": {
         "enabled": False,
@@ -277,6 +279,17 @@ def load_state():
         try:
             with open(STATE_FILE) as f:
                 saved = json.load(f)
+            # Migration: legacy preset stored a single ADSR under
+            # synth_pad.adsr; per-OSC ADSR shipped in 5278d8e splits this
+            # into adsr_osc1 / adsr_osc2. Splat the legacy block to BOTH
+            # before deep-merge so a saved attack/release survives upgrade.
+            sp = saved.get("synth_pad")
+            if isinstance(sp, dict) and "adsr" in sp and isinstance(sp["adsr"], dict):
+                if "adsr_osc1" not in sp:
+                    sp["adsr_osc1"] = dict(sp["adsr"])
+                if "adsr_osc2" not in sp:
+                    sp["adsr_osc2"] = dict(sp["adsr"])
+                sp.pop("adsr", None)
             state = _deep_merge(defaults, saved)
         except (json.JSONDecodeError, OSError):
             pass

@@ -1,9 +1,20 @@
 #!/usr/bin/env bash
 # Compile Faust .dsp files → C → shared library.
 # Build dependency: `faust` + `gcc`. Both installed by install.sh.
+#
+# Modules whose .so is newer than the .dsp are skipped. Pass --force to
+# rebuild everything (e.g. after changing CFLAGS or the prelude header).
 
 set -euo pipefail
 cd "$(dirname "$0")"
+
+FORCE=0
+for arg in "$@"; do
+    case "$arg" in
+        -f|--force) FORCE=1 ;;
+        *) echo "unknown arg: $arg" >&2; exit 2 ;;
+    esac
+done
 
 CFLAGS="-shared -fPIC -O3 -ffast-math -include $(pwd)/faust_cprelude.h"
 
@@ -12,10 +23,15 @@ build_module() {
     local cname=$2      # C class name passed to faust -cn
     local libname=$3    # output library stem (libNAME.so)
 
-    echo "─── $name → lib${libname}.so ───"
+    local out="lib${libname}.so"
+    if [ "$FORCE" -eq 0 ] && [ -f "$out" ] && [ "$out" -nt "${name}.dsp" ] && [ "$out" -nt "faust_cprelude.h" ]; then
+        echo "─── $name → $out  (up-to-date, skip)"
+        return
+    fi
+    echo "─── $name → $out ───"
     faust -lang c -cn "$cname" -o "${name}.c" "${name}.dsp"
-    gcc $CFLAGS -o "lib${libname}.so" "${name}.c"
-    ls -la "lib${libname}.so"
+    gcc $CFLAGS -o "$out" "${name}.c"
+    ls -la "$out"
 }
 
 build_module gain         StaveGain         stave_gain

@@ -1565,41 +1565,6 @@ body.macro-learning .setting-row:active {
     margin-left: 0.4vw;
 }
 
-/* MIRROR indicator pill on OSC 1 / OSC 2 tabs — reflects LINK tab's MIRROR checkbox */
-.mirror-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4vw;
-    margin: 0.3vh 0 0.2vh 0;
-    padding: 0.25vh 0.7vw;
-    border: 1px solid rgba(0, 191, 99, 0.2);
-    border-radius: 1.4vh;
-    font-size: clamp(7px, 1.1vw, 9px);
-    letter-spacing: 0.08em;
-    color: var(--text-green-dim);
-    background: rgba(0, 191, 99, 0.03);
-}
-.mirror-pill .mirror-dot {
-    width: 0.6vh;
-    height: 0.6vh;
-    min-width: 6px;
-    min-height: 6px;
-    border-radius: 50%;
-    background: rgba(0, 191, 99, 0.2);
-    border: 1px solid rgba(0, 191, 99, 0.3);
-    box-shadow: none;
-}
-.mirror-pill.active {
-    color: var(--text-green);
-    border-color: var(--border-green);
-    background: rgba(0, 191, 99, 0.1);
-}
-.mirror-pill.active .mirror-dot {
-    background: var(--text-green);
-    border-color: var(--text-green);
-    box-shadow: 0 0 5px rgba(0, 191, 99, 0.8);
-}
-
 .setting-section:first-child {
     border-top: none;
     margin-top: 0;

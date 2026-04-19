@@ -372,7 +372,12 @@ class FaustOrganEngine:
                 gate *= attack_factor
                 v.attack_remaining = max(0, v.attack_remaining - n_samples)
 
-            # Release ramp (linear remaining/release_total → 0)
+            # Release ramp (linear remaining/release_total → 0).
+            # Faust sees one scalar gate per block which it then 1ms-smooths
+            # internally, so for the partial-block release case we write the
+            # time-weighted *average* gate over the block rather than 0 —
+            # otherwise short release_ms values cut to silence in one step
+            # and produce an audible click before si.smooth can catch up.
             if v.releasing:
                 release_samples = max(1, v.release_total)
                 if v.release_remaining <= 0:
@@ -383,7 +388,12 @@ class FaustOrganEngine:
                     end_factor = max(0.0, (v.release_remaining - n_samples) / release_samples)
                     v.release_remaining -= n_samples
                 else:
-                    end_factor = 0.0
+                    # Partial-block release: linear ramp from start_factor → 0
+                    # over `r` samples, then silence for the rest of the block.
+                    # Time-weighted average = (start_factor / 2) × (r / n_samples).
+                    r = v.release_remaining
+                    start_factor = r / release_samples
+                    end_factor = (start_factor * 0.5) * (r / n_samples)
                     v.release_remaining = 0
                     dead_notes.append(note)
                 gate *= end_factor
