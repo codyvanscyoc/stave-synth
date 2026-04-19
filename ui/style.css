@@ -931,7 +931,8 @@ body.retro-amber {
 }
 
 #macro-layer-btn,
-#macro-edit-btn {
+#macro-edit-btn,
+#macro-clear-btn {
     width: clamp(26px, 3.5vw, 34px);
     writing-mode: vertical-rl;
     text-orientation: mixed;
@@ -947,34 +948,22 @@ body.retro-amber {
     color: var(--bg);
     border-color: var(--text-green);
 }
-
-/* When editing macros, count badge becomes a clear-all ✕ */
-body.macros-editing .macro-slot .macro-count {
-    font-size: clamp(10px, 1.4vw, 13px);
-    font-weight: bold;
+#macro-clear-btn.active {
+    background: var(--text-red, #ff4d6a);
     color: var(--bg);
-    background: var(--macro-color);
-    border-radius: 50%;
-    width: 1.5em;
-    height: 1.5em;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    top: 50%;
-    right: 6px;
-    transform: translateY(-50%);
-    cursor: pointer;
-    pointer-events: auto;
+    border-color: var(--text-red, #ff4d6a);
 }
-body.macros-editing .macro-slot .macro-count::before {
-    content: "✕";
+/* CLEAR is gated behind EDIT — only visible while edit mode is on */
+#macro-clear-btn { display: none; }
+body.macros-editing #macro-clear-btn { display: inline-flex; }
+/* Tap-target hint: macro slots dashed-outlined while edit mode is on */
+body.macros-editing .macro-slot {
+    outline: 1px dashed var(--text-green);
+    outline-offset: 2px;
 }
-body.macros-editing .macro-slot .macro-count {
-    /* Hide the numeric count — the ✕ pseudo replaces it */
-    font-size: 0;
-}
-body.macros-editing .macro-slot .macro-count::before {
-    font-size: clamp(11px, 1.5vw, 14px);
+body.macros-clearing .macro-slot {
+    outline: 1px dashed var(--text-red, #ff4d6a) !important;
+    cursor: not-allowed;
 }
 
 /* ═══ Pad Player (drone 12-key launcher) ═══ */
@@ -1140,20 +1129,54 @@ body.macros-editing .macro-slot .macro-count::before {
    This is the ONLY reliable way to stop <input type="range"> from tracking
    a tap while we intercept it, because range inputs handle pointer drag
    internally in ways preventDefault can't stop. */
-body.macro-learning .setting-slider,
-body.macro-learning .setting-checkbox,
-body.macro-learning .setting-select {
+body.macro-learning .setting-slider {
     pointer-events: none;
     outline: 1px dashed currentColor;
     outline-offset: 2px;
 }
-body.macro-learning .setting-row {
+body.macro-learning .setting-row:has(.setting-slider[data-section][data-param]) {
     cursor: cell;
     position: relative;
 }
-body.macro-learning .setting-row:hover,
-body.macro-learning .setting-row:active {
+body.macro-learning .setting-row:has(.setting-slider[data-section][data-param]):hover,
+body.macro-learning .setting-row:has(.setting-slider[data-section][data-param]):active {
     background: rgba(255, 176, 32, 0.06);
+}
+body.macro-learning .knob {
+    outline: 1px dashed var(--macro-learn-color, currentColor);
+    outline-offset: 3px;
+    cursor: cell;
+    border-radius: 4px;
+}
+body.macro-learning .fader-track {
+    outline: 1px dashed var(--macro-learn-color, currentColor);
+    outline-offset: 3px;
+    cursor: cell;
+}
+body.macro-learning .macro-assigned-now {
+    outline: 2px solid var(--macro-learn-color, currentColor) !important;
+    outline-offset: 3px !important;
+    box-shadow: 0 0 10px var(--macro-learn-color);
+    border-radius: 4px;
+}
+body.macro-learning .macro-assigned-now .setting-slider {
+    outline: none;
+}
+.macro-assign-flash {
+    animation: macro-assign-flash-anim 0.55s ease-out;
+}
+@keyframes macro-assign-flash-anim {
+    0%   { box-shadow: 0 0 0 0 var(--macro-learn-color, #fff), inset 0 0 0 0 var(--macro-learn-color, #fff); background-color: color-mix(in srgb, var(--macro-learn-color, #fff) 40%, transparent); }
+    100% { box-shadow: 0 0 14px 2px transparent, inset 0 0 14px transparent; background-color: transparent; }
+}
+
+body.macro-learning #settings-box {
+    border-color: var(--macro-learn-color, var(--border-green));
+    animation: macro-learn-modal-pulse 1.6s ease-in-out infinite;
+}
+@keyframes macro-learn-modal-pulse {
+    0%, 100% { box-shadow: 0 0 16px var(--macro-learn-color), inset 0 0 8px var(--macro-learn-color); }
+    50%      { box-shadow: 0 0 32px var(--macro-learn-color), inset 0 0 16px var(--macro-learn-color); }
 }
 
 /* When editing, presets pulse gently and load-on-tap is suppressed via JS */
@@ -1502,6 +1525,18 @@ body.macro-learning .setting-row:active {
 .motion-delay-knobs .knob .setting-value {
     font-size: clamp(8px, 1.3vw, 10px);
 }
+
+/* Scoot the 4-checkbox row in LFO columns: kill the 37% indent (made for
+ * the slider/value layout) so checkboxes use full column width, centered. */
+.lfo-col .setting-row-checkbox {
+    padding-left: 0;
+    justify-content: space-around;
+    gap: 0.4vw;
+}
+.lfo-col .setting-checkbox-label {
+    gap: 0.4vw;
+    font-size: clamp(8px, 1.15vw, 10px);
+}
 .motion-delay-knobs {
     padding: 0.6vh 0;
     gap: 1.2vw;
@@ -1727,6 +1762,14 @@ body.macro-learning .setting-row:active {
     box-sizing: border-box;
 }
 
+.knob.knob-half { min-width: 30px; }
+.knob.knob-half .knob-dial {
+    width: clamp(24px, 5vw, 34px);
+    height: clamp(24px, 5vw, 34px);
+}
+.knob.knob-half .knob-label { font-size: clamp(7px, 1.1vw, 9px); }
+.knob.knob-half .setting-value { font-size: clamp(7px, 1.1vw, 9px); }
+
 .knob-indicator {
     position: absolute;
     width: 100%;
@@ -1823,12 +1866,16 @@ body.macro-learning .setting-row:active {
 }
 
 /* In learn mode, faders pulse orange border */
-.midi-learn-active .fader-track {
+.midi-learn-active .fader-track,
+.midi-learn-active .macro-slot {
     cursor: crosshair;
     border-color: var(--border-orange) !important;
+    outline: 1px dashed var(--text-orange, #ff751f);
+    outline-offset: 2px;
 }
 
-.midi-learn-active .fader-track:active {
+.midi-learn-active .fader-track:active,
+.midi-learn-active .macro-slot:active {
     background: rgba(255, 117, 31, 0.15);
 }
 

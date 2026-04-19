@@ -4,6 +4,7 @@ Performance-critical: all audio processing uses vectorized NumPy.
 """
 
 import logging
+import math
 import numpy as np
 from dataclasses import dataclass, field
 
@@ -42,12 +43,53 @@ def blend_to_amplitude(fader: float) -> float:
         return 0.0
     return 10.0 ** ((fader - 1.0) * BLEND_DB_RANGE / 20.0)
 
-def generate_waveform(waveform: str, phases: np.ndarray) -> np.ndarray:
-    """Generate a waveform from phase array. All outputs are roughly -1 to +1."""
+def _poly_blep(t: np.ndarray, dt) -> np.ndarray:
+    """Vectorised polyBLEP correction at a phase wrap (0/1 boundary).
+
+    t  : phase fraction in [0, 1), shape (..., n_samples)
+    dt : per-sample phase increment as fraction of cycle. Scalar OR a
+         broadcast-compatible array (e.g. shape (n_uni, 1) when t is
+         (n_uni, n_samples) for unison-detuned voices).
+
+    Returns a correction array (same shape as t) to add to the naive
+    waveform. Subtract for sawtooth, combine for square (2 discontinuities)."""
+    blep_lo = np.zeros_like(t)
+    blep_hi = np.zeros_like(t)
+    dt_safe = np.maximum(dt, 1e-9)
+    # Just past the wrap (t in [0, dt))
+    mask_lo = t < dt
+    if np.any(mask_lo):
+        tt = t / dt_safe
+        blep_lo = np.where(mask_lo, 2.0 * tt - tt * tt - 1.0, 0.0)
+    # About to wrap (t in [1-dt, 1))
+    mask_hi = t > (1.0 - dt)
+    if np.any(mask_hi):
+        tt = (t - 1.0) / dt_safe
+        blep_hi = np.where(mask_hi, tt * tt + 2.0 * tt + 1.0, 0.0)
+    return blep_lo + blep_hi
+
+
+def generate_waveform(waveform: str, phases: np.ndarray, dt=None) -> np.ndarray:
+    """Generate a waveform from phase array. All outputs are roughly -1..+1.
+
+    dt (optional) is the per-sample phase increment as a fraction of cycle
+    (= freq / sample_rate). When provided, sawtooth and square use polyBLEP
+    for band-limited generation — eliminates aliasing buzz on bright voices.
+    Pass None for slow signals (LFOs, etc.) where aliasing doesn't matter."""
     if waveform == "square":
-        return np.sign(np.sin(phases))
+        sq = np.sign(np.sin(phases))
+        if dt is not None:
+            # Square has rising AND falling discontinuities; apply polyBLEP
+            # at the rising edge (t=0) and subtract at the falling edge (t=0.5).
+            t = (phases / TWO_PI) % 1.0
+            sq = sq + _poly_blep(t, dt) - _poly_blep((t + 0.5) % 1.0, dt)
+        return sq
     elif waveform == "saw":
-        return 2.0 * ((phases / TWO_PI) % 1.0) - 1.0
+        t = (phases / TWO_PI) % 1.0
+        naive = 2.0 * t - 1.0
+        if dt is not None:
+            return naive - _poly_blep(t, dt)
+        return naive
     elif waveform == "triangle":
         return 2.0 * np.abs(2.0 * ((phases / TWO_PI) % 1.0) - 1.0) - 1.0
     elif waveform == "saturated":
@@ -1293,6 +1335,11 @@ class SynthEngine:
         self.osc2_reverb_send = 1.0
         self.osc1_fx_bypass = False
         self.osc2_fx_bypass = False
+        # Per-OSC LFO receive routing (amp/pan targets only)
+        self.osc1_recv_lfo1 = True
+        self.osc1_recv_lfo2 = True
+        self.osc2_recv_lfo1 = True
+        self.osc2_recv_lfo2 = True
         self._rev_send_filter_l = BiquadLowpass(8000.0, 0.707, sample_rate)
         self._rev_send_filter_r = BiquadLowpass(8000.0, 0.707, sample_rate)
         self._rev_send_filter2_l = BiquadLowpass(8000.0, 0.707, sample_rate)
@@ -1436,6 +1483,17 @@ class SynthEngine:
         self._lfo_prev_phase = 0.0     # to detect wraps for S&H
         self._lfo_mod_a_last = 0.0     # previous block's end mod value (for per-sample ramp)
         self._lfo_mod_b_last = 0.0
+        # Smoothness — one-pole LP applied to the per-sample LFO mod ramp.
+        # Tames sideband content (AM artifacts) when the LFO runs fast on
+        # bright source material. 0 = no smoothing.
+        self.lfo_smooth = 0.0
+        self._lfo_smooth_a_state = 0.0
+        self._lfo_smooth_b_state = 0.0
+        # Polyphonic mode — when on AND the Faust osc_bank is active, each
+        # voice gets its own LFO phase (random at note_on) so amp mod across
+        # held notes is decorrelated, not lockstep. Pan/filter targets stay
+        # mono on this path; AMP target only.
+        self.lfo_poly = False
 
         # LFO 2 — independent second modulator. Can target filter/amp/pan same
         # as LFO 1; outputs stack additively at each target. Keeps its own
@@ -1457,6 +1515,10 @@ class SynthEngine:
         self._lfo2_sh_value_r = 0.0
         self._lfo2_mod_a_last = 0.0
         self._lfo2_mod_b_last = 0.0
+        self.lfo2_smooth = 0.0
+        self._lfo2_smooth_a_state = 0.0
+        self._lfo2_smooth_b_state = 0.0
+        self.lfo2_poly = False
 
         self.voices: list[Voice] = []
         self._age_counter = 0
@@ -1626,6 +1688,12 @@ class SynthEngine:
                 # init of osc1/osc2 phase lists at note_on. Prevents osc1+osc2
                 # fundamentals from summing coherently (~2× gain overshoot).
                 self._faust_osc_bank.randomize_phase(voice.faust_slot)
+                # Per-voice LFO phase: random at note_on so poly LFO mode
+                # gives each note a different starting position in the cycle.
+                # Cheap to always set (zone write); only audible when an LFO
+                # has poly+amp engaged.
+                if hasattr(self._faust_osc_bank, "randomize_lfo_phase"):
+                    self._faust_osc_bank.randomize_lfo_phase(voice.faust_slot)
         self.voices.append(voice)
 
     def note_off(self, note: int):
@@ -1701,6 +1769,10 @@ class SynthEngine:
         self._lfo_mod_b_last = 0.0
         self._lfo2_mod_a_last = 0.0
         self._lfo2_mod_b_last = 0.0
+        self._lfo_smooth_a_state = 0.0
+        self._lfo_smooth_b_state = 0.0
+        self._lfo2_smooth_a_state = 0.0
+        self._lfo2_smooth_b_state = 0.0
         # Drone phase accumulators (audible if user hits panic mid-drone-fade)
         for attr in ("_drone_root_phase", "_drone_fifth_phase", "_drone_third_phase",
                      "_drone_oct_phase", "_drone_broad_phase"):
@@ -2221,6 +2293,35 @@ class SynthEngine:
                 fifth_freq=self._drone_fifth_freq_cur,
                 gain_lvl=drone_lvl_combined,
             )
+            # Poly-LFO push: only the AMP target gets per-voice mod here.
+            # Pan/Filter targets continue to apply globally via Python below.
+            if hasattr(self._faust_osc_bank, "set_lfo_params"):
+                lfo1_active = (self.lfo_poly and self.lfo_enabled
+                               and self.lfo_target == "amp")
+                lfo2_active = (self.lfo2_poly and self.lfo2_enabled
+                               and self.lfo2_target == "amp")
+                # Effective rate (matches _advance_lfo logic) — Faust LFO
+                # phasor uses this Hz value directly.
+                def _eff_rate(prefix):
+                    rate_mode = getattr(self, prefix + "_rate_mode")
+                    if rate_mode == "FREE":
+                        return getattr(self, prefix + "_rate_hz")
+                    beats = self._DELAY_DIVISIONS.get(rate_mode, 1.0)
+                    cycle_sec = max(0.05, (60.0 / max(40.0, self.bpm)) * beats)
+                    cycle_sec /= max(0.1, getattr(self, prefix + "_rate_multiplier"))
+                    return 1.0 / cycle_sec
+                self._faust_osc_bank.set_lfo_params(
+                    1, active=lfo1_active,
+                    rate_hz=_eff_rate("lfo"),
+                    depth=min(self.lfo_depth * self.motion_mix, 0.7),
+                    shape=self.lfo_shape,
+                )
+                self._faust_osc_bank.set_lfo_params(
+                    2, active=lfo2_active,
+                    rate_hz=_eff_rate("lfo2"),
+                    depth=min(self.lfo2_depth * self.motion_mix, 0.7),
+                    shape=self.lfo2_shape,
+                )
 
         voice_idx = 0
         for voice in self.voices:
@@ -2278,7 +2379,10 @@ class SynthEngine:
                 if render_osc1:
                     uni_starts = np.asarray(voice.osc1_phases[:n_uni], dtype=np.float64)
                     ph_2d = uni_starts[:, None] + osc1_inc_per_u[:, None] * indices[None, :]
-                    wave_2d = generate_waveform(osc1_wf, ph_2d) * osc1_b
+                    # dt = per-sample phase increment as fraction of cycle, per
+                    # unison voice. Drives polyBLEP anti-aliasing for saw/square.
+                    dt_2d = (osc1_inc_per_u / TWO_PI)[:, None]
+                    wave_2d = generate_waveform(osc1_wf, ph_2d, dt=dt_2d) * osc1_b
                     osc1_l += (wave_2d * o1_gl_arr[:, None]).sum(axis=0)
                     osc1_r += (wave_2d * o1_gr_arr[:, None]).sum(axis=0)
                     for u in range(n_uni):
@@ -2287,7 +2391,8 @@ class SynthEngine:
                 if render_osc2:
                     uni_starts = np.asarray(voice.osc2_phases[:n_uni], dtype=np.float64)
                     ph_2d = uni_starts[:, None] + osc2_inc_per_u[:, None] * indices[None, :]
-                    wave_2d = generate_waveform(osc2_wf, ph_2d) * osc2_b
+                    dt_2d = (osc2_inc_per_u / TWO_PI)[:, None]
+                    wave_2d = generate_waveform(osc2_wf, ph_2d, dt=dt_2d) * osc2_b
                     osc2_l += (wave_2d * o2_gl_arr[:, None]).sum(axis=0)
                     osc2_r += (wave_2d * o2_gr_arr[:, None]).sum(axis=0)
                     for u in range(n_uni):
@@ -2441,13 +2546,25 @@ class SynthEngine:
         lfo2_a, lfo2_b = self._advance_lfo(n_samples, which=2)
 
         # Depth × motion_mix scales raw LFO into its modulation contribution.
-        lfo1_d = self.lfo_depth * self.motion_mix
-        lfo2_d = self.lfo2_depth * self.motion_mix
+        # Capped at 0.7 — beyond that, the per-voice amplitude swing is wide
+        # enough that AM sidebands push the master limiter on transients
+        # (audible as faint "buzz" clicks). The cap engages only when both
+        # depth AND motion fader are pushed near full; normal use lands well
+        # below it. Removes the need to baby the motion fader for live work.
+        _LFO_DEPTH_CAP = 0.7
+        lfo1_d = min(self.lfo_depth * self.motion_mix, _LFO_DEPTH_CAP)
+        lfo2_d = min(self.lfo2_depth * self.motion_mix, _LFO_DEPTH_CAP)
 
         filter_mod = 0.0
-        if self.lfo_enabled and self.lfo_target == "filter" and lfo1_d > 0.001:
+        # Filter is shared between OSCs, so route by "any OSC receives this
+        # LFO" — if neither OSC receives, the LFO has no business moving the
+        # shared cutoff. Per-OSC filter routing would need per-OSC filters
+        # (deferred — see project_next_work memo).
+        any_recv_lfo1 = self.osc1_recv_lfo1 or self.osc2_recv_lfo1
+        any_recv_lfo2 = self.osc1_recv_lfo2 or self.osc2_recv_lfo2
+        if any_recv_lfo1 and self.lfo_enabled and self.lfo_target == "filter" and lfo1_d > 0.001:
             filter_mod += lfo1_a * lfo1_d
-        if self.lfo2_enabled and self.lfo2_target == "filter" and lfo2_d > 0.001:
+        if any_recv_lfo2 and self.lfo2_enabled and self.lfo2_target == "filter" and lfo2_d > 0.001:
             filter_mod += lfo2_a * lfo2_d
 
         effective_cutoff = self._filter_cutoff_cur
@@ -2518,11 +2635,13 @@ class SynthEngine:
                 return
             inc1 = TWO_PI * self._drone_root_freq_cur / self.sample_rate
             ph1 = self._drone_root_phase + inc1 * indices
-            drone_low[:] += generate_waveform(self.osc1_waveform, ph1) * self._drone_gain * 0.30 * lvl
+            dt1 = self._drone_root_freq_cur / self.sample_rate
+            drone_low[:] += generate_waveform(self.osc1_waveform, ph1, dt=dt1) * self._drone_gain * 0.30 * lvl
             self._drone_root_phase = ph1[-1] % TWO_PI
             inc2 = TWO_PI * self._drone_fifth_freq_cur / self.sample_rate
             ph2 = self._drone_fifth_phase + inc2 * indices
-            drone_low[:] += generate_waveform(self.osc1_waveform, ph2) * self._drone_gain * 0.22 * lvl
+            dt2 = self._drone_fifth_freq_cur / self.sample_rate
+            drone_low[:] += generate_waveform(self.osc1_waveform, ph2, dt=dt2) * self._drone_gain * 0.22 * lvl
             self._drone_fifth_phase = ph2[-1] % TWO_PI
 
         if self.drone_enabled and self._drone_root_freq > 0:
@@ -2606,41 +2725,114 @@ class SynthEngine:
         #
         # PAN stays with the symmetric ±(d/2) swing on L (+) / R (−), which stacks
         # additively across multiple LFOs targeting pan.
-        amp_mul_l = None
-        amp_mul_r = None
-        pan_mod_l_add = None
-        pan_mod_r_add = None
-        if self.lfo_enabled and lfo1_d > 0.001:
-            r1a = np.linspace(self._lfo_mod_a_last, lfo1_a, n_samples, dtype=np.float64)
-            r1b = np.linspace(self._lfo_mod_b_last, lfo1_b, n_samples, dtype=np.float64)
-            if self.lfo_target == "amp":
-                makeup1 = 1.0 / max(1.0 - lfo1_d * 0.5, 0.1)
-                amp_mul_l = (1.0 - lfo1_d + lfo1_d * (1.0 + r1a) * 0.5) * makeup1
-                amp_mul_r = (1.0 - lfo1_d + lfo1_d * (1.0 + r1b) * 0.5) * makeup1
-            elif self.lfo_target == "pan":
-                pan_mod_l_add = r1a * lfo1_d * 0.5
-                pan_mod_r_add = -r1a * lfo1_d * 0.5
-        if self.lfo2_enabled and lfo2_d > 0.001:
-            r2a = np.linspace(self._lfo2_mod_a_last, lfo2_a, n_samples, dtype=np.float64)
-            r2b = np.linspace(self._lfo2_mod_b_last, lfo2_b, n_samples, dtype=np.float64)
-            if self.lfo2_target == "amp":
-                makeup2 = 1.0 / max(1.0 - lfo2_d * 0.5, 0.1)
-                g2_l = (1.0 - lfo2_d + lfo2_d * (1.0 + r2a) * 0.5) * makeup2
-                g2_r = (1.0 - lfo2_d + lfo2_d * (1.0 + r2b) * 0.5) * makeup2
-                # Compose two gates: both must be open for signal to pass
-                amp_mul_l = g2_l if amp_mul_l is None else amp_mul_l * g2_l
-                amp_mul_r = g2_r if amp_mul_r is None else amp_mul_r * g2_r
-            elif self.lfo2_target == "pan":
-                add_l = r2a * lfo2_d * 0.5
-                add_r = -r2a * lfo2_d * 0.5
-                pan_mod_l_add = add_l if pan_mod_l_add is None else pan_mod_l_add + add_l
-                pan_mod_r_add = add_r if pan_mod_r_add is None else pan_mod_r_add + add_r
-        if amp_mul_l is not None:
-            output_l *= amp_mul_l
-            output_r *= amp_mul_r
-        if pan_mod_l_add is not None:
-            output_l *= (1.0 + pan_mod_l_add)
-            output_r *= (1.0 + pan_mod_r_add)
+        #
+        # Per-OSC routing: the amp/pan mods can be selectively applied to each
+        # OSC via the *_recv_lfo* checkboxes. When all four receives are true
+        # (default), the math reduces to the legacy combined-bus mod. When
+        # routes differ, we split output_l/r by per-OSC pre-filter magnitude
+        # ratio (a cheap approximation), apply each OSC's mods independently,
+        # then sum back. Linear filter timbre means the ratio split is a tiny
+        # spectrum approximation but musically transparent.
+        def _amp_gate(r, d):
+            # Tremolo-style gate: peak naturally at 1.0, trough at 1-d.
+            # No makeup boost — depth controls how much the amp DIPS, never
+            # pumps above unity. Inherently safe against limiter overshoot
+            # regardless of depth or LFO stacking.
+            return 1.0 - d + d * (1.0 + r) * 0.5
+
+        def _smooth_one_pole(x, prev_state, smooth_amt):
+            """One-pole LP on per-sample LFO ramp. smooth_amt in [0,1] maps
+            to time constant 0.5ms..100ms. Returns (filtered, new_state).
+            scipy lfilter is fully vectorised so cost is negligible."""
+            if smooth_amt <= 0.001:
+                return x, x[-1]
+            tau_s = 0.0005 + 0.0995 * smooth_amt
+            a = math.exp(-1.0 / max(tau_s * self.sample_rate, 1.0))
+            b_coef = np.array([1.0 - a])
+            a_coef = np.array([1.0, -a])
+            zi = np.array([a * prev_state])
+            y, _zf = lfilter(b_coef, a_coef, x, zi=zi)
+            return y, float(y[-1])
+        def _osc_amp_pan(recv1, recv2):
+            amul_l = None; amul_r = None
+            pmod_l = None; pmod_r = None
+            # Suppress AMP mod here when Faust handles it per-voice (poly mode).
+            # Pan target always stays Python-side regardless of poly setting.
+            lfo1_amp_via_faust = use_faust and self.lfo_poly and self.lfo_target == "amp"
+            lfo2_amp_via_faust = use_faust and self.lfo2_poly and self.lfo2_target == "amp"
+            if recv1 and self.lfo_enabled and lfo1_d > 0.001:
+                r1a = np.linspace(self._lfo_mod_a_last, lfo1_a, n_samples, dtype=np.float64)
+                r1b = np.linspace(self._lfo_mod_b_last, lfo1_b, n_samples, dtype=np.float64)
+                r1a, self._lfo_smooth_a_state = _smooth_one_pole(r1a, self._lfo_smooth_a_state, self.lfo_smooth)
+                r1b, self._lfo_smooth_b_state = _smooth_one_pole(r1b, self._lfo_smooth_b_state, self.lfo_smooth)
+                if self.lfo_target == "amp" and not lfo1_amp_via_faust:
+                    amul_l = _amp_gate(r1a, lfo1_d)
+                    amul_r = _amp_gate(r1b, lfo1_d)
+                elif self.lfo_target == "pan":
+                    pmod_l = r1a * lfo1_d * 0.5
+                    pmod_r = -r1a * lfo1_d * 0.5
+            if recv2 and self.lfo2_enabled and lfo2_d > 0.001:
+                r2a = np.linspace(self._lfo2_mod_a_last, lfo2_a, n_samples, dtype=np.float64)
+                r2b = np.linspace(self._lfo2_mod_b_last, lfo2_b, n_samples, dtype=np.float64)
+                r2a, self._lfo2_smooth_a_state = _smooth_one_pole(r2a, self._lfo2_smooth_a_state, self.lfo2_smooth)
+                r2b, self._lfo2_smooth_b_state = _smooth_one_pole(r2b, self._lfo2_smooth_b_state, self.lfo2_smooth)
+                if self.lfo2_target == "amp" and not lfo2_amp_via_faust:
+                    g2l = _amp_gate(r2a, lfo2_d)
+                    g2r = _amp_gate(r2b, lfo2_d)
+                    amul_l = g2l if amul_l is None else amul_l * g2l
+                    amul_r = g2r if amul_r is None else amul_r * g2r
+                elif self.lfo2_target == "pan":
+                    add_l = r2a * lfo2_d * 0.5
+                    add_r = -r2a * lfo2_d * 0.5
+                    pmod_l = add_l if pmod_l is None else pmod_l + add_l
+                    pmod_r = add_r if pmod_r is None else pmod_r + add_r
+            # No cap needed — gate naturally stays in [1-d, 1.0].
+            return amul_l, amul_r, pmod_l, pmod_r
+
+        all_recv = (self.osc1_recv_lfo1 and self.osc1_recv_lfo2
+                    and self.osc2_recv_lfo1 and self.osc2_recv_lfo2)
+        if all_recv:
+            # Fast path — single combined mod, identical to legacy behaviour.
+            amp_mul_l, amp_mul_r, pan_mod_l_add, pan_mod_r_add = _osc_amp_pan(True, True)
+            if amp_mul_l is not None:
+                output_l *= amp_mul_l
+                output_r *= amp_mul_r
+            if pan_mod_l_add is not None:
+                output_l *= (1.0 + pan_mod_l_add)
+                output_r *= (1.0 + pan_mod_r_add)
+        else:
+            # Per-OSC split path. Ratio from pre-filter magnitudes; if both
+            # OSCs are silent, ratios fall back to 0.5/0.5 (mod has nothing
+            # to act on so the value is moot).
+            o1l = self._osc1_pre_l[:n_samples]
+            o1r = self._osc1_pre_r[:n_samples]
+            o2l = self._osc2_pre_l[:n_samples]
+            o2r = self._osc2_pre_r[:n_samples]
+            m1 = float(np.abs(o1l).sum() + np.abs(o1r).sum())
+            m2 = float(np.abs(o2l).sum() + np.abs(o2r).sum())
+            tot = m1 + m2
+            if tot > 1e-6:
+                ratio1 = m1 / tot
+                ratio2 = m2 / tot
+            else:
+                ratio1 = 0.5
+                ratio2 = 0.5
+            split1_l = output_l * ratio1
+            split1_r = output_r * ratio1
+            split2_l = output_l * ratio2
+            split2_r = output_r * ratio2
+            a1l, a1r, p1l, p1r = _osc_amp_pan(self.osc1_recv_lfo1, self.osc1_recv_lfo2)
+            a2l, a2r, p2l, p2r = _osc_amp_pan(self.osc2_recv_lfo1, self.osc2_recv_lfo2)
+            if a1l is not None:
+                split1_l *= a1l; split1_r *= a1r
+            if a2l is not None:
+                split2_l *= a2l; split2_r *= a2r
+            if p1l is not None:
+                split1_l *= (1.0 + p1l); split1_r *= (1.0 + p1r)
+            if p2l is not None:
+                split2_l *= (1.0 + p2l); split2_r *= (1.0 + p2r)
+            output_l[:] = split1_l + split2_l
+            output_r[:] = split1_r + split2_r
         # Remember this block's end values (normalized) for the next block's ramp start
         self._lfo_mod_a_last = lfo1_a
         self._lfo_mod_b_last = lfo1_b
@@ -2860,8 +3052,17 @@ class SynthEngine:
             fx_bus = np.empty((2, n_samples), dtype=np.float64)
             fx_bus[0] = stereo_out[0] - dry_bus[0]
             fx_bus[1] = stereo_out[1] - dry_bus[1]
+            # Pad bus headroom trim — applied to both dry and fx splits so
+            # the FX-bypass routing stays in sync with the unified path.
+            dry_bus *= 0.85
+            fx_bus *= 0.85
             return dry_bus, fx_bus
 
+        # Pad bus headroom trim — ~1.4dB to give the master limiter clearance
+        # against LFO peaks + dense FX summing + poly-LFO higher avg loudness.
+        # Calibrated against the post-system-volume-honoring chain (ART USB
+        # DI fix made everything ~6dB hotter than original tuning).
+        stereo_out *= 0.85
         return stereo_out  # (2, n)
 
     def update_params(self, params: dict):
@@ -2978,6 +3179,9 @@ class SynthEngine:
             self.osc1_fx_bypass = bool(params["osc1_fx_bypass"])
         if "osc2_fx_bypass" in params:
             self.osc2_fx_bypass = bool(params["osc2_fx_bypass"])
+        for _k in ("osc1_recv_lfo1", "osc1_recv_lfo2", "osc2_recv_lfo1", "osc2_recv_lfo2"):
+            if _k in params:
+                setattr(self, _k, bool(params[_k]))
         if "reverb_decay_seconds" in params:
             self.reverb.set_decay(float(params["reverb_decay_seconds"]))
         # Direct zone writes for expert reverb sliders — only applies when the
@@ -3041,6 +3245,10 @@ class SynthEngine:
             self.lfo_offset_ms = max(-500.0, min(500.0, float(params["lfo_offset_ms"])))
         if "lfo_haas_compensate" in params:
             self.lfo_haas_compensate = bool(params["lfo_haas_compensate"])
+        if "lfo_smooth" in params:
+            self.lfo_smooth = max(0.0, min(1.0, float(params["lfo_smooth"])))
+        if "lfo_poly" in params:
+            self.lfo_poly = bool(params["lfo_poly"])
         if "lfo_target" in params:
             t = str(params["lfo_target"])
             if t in ("filter", "amp", "pan"):
@@ -3075,6 +3283,10 @@ class SynthEngine:
             self.lfo2_offset_ms = max(-500.0, min(500.0, float(params["lfo2_offset_ms"])))
         if "lfo2_haas_compensate" in params:
             self.lfo2_haas_compensate = bool(params["lfo2_haas_compensate"])
+        if "lfo2_smooth" in params:
+            self.lfo2_smooth = max(0.0, min(1.0, float(params["lfo2_smooth"])))
+        if "lfo2_poly" in params:
+            self.lfo2_poly = bool(params["lfo2_poly"])
         if "lfo2_target" in params:
             t = str(params["lfo2_target"])
             if t in ("filter", "amp", "pan"):

@@ -13,7 +13,7 @@
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="logo.png">
     <!-- Keep style.css and script.js cache-bust versions in sync -->
-    <link rel="stylesheet" href="style.css?v=107">
+    <link rel="stylesheet" href="style.css?v=122">
 </head>
 <body>
     <div id="app">
@@ -168,6 +168,7 @@
                     <span class="macro-count">0</span>
                 </div>
                 <button id="macro-edit-btn" class="ctrl-btn">EDIT</button>
+                <button id="macro-clear-btn" class="ctrl-btn">CLEAR</button>
             </div>
             <div id="pad-player">
                 <div class="pad-keys">
@@ -433,6 +434,20 @@
                                         <span>FX Bypass</span>
                                     </label>
                                 </div>
+
+                                <div class="setting-section">LFO RECV</div>
+                                <div class="setting-row setting-row-checkbox">
+                                    <label class="setting-checkbox-label">
+                                        <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc1_recv_lfo1" checked>
+                                        <span>← LFO 1</span>
+                                    </label>
+                                </div>
+                                <div class="setting-row setting-row-checkbox">
+                                    <label class="setting-checkbox-label">
+                                        <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc1_recv_lfo2" checked>
+                                        <span>← LFO 2</span>
+                                    </label>
+                                </div>
                             </div>
 
                             <div class="osc-col">
@@ -516,6 +531,20 @@
                                     <label class="setting-checkbox-label">
                                         <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc2_fx_bypass">
                                         <span>FX Bypass</span>
+                                    </label>
+                                </div>
+
+                                <div class="setting-section">LFO RECV</div>
+                                <div class="setting-row setting-row-checkbox">
+                                    <label class="setting-checkbox-label">
+                                        <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc2_recv_lfo1" checked>
+                                        <span>← LFO 1</span>
+                                    </label>
+                                </div>
+                                <div class="setting-row setting-row-checkbox">
+                                    <label class="setting-checkbox-label">
+                                        <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc2_recv_lfo2" checked>
+                                        <span>← LFO 2</span>
                                     </label>
                                 </div>
                             </div>
@@ -753,6 +782,10 @@
                                         <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="lfo_invert">
                                         <span>Invert</span>
                                     </label>
+                                    <label class="setting-checkbox-label">
+                                        <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="lfo_poly">
+                                        <span>Poly</span>
+                                    </label>
                                 </div>
                                 <div class="setting-row">
                                     <span class="setting-label">Shape</span>
@@ -826,6 +859,12 @@
                                         <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="lfo_spread" min="0" max="100" value="0">
                                         <span class="setting-value">0%</span>
                                     </div>
+                                    <div class="knob knob-half">
+                                        <div class="knob-label">SMOOTH</div>
+                                        <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                        <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="lfo_smooth" min="0" max="100" value="0">
+                                        <span class="setting-value">0%</span>
+                                    </div>
                                 </div>
                             </div>
 
@@ -843,6 +882,10 @@
                                     <label class="setting-checkbox-label">
                                         <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="lfo2_invert">
                                         <span>Invert</span>
+                                    </label>
+                                    <label class="setting-checkbox-label">
+                                        <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="lfo2_poly">
+                                        <span>Poly</span>
                                     </label>
                                 </div>
                                 <div class="setting-row">
@@ -915,6 +958,12 @@
                                         <div class="knob-label">SPREAD</div>
                                         <div class="knob-dial"><div class="knob-indicator"></div></div>
                                         <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="lfo2_spread" min="0" max="100" value="0">
+                                        <span class="setting-value">0%</span>
+                                    </div>
+                                    <div class="knob knob-half">
+                                        <div class="knob-label">SMOOTH</div>
+                                        <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                        <input type="range" class="setting-slider knob-slider" data-section="synth_pad" data-param="lfo2_smooth" min="0" max="100" value="0">
                                         <span class="setting-value">0%</span>
                                     </div>
                                 </div>
@@ -1302,6 +1351,6 @@
 
     </div>
 
-    <script src="script.js?v=107"></script>
+    <script src="script.js?v=121"></script>
 </body>
 </html>

@@ -279,8 +279,9 @@
             midiLearnWaiting = true;
             updateMidiLearnUI();
         } else if (msg.type === "midi_learn_mapped") {
+            // Stay in learn mode for chained mappings. Only clear the
+            // "waiting for CC" state — tap a new fader/macro to map another.
             ccMap = msg.map || {};
-            midiLearnActive = false;
             midiLearnWaiting = false;
             updateMidiLearnUI();
             updateCCIndicators();
@@ -308,12 +309,22 @@
                 state.macros[msg.idx].assignments = msg.assignments || [];
             }
             applyMacroVisuals();
+        } else if (msg.type === "macro_cc_value") {
+            // CC mapped to macro arrived — drive macro just like a slot drag.
+            sendMacroValue(msg.idx, msg.value);
+            applyMacroVisuals();
+        } else if (msg.type === "macros_clear_all_ack") {
+            if (state && state.macros) {
+                (msg.macros || []).forEach(function (assigns, i) {
+                    if (state.macros[i]) state.macros[i].assignments = assigns || [];
+                });
+            }
+            applyMacroVisuals();
         } else if (msg.type === "macro_value_ack") {
             if (state && state.macros && state.macros[msg.idx]) {
                 state.macros[msg.idx].value = msg.value;
             }
-            // Refresh sliders because assigned params just changed on the backend
-            updateSettingsSliders();
+            // No slider refresh — UI fingers already moved the controls.
         } else if (msg.type === "reverb_types_available") {
             // Engine reports which reverb types have working .so backends.
             // Disable PLATE / DRONE in the selector if their .so is missing
@@ -662,6 +673,12 @@
 
     function onFaderStart(e, id) {
         if (midiLearnActive) return;  // suppress fader drag in learn mode
+        if (document.body.classList.contains("macro-learning")) {
+            e.preventDefault();
+            tryMacroAssignFromFader(faderTracks[id]);
+            flashMacroAssign(faderTracks[id]);
+            return;
+        }
         e.preventDefault();
         activeFader = id;
         const clientY = e.touches ? e.touches[0].clientY : e.clientY;
@@ -858,10 +875,46 @@
             slot.classList.toggle("learn", idx === macroLearnIdx);
         });
         document.body.classList.toggle("macro-learning", macroLearnIdx >= 0);
+        var learnColor = "";
+        macroSlots.forEach(function (slot) {
+            if (parseInt(slot.dataset.macro || "-1", 10) === macroLearnIdx) {
+                learnColor = slot.style.getPropertyValue("--macro-color").trim();
+            }
+        });
+        if (learnColor) document.body.style.setProperty("--macro-learn-color", learnColor);
+        else document.body.style.removeProperty("--macro-learn-color");
         if (macroLayerBtn) {
             macroLayerBtn.textContent = macroLayer === 0 ? "A" : "B";
             macroLayerBtn.classList.toggle("active", macroLayer > 0);
         }
+        applyMacroAssignedHighlight();
+    }
+
+    // Persistent glow on controls already assigned to the active learn macro.
+    // Lets user re-tap to toggle off without remembering what they assigned.
+    function applyMacroAssignedHighlight() {
+        document.querySelectorAll(".macro-assigned-now").forEach(function (el) {
+            el.classList.remove("macro-assigned-now");
+        });
+        if (macroLearnIdx < 0) return;
+        var macros = getMacros();
+        var m = macros[macroLearnIdx];
+        if (!m) return;
+        (m.assignments || []).forEach(function (a) {
+            var kind = a.kind || "param";
+            if (kind === "fader") {
+                var col = document.querySelector('.fader-column[data-id="' + a.fader_id + '"]');
+                if (!col) return;
+                var track = col.querySelector(".fader-track");
+                if (track) track.classList.add("macro-assigned-now");
+            } else {
+                var sel = '[data-section="' + a.section + '"][data-param="' + a.param + '"]';
+                var ctl = document.querySelector(sel);
+                if (!ctl) return;
+                var target = ctl.closest(".knob") || ctl.closest(".setting-row, .setting-row-checkbox");
+                if (target) target.classList.add("macro-assigned-now");
+            }
+        });
     }
 
     if (macroLayerBtn) {
@@ -872,39 +925,113 @@
         });
     }
 
-    // Macro EDIT button — toggles macros-editing mode where tapping the count
-    // badge on a macro clears that macro's assignments.
+    // EDIT gates entry into learn mode + reveals CLEAR. Outside edit mode,
+    // macro slots are drag-only — no accidental learn-mode entry.
     var macroEditBtn = document.getElementById("macro-edit-btn");
     var macroEditMode = false;
+    function setMacroEditMode(on) {
+        macroEditMode = on;
+        if (macroEditBtn) macroEditBtn.classList.toggle("active", on);
+        document.body.classList.toggle("macros-editing", on);
+        if (!on) {
+            if (macroLearnIdx >= 0) setMacroLearn(macroLearnIdx);
+            if (macroClearArmed) setMacroClearArmed(false);
+        }
+    }
     if (macroEditBtn) {
         macroEditBtn.addEventListener("click", function (e) {
             e.stopPropagation();
-            macroEditMode = !macroEditMode;
-            macroEditBtn.classList.toggle("active", macroEditMode);
-            document.body.classList.toggle("macros-editing", macroEditMode);
-            // Exit learn mode if entering edit mode (avoid conflicting state)
-            if (macroEditMode && macroLearnIdx >= 0) setMacroLearn(macroLearnIdx);
+            setMacroEditMode(!macroEditMode);
         });
     }
-    // Click on a count badge in editing mode → clear that macro
-    macroSlots.forEach(function (slot) {
-        var cnt = slot.querySelector(".macro-count");
-        if (!cnt) return;
-        cnt.addEventListener("click", function (e) {
-            if (!macroEditMode) return;
+
+    // CLEAR — only effective in edit mode. Arms next macro tap to wipe.
+    var macroClearBtn = document.getElementById("macro-clear-btn");
+    var macroClearArmed = false;
+    function setMacroClearArmed(on) {
+        macroClearArmed = on;
+        if (macroClearBtn) macroClearBtn.classList.toggle("active", on);
+        document.body.classList.toggle("macros-clearing", on);
+    }
+    if (macroClearBtn) {
+        macroClearBtn.addEventListener("click", function (e) {
             e.stopPropagation();
-            var idx = parseInt(slot.dataset.macro || "0", 10);
-            send({ type: "macro_assign", idx: idx, action: "clear" });
+            if (!macroEditMode) return;
+            if (!macroClearArmed && macroLearnIdx >= 0) setMacroLearn(macroLearnIdx);
+            setMacroClearArmed(!macroClearArmed);
         });
-    });
+    }
 
     function setMacroLearn(idx) {
         macroLearnIdx = (macroLearnIdx === idx) ? -1 : idx;
         applyMacroVisuals();
     }
 
+    // Macro = invisible fingers on the UI. Move every assigned control as if
+    // the user were dragging it; the controls' own input handlers do the
+    // normalization + sending + visual updates. Backend just records the
+    // macro value (for save/recall) — it does NOT apply settings directly.
     function sendMacroValue(idx, value) {
         send({ type: "macro_value", idx: idx, value: value });
+        if (state && state.macros && state.macros[idx]) {
+            state.macros[idx].value = value;
+        }
+        var macros = getMacros();
+        var m = macros[idx];
+        if (!m) return;
+        (m.assignments || []).forEach(function (a) {
+            applyMacroFinger(a, value);
+        });
+    }
+
+    function applyMacroFinger(a, value) {
+        var mn = parseFloat(a.min != null ? a.min : 0);
+        var mx = parseFloat(a.max != null ? a.max : 1);
+        var target;
+        if (a.is_bool) target = value >= 0.5;
+        else target = mn + value * (mx - mn);
+
+        if ((a.kind || "param") === "fader") {
+            applyFaderFinger(parseInt(a.fader_id, 10), parseInt(a.fader_alt || 0, 10), target);
+            return;
+        }
+        var sel = '[data-section="' + a.section + '"][data-param="' + a.param + '"]';
+        var ctl = document.querySelector(sel);
+        if (!ctl) return;
+        if (ctl.type === "checkbox") {
+            var newChecked = !!target;
+            if (ctl.checked !== newChecked) {
+                ctl.checked = newChecked;
+                ctl.dispatchEvent(new Event("change", { bubbles: true }));
+            }
+        } else if (ctl.tagName === "SELECT") {
+            // Skip — selects don't lerp meaningfully
+        } else {
+            ctl.value = target;
+            ctl.dispatchEvent(new Event("input", { bubbles: true }));
+            var knob = ctl.closest(".knob");
+            if (knob && typeof updateKnobRotation === "function") updateKnobRotation(knob);
+        }
+    }
+
+    function applyFaderFinger(id, alt, value) {
+        if (!isFinite(id)) return;
+        value = Math.max(0, Math.min(1, value));
+        if (id === 1) {
+            if (alt === 0) faderValues[1] = value;
+            else if (alt === 1) altFaderValues[1] = value;
+            else fader1CompValue = value;
+        } else if (id === 3) {
+            if (alt === 0) faderValues[3] = value;
+            else if (alt === 1) altFaderValues[3] = value;
+            else fader3MotionValue = value;
+        } else if (alt === 1) {
+            altFaderValues[id] = value;
+        } else {
+            faderValues[id] = value;
+        }
+        send({ type: "fader", id: id, value: value, alt: alt });
+        if (getFaderAlt(id) === alt) updateFader(id);
     }
 
     // Pointer drag on macro slot → value 0..1 based on horizontal position.
@@ -926,6 +1053,16 @@
         }
 
         slot.addEventListener("pointerdown", function (e) {
+            if (midiLearnActive) {
+                // MIDI learn: tap selects macro for next CC; suppress drag.
+                if (!midiLearnWaiting) {
+                    e.preventDefault();
+                    send({ type: "midi_learn_select", macro_idx: currentIdx() });
+                    midiLearnWaiting = true;
+                    updateMidiLearnUI();
+                }
+                return;
+            }
             dragging = true;
             moved = false;
             pressStart = Date.now();
@@ -947,39 +1084,29 @@
             dragging = false;
             slot.releasePointerCapture(e.pointerId);
             var held = Date.now() - pressStart;
-            if (!moved && held < 300) setMacroLearn(currentIdx());
+            if (moved || held >= 300) return;
+            // Tap-only branch — drag is allowed regardless of edit mode and
+            // sets the macro value via setValueFromPointer in pointermove.
+            if (!macroEditMode) return;  // outside edit mode, taps are no-ops
+            if (macroClearArmed) {
+                send({ type: "macro_assign", idx: currentIdx(), action: "clear" });
+                setMacroClearArmed(false);
+                return;
+            }
+            setMacroLearn(currentIdx());
         });
         slot.addEventListener("pointercancel", function () { dragging = false; });
     });
 
-    // Click-to-assign: while a macro is in learn mode, the CSS disables
-    // pointer-events on the inputs (so no accidental value change) and the
-    // click lands on .setting-row. This handler reads the child input's
-    // section/param + CURRENT VALUE (captured as the macro's max target).
-    document.addEventListener("click", function (e) {
+    // Macro assignment helpers. Param-targets (slider/checkbox/select/knob in
+    // the menu) capture CURRENT VALUE as the macro's max so moving the macro
+    // can only reduce the param from where you had it. Fader-targets store
+    // fader_id + alt so the backend routes through _handle_fader.
+    function sendParamAssign(ctl) {
         if (macroLearnIdx < 0) return;
-        var row = e.target.closest(".setting-row, .setting-row-checkbox");
-        if (!row) return;
-        // Find the first assignable control in this row.
-        var ctl = row.querySelector(
-            "[data-section][data-param].setting-slider, " +
-            "[data-section][data-param].setting-checkbox, " +
-            "[data-section][data-param].setting-select"
-        );
-        if (!ctl) return;
-        e.preventDefault();
-        e.stopPropagation();
-        var section = ctl.dataset.section;
-        var param = ctl.dataset.param;
         var is_bool = ctl.type === "checkbox";
         var mn = 0.0, mx = 1.0;
-        if (is_bool) {
-            // Boolean: macro >= 0.5 maps to true, < 0.5 to false
-            mn = 0.0; mx = 1.0;
-        } else {
-            // Relative mapping: macro 0 → slider.min; macro 1 → CURRENT value
-            // at capture time. Moving macro can only reduce param from its
-            // current setting, not push it beyond where you had it.
+        if (!is_bool) {
             mn = parseFloat(ctl.min || "0");
             mx = parseFloat(ctl.value);
             if (!isFinite(mx)) mx = parseFloat(ctl.max || "1");
@@ -988,12 +1115,67 @@
             type: "macro_assign",
             idx: macroLearnIdx,
             action: "toggle",
-            section: section,
-            param: param,
+            kind: "param",
+            section: ctl.dataset.section,
+            param: ctl.dataset.param,
             min: mn, max: mx,
             is_bool: is_bool,
         });
+    }
+    function tryMacroAssignFromRow(row) {
+        // Checkboxes and selects are intentionally excluded — only continuous
+        // controls (sliders + knobs) make sense as macro targets.
+        var ctl = row.querySelector("[data-section][data-param].setting-slider");
+        if (ctl) sendParamAssign(ctl);
+    }
+    function tryMacroAssignFromKnob(knob) {
+        var ctl = knob.querySelector("[data-section][data-param].setting-slider");
+        if (ctl) sendParamAssign(ctl);
+    }
+    function getFaderAlt(id) {
+        if (id === 1) return fader1AltState;
+        if (id === 3) return fader3AltState;
+        return altModes[id] ? 1 : 0;
+    }
+    function tryMacroAssignFromFader(track) {
+        if (macroLearnIdx < 0) return;
+        var col = track.closest(".fader-column");
+        if (!col) return;
+        var fid = parseInt(col.dataset.id, 10);
+        if (!isFinite(fid)) return;
+        send({
+            type: "macro_assign",
+            idx: macroLearnIdx,
+            action: "toggle",
+            kind: "fader",
+            fader_id: fid,
+            fader_alt: getFaderAlt(fid),
+            min: 0.0,
+            max: getMultiAltValue(fid),
+        });
+    }
+    // Document click capture-phase: handles menu rows. Pointer-events:none on
+    // the inputs lets the click land on .setting-row.
+    document.addEventListener("click", function (e) {
+        if (macroLearnIdx < 0) return;
+        var row = e.target.closest(".setting-row, .setting-row-checkbox");
+        if (!row) return;
+        e.preventDefault();
+        e.stopPropagation();
+        tryMacroAssignFromRow(row);
+        flashMacroAssign(row);
     }, true);
+
+    // Brief color flash on a control when assignment is sent — confirms the
+    // tap landed even if the change is otherwise invisible.
+    function flashMacroAssign(el) {
+        if (!el) return;
+        el.classList.remove("macro-assign-flash");
+        // Force reflow so re-adding the class restarts the animation
+        void el.offsetWidth;
+        el.classList.add("macro-assign-flash");
+        setTimeout(function () { el.classList.remove("macro-assign-flash"); }, 600);
+    }
 
     function setEditMode(on) {
         presetEditMode = on;
@@ -2012,6 +2194,7 @@
                 displayValue = sendValue.toFixed(2) + "Hz";
             } else if (param === "lfo_depth" || param === "lfo_spread" ||
                 param === "lfo2_depth" || param === "lfo2_spread" ||
+                param === "lfo_smooth" || param === "lfo2_smooth" ||
                 param === "delay_wet" || param === "delay_feedback") {
                 sendValue = value / 100;
                 displayValue = Math.round(value) + "%";
@@ -2095,10 +2278,12 @@
             if (param === "lfo_rate_hz") lfoTwin = "lfo2_rate_hz";
             else if (param === "lfo_depth") lfoTwin = "lfo2_depth";
             else if (param === "lfo_spread") lfoTwin = "lfo2_spread";
+            else if (param === "lfo_smooth") lfoTwin = "lfo2_smooth";
             else if (param === "lfo_offset_ms") lfoTwin = "lfo2_offset_ms";
             else if (param === "lfo2_rate_hz") lfoTwin = "lfo_rate_hz";
             else if (param === "lfo2_depth") lfoTwin = "lfo_depth";
             else if (param === "lfo2_spread") lfoTwin = "lfo_spread";
+            else if (param === "lfo2_smooth") lfoTwin = "lfo_smooth";
             else if (param === "lfo2_offset_ms") lfoTwin = "lfo_offset_ms";
             if (lfoLink && lfoTwin) {
                 var lfoTwinSlider = document.querySelector('.setting-slider[data-param="' + lfoTwin + '"]');
@@ -2226,6 +2411,7 @@
             ["lfo_rate_hz", "lfo2_rate_hz"],
             ["lfo_depth", "lfo2_depth"],
             ["lfo_spread", "lfo2_spread"],
+            ["lfo_smooth", "lfo2_smooth"],
             ["lfo_offset_ms", "lfo2_offset_ms"],
         ];
         sliderPairs.forEach(function (pair) {
@@ -2255,6 +2441,7 @@
             ["lfo_key_sync", "lfo2_key_sync"],
             ["lfo_invert", "lfo2_invert"],
             ["lfo_haas_compensate", "lfo2_haas_compensate"],
+            ["lfo_poly", "lfo2_poly"],
         ];
         cbPairs.forEach(function (pair) {
             var src = document.querySelector('.setting-checkbox[data-param="' + pair[0] + '"]');
@@ -2291,7 +2478,11 @@
         });
 
         // Menu checkboxes
-        var cbPairs = [["osc1_fx_bypass", "osc2_fx_bypass"]];
+        var cbPairs = [
+            ["osc1_fx_bypass", "osc2_fx_bypass"],
+            ["osc1_recv_lfo1", "osc2_recv_lfo1"],
+            ["osc1_recv_lfo2", "osc2_recv_lfo2"],
+        ];
         cbPairs.forEach(function (pair) {
             var src = document.querySelector('.setting-checkbox[data-param="' + pair[0] + '"]');
             var dst = document.querySelector('.setting-checkbox[data-param="' + pair[1] + '"]');
@@ -2342,12 +2533,20 @@
                 linkOscLevels = checkbox.checked;
                 if (linkOscLevels) snapMirrorOsc2ToOsc1();
             }
-            if (linkOscLevels && (p === "osc1_fx_bypass" || p === "osc2_fx_bypass")) {
-                var twin = p === "osc1_fx_bypass" ? "osc2_fx_bypass" : "osc1_fx_bypass";
-                var twinCb = document.querySelector('.setting-checkbox[data-param="' + twin + '"]');
-                if (twinCb && twinCb.checked !== checkbox.checked) {
-                    twinCb.checked = checkbox.checked;
-                    send({ type: "setting", section: "synth_pad", param: twin, value: checkbox.checked });
+            if (linkOscLevels) {
+                var oscMirror = null;
+                if (p === "osc1_fx_bypass") oscMirror = "osc2_fx_bypass";
+                else if (p === "osc2_fx_bypass") oscMirror = "osc1_fx_bypass";
+                else if (p === "osc1_recv_lfo1") oscMirror = "osc2_recv_lfo1";
+                else if (p === "osc2_recv_lfo1") oscMirror = "osc1_recv_lfo1";
+                else if (p === "osc1_recv_lfo2") oscMirror = "osc2_recv_lfo2";
+                else if (p === "osc2_recv_lfo2") oscMirror = "osc1_recv_lfo2";
+                if (oscMirror) {
+                    var twinCb = document.querySelector('.setting-checkbox[data-param="' + oscMirror + '"]');
+                    if (twinCb && twinCb.checked !== checkbox.checked) {
+                        twinCb.checked = checkbox.checked;
+                        send({ type: "setting", section: "synth_pad", param: oscMirror, value: checkbox.checked });
+                    }
                 }
             }
 
@@ -2361,10 +2560,12 @@
             else if (p === "lfo_key_sync") lfoCbTwin = "lfo2_key_sync";
             else if (p === "lfo_invert") lfoCbTwin = "lfo2_invert";
             else if (p === "lfo_haas_compensate") lfoCbTwin = "lfo2_haas_compensate";
+            else if (p === "lfo_poly") lfoCbTwin = "lfo2_poly";
             else if (p === "lfo2_enabled") lfoCbTwin = "lfo_enabled";
             else if (p === "lfo2_key_sync") lfoCbTwin = "lfo_key_sync";
             else if (p === "lfo2_invert") lfoCbTwin = "lfo_invert";
             else if (p === "lfo2_haas_compensate") lfoCbTwin = "lfo_haas_compensate";
+            else if (p === "lfo2_poly") lfoCbTwin = "lfo_poly";
             if (lfoLink && lfoCbTwin) {
                 var lfoTwinCb = document.querySelector('.setting-checkbox[data-param="' + lfoCbTwin + '"]');
                 if (lfoTwinCb && lfoTwinCb.checked !== checkbox.checked) {
@@ -2532,6 +2733,7 @@
             } else if (param === "lfo_rate_hz" || param === "lfo_depth" ||
                 param === "lfo_spread" || param === "lfo2_rate_hz" ||
                 param === "lfo2_depth" || param === "lfo2_spread" ||
+                param === "lfo_smooth" || param === "lfo2_smooth" ||
                 param === "delay_wet" || param === "delay_feedback") {
                 slider.value = value * 100;
             } else if (param === "lfo_offset_ms" || param === "lfo2_offset_ms") {
@@ -2831,6 +3033,13 @@
         var startY = 0, startValue = 0, dragging = false;
 
         knob.addEventListener("pointerdown", function (e) {
+            if (document.body.classList.contains("macro-learning")) {
+                e.preventDefault();
+                e.stopPropagation();
+                tryMacroAssignFromKnob(knob);
+                flashMacroAssign(knob);
+                return;
+            }
             e.preventDefault();
             dragging = true;
             startY = e.clientY;
@@ -2883,32 +3092,37 @@
     function updateCCIndicators() {
         document.querySelectorAll(".cc-indicator").forEach(function (el) { el.remove(); });
         if (!midiLearnActive) return;  // only show in learn mode
+        function buildDot(cc) {
+            var dot = document.createElement("div");
+            dot.className = "cc-indicator";
+            var span = document.createElement("span");
+            span.textContent = "CC" + cc;
+            dot.appendChild(span);
+            var xBtn = document.createElement("button");
+            xBtn.className = "cc-delete";
+            xBtn.textContent = "X";
+            xBtn.dataset.cc = cc;
+            function deleteCC(e) {
+                e.stopPropagation();
+                e.preventDefault();
+                send({ type: "midi_learn_clear", cc: e.currentTarget.dataset.cc });
+            }
+            xBtn.addEventListener("click", deleteCC);
+            xBtn.addEventListener("touchend", deleteCC);
+            dot.appendChild(xBtn);
+            return dot;
+        }
         for (var cc in ccMap) {
             var target = ccMap[cc];
+            if (target.kind === "macro") {
+                var slot = document.querySelector('.macro-slot[data-macro="' + target.macro_idx + '"]');
+                if (slot) slot.appendChild(buildDot(cc));
+                continue;
+            }
             var col = faderColumns[target.id];
             if (col) {
-                var dot = document.createElement("div");
-                dot.className = "cc-indicator";
-                var span = document.createElement("span");
-                span.textContent = "CC" + cc;
-                dot.appendChild(span);
-                var xBtn = document.createElement("button");
-                xBtn.className = "cc-delete";
-                xBtn.textContent = "X";
-                xBtn.dataset.cc = cc;
-                function deleteCC(e) {
-                    e.stopPropagation();
-                    e.preventDefault();
-                    var ccNum = e.currentTarget.dataset.cc;
-                    send({ type: "midi_learn_clear", cc: ccNum });
-                }
-                xBtn.addEventListener("click", deleteCC);
-                xBtn.addEventListener("touchend", deleteCC);
-                dot.appendChild(xBtn);
                 var label = col.querySelector(".fader-label");
-                if (label) {
-                    label.parentNode.insertBefore(dot, label.nextSibling);
-                }
+                if (label) label.parentNode.insertBefore(buildDot(cc), label.nextSibling);
             }
         }
     }
@@ -2928,18 +3142,12 @@
         }
     });
 
-    // In learn mode, tapping a fader selects it for new CC mapping
+    // In learn mode, tapping a fader selects it for new CC mapping.
     // (use the X button on a CC label to delete a mapping)
-    function getFaderAlt(id) {
-        if (id === 1) return fader1AltState;
-        return altModes[id] ? 1 : 0;
-    }
-
     faderTracks.forEach(function (track, i) {
         track.addEventListener("click", function () {
             if (!midiLearnActive || midiLearnWaiting) return;
-            var alt = getFaderAlt(i);
-            send({ type: "midi_learn_select", id: i, alt: alt });
+            send({ type: "midi_learn_select", id: i, alt: getFaderAlt(i) });
             midiLearnWaiting = true;
             updateMidiLearnUI();
         });

@@ -889,9 +889,10 @@ class StaveSynth:
     # ═══ Macros (performance morph knobs) ═══
 
     def _handle_macro_value(self, msg: dict) -> dict:
-        """Set a macro's value and apply all of its assigned parameters. Each
-        assignment lerps its target param from min → max across the macro
-        value 0 → 1."""
+        """Record macro value. Application is done by the UI ("invisible
+        fingers" model) via real fader/setting messages, so the controls'
+        normalization, displays, and twin-mirror logic all behave identically
+        to a human moving them."""
         idx = int(msg.get("idx", 0))
         value = float(msg.get("value", 0.0))
         value = max(0.0, min(1.0, value))
@@ -899,53 +900,69 @@ class StaveSynth:
         if idx < 0 or idx >= len(macros):
             return {"type": "error", "message": f"Invalid macro idx {idx}"}
         macros[idx]["value"] = value
-        for a in macros[idx].get("assignments", []):
-            section = a.get("section")
-            param = a.get("param")
-            mn = float(a.get("min", 0.0))
-            mx = float(a.get("max", 1.0))
-            if a.get("is_bool"):
-                target_val = value >= 0.5
-            else:
-                target_val = mn + value * (mx - mn)
-            try:
-                self._handle_setting({"section": section, "param": param, "value": target_val})
-            except Exception as e:
-                logger.warning("Macro %d failed to apply %s.%s: %s", idx, section, param, e)
         return {"type": "macro_value_ack", "idx": idx, "value": value}
 
     def _handle_macro_assign(self, msg: dict) -> dict:
         """Add, remove, toggle, or clear a macro's assignments.
         action in {"toggle", "add", "remove", "clear"}."""
-        idx = int(msg.get("idx", 0))
         action = str(msg.get("action", "toggle"))
         macros = self.state.get("macros", [])
+        if action == "clear_all":
+            for m in macros:
+                m["assignments"] = []
+            return {
+                "type": "macros_clear_all_ack",
+                "macros": [m["assignments"] for m in macros],
+            }
+        idx = int(msg.get("idx", 0))
         if idx < 0 or idx >= len(macros):
             return {"type": "error", "message": f"Invalid macro idx {idx}"}
         if action == "clear":
             macros[idx]["assignments"] = []
         else:
-            section = str(msg.get("section", ""))
-            param = str(msg.get("param", ""))
-            if not section or not param:
-                return {"type": "error", "message": "assign needs section + param"}
+            kind = str(msg.get("kind", "param"))
             mn = float(msg.get("min", 0.0))
             mx = float(msg.get("max", 1.0))
             is_bool = bool(msg.get("is_bool", False))
             assigns = macros[idx]["assignments"]
-            existing = next(
-                (a for a in assigns if a.get("section") == section and a.get("param") == param),
-                None,
-            )
+            if kind == "fader":
+                fid = int(msg.get("fader_id", -1))
+                falt = int(msg.get("fader_alt", 0))
+                if fid < 0:
+                    return {"type": "error", "message": "fader assign needs fader_id"}
+                existing = next(
+                    (a for a in assigns
+                     if a.get("kind") == "fader"
+                     and a.get("fader_id") == fid
+                     and a.get("fader_alt") == falt),
+                    None,
+                )
+                new_entry = {
+                    "kind": "fader", "fader_id": fid, "fader_alt": falt,
+                    "min": mn, "max": mx, "is_bool": False,
+                }
+            else:
+                section = str(msg.get("section", ""))
+                param = str(msg.get("param", ""))
+                if not section or not param:
+                    return {"type": "error", "message": "assign needs section + param"}
+                existing = next(
+                    (a for a in assigns
+                     if a.get("kind", "param") == "param"
+                     and a.get("section") == section
+                     and a.get("param") == param),
+                    None,
+                )
+                new_entry = {
+                    "kind": "param", "section": section, "param": param,
+                    "min": mn, "max": mx, "is_bool": is_bool,
+                }
             if action == "remove" or (action == "toggle" and existing):
                 if existing:
                     assigns.remove(existing)
             else:  # add or toggle-add
                 if not existing:
-                    assigns.append({
-                        "section": section, "param": param,
-                        "min": mn, "max": mx, "is_bool": is_bool,
-                    })
+                    assigns.append(new_entry)
         return {
             "type": "macro_assign_ack",
             "idx": idx,
@@ -1373,11 +1390,16 @@ class StaveSynth:
         return {"type": "midi_learn_active", "active": False}
 
     def _handle_midi_learn_select(self, msg: dict) -> dict:
-        """User tapped a fader in learn mode — now waiting for CC input."""
-        fader_id = msg.get("id", 0)
-        alt = msg.get("alt", 0)
+        """User tapped a fader OR macro slot in learn mode — waiting for CC."""
         with self._midi_learn_lock:
-            self._midi_learn_target = {"id": fader_id, "alt": alt}
+            if "macro_idx" in msg:
+                idx = int(msg.get("macro_idx", 0))
+                self._midi_learn_target = {"kind": "macro", "macro_idx": idx}
+                logger.info("MIDI learn: waiting for CC → macro %d", idx)
+                return {"type": "midi_learn_waiting", "macro_idx": idx}
+            fader_id = msg.get("id", 0)
+            alt = msg.get("alt", 0)
+            self._midi_learn_target = {"kind": "fader", "id": fader_id, "alt": alt}
         logger.info("MIDI learn: waiting for CC → fader %d (alt=%s)", fader_id, alt)
         return {"type": "midi_learn_waiting", "id": fader_id, "alt": alt}
 
@@ -1396,14 +1418,18 @@ class StaveSynth:
         """Called from JACK engine MIDI thread on CC messages."""
         with self._midi_learn_lock:
             if self._midi_learn_active and self._midi_learn_target:
-                # Learn mode: map this CC to the selected fader
+                # Learn mode: map this CC to the selected target (fader or macro)
                 cc_key = str(cc_num)
-                self._cc_map[cc_key] = self._midi_learn_target.copy()
+                target = self._midi_learn_target.copy()
+                self._cc_map[cc_key] = target
                 self._save_cc_map()
-                logger.info("Mapped CC %d → fader %d alt=%s",
-                            cc_num, self._midi_learn_target["id"],
-                            self._midi_learn_target["alt"])
-                self._midi_learn_active = False
+                if target.get("kind") == "macro":
+                    logger.info("Mapped CC %d → macro %s", cc_num, target.get("macro_idx"))
+                else:
+                    logger.info("Mapped CC %d → fader %s alt=%s",
+                                cc_num, target.get("id"), target.get("alt"))
+                # Stay in learn mode so user can map multiple CCs without
+                # re-tapping MIDI. Only clear target so next tap selects fresh.
                 self._midi_learn_target = None
                 if self.ws_server:
                     self.ws_server.broadcast_sync({
@@ -1413,12 +1439,23 @@ class StaveSynth:
                     })
                 return
 
-            # Normal mode: apply CC value to mapped fader
+            # Normal mode: apply CC value to mapped fader OR macro
             cc_key = str(cc_num)
             target = self._cc_map.get(cc_key)
 
         if target:
             value = cc_val / 127.0
+            kind = target.get("kind", "fader")  # legacy maps lack kind → fader
+            if kind == "macro":
+                # Macros are UI-driven (invisible fingers); broadcast value and
+                # the frontend simulates control moves.
+                if self.ws_server:
+                    self.ws_server.broadcast_sync({
+                        "type": "macro_cc_value",
+                        "idx": int(target["macro_idx"]),
+                        "value": value,
+                    })
+                return
             fader_msg = {
                 "type": "fader",
                 "id": target["id"],

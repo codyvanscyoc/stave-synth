@@ -64,6 +64,73 @@ osc2_pan   = hslider("osc2_pan",      0, -1, 1, 0.001);
 shimmer_mult   = hslider("shimmer_mult", 2.0, 1.0, 4.0, 0.001);
 shimmer_enable = hslider("shimmer_enable", 0.0, 0.0, 1.0, 1.0);
 
+// ═══════════════════════════════════════════════════════════════════════
+// Polyphonic LFOs — per-voice phase, shared rate/depth/shape/target.
+// AMP target only on this Faust path (per-voice gate scaling). Pan/Filter
+// continue to apply globally via the Python LFO mod path. Python writes
+// `lfoN_active` = 1 when poly mode is on for that LFO so we know whether
+// to engage per-voice mod here OR let Python handle it as a global mod.
+//
+// Per-voice phase offset (`lfoN_phase_v%i`) is written by Python on note_on
+// when poly mode is on — random in [0, 1) — so each voice's LFO sits at
+// a different point in the cycle. That's the whole sonic point of poly:
+// mod across notes is decorrelated, not lockstep.
+// ═══════════════════════════════════════════════════════════════════════
+lfo1_active = hslider("lfo1_active",  0,    0,    1,     1);
+lfo1_rate   = hslider("lfo1_rate",    1.0,  0.05, 20.0,  0.001) : si.smoo;
+lfo1_depth  = hslider("lfo1_depth",   0.0,  0.0,  1.0,   0.001) : si.smoo;
+lfo1_shape  = hslider("lfo1_shape",   0,    0,    6,     1);
+lfo2_active = hslider("lfo2_active",  0,    0,    1,     1);
+lfo2_rate   = hslider("lfo2_rate",    1.0,  0.05, 20.0,  0.001) : si.smoo;
+lfo2_depth  = hslider("lfo2_depth",   0.0,  0.0,  1.0,   0.001) : si.smoo;
+lfo2_shape  = hslider("lfo2_shape",   0,    0,    6,     1);
+voice_lfo1_phase_off(i) = hslider("lfo1_phase_v%i", 0, 0, 1, 0.001);
+voice_lfo2_phase_off(i) = hslider("lfo2_phase_v%i", 0, 0, 1, 0.001);
+
+// LFO shape eval — output bipolar [-1, +1] (matches Python lfoShapeEval).
+// Shapes: 0=sine, 1=triangle, 2=square, 3=saw, 4=ramp, 5=peak, 6=sh.
+// S&H is approximated deterministically (matches Python's static-preview
+// formula); good enough on a per-voice mod where strict randomness is
+// unimportant.
+lfo_shape_eval(shape, ph01) =
+    select7(int(shape),
+        sin(2.0 * ma.PI * ph01),                                  // 0 sine
+        4.0 * abs(ph01 - 0.5) - 1.0,                              // 1 triangle
+        select2(ph01 < 0.5, -1.0, 1.0),                           // 2 square
+        2.0 * ph01 - 1.0,                                         // 3 saw ↗
+        1.0 - 2.0 * ph01,                                         // 4 ramp ↘
+        select2(ph01 < 0.2,                                       // 5 peak
+            (1.0 - (ph01 - 0.2) / 0.8) * 2.0 - 1.0,
+            (ph01 / 0.2) * 2.0 - 1.0),
+        sin(ph01 * 37.9) * cos(ph01 * 23.3))                      // 6 s&h
+with {
+    select7(i, a, b, c, d, e, f, g) =
+        select2(i < 1, select2(i < 2, select2(i < 3, select2(i < 4,
+            select2(i < 5, select2(i < 6, g, f), e), d), c), b), a);
+};
+
+// Per-voice running phase, gated by `active` so when poly is off the
+// phasor ticks at zero rate (frozen, no CPU lost on fixed-cost evals).
+voice_lfo1_phase(i) = (+(lfo1_rate * lfo1_active / SR) : ma.frac) ~ _
+                    : +(voice_lfo1_phase_off(i)) : ma.frac;
+voice_lfo2_phase(i) = (+(lfo2_rate * lfo2_active / SR) : ma.frac) ~ _
+                    : +(voice_lfo2_phase_off(i)) : ma.frac;
+
+// Tremolo-style amp gate (matches Python _amp_gate post-makeup-removal):
+// peak naturally at 1.0, trough at 1-d. Inherently safe against limiter
+// overshoot. `active` gates the depth so an "off" LFO contributes unity.
+voice_lfo_amp_gate(lfo_val, depth, active) =
+    1.0 - eff_d + eff_d * (1.0 + lfo_val) * 0.5
+with {
+    eff_d = depth * active;
+};
+
+voice_amp_mod(i) =
+    voice_lfo_amp_gate(lfo_shape_eval(lfo1_shape, voice_lfo1_phase(i)),
+                       lfo1_depth, lfo1_active) *
+    voice_lfo_amp_gate(lfo_shape_eval(lfo2_shape, voice_lfo2_phase(i)),
+                       lfo2_depth, lfo2_active);
+
 // Chord drone — two sines (root + fifth) one octave below the played note,
 // using osc1's waveform shape. Python writes the already-smoothed freqs
 // + the combined `gain × level × fade_scale` every block.
@@ -79,13 +146,29 @@ drone_gain_lvl   = hslider("drone_gain_lvl",   0, 0, 2,     0.001) : si.smoo;
 // unbounded phase grows by ~inc/sample, eating mantissa bits over time
 // → audible pitch drift after a few seconds of sustain.
 // ═══════════════════════════════════════════════════════════════════════
-wave_gen(wf, ph01) = select5(int(wf), w_sine, w_square, w_saw, w_tri, w_sat)
+// PolyBLEP correction at phasor wraps. dt = freq/SR (per-sample phase
+// increment as fraction of cycle). Adds a 2-sample polynomial smoothing
+// to the discontinuity so the saw/square loses its above-Nyquist content.
+// Cheap (~6 ops per sample) and dramatically cleaner than naive math.
+poly_blep(t, dt) = lo + hi
+with {
+    tt_lo = t / max(dt, 1e-9);
+    lo = ba.if(t < dt, 2.0 * tt_lo - tt_lo * tt_lo - 1.0, 0.0);
+    tt_hi = (t - 1.0) / max(dt, 1e-9);
+    hi = ba.if(t > (1.0 - dt), tt_hi * tt_hi + 2.0 * tt_hi + 1.0, 0.0);
+};
+
+wave_gen(wf, ph01, dt) = select5(int(wf), w_sine, w_square, w_saw, w_tri, w_sat)
 with {
     theta     = TWO_PI * ph01;         // 0..2π for math-based waves
     w_sine    = sin(theta);
-    w_square  = ma.signum(w_sine);
-    w_saw     = 2.0 * ph01 - 1.0;
-    w_tri     = 2.0 * abs(w_saw) - 1.0;
+    // Square has rising AND falling discontinuities — polyBLEP at both.
+    w_square  = ma.signum(w_sine) + poly_blep(ph01, dt) - poly_blep(ma.frac(ph01 + 0.5), dt);
+    // Saw discontinuity at the wrap — single polyBLEP.
+    w_saw     = (2.0 * ph01 - 1.0) - poly_blep(ph01, dt);
+    // Triangle is naturally band-limited (continuous waveform, only the
+    // derivative is discontinuous); naive math is fine.
+    w_tri     = 2.0 * abs(2.0 * ph01 - 1.0) - 1.0;
     w_sat     = ma.tanh(4.0 * w_sine);
     select5(i, a, b, c, d, e) =
         select2(i < 1, select2(i < 2,
@@ -135,7 +218,7 @@ with {
     freq_per_sample = voice_freq(i) * oct_mult * uni_det_mult(u) / SR;
     phasor01        = (+(freq_per_sample) : ma.frac) ~ _;
     phased          = ma.frac(phasor01 + phase_off + uni_phase_seed(u));
-    wave            = wave_gen(wf, phased) * blend;
+    wave            = wave_gen(wf, phased, freq_per_sample) * blend;
 };
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -171,8 +254,12 @@ one_voice(i) =
     (one_osc_phased(i, osc1_wf, osc1_oct, osc1_blend, osc1_pan, voice_osc1_phase_off(i)) : scale_osc1),
     (one_osc_phased(i, osc2_wf, osc2_oct, osc2_blend, osc2_pan, voice_osc2_phase_off(i)) : scale_osc2)
 with {
-    g_osc1 = voice_gate_osc1(i) * UNI_SCALE;
-    g_osc2 = voice_gate_osc2(i) * UNI_SCALE;
+    // Per-voice LFO amp mod multiplies the gate. When neither LFO is in
+    // poly+amp mode, voice_amp_mod = 1.0 (unity, no effect) since both
+    // active flags are 0 → eff_depth = 0 → gate = 1.0 always.
+    amp_mod = voice_amp_mod(i);
+    g_osc1 = voice_gate_osc1(i) * UNI_SCALE * amp_mod;
+    g_osc2 = voice_gate_osc2(i) * UNI_SCALE * amp_mod;
     scale_osc1 = *(g_osc1), *(g_osc1);
     scale_osc2 = *(g_osc2), *(g_osc2);
 };
@@ -201,7 +288,7 @@ shimmer_bank = par(i, NVOICES, shimmer_voice(i)) :> _;
 // Chord drone — two wrapping-phasor oscs using osc1's waveform shape.
 // Separate `drone_osc` calls instantiate independent phasor state.
 // ═══════════════════════════════════════════════════════════════════════
-drone_osc(freq) = wave_gen(osc1_wf, phasor01)
+drone_osc(freq) = wave_gen(osc1_wf, phasor01, freq / SR)
 with {
     phasor01 = (+(freq / SR) : ma.frac) ~ _;
 };

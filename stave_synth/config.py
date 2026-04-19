@@ -102,6 +102,13 @@ DEFAULT_STATE = {
         "osc2_reverb_send": 1.0,
         "osc1_fx_bypass": False,
         "osc2_fx_bypass": False,
+        # Per-OSC LFO receive routing. Default true = both OSCs receive both
+        # LFOs (legacy behaviour). Affects amp/pan targets only — filter LFO
+        # always applies to both OSCs (shared filter constraint).
+        "osc1_recv_lfo1": True,
+        "osc1_recv_lfo2": True,
+        "osc2_recv_lfo1": True,
+        "osc2_recv_lfo2": True,
         "reverb_dry_wet": 0.45,
         "reverb_wet_gain": 1.0,
         "reverb_decay_seconds": 6.0,
@@ -126,6 +133,8 @@ DEFAULT_STATE = {
         "lfo_invert": False,
         "lfo_offset_ms": 0.0,
         "lfo_haas_compensate": False,
+        "lfo_smooth": 0.0,  # 0..1 — one-pole LP on LFO mod, kills sidebands at high rate
+        "lfo_poly": False,  # per-voice phase via Faust (AMP target only)
         "lfo2_enabled": False,
         "lfo2_rate_hz": 1.0,
         "lfo2_rate_mode": "FREE",
@@ -138,6 +147,8 @@ DEFAULT_STATE = {
         "lfo2_invert": False,
         "lfo2_offset_ms": 0.0,
         "lfo2_haas_compensate": False,
+        "lfo2_smooth": 0.0,
+        "lfo2_poly": False,
         "lfo_link": False,
         "delay_enabled": False,
         "delay_time_mode": "1/4",

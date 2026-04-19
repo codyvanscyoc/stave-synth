@@ -101,6 +101,8 @@ class FaustOscBank:
         self._gate_osc2_zones = [self._zones[f"gate_osc2_v{i}"] for i in range(NVOICES)]
         self._osc1_phase_zones = [self._zones[f"osc1_phase_v{i}"] for i in range(NVOICES)]
         self._osc2_phase_zones = [self._zones[f"osc2_phase_v{i}"] for i in range(NVOICES)]
+        self._lfo1_phase_zones = [self._zones[f"lfo1_phase_v{i}"] for i in range(NVOICES)]
+        self._lfo2_phase_zones = [self._zones[f"lfo2_phase_v{i}"] for i in range(NVOICES)]
 
         # Scratch — Faust emits 6 channels: osc1_L/R, osc2_L/R, shimmer_mono, drone_mono
         self._buf_n = 0
@@ -165,6 +167,30 @@ class FaustOscBank:
         doubling apparent loudness vs the Python implementation)."""
         self._osc1_phase_zones[slot][0] = float(np.random.uniform(0.0, 1.0))
         self._osc2_phase_zones[slot][0] = float(np.random.uniform(0.0, 1.0))
+
+    def randomize_lfo_phase(self, slot: int):
+        """Random LFO phase offset per voice — call at note_on when poly LFO
+        is on, so each voice's modulator sits at its own point in the cycle.
+        That's the whole sonic point of poly LFO: notes don't pump in
+        lockstep, the mod feels organic."""
+        self._lfo1_phase_zones[slot][0] = float(np.random.uniform(0.0, 1.0))
+        self._lfo2_phase_zones[slot][0] = float(np.random.uniform(0.0, 1.0))
+
+    _LFO_SHAPE_INDEX = {
+        "sine": 0, "triangle": 1, "square": 2,
+        "saw": 3, "ramp": 4, "peak": 5, "sh": 6,
+    }
+
+    def set_lfo_params(self, which: int, *, active: bool, rate_hz: float,
+                       depth: float, shape: str):
+        """Push one LFO's runtime params. `active` = poly mode engaged AND
+        target == 'amp'; when False, the per-voice gate scaling collapses
+        to unity inside Faust (engine routes mod through Python instead)."""
+        prefix = "lfo1" if int(which) == 1 else "lfo2"
+        self._zones[f"{prefix}_active"][0] = 1.0 if active else 0.0
+        self._zones[f"{prefix}_rate"][0] = float(max(0.05, min(20.0, rate_hz)))
+        self._zones[f"{prefix}_depth"][0] = float(max(0.0, min(1.0, depth)))
+        self._zones[f"{prefix}_shape"][0] = float(self._LFO_SHAPE_INDEX.get(shape, 0))
 
     # ─── Global osc setters (set when UI changes, not per-block) ───
     def set_osc_params(self,
