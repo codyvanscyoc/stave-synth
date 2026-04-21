@@ -97,13 +97,29 @@ class FaustPingPong:
         _lib.instanceClearStavePingPong(self._dsp)
 
     def set_params(self, delay_l_samps: int, delay_r_samps: int,
-                   feedback: float, wet: float):
+                   feedback: float, wet: float,
+                   low_cut_hz: float = 20.0, high_cut_hz: float = 18000.0,
+                   drive: float = 0.0, width: float = 1.0,
+                   mod_rate_hz: float = 0.5, mod_depth_ms: float = 0.0,
+                   polarity: float = 1.0,
+                   reverse_amount: float = 0.0, reverse_window_ms: float = 500.0,
+                   reverse_feedback: float = 0.0):
         """Write all delay params at once. delay_*_samps are ints; Python
         computes them from ms/BPM per block and passes here."""
         self._zones["delay_l_samps"][0] = float(max(1, min(65535, int(delay_l_samps))))
         self._zones["delay_r_samps"][0] = float(max(1, min(65535, int(delay_r_samps))))
-        self._zones["feedback"][0] = float(max(0.0, min(0.85, feedback)))
+        self._zones["feedback"][0] = float(max(0.0, min(1.0, feedback)))
         self._zones["wet"][0] = float(max(0.0, min(1.0, wet)))
+        self._zones["low_cut_hz"][0] = float(max(20.0, min(1000.0, low_cut_hz)))
+        self._zones["high_cut_hz"][0] = float(max(500.0, min(20000.0, high_cut_hz)))
+        self._zones["drive"][0] = float(max(0.0, min(1.0, drive)))
+        self._zones["width"][0] = float(max(0.0, min(1.0, width)))
+        self._zones["mod_rate_hz"][0] = float(max(0.05, min(8.0, mod_rate_hz)))
+        self._zones["mod_depth_ms"][0] = float(max(0.0, min(15.0, mod_depth_ms)))
+        self._zones["polarity"][0] = -1.0 if polarity < 0 else 1.0
+        self._zones["reverse_amount"][0] = float(max(0.0, min(1.0, reverse_amount)))
+        self._zones["reverse_window_ms"][0] = float(max(50.0, min(15000.0, reverse_window_ms)))
+        self._zones["reverse_feedback"][0] = float(max(0.0, min(0.7, reverse_feedback)))
 
     def process_inplace(self, out_l: np.ndarray, out_r: np.ndarray):
         """Replace (out_l, out_r) with the Faust ping-pong result in-place.

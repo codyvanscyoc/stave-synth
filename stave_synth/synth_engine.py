@@ -916,6 +916,16 @@ class SamplePlayer:
     RELEASE_S = 4.0    # 4 s — linear ramp 1→0
     XFADE_MS = 500     # 500 ms — generous loop crossfade hides any seam
 
+    # RISE envelope — drawn on top of normal looping playback.
+    # Volume: 0 → 1 over rise_seconds, then quick decay to RISE_SUSTAIN, hold.
+    # Filter: log-sweep 200 → 3000 Hz over rise_seconds, then hold.
+    # Peak volume is gated by the engine's drone_level (user's VOL slider).
+    RISE_CUTOFF_CLOSED = 200.0
+    RISE_CUTOFF_OPEN_DEFAULT = 3000.0   # peak cutoff (overridable per trigger)
+    RISE_CUTOFF_SUSTAIN = 300.0         # filter falls back to here during volume decay
+    RISE_SUSTAIN = 0.55                 # sustain volume after the post-peak decay
+    RISE_DECAY_S = 0.8                  # decay from peak (1.0) to RISE_SUSTAIN over 0.8s
+
     def __init__(self, sample_rate: int = SAMPLE_RATE):
         self.sample_rate = int(sample_rate)
         self.samples_l = None   # np.ndarray float64 or None when unloaded
@@ -927,6 +937,18 @@ class SamplePlayer:
         self.env = 0.0
         self.env_target = 0.0
         self.xfade_len = int(self.XFADE_MS * sample_rate / 1000.0)
+        # Rise-envelope state.
+        # _rise_active: drives the custom env shape (cleared on release so
+        #               normal release ramp can take env→0).
+        # _rise_filter_engaged: keeps the LP filter running through the release
+        #               tail so the spectrum doesn't jump (cleared at deactivate).
+        self.rise_seconds = 0.0
+        self.rise_cutoff_open = self.RISE_CUTOFF_OPEN_DEFAULT
+        self._rise_t_samples = 0
+        self._rise_active = False
+        self._rise_filter_engaged = False
+        self._rise_lp_l = BiquadLowpass(self.rise_cutoff_open, 0.707, self.sample_rate)
+        self._rise_lp_r = BiquadLowpass(self.rise_cutoff_open, 0.707, self.sample_rate)
 
     def load(self, path) -> bool:
         try:
@@ -983,8 +1005,12 @@ class SamplePlayer:
         self.env_target = 0.0
         return True
 
-    def trigger(self):
-        """Start playback (or re-trigger). Resets read position if idle."""
+    def trigger(self, rise_seconds: float = 0.0,
+                rise_cutoff_open: float = None):
+        """Start playback (or re-trigger). Resets read position if idle.
+        rise_seconds > 0 arms the filter-sweep rise envelope for this trigger.
+        rise_cutoff_open sets the peak cutoff the rise sweeps to (defaults
+        to RISE_CUTOFF_OPEN_DEFAULT)."""
         if not self.loaded:
             return
         if not self.active:
@@ -992,10 +1018,28 @@ class SamplePlayer:
             self.env = 0.0
         self.env_target = 1.0
         self.active = True
+        self.rise_seconds = max(0.0, float(rise_seconds))
+        self.rise_cutoff_open = (float(rise_cutoff_open)
+                                  if rise_cutoff_open is not None
+                                  else self.RISE_CUTOFF_OPEN_DEFAULT)
+        self._rise_t_samples = 0
+        self._rise_active = self.rise_seconds > 0.0
+        self._rise_filter_engaged = self._rise_active
+        if self._rise_active:
+            self._rise_lp_l.reset()
+            self._rise_lp_r.reset()
+            self._rise_lp_l.set_params(self.RISE_CUTOFF_CLOSED, 0.707)
+            self._rise_lp_r.set_params(self.RISE_CUTOFF_CLOSED, 0.707)
+            # Rise envelope drives volume directly via _rise_t — start from 0.
+            self.env = 0.0
 
     def release(self):
         """Begin fade-out. Voice deactivates when envelope hits ~0."""
         self.env_target = 0.0
+        # Disengage rise envelope so the standard release ramp can take
+        # env→0. Filter stays engaged (_rise_filter_engaged) so the spectrum
+        # doesn't snap from muffled-sustain to bright on release — kills click.
+        self._rise_active = False
 
     def process(self, n: int, out_l: np.ndarray, out_r: np.ndarray):
         """Additively mix (enveloped) playback into out_l / out_r. No-op
@@ -1003,23 +1047,46 @@ class SamplePlayer:
         if not self.active or not self.loaded:
             return
         sr = self.sample_rate
-        # Envelope — LINEAR ramp (predictable AR, unlike exp-approach which
-        # reaches only 63% by its "time" point). Attack ramps env 0→1 over
-        # ATTACK_S seconds; release ramps env→0 over RELEASE_S seconds.
-        if self.env_target > self.env:
-            step = n / (self.ATTACK_S * sr)
-            new_env = min(self.env_target, self.env + step)
-        elif self.env_target < self.env:
-            step = n / (self.RELEASE_S * sr)
-            new_env = max(self.env_target, self.env - step)
+        # Envelope — when rise mode is active and not released, drive env
+        # from a custom shape (rise → quick decay → sustain) instead of the
+        # standard linear AR. After release, _rise_active is cleared and the
+        # standard release ramp takes over from the current env value.
+        if self._rise_active and self.env_target > 0:
+            t_start = self._rise_t_samples / float(sr)
+            t_end = (self._rise_t_samples + n) / float(sr)
+
+            def _rise_env_at(t):
+                rise_s = self.rise_seconds
+                if t < rise_s:
+                    return t / rise_s
+                decay_end = rise_s + self.RISE_DECAY_S
+                if t < decay_end:
+                    p = (t - rise_s) / self.RISE_DECAY_S
+                    return 1.0 - (1.0 - self.RISE_SUSTAIN) * p
+                return self.RISE_SUSTAIN
+
+            env_start = _rise_env_at(t_start)
+            new_env = _rise_env_at(t_end)
+            self._rise_t_samples += n
         else:
-            new_env = self.env
-        if self.env_target < 0.001 and new_env <= 0.0001:
-            # Fully faded out — stop rendering this voice
-            self.active = False
-            self.env = 0.0
-            return
-        env_ramp = np.linspace(self.env, new_env, n, dtype=np.float64)
+            if self.env_target > self.env:
+                step = n / (self.ATTACK_S * sr)
+                new_env = min(self.env_target, self.env + step)
+                env_start = self.env
+            elif self.env_target < self.env:
+                step = n / (self.RELEASE_S * sr)
+                new_env = max(self.env_target, self.env - step)
+                env_start = self.env
+            else:
+                new_env = self.env
+                env_start = self.env
+            if self.env_target < 0.001 and new_env <= 0.0001:
+                self.active = False
+                self.env = 0.0
+                self._rise_active = False
+                self._rise_filter_engaged = False
+                return
+        env_ramp = np.linspace(env_start, new_env, n, dtype=np.float64)
         self.env = new_env
 
         # Read positions (speed = 1.0 by design). Playback goes 0..length-1 on
@@ -1062,6 +1129,31 @@ class SamplePlayer:
         else:
             out_l_block = primary_l
             out_r_block = primary_r
+
+        # RISE filter sweep — log-lerp cutoff CLOSED → OPEN over rise_seconds,
+        # then mirrors the volume decay back down to CUTOFF_SUSTAIN, holds.
+        # Stays engaged through release tail so the spectrum doesn't snap on
+        # release; only disengages when the voice fully deactivates.
+        if self._rise_filter_engaged:
+            t_sec = max(0.0, (self._rise_t_samples - n) / float(sr))
+            rise_s = self.rise_seconds
+            open_hz = self.rise_cutoff_open
+            if t_sec < rise_s:
+                p = t_sec / rise_s
+                cutoff = self.RISE_CUTOFF_CLOSED * (
+                    (open_hz / self.RISE_CUTOFF_CLOSED) ** p
+                )
+            elif t_sec < rise_s + self.RISE_DECAY_S:
+                p = (t_sec - rise_s) / self.RISE_DECAY_S
+                cutoff = open_hz * (
+                    (self.RISE_CUTOFF_SUSTAIN / open_hz) ** p
+                )
+            else:
+                cutoff = self.RISE_CUTOFF_SUSTAIN
+            self._rise_lp_l.set_params(cutoff, 0.707)
+            self._rise_lp_r.set_params(cutoff, 0.707)
+            out_l_block = self._rise_lp_l.process(out_l_block)
+            out_r_block = self._rise_lp_r.process(out_r_block)
 
         out_l += out_l_block * env_ramp
         out_r += out_r_block * env_ramp
@@ -1410,6 +1502,12 @@ class SynthEngine:
         # in ~/.local/share/stave-synth/pad_samples/. Populated by load_pad_samples().
         self._pad_samples: dict = {}
         self._pad_samples_dir = None   # set by load_pad_samples()
+        # Mellow filter — global LP applied to combined pad-sample bus when
+        # a recorded sample sounds too bright. Bypassed when disabled.
+        self.pad_mellow_enabled = False
+        self.pad_mellow_cutoff_hz = 400.0
+        self._pad_mellow_lp_l = BiquadLowpass(self.pad_mellow_cutoff_hz, 0.707, sample_rate)
+        self._pad_mellow_lp_r = BiquadLowpass(self.pad_mellow_cutoff_hz, 0.707, sample_rate)
         # Drone DSP (filter/reverb/air/double) is intentionally GONE — the pad
         # player will be fed by pre-recorded sample playback in the next pass.
         # Until then, the drone renders as a simple root+fifth bed straight
@@ -1438,8 +1536,26 @@ class SynthEngine:
         self.delay_time_mode = "1/4"   # "FREE" or subdivision string
         self.delay_time_ms = 375.0     # used when mode = FREE
         self.delay_offset_ms = 0.0     # L/R offset in ms
-        self.delay_feedback = 0.35     # 0..0.85
+        self.delay_feedback = 0.35     # 0..0.99 (slider); oblivion overrides to 1.0
+        self.delay_oblivion = False    # mirror-in-mirror infinite hold
+        # Rate multiplier mirrors LFO's pattern. Sign carries polarity:
+        # negative value = polarity-inverted feedback (comb-filter character).
+        self.delay_rate_multiplier = 1.0
         self.delay_wet = 0.0           # 0..1 (dry always passes through)
+        # Feedback-path tone shaping + character (only in Faust path).
+        self.delay_low_cut_hz = 20.0       # 20..1000 Hz
+        self.delay_high_cut_hz = 18000.0   # 500..20000 Hz
+        self.delay_drive = 0.0             # 0..1 tanh saturation in feedback
+        self.delay_width = 1.0             # 0 = mono echo per side, 1 = full ping-pong
+        self.delay_mod_rate_hz = 0.5       # 0.05..8 Hz BBD wobble
+        self.delay_mod_depth_ms = 0.0      # 0..15 ms fractional read offset
+        # Reverse playback (parallel to ping-pong, additive into wet output)
+        self.delay_reverse_amount = 0.0       # 0..1 — wet contribution from reversed input
+        self.delay_reverse_window_ms = 500.0  # 50..3000 ms chunk size
+        self.delay_reverse_window_mode = "FREE"  # "FREE" or subdivision string
+        self.delay_reverse_feedback = 0.0     # 0..0.7 recursive feedback into reverse buffer
+        self.delay_aurora_enabled = False     # AURORA = long-window rise mode
+        self.delay_aurora_seconds = 5.0       # 3..15 sec rise length when AURORA on
         self.bpm = 120.0
         _delay_max_ms = 1000.0          # generous headroom; will clamp read offset
         _delay_buf_len = int((_delay_max_ms / 1000.0) * sample_rate)
@@ -1802,23 +1918,62 @@ class SynthEngine:
             ms = max(1.0, min(1000.0, ms))
         return int(ms * 0.001 * self.sample_rate)
 
+    def _effective_reverse_window_ms(self) -> float:
+        """Reverse window length in ms. AURORA wins; else tempo-sync if mode != FREE; else slider."""
+        if self.delay_aurora_enabled:
+            return max(50.0, min(15000.0, self.delay_aurora_seconds * 1000.0))
+        if self.delay_reverse_window_mode != "FREE":
+            mult = self._DELAY_DIVISIONS.get(self.delay_reverse_window_mode, 1.0)
+            beat_sec = 60.0 / max(40.0, self.bpm)
+            return max(50.0, min(3000.0, beat_sec * mult * 1000.0))
+        return max(50.0, min(3000.0, self.delay_reverse_window_ms))
+
     def _process_ping_pong(self, out_l: np.ndarray, out_r: np.ndarray):
         """Stereo cross-feedback delay applied in place on out_l/out_r.
         Dry signal passes through unchanged; wet taps mix in at self.delay_wet × motion_mix.
         Read happens before write so we never self-read within a block."""
         effective_wet = self.delay_wet * self.motion_mix
-        if not self.delay_enabled or effective_wet < 0.001:
+        effective_rev = self.delay_reverse_amount * self.motion_mix
+        if not self.delay_enabled or (effective_wet < 0.001 and effective_rev < 0.001):
             return
         if self._faust_ping_pong is not None:
-            delay_samps = max(1, self._delay_time_samples())
-            off_samps = int(self.delay_offset_ms * 0.001 * self.sample_rate)
+            mult_abs = max(0.1, abs(self.delay_rate_multiplier))
+            polarity = -1.0 if self.delay_rate_multiplier < 0 else 1.0
+            delay_samps = max(1, int(self._delay_time_samples() / mult_abs))
+            off_samps = int(self.delay_offset_ms * 0.001 * self.sample_rate / mult_abs)
+            fb_eff = 1.0 if self.delay_oblivion else self.delay_feedback
             self._faust_ping_pong.set_params(
                 delay_l_samps=delay_samps,
                 delay_r_samps=delay_samps + off_samps,
-                feedback=self.delay_feedback,
+                feedback=fb_eff,
                 wet=effective_wet,
+                low_cut_hz=self.delay_low_cut_hz,
+                high_cut_hz=self.delay_high_cut_hz,
+                drive=self.delay_drive,
+                width=self.delay_width,
+                mod_rate_hz=self.delay_mod_rate_hz,
+                mod_depth_ms=self.delay_mod_depth_ms,
+                polarity=polarity,
+                reverse_amount=effective_rev,
+                reverse_window_ms=self._effective_reverse_window_ms(),
+                reverse_feedback=self.delay_reverse_feedback,
             )
-            self._faust_ping_pong.process_inplace(out_l, out_r)
+            # Add piano/organ send into the delay input so they ping-pong
+            # too, then subtract it back out — leaves only the wet taps from
+            # the piano contribution added to the pad output. (Piano dry is
+            # mixed by jack_engine downstream.)
+            ext = getattr(self, "_external_delay_send", None)
+            n = out_l.shape[0]
+            if ext is not None and ext.shape[1] >= n:
+                send_l = ext[0, :n]
+                send_r = ext[1, :n]
+                out_l += send_l
+                out_r += send_r
+                self._faust_ping_pong.process_inplace(out_l, out_r)
+                out_l -= send_l
+                out_r -= send_r
+            else:
+                self._faust_ping_pong.process_inplace(out_l, out_r)
             return
         n = out_l.shape[0]
         buf_l = self._delay_buf_l
@@ -2130,10 +2285,11 @@ class SynthEngine:
         logger.info("Pad samples loaded: %d / 12 from %s", loaded, pad_dir)
         return loaded
 
-    def trigger_pad_sample(self, note: int) -> bool:
+    def trigger_pad_sample(self, note: int, rise_seconds: float = 0.0,
+                           rise_cutoff_open: float = None) -> bool:
         """Trigger the pad slot for this MIDI note. Returns True if a sample
         was available and triggered. False means no slot file — caller should
-        fall back to the live synth drone."""
+        fall back to the live synth drone. rise_seconds > 0 enables RISE mode."""
         note = int(note)
         player = self._pad_samples.get(note)
         if player is None or not player.loaded:
@@ -2142,7 +2298,7 @@ class SynthEngine:
         for n, p in self._pad_samples.items():
             if n != note and p.active:
                 p.release()
-        player.trigger()
+        player.trigger(rise_seconds=rise_seconds, rise_cutoff_open=rise_cutoff_open)
         return True
 
     def release_pad_samples(self):
@@ -2157,11 +2313,13 @@ class SynthEngine:
         return p is not None and p.loaded
 
     def render(self, n_samples: int, separate_fx: bool = False,
-               external_reverb_send: np.ndarray = None):
-        """Render the pad bus. `external_reverb_send` is an optional stereo
-        (2, n) float64 buffer that gets summed into the reverb input before
-        reverb.process() — lets jack_engine feed piano/organ sends into the
-        pad's reverb bus without changing the dry mix."""
+               external_reverb_send: np.ndarray = None,
+               external_delay_send: np.ndarray = None):
+        """Render the pad bus. `external_reverb_send` and `external_delay_send`
+        are optional stereo (2, n) float64 buffers fed by jack_engine — they
+        let piano/organ contribute to the reverb / ping-pong taps without
+        changing the dry mix."""
+        self._external_delay_send = external_delay_send
         if n_samples == 0:
             return np.zeros((2, 0), dtype=np.float64)
 
@@ -3037,6 +3195,17 @@ class SynthEngine:
             if _player.active:
                 _player.process(n_samples, pad_l, pad_r)
 
+        # Mellow filter — applied to combined pad sample bus for tonal cut.
+        # Bypassed when any pad voice is in rise mode (rise has its own filter
+        # sweep already; stacking mellow on top would over-darken the swell).
+        any_rise = any(getattr(p, "_rise_filter_engaged", False)
+                       for p in self._pad_samples.values() if p.active)
+        if self.pad_mellow_enabled and not any_rise:
+            self._pad_mellow_lp_l.set_params(self.pad_mellow_cutoff_hz, 0.707)
+            self._pad_mellow_lp_r.set_params(self.pad_mellow_cutoff_hz, 0.707)
+            pad_l[:] = self._pad_mellow_lp_l.process(pad_l)
+            pad_r[:] = self._pad_mellow_lp_r.process(pad_r)
+
         # Drone bus — live synth root+fifth (when no sample) + any active pad
         # samples. VOL fader (drone_level) scales both paths uniformly.
         pad_vol = self.drone_level * self._drone_fade_scale
@@ -3305,9 +3474,42 @@ class SynthEngine:
         if "delay_offset_ms" in params:
             self.delay_offset_ms = max(-200.0, min(200.0, float(params["delay_offset_ms"])))
         if "delay_feedback" in params:
-            self.delay_feedback = max(0.0, min(0.85, float(params["delay_feedback"])))
+            self.delay_feedback = max(0.0, min(0.99, float(params["delay_feedback"])))
+        if "delay_oblivion" in params:
+            self.delay_oblivion = bool(params["delay_oblivion"])
+        if "delay_rate_multiplier" in params:
+            v = float(params["delay_rate_multiplier"])
+            if v == 0:
+                v = 1.0
+            self.delay_rate_multiplier = max(-10.0, min(10.0, v))
         if "delay_wet" in params:
             self.delay_wet = max(0.0, min(1.0, float(params["delay_wet"])))
+        if "delay_low_cut_hz" in params:
+            self.delay_low_cut_hz = max(20.0, min(1000.0, float(params["delay_low_cut_hz"])))
+        if "delay_high_cut_hz" in params:
+            self.delay_high_cut_hz = max(500.0, min(20000.0, float(params["delay_high_cut_hz"])))
+        if "delay_drive" in params:
+            self.delay_drive = max(0.0, min(1.0, float(params["delay_drive"])))
+        if "delay_width" in params:
+            self.delay_width = max(0.0, min(1.0, float(params["delay_width"])))
+        if "delay_mod_rate_hz" in params:
+            self.delay_mod_rate_hz = max(0.05, min(8.0, float(params["delay_mod_rate_hz"])))
+        if "delay_mod_depth_ms" in params:
+            self.delay_mod_depth_ms = max(0.0, min(15.0, float(params["delay_mod_depth_ms"])))
+        if "delay_reverse_amount" in params:
+            self.delay_reverse_amount = max(0.0, min(1.0, float(params["delay_reverse_amount"])))
+        if "delay_reverse_window_ms" in params:
+            self.delay_reverse_window_ms = max(50.0, min(3000.0, float(params["delay_reverse_window_ms"])))
+        if "delay_reverse_window_mode" in params:
+            m = str(params["delay_reverse_window_mode"])
+            if m == "FREE" or m in self._DELAY_DIVISIONS:
+                self.delay_reverse_window_mode = m
+        if "delay_reverse_feedback" in params:
+            self.delay_reverse_feedback = max(0.0, min(0.7, float(params["delay_reverse_feedback"])))
+        if "delay_aurora_enabled" in params:
+            self.delay_aurora_enabled = bool(params["delay_aurora_enabled"])
+        if "delay_aurora_seconds" in params:
+            self.delay_aurora_seconds = max(3.0, min(15.0, float(params["delay_aurora_seconds"])))
         if "bpm" in params:
             self.bpm = max(40.0, min(300.0, float(params["bpm"])))
         if "motion_mix" in params:
@@ -3323,6 +3525,13 @@ class SynthEngine:
             self.drone_enabled = bool(params["drone_enabled"])
         if "drone_level" in params:
             self.drone_level = max(0.0, min(1.0, float(params["drone_level"])))
+        if "pad_mellow_enabled" in params:
+            self.pad_mellow_enabled = bool(params["pad_mellow_enabled"])
+            if self.pad_mellow_enabled:
+                self._pad_mellow_lp_l.reset()
+                self._pad_mellow_lp_r.reset()
+        if "pad_mellow_cutoff_hz" in params:
+            self.pad_mellow_cutoff_hz = max(100.0, min(8000.0, float(params["pad_mellow_cutoff_hz"])))
             if not self.drone_enabled:
                 self.drone_off()
 

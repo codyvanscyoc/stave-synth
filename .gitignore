@@ -16,8 +16,9 @@ env/
 *~
 .DS_Store
 *.sf2
-# Track bundled fallback soundfonts committed to the repo
-!soundfonts/*.sf2
+# Only TimGM6mb (~6MB) is bundled in the repo. Larger soundfonts like
+# Salamander (1.2GB) are fetched by install.sh --salamander; never commit them.
+!soundfonts/TimGM6mb.sf2
 
 # Faust build artifacts — regenerated from .dsp by faust/build.sh (invoked by install.sh)
 faust/*.c

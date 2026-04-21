@@ -144,6 +144,10 @@ class StaveSynth:
             return self._handle_preset_label(msg)
         elif msg_type == "preset_swap":
             return self._handle_preset_swap(msg)
+        elif msg_type == "setlist_save":
+            return self._handle_setlist_save(msg)
+        elif msg_type == "setlist_load":
+            return self._handle_setlist_load(msg)
         elif msg_type == "transpose":
             return self._handle_transpose(msg)
         elif msg_type == "panic":
@@ -195,7 +199,11 @@ class StaveSynth:
                     self.ws_server.broadcast_sync({"type": "reverb_types_available", "available": avail})
             except Exception as e:
                 logger.debug("reverb_types_available probe failed: %s", e)
-            return {"type": "state", "state": self.state}
+            try:
+                sf_list = FluidSynthPlayer.list_available_soundfonts()
+            except Exception:
+                sf_list = []
+            return {"type": "state", "state": self.state, "soundfonts_available": sf_list}
         elif msg_type == "debug":
             # Piano diagnostics
             piano_info = {}
@@ -384,6 +392,53 @@ class StaveSynth:
         fader_id = msg.get("id", 0)
         alt = msg.get("alt", False)
         return {"type": "alt_ack", "id": fader_id, "alt": alt}
+
+    def _handle_setlist_save(self, msg: dict) -> dict:
+        """Snapshot the current 10-preset bank into a setlist slot.
+        Captures each preset's JSON content + labels."""
+        slot = int(msg.get("slot", 0))
+        name = str(msg.get("name", ""))[:24]
+        if slot < 0 or slot >= 10:
+            return {"type": "error", "message": f"Invalid setlist slot {slot}"}
+        presets_snapshot = []
+        for i in range(self.presets.num_slots):
+            presets_snapshot.append(self.presets.load(i))  # None if empty
+        labels = list(self.state.get("ui", {}).get("preset_labels", []))
+        if len(labels) < 10:
+            labels = labels + [""] * (10 - len(labels))
+        setlists = self.state.setdefault("setlists", [])
+        while len(setlists) < 10:
+            setlists.append({"name": "", "presets": None})
+        setlists[slot] = {
+            "name": name, "presets": presets_snapshot, "labels": labels[:10],
+        }
+        from .config import save_state
+        save_state(self.state)
+        return {"type": "setlist_save_ack", "slot": slot, "name": name}
+
+    def _handle_setlist_load(self, msg: dict) -> dict:
+        """Restore a setlist's 10-preset bank to disk + state labels."""
+        slot = int(msg.get("slot", 0))
+        if slot < 0 or slot >= 10:
+            return {"type": "error", "message": f"Invalid setlist slot {slot}"}
+        setlists = self.state.get("setlists", [])
+        if slot >= len(setlists) or not setlists[slot].get("presets"):
+            return {"type": "error", "message": f"Setlist slot {slot} is empty"}
+        sl = setlists[slot]
+        for i, pdata in enumerate(sl["presets"][:self.presets.num_slots]):
+            if pdata is None:
+                self.presets.delete(i)
+            else:
+                self.presets.save(i, pdata)
+        ui = self.state.setdefault("ui", {})
+        labels = sl.get("labels") or [""] * 10
+        ui["preset_labels"] = list(labels)[:10] + [""] * max(0, 10 - len(labels))
+        self._rebuild_preset_saved()
+        from .config import save_state
+        save_state(self.state)
+        if self.ws_server:
+            self.ws_server.broadcast_sync({"type": "state", "state": self.state})
+        return {"type": "setlist_load_ack", "slot": slot, "name": sl.get("name", "")}
 
     def _rebuild_preset_saved(self):
         """Rebuild ui.preset_saved from which files actually exist on disk."""
@@ -815,9 +870,12 @@ class StaveSynth:
         silence the live drone. Else fall back to the live root+fifth synth
         and silence any active sampler voice."""
         note = int(msg.get("note", 60))
+        rise_seconds_msg = float(msg.get("rise_seconds", 0.0) or 0.0)
         current_key = self.state["synth_pad"].get("drone_key")
         current_on = bool(self.state["synth_pad"].get("drone_enabled", False))
-        if current_on and current_key == note:
+        # Toggle-off only when not in rise mode — with rise armed, every tap
+        # re-triggers (otherwise tapping same pad twice would just release it).
+        if current_on and current_key == note and rise_seconds_msg <= 0.0:
             self.state["synth_pad"]["drone_enabled"] = False
             self.state["synth_pad"]["drone_key"] = None
             if self.synth:
@@ -828,8 +886,12 @@ class StaveSynth:
         self.state["synth_pad"]["drone_enabled"] = True
         self.state["synth_pad"]["drone_key"] = note
         source = "live"
+        rise_seconds = float(msg.get("rise_seconds", 0.0) or 0.0)
+        rise_cutoff = self.state.get("synth_pad", {}).get("pad_rise_cutoff_hz", 3000.0)
         if self.synth:
-            used_sample = self.synth.trigger_pad_sample(note)
+            used_sample = self.synth.trigger_pad_sample(
+                note, rise_seconds=rise_seconds, rise_cutoff_open=rise_cutoff,
+            )
             if used_sample:
                 # Sample took over — silence the live drone so we don't double up
                 self.synth.drone_off()
@@ -904,7 +966,7 @@ class StaveSynth:
 
     def _handle_macro_assign(self, msg: dict) -> dict:
         """Add, remove, toggle, or clear a macro's assignments.
-        action in {"toggle", "add", "remove", "clear"}."""
+        action in {"toggle", "add", "remove", "clear", "set_bipolar", "set_center"}."""
         action = str(msg.get("action", "toggle"))
         macros = self.state.get("macros", [])
         if action == "clear_all":
@@ -917,6 +979,28 @@ class StaveSynth:
         idx = int(msg.get("idx", 0))
         if idx < 0 or idx >= len(macros):
             return {"type": "error", "message": f"Invalid macro idx {idx}"}
+        if action == "set_bipolar":
+            macros[idx]["bipolar"] = bool(msg.get("bipolar", False))
+            return {
+                "type": "macro_assign_ack",
+                "idx": idx,
+                "bipolar": macros[idx]["bipolar"],
+                "assignments": macros[idx]["assignments"],
+            }
+        if action == "set_center":
+            ai = int(msg.get("assignment_idx", -1))
+            assigns = macros[idx]["assignments"]
+            if 0 <= ai < len(assigns):
+                if "center" in msg and msg["center"] is not None:
+                    assigns[ai]["center"] = float(msg["center"])
+                else:
+                    assigns[ai].pop("center", None)
+            return {
+                "type": "macro_assign_ack",
+                "idx": idx,
+                "bipolar": macros[idx].get("bipolar", False),
+                "assignments": macros[idx]["assignments"],
+            }
         if action == "clear":
             macros[idx]["assignments"] = []
         else:
@@ -966,6 +1050,7 @@ class StaveSynth:
         return {
             "type": "macro_assign_ack",
             "idx": idx,
+            "bipolar": macros[idx].get("bipolar", False),
             "assignments": macros[idx]["assignments"],
         }
 
@@ -1297,6 +1382,11 @@ class StaveSynth:
                 self.state["master"][param] = v
                 if self.jack:
                     self.jack.piano_reverb_send = v
+            elif param == "piano_delay_send":
+                v = max(0.0, min(1.0, float(value)))
+                self.state["master"][param] = v
+                if self.jack:
+                    self.jack.piano_delay_send = v
             elif param == "saturation_enabled":
                 self.state["master"][param] = bool(value)
                 if self.jack:
@@ -1580,7 +1670,7 @@ class StaveSynth:
         try:
             self.piano = FluidSynthPlayer()
             self.piano.start(
-                self.state.get("piano", {}).get("soundfont", "Arachno")
+                self.state.get("piano", {}).get("soundfont", "Salamander")
             )
             self.piano.update_params(self.state.get("piano", {}))
         except Exception as e:
@@ -1619,6 +1709,7 @@ class StaveSynth:
             self.jack.piano_octave = self.state.get("master", {}).get("piano_octave", 0)
             self.jack.pre_gain = float(self.state.get("master", {}).get("pre_limiter_trim", 2.0))
             self.jack.piano_reverb_send = float(self.state.get("master", {}).get("piano_reverb_send", 0.0))
+            self.jack.piano_delay_send = float(self.state.get("master", {}).get("piano_delay_send", 0.0))
             self.jack.saturation_enabled = bool(self.state.get("master", {}).get("saturation_enabled", False))
             self.jack.set_bpm(float(self.state.get("master", {}).get("bpm", 120)))
             # Push all bus_comp_* keys at startup so the compressor matches saved state

@@ -125,6 +125,9 @@
 
     function handleServerMessage(msg) {
         if (msg.type === "state" && msg.state) {
+            if (Array.isArray(msg.soundfonts_available)) {
+                populateSoundfontDropdown(msg.soundfonts_available);
+            }
             applyState(msg.state);
         } else if (msg.type === "transpose_ack") {
             transposeValue = msg.semitones;
@@ -325,6 +328,15 @@
                 state.macros[msg.idx].value = msg.value;
             }
             // No slider refresh — UI fingers already moved the controls.
+        } else if (msg.type === "setlist_save_ack") {
+            // Update local state cache so dropdown re-renders with new name + presets.
+            if (state && state.setlists && state.setlists[msg.slot]) {
+                state.setlists[msg.slot].name = msg.name || "";
+                state.setlists[msg.slot].presets = state.setlists[msg.slot].presets || [];
+            }
+            if (typeof refreshSetlistDropdown === "function") refreshSetlistDropdown();
+        } else if (msg.type === "setlist_load_ack") {
+            // Backend broadcasts a state message too — that'll re-sync presets/labels.
         } else if (msg.type === "reverb_types_available") {
             // Engine reports which reverb types have working .so backends.
             // Disable PLATE / DRONE in the selector if their .so is missing
@@ -367,6 +379,24 @@
         }
     }
 
+    // Populate the piano soundfont dropdown from the list the backend sends
+    // with the initial state. Called once on the `state` message; list
+    // doesn't change at runtime (would require dropping a new .sf2 in
+    // SOUNDFONT_DIR + restarting).
+    function populateSoundfontDropdown(list) {
+        var sel = document.getElementById("piano-soundfont-select");
+        if (!sel || !Array.isArray(list) || list.length === 0) return;
+        var prev = sel.value;
+        sel.innerHTML = "";
+        list.forEach(function (name) {
+            var opt = document.createElement("option");
+            opt.value = name;
+            opt.textContent = name;
+            sel.appendChild(opt);
+        });
+        if (prev && list.indexOf(prev) !== -1) sel.value = prev;
+    }
+
     function applyState(s) {
         state = s;
 
@@ -398,6 +428,15 @@
             if (padVolSlider) {
                 var dl = s.synth_pad.drone_level;
                 if (typeof dl === "number") padVolSlider.value = Math.round(dl * 100);
+                if (typeof syncPadSliderFill === "function") syncPadSliderFill(padVolSlider);
+            }
+            if (typeof s.synth_pad.pad_rise_seconds === "number") {
+                padRiseSeconds = s.synth_pad.pad_rise_seconds;
+                if (padRiseSecs) {
+                    padRiseSecs.value = Math.round(padRiseSeconds * 10);
+                    if (typeof syncPadSliderFill === "function") syncPadSliderFill(padRiseSecs);
+                }
+                if (padRiseValue) padRiseValue.textContent = padRiseSeconds.toFixed(1) + "s";
             }
             // Sync filter lowcut (ALT value)
             if (s.synth_pad.filter_highpass_hz) {
@@ -451,6 +490,16 @@
             pianoEnabled = s.piano.enabled !== false;
             pianoBtn.classList.toggle("active", pianoEnabled);
             pianoBtn.classList.toggle("off", !pianoEnabled);
+            // Flatten eq_bands[] → eq_bandN_{freq,gain,q} so the generic
+            // slider-sync loop below can populate each knob directly.
+            if (Array.isArray(s.piano.eq_bands)) {
+                s.piano.eq_bands.forEach(function (band, i) {
+                    if (!band) return;
+                    s.piano["eq_band" + i + "_freq"] = band.freq_hz;
+                    s.piano["eq_band" + i + "_gain"] = band.gain_db;
+                    s.piano["eq_band" + i + "_q"] = band.q;
+                });
+            }
         }
         if (s.master) {
             faderValues[4] = s.master.volume ?? 0.85;
@@ -485,6 +534,7 @@
         updateShimmerDisplay();
         updateSettingsSliders();
         if (typeof applyMacroVisuals === "function") applyMacroVisuals();
+        if (typeof refreshSetlistDropdown === "function") refreshSetlistDropdown();
     }
 
     // ═══ Fader Logic ═══
@@ -859,6 +909,19 @@
         return (state && state.macros) ? state.macros : [];
     }
 
+    function setMacroSlotValueCSS(slot, value, bipolar) {
+        slot.style.setProperty("--macro-value", value.toFixed(3));
+        var fillStart, fillEnd;
+        if (bipolar) {
+            if (value >= 0.5) { fillStart = 0.5; fillEnd = value; }
+            else { fillStart = value; fillEnd = 0.5; }
+        } else {
+            fillStart = 0; fillEnd = value;
+        }
+        slot.style.setProperty("--macro-fill-start", fillStart.toFixed(3));
+        slot.style.setProperty("--macro-fill-end", fillEnd.toFixed(3));
+    }
+
     function applyMacroVisuals() {
         var macros = getMacros();
         // Map visible slot -> absolute macro index (0-3 or 4-7)
@@ -867,12 +930,13 @@
             slot.dataset.macro = idx;
             var m = macros[idx];
             if (!m) return;
-            slot.style.setProperty("--macro-value", (m.value || 0).toFixed(3));
+            setMacroSlotValueCSS(slot, m.value || 0, !!m.bipolar);
             var cnt = slot.querySelector(".macro-count");
             if (cnt) cnt.textContent = (m.assignments || []).length;
             var lbl = slot.querySelector(".macro-label");
             if (lbl) lbl.textContent = "MACRO " + (idx + 1);
             slot.classList.toggle("learn", idx === macroLearnIdx);
+            slot.classList.toggle("bipolar", !!m.bipolar);
         });
         document.body.classList.toggle("macro-learning", macroLearnIdx >= 0);
         var learnColor = "";
@@ -979,17 +1043,25 @@
         var macros = getMacros();
         var m = macros[idx];
         if (!m) return;
+        var bip = !!m.bipolar;
         (m.assignments || []).forEach(function (a) {
-            applyMacroFinger(a, value);
+            applyMacroFinger(a, value, bip);
         });
     }
 
-    function applyMacroFinger(a, value) {
+    function applyMacroFinger(a, value, bipolar) {
         var mn = parseFloat(a.min != null ? a.min : 0);
         var mx = parseFloat(a.max != null ? a.max : 1);
         var target;
-        if (a.is_bool) target = value >= 0.5;
-        else target = mn + value * (mx - mn);
+        if (a.is_bool) {
+            target = value >= 0.5;
+        } else if (bipolar) {
+            var center = (a.center != null) ? parseFloat(a.center) : (mn + mx) * 0.5;
+            if (value <= 0.5) target = center + (mn - center) * (1 - 2 * value);
+            else target = center + (mx - center) * (2 * value - 1);
+        } else {
+            target = mn + value * (mx - mn);
+        }
 
         if ((a.kind || "param") === "fader") {
             applyFaderFinger(parseInt(a.fader_id, 10), parseInt(a.fader_alt || 0, 10), target);
@@ -1044,15 +1116,40 @@
         function currentIdx() {
             return parseInt(slot.dataset.macro || "0", 10);
         }
+        function isBipolar() {
+            var macros = getMacros();
+            var m = macros[currentIdx()];
+            return !!(m && m.bipolar);
+        }
         function setValueFromPointer(e) {
             var rect = slot.getBoundingClientRect();
             var x = (e.clientX !== undefined ? e.clientX : (e.touches ? e.touches[0].clientX : 0)) - rect.left;
             var v = Math.max(0, Math.min(1, x / rect.width));
-            slot.style.setProperty("--macro-value", v.toFixed(3));
+            var bip = isBipolar();
+            if (bip && Math.abs(v - 0.5) < 0.04) v = 0.5;
+            setMacroSlotValueCSS(slot, v, bip);
             sendMacroValue(currentIdx(), v);
         }
 
         slot.addEventListener("pointerdown", function (e) {
+            // Bipolar toggle button: only active in EDIT mode, swallows the press.
+            if (e.target && e.target.classList && e.target.classList.contains("macro-bipolar-btn")) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!macroEditMode) return;
+                var macros = getMacros();
+                var m = macros[currentIdx()];
+                if (!m) return;
+                var nextBip = !m.bipolar;
+                send({ type: "macro_assign", idx: currentIdx(), action: "set_bipolar", bipolar: nextBip });
+                m.bipolar = nextBip;
+                if (nextBip) {
+                    m.value = 0.5;
+                    sendMacroValue(currentIdx(), 0.5);
+                }
+                applyMacroVisuals();
+                return;
+            }
             if (midiLearnActive) {
                 // MIDI learn: tap selects macro for next CC; suppress drag.
                 if (!midiLearnWaiting) {
@@ -1799,14 +1896,24 @@
     // ═══ Pad Player (12-key drone launcher) ═══
     var padKeys = document.querySelectorAll(".pad-key");
     var padVolSlider = document.getElementById("pad-vol");
+    var padRiseSecs = document.getElementById("pad-rise-secs");
+    var padRiseValue = document.querySelector(".pad-rise-value");
+    var padVolWrap = document.querySelector(".pad-vol-wrap");
     var padFadeBtn = document.getElementById("pad-fade-btn");
     var padActiveNote = null;  // currently highlighted key
+    var padRiseSeconds = 5.0;  // current RISE seconds slider value
 
     function updatePadKeyVisuals() {
         padKeys.forEach(function (btn) {
             var note = parseInt(btn.dataset.note, 10);
             btn.classList.toggle("active", note === padActiveNote);
         });
+    }
+
+    function setPadVolState(state) {
+        if (!padVolWrap) return;
+        padVolWrap.dataset.state = state;
+        document.body.classList.toggle("pad-rise-armed", state === "rise");
     }
 
     padKeys.forEach(function (btn) {
@@ -1819,14 +1926,98 @@
                 padActiveNote = note;
             }
             updatePadKeyVisuals();
-            send({ type: "drone_key", note: note });
+            var msg = { type: "drone_key", note: note };
+            if (padVolWrap && padVolWrap.dataset.state === "rise") {
+                msg.rise_seconds = padRiseSeconds;
+            }
+            send(msg);
         });
     });
 
+    function syncPadSliderFill(slider) {
+        if (!slider) return;
+        var lo = parseFloat(slider.min || "0");
+        var hi = parseFloat(slider.max || "100");
+        var v = parseFloat(slider.value);
+        var pct = ((v - lo) / (hi - lo)) * 100;
+        slider.style.setProperty("--pct", pct.toFixed(1));
+    }
+
     if (padVolSlider) {
+        syncPadSliderFill(padVolSlider);
         padVolSlider.addEventListener("input", function () {
+            syncPadSliderFill(padVolSlider);
             var v = parseFloat(padVolSlider.value) / 100.0;
             send({ type: "setting", section: "synth_pad", param: "drone_level", value: v });
+        });
+    }
+
+    if (padRiseSecs) {
+        syncPadSliderFill(padRiseSecs);
+        padRiseSecs.addEventListener("input", function () {
+            syncPadSliderFill(padRiseSecs);
+            padRiseSeconds = parseFloat(padRiseSecs.value) / 10.0;
+            if (padRiseValue) padRiseValue.textContent = padRiseSeconds.toFixed(1) + "s";
+            send({ type: "setting", section: "synth_pad", param: "pad_rise_seconds", value: padRiseSeconds });
+        });
+    }
+
+    document.querySelectorAll(".pad-mode-btn").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+            setPadVolState(btn.dataset.mode);
+        });
+    });
+    document.querySelectorAll(".pad-mode-back").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+            setPadVolState("buttons");
+        });
+    });
+
+    // ═══ Setlists (Global tab) ═══
+    var setlistSelect = document.getElementById("setlist-select");
+    var setlistName = document.getElementById("setlist-name");
+    var setlistSave = document.getElementById("setlist-save-btn");
+    var setlistLoad = document.getElementById("setlist-load-btn");
+
+    function refreshSetlistDropdown() {
+        if (!setlistSelect) return;
+        var lists = (state && state.setlists) ? state.setlists : [];
+        var prevIdx = parseInt(setlistSelect.value || "0", 10);
+        setlistSelect.innerHTML = "";
+        for (var i = 0; i < 10; i++) {
+            var s = lists[i] || {};
+            var hasData = !!s.presets;
+            var label = (s.name && s.name.length) ? s.name : ("Slot " + (i + 1));
+            if (!hasData) label += " (empty)";
+            var opt = document.createElement("option");
+            opt.value = String(i);
+            opt.textContent = (i + 1) + ". " + label;
+            setlistSelect.appendChild(opt);
+        }
+        setlistSelect.value = String(prevIdx);
+        var sel = lists[prevIdx];
+        if (setlistName) setlistName.value = (sel && sel.name) ? sel.name : "";
+    }
+
+    if (setlistSelect) {
+        setlistSelect.addEventListener("change", function () {
+            var idx = parseInt(setlistSelect.value, 10);
+            var lists = (state && state.setlists) ? state.setlists : [];
+            var sel = lists[idx];
+            if (setlistName) setlistName.value = (sel && sel.name) ? sel.name : "";
+        });
+    }
+    if (setlistSave) {
+        setlistSave.addEventListener("click", function () {
+            var idx = parseInt(setlistSelect.value, 10);
+            var nm = setlistName ? setlistName.value.trim() : "";
+            send({ type: "setlist_save", slot: idx, name: nm });
+        });
+    }
+    if (setlistLoad) {
+        setlistLoad.addEventListener("click", function () {
+            var idx = parseInt(setlistSelect.value, 10);
+            send({ type: "setlist_load", slot: idx });
         });
     }
 
@@ -2070,6 +2261,18 @@
         });
     });
 
+    // Sub-tabs inside MOTION panel (LFO / DELAY).
+    document.querySelectorAll(".motion-subtab-btn").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+            var target = btn.dataset.subtab;
+            document.querySelectorAll(".motion-subtab-btn").forEach(function (b) { b.classList.remove("active"); });
+            document.querySelectorAll(".motion-subpanel").forEach(function (p) { p.classList.remove("active"); });
+            btn.classList.add("active");
+            var panel = document.querySelector('.motion-subpanel[data-subpanel="' + target + '"]');
+            if (panel) panel.classList.add("active");
+        });
+    });
+
     // Frequency params that need log-scale sliders
     var FREQ_PARAMS = {
         "filter_highcut_hz": true, "filter_lowcut_hz": true,
@@ -2081,10 +2284,16 @@
         "eq_lowcut_hz": true,
         "bus_comp_sc_hpf_hz": true,
         "drone_cutoff_hz": true,
+        "delay_low_cut_hz": true, "delay_high_cut_hz": true,
+        "pad_mellow_cutoff_hz": true, "pad_rise_cutoff_hz": true,
+        "eq_band0_freq": true, "eq_band1_freq": true,
+        "eq_band2_freq": true, "eq_band3_freq": true,
     };
 
     var EQ_GAIN_PARAMS = {
         "eq_low_gain": true, "eq_mid_gain": true, "eq_high_gain": true,
+        "eq_band0_gain": true, "eq_band1_gain": true,
+        "eq_band2_gain": true, "eq_band3_gain": true,
     };
 
     function sliderToHz(slider01, minHz, maxHz) {
@@ -2130,6 +2339,7 @@
                 param === "width" || param === "tone_tilt" ||
                 param === "reverb_damp" || param === "reverb_shimmer_fb" ||
                 param === "reverb_noise_mod" || param === "piano_reverb_send" ||
+                param === "piano_delay_send" ||
                 param === "comp_wet" || param === "osc1_reverb_send" ||
                 param === "osc2_reverb_send") {
                 sendValue = value / 100;
@@ -2195,9 +2405,23 @@
             } else if (param === "lfo_depth" || param === "lfo_spread" ||
                 param === "lfo2_depth" || param === "lfo2_spread" ||
                 param === "lfo_smooth" || param === "lfo2_smooth" ||
-                param === "delay_wet" || param === "delay_feedback") {
+                param === "delay_wet" || param === "delay_feedback" ||
+                param === "delay_drive" || param === "delay_width" ||
+                param === "delay_reverse_amount" || param === "delay_reverse_feedback") {
                 sendValue = value / 100;
                 displayValue = Math.round(value) + "%";
+            } else if (param === "delay_reverse_window_ms") {
+                sendValue = value;
+                displayValue = (value >= 1000 ? (value / 1000).toFixed(2) + "s" : Math.round(value) + "ms");
+            } else if (param === "delay_aurora_seconds") {
+                sendValue = value;
+                displayValue = Math.round(value) + "s";
+            } else if (param === "delay_mod_rate_hz") {
+                sendValue = value / 100;
+                displayValue = sendValue.toFixed(2) + "Hz";
+            } else if (param === "delay_mod_depth_ms") {
+                sendValue = value / 10;
+                displayValue = sendValue.toFixed(1) + "ms";
             } else if (param === "lfo_offset_ms" || param === "lfo2_offset_ms") {
                 // Bipolar ms offset. Snap to 0 within ±3ms so "0ms" is a real detent.
                 if (value >= -3 && value <= 3) {
@@ -2235,6 +2459,10 @@
                 var t = value / 1000;
                 sendValue = Math.round(sliderToHz(t, minHz, maxHz));
                 displayValue = formatHz(sendValue);
+            } else if (param.indexOf("eq_band") === 0 && param.indexOf("_q") > 0) {
+                // Piano parametric EQ Q knobs — native float slider value.
+                sendValue = value;
+                displayValue = value.toFixed(1);
             } else {
                 sendValue = value;
                 displayValue = Math.round(value).toString();
@@ -2715,6 +2943,7 @@
                 param === "width" || param === "tone_tilt" ||
                 param === "reverb_damp" || param === "reverb_shimmer_fb" ||
                 param === "reverb_noise_mod" || param === "piano_reverb_send" ||
+                param === "piano_delay_send" ||
                 param === "comp_wet" || param === "osc1_reverb_send" ||
                 param === "osc2_reverb_send") {
                 slider.value = value * 100;
@@ -2734,8 +2963,15 @@
                 param === "lfo_spread" || param === "lfo2_rate_hz" ||
                 param === "lfo2_depth" || param === "lfo2_spread" ||
                 param === "lfo_smooth" || param === "lfo2_smooth" ||
-                param === "delay_wet" || param === "delay_feedback") {
+                param === "delay_wet" || param === "delay_feedback" ||
+                param === "delay_drive" || param === "delay_width" ||
+                param === "delay_mod_rate_hz" || param === "delay_reverse_amount" ||
+                param === "delay_reverse_feedback") {
                 slider.value = value * 100;
+            } else if (param === "delay_reverse_window_ms" || param === "delay_aurora_seconds") {
+                slider.value = value;
+            } else if (param === "delay_mod_depth_ms") {
+                slider.value = value * 10;
             } else if (param === "lfo_offset_ms" || param === "lfo2_offset_ms") {
                 // Raw ms — no scaling.
                 slider.value = value;
@@ -2777,6 +3013,7 @@
                 param === "drive" || param === "width" || param === "tone_tilt" ||
                 param === "reverb_damp" || param === "reverb_shimmer_fb" ||
                 param === "reverb_noise_mod" || param === "piano_reverb_send" ||
+                param === "piano_delay_send" ||
                 param === "comp_wet" || param === "osc1_reverb_send" ||
                 param === "osc2_reverb_send") {
                     valueEl.textContent = Math.round(value * 100) + "%";
@@ -2813,8 +3050,18 @@
                     valueEl.textContent = value.toFixed(2) + "Hz";
                 } else if (param === "lfo_depth" || param === "lfo_spread" ||
                     param === "lfo2_depth" || param === "lfo2_spread" ||
-                    param === "delay_wet" || param === "delay_feedback") {
+                    param === "delay_wet" || param === "delay_feedback" ||
+                    param === "delay_drive" || param === "delay_width" ||
+                    param === "delay_reverse_amount" || param === "delay_reverse_feedback") {
                     valueEl.textContent = Math.round(value * 100) + "%";
+                } else if (param === "delay_reverse_window_ms") {
+                    valueEl.textContent = (value >= 1000 ? (value / 1000).toFixed(2) + "s" : Math.round(value) + "ms");
+                } else if (param === "delay_aurora_seconds") {
+                    valueEl.textContent = Math.round(value) + "s";
+                } else if (param === "delay_mod_rate_hz") {
+                    valueEl.textContent = value.toFixed(2) + "Hz";
+                } else if (param === "delay_mod_depth_ms") {
+                    valueEl.textContent = value.toFixed(1) + "ms";
                 } else if (param === "lfo_offset_ms" || param === "lfo2_offset_ms") {
                     var _sgn = value > 0 ? "+" : "";
                     valueEl.textContent = _sgn + Math.round(value) + "ms";
@@ -2834,6 +3081,8 @@
                     valueEl.textContent = sign + value.toFixed(1) + "dB";
                 } else if (FREQ_PARAMS[param]) {
                     valueEl.textContent = formatHz(value);
+                } else if (param.indexOf("eq_band") === 0 && param.indexOf("_q") > 0) {
+                    valueEl.textContent = value.toFixed(1);
                 } else {
                     valueEl.textContent = Math.round(value).toString();
                 }

@@ -6,13 +6,19 @@
 set -e
 
 AUTOSTART=1
+INSTALL_SALAMANDER=1
 for arg in "$@"; do
     case "$arg" in
-        --no-autostart) AUTOSTART=0 ;;
+        --no-autostart)  AUTOSTART=0 ;;
+        --no-salamander) INSTALL_SALAMANDER=0 ;;
         -h|--help)
-            echo "Usage: ./install.sh [--no-autostart]"
-            echo "  --no-autostart   Skip the systemd user service install."
-            echo "                   Launch on demand with ./stave-synth.sh instead."
+            echo "Usage: ./install.sh [--no-autostart] [--no-salamander]"
+            echo "  --no-autostart    Skip the systemd user service install."
+            echo "                    Launch on demand with ./stave-synth.sh instead."
+            echo "  --no-salamander   Skip the Salamander Grand Piano download (~296MB"
+            echo "                    download → 1.2GB on disk). Use if you're on a slow"
+            echo "                    link or can't afford the space; the installer will"
+            echo "                    fall back to FluidR3_GM via apt."
             exit 0
             ;;
     esac
@@ -198,23 +204,77 @@ if [ -n "$FOUND_SF" ]; then
     ln -sf "$FOUND_SF" "$SOUNDFONT_DIR/system.sf2" 2>/dev/null || true
 fi
 
-# Install TimGM6mb. Prefer the copy bundled in the repo (offline-proof);
-# fall back to Debian package; fall back to direct download.
-BUNDLED_SF="$SCRIPT_DIR/soundfonts/TimGM6mb.sf2"
-if [ ! -f "$SOUNDFONT_DIR/TimGM6mb.sf2" ]; then
-    if [ -f "$BUNDLED_SF" ]; then
-        cp "$BUNDLED_SF" "$SOUNDFONT_DIR/TimGM6mb.sf2"
-        echo -e "${GREEN}  Installed bundled TimGM6mb.sf2${NC}"
-    elif apt-cache show timgm6mb-soundfont > /dev/null 2>&1; then
-        sudo apt-get install -y timgm6mb-soundfont > /dev/null 2>&1 && \
-            ln -sf /usr/share/sounds/sf2/TimGM6mb.sf2 "$SOUNDFONT_DIR/TimGM6mb.sf2" && \
-            echo -e "${GREEN}  Installed TimGM6mb via apt${NC}"
+# Salamander Grand Piano — FreePats SF2 build, 16 velocity layers, Yamaha C5.
+# CC-BY 3.0 (Alexander Holm; SF2 assembly by Roberto @ FreePats). 296MB download
+# → 1.2GB on disk. The default piano; run with --no-salamander if you want to
+# skip it (e.g. slow link or tight storage — fallback chain below handles it).
+SAL_INSTALLED=0
+if [ "$INSTALL_SALAMANDER" = "1" ]; then
+    if [ ! -f "$SOUNDFONT_DIR/Salamander.sf2" ]; then
+        echo "  Downloading Salamander Grand Piano (~296MB, extracts to 1.2GB)..."
+        SAL_URL="https://freepats.zenvoid.org/Piano/SalamanderGrandPiano/SalamanderGrandPiano-SF2-V3+20200602.tar.xz"
+        TMP_TAR="$(mktemp --suffix=.tar.xz)"
+        if wget -q --show-progress "$SAL_URL" -O "$TMP_TAR"; then
+            TMP_DIR="$(mktemp -d)"
+            tar xf "$TMP_TAR" -C "$TMP_DIR"
+            SAL_SF2="$(find "$TMP_DIR" -name '*.sf2' -type f | head -1)"
+            SAL_LIC="$(find "$TMP_DIR" -name 'readme.txt' -type f | head -1)"
+            if [ -n "$SAL_SF2" ]; then
+                mv "$SAL_SF2" "$SOUNDFONT_DIR/Salamander.sf2"
+                [ -n "$SAL_LIC" ] && cp "$SAL_LIC" "$SOUNDFONT_DIR/Salamander-LICENSE.txt"
+                echo -e "${GREEN}  Installed Salamander Grand Piano${NC}"
+                SAL_INSTALLED=1
+            else
+                echo -e "${ORANGE}  Salamander archive unpacked but no .sf2 found${NC}"
+            fi
+            rm -rf "$TMP_DIR" "$TMP_TAR"
+        else
+            echo -e "${ORANGE}  Salamander download failed — falling back to FluidR3_GM${NC}"
+            rm -f "$TMP_TAR"
+        fi
     else
-        echo "  Attempting to download TimGM6mb soundfont (~6MB)..."
-        wget -q "https://sourceforge.net/projects/mscore/files/soundfont/TimGM6mb.sf2/download" \
-            -O "$SOUNDFONT_DIR/TimGM6mb.sf2" 2>/dev/null && \
-            echo -e "${GREEN}  Downloaded TimGM6mb.sf2${NC}" || \
-            echo -e "${ORANGE}  Could not install a soundfont. Drop a .sf2 file in: $SOUNDFONT_DIR${NC}"
+        echo -e "${GREEN}  Salamander Grand Piano already installed${NC}"
+        SAL_INSTALLED=1
+    fi
+fi
+
+# Rhodes MKII — free CC-BY 3.0 SF2, ~73MB. Powers both the "Rhodes" and
+# "Suitcase" soundfont presets (Suitcase = same file + internal tremolo LFO).
+# Installed by default; tied to the same --no-salamander flag because if
+# you're on a tight install you probably want to skip both.
+if [ "$INSTALL_SALAMANDER" = "1" ]; then
+    if [ ! -f "$SOUNDFONT_DIR/Rhodes.sf2" ]; then
+        echo "  Downloading Rhodes MKII Piano (~73MB)..."
+        RHODES_URL="https://musical-artifacts.com/artifacts/5001/Rhodes_MKII_Piano.sf2"
+        if wget -q --show-progress -U "Mozilla/5.0" "$RHODES_URL" -O "$SOUNDFONT_DIR/Rhodes.sf2"; then
+            echo -e "${GREEN}  Installed Rhodes MKII Piano (CC-BY 3.0)${NC}"
+        else
+            echo -e "${ORANGE}  Rhodes download failed — Rhodes/Suitcase presets will be unavailable${NC}"
+            rm -f "$SOUNDFONT_DIR/Rhodes.sf2"
+        fi
+    else
+        echo -e "${GREEN}  Rhodes MKII Piano already installed${NC}"
+    fi
+    # Copy Rhodes attribution next to the file.
+    BUNDLED_RHODES_LIC="$SCRIPT_DIR/soundfonts/RHODES-LICENSE.txt"
+    if [ -f "$BUNDLED_RHODES_LIC" ]; then
+        cp "$BUNDLED_RHODES_LIC" "$SOUNDFONT_DIR/Rhodes-LICENSE.txt"
+    fi
+fi
+
+# Fallback: FluidR3_GM (via apt `fluid-soundfont-gm`). Always present on a
+# Debian-based install after the apt step above, and gives us something piano-
+# capable even when Salamander isn't available (slow link, --no-salamander,
+# or download failure).
+if [ "$SAL_INSTALLED" != "1" ] && [ ! -f "$SOUNDFONT_DIR/FluidR3_GM.sf2" ]; then
+    if [ -f /usr/share/sounds/sf2/FluidR3_GM.sf2 ]; then
+        ln -sf /usr/share/sounds/sf2/FluidR3_GM.sf2 "$SOUNDFONT_DIR/FluidR3_GM.sf2"
+        echo -e "${GREEN}  Symlinked FluidR3_GM from apt package${NC}"
+    elif apt-cache show fluid-soundfont-gm > /dev/null 2>&1; then
+        sudo apt-get install -y fluid-soundfont-gm > /dev/null 2>&1 && \
+            ln -sf /usr/share/sounds/sf2/FluidR3_GM.sf2 "$SOUNDFONT_DIR/FluidR3_GM.sf2" && \
+            echo -e "${GREEN}  Installed FluidR3_GM via apt${NC}" || \
+            echo -e "${ORANGE}  FluidR3_GM install failed — piano will be silent${NC}"
     fi
 fi
 

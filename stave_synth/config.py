@@ -155,7 +155,25 @@ DEFAULT_STATE = {
         "delay_time_ms": 375.0,
         "delay_offset_ms": 0.0,
         "delay_feedback": 0.35,
+        "delay_oblivion": False,
+        "delay_rate_multiplier": 1.0,
         "delay_wet": 0.0,
+        "delay_low_cut_hz": 20.0,
+        "delay_high_cut_hz": 18000.0,
+        "delay_drive": 0.0,
+        "delay_width": 1.0,
+        "delay_mod_rate_hz": 0.5,
+        "delay_mod_depth_ms": 0.0,
+        "delay_reverse_amount": 0.0,
+        "delay_reverse_window_ms": 500.0,
+        "delay_reverse_window_mode": "FREE",
+        "delay_reverse_feedback": 0.0,
+        "delay_aurora_enabled": False,
+        "delay_aurora_seconds": 5.0,
+        "pad_rise_seconds": 5.0,
+        "pad_rise_cutoff_hz": 3000.0,
+        "pad_mellow_enabled": False,
+        "pad_mellow_cutoff_hz": 400.0,
         "motion_mix": 1.0,
         "freeze_enabled": False,
         "sympathetic_enabled": False,
@@ -169,10 +187,17 @@ DEFAULT_STATE = {
     },
     "piano": {
         "enabled": True,
-        "soundfont": "FluidR3_GM",
+        "soundfont": "Salamander",
         "sound": "acoustic_grand_piano",
-        "filter_highcut_hz": 20000,
-        "filter_lowcut_hz": 20,
+        "voicing": "acoustic",
+        "eq_bands": [
+            {"freq_hz": 150.0,   "gain_db":  2.0, "q": 0.8, "enabled": True},
+            {"freq_hz": 300.0,   "gain_db": -2.5, "q": 1.0, "enabled": True},
+            {"freq_hz": 2800.0,  "gain_db": -3.0, "q": 1.5, "enabled": True},
+            {"freq_hz": 10000.0, "gain_db": -1.5, "q": 0.7, "enabled": True},
+        ],
+        "filter_highcut_hz": 18000,
+        "filter_lowcut_hz": 40,
         "tone_range_min": 200,
         "tone_range_max": 20000,
         "volume": 0.5,
@@ -239,17 +264,21 @@ DEFAULT_STATE = {
         # routes a copy into whichever reverb type is active, so BLOOM on
         # piano or PLATE on organ is a one-knob choice.
         "piano_reverb_send": 0.0,
+        "piano_delay_send": 0.0,
     },
     "midi_cc_map": {},
     "macros": [
-        {"name": "M1", "value": 0.0, "assignments": []},
-        {"name": "M2", "value": 0.0, "assignments": []},
-        {"name": "M3", "value": 0.0, "assignments": []},
-        {"name": "M4", "value": 0.0, "assignments": []},
-        {"name": "M5", "value": 0.0, "assignments": []},
-        {"name": "M6", "value": 0.0, "assignments": []},
-        {"name": "M7", "value": 0.0, "assignments": []},
-        {"name": "M8", "value": 0.0, "assignments": []},
+        {"name": "M1", "value": 0.0, "bipolar": False, "assignments": []},
+        {"name": "M2", "value": 0.0, "bipolar": False, "assignments": []},
+        {"name": "M3", "value": 0.0, "bipolar": False, "assignments": []},
+        {"name": "M4", "value": 0.0, "bipolar": False, "assignments": []},
+        {"name": "M5", "value": 0.0, "bipolar": False, "assignments": []},
+        {"name": "M6", "value": 0.0, "bipolar": False, "assignments": []},
+        {"name": "M7", "value": 0.0, "bipolar": False, "assignments": []},
+        {"name": "M8", "value": 0.0, "bipolar": False, "assignments": []},
+    ],
+    "setlists": [
+        {"name": "", "presets": None} for _ in range(10)
     ],
     "ui": {
         "preset_saved": [False] * 10,
@@ -316,6 +345,40 @@ def load_state():
             arr = list(arr) + [filler] * (10 - len(arr))
             ui[key] = arr
 
+    # Migration: piano voicings were renamed 2026-04-20 to short single-word
+    # keys ("acoustic_grand" → "acoustic", etc). Also the old electric_piano_*
+    # entries are gone — those are Sound-dropdown concerns, not voicings.
+    _VOICING_RENAME = {
+        "acoustic_grand":   "acoustic",
+        "bright_studio":    "bright",
+        "mellow_warm":      "mellow",
+        "electric_piano_1": "acoustic",
+        "electric_piano_2": "acoustic",
+    }
+    _VALID_VOICINGS = {"acoustic", "bright", "mellow", "warm", "dark", "vintage", "stage"}
+    # Migration: soundfont names moved from raw file stems to preset keys
+    # 2026-04-20. "FluidR3_GM" saved state → "Fluid" preset, etc.
+    _SOUNDFONT_RENAME = {
+        "FluidR3_GM": "Fluid",
+        "TimGM6mb":   "Fluid",   # TimGM6mb removed entirely; Fluid is the closest GM bank
+        "Arachno":    "Fluid",
+        "system":     "Fluid",
+        "default-GM": "Fluid",
+    }
+    _VALID_SOUNDFONTS = {"Salamander", "Fluid", "Rhodes", "Suitcase"}
+    piano_state = state.get("piano")
+    if isinstance(piano_state, dict):
+        v = piano_state.get("voicing")
+        if v in _VOICING_RENAME:
+            piano_state["voicing"] = _VOICING_RENAME[v]
+        elif v not in _VALID_VOICINGS:
+            piano_state["voicing"] = "acoustic"
+        sf = piano_state.get("soundfont")
+        if sf in _SOUNDFONT_RENAME:
+            piano_state["soundfont"] = _SOUNDFONT_RENAME[sf]
+        elif sf not in _VALID_SOUNDFONTS:
+            piano_state["soundfont"] = "Salamander"
+
     # Migration: extend macros array to 8 if saved state had fewer (handles
     # upgrading from the original 4-macro layout to the 4+4 A/B-layer design).
     macros = state.get("macros", [])
@@ -323,8 +386,19 @@ def load_state():
         macros = []
     if len(macros) < 8:
         for idx in range(len(macros), 8):
-            macros.append({"name": f"M{idx+1}", "value": 0.0, "assignments": []})
+            macros.append({"name": f"M{idx+1}", "value": 0.0, "bipolar": False, "assignments": []})
         state["macros"] = macros
+    for m in macros:
+        if isinstance(m, dict) and "bipolar" not in m:
+            m["bipolar"] = False
+    # Migration: add setlists array if missing or short
+    setlists = state.get("setlists", [])
+    if not isinstance(setlists, list):
+        setlists = []
+    if len(setlists) < 10:
+        for _ in range(10 - len(setlists)):
+            setlists.append({"name": "", "presets": None})
+        state["setlists"] = setlists
     return state
 
 

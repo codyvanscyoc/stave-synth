@@ -15,6 +15,18 @@
     --font: 'Courier New', 'Menlo', 'Monaco', monospace;
 }
 
+/* Touch devices (iPad, phones) get brighter dim-text + thicker borders so the
+   menu reads cleanly under their typically-lower-contrast LCD vs the desktop. */
+@media (hover: none) {
+    :root {
+        --text-green-dim: #00904B;       /* was #006B38 — ~30% brighter */
+        --text-orange-dim: #C75D17;       /* was #994611 — ~30% brighter */
+        --text-muted: #807760;            /* was #555544 — ~50% brighter */
+    }
+    .help-text { color: #80A89A; }
+    .setting-section { color: var(--text-green); }
+}
+
 .hidden { display: none !important; }
 
 * {
@@ -91,7 +103,7 @@ body.retro-amber {
     align-items: center;
     justify-content: space-between;  /* evenly distribute gaps across all items */
     padding: 1vh 2vw;
-    margin-top: 5vh;  /* breathe away from the screen edge — shifts whole app down */
+    margin-top: 7vh;  /* breathe away from the screen edge — shifts whole app down */
     border-bottom: 1px solid var(--border-green);
     height: 7vh;
     min-height: 32px;
@@ -694,11 +706,11 @@ body.retro-amber {
     border: 1px solid var(--border-green);
     color: var(--text-green-dim);
     font-family: var(--font);
-    font-size: clamp(10px, 1.7vw, 13px);
-    padding: 0.6vh 1.6vw;
+    font-size: clamp(11px, 1.9vw, 14px);
+    padding: 0.9vh 2.0vw;
     cursor: pointer;
-    min-height: 3.3vh;
-    min-width: 3em;
+    min-height: 4.2vh;
+    min-width: 3.4em;
     flex-shrink: 0;
 }
 
@@ -713,11 +725,11 @@ body.retro-amber {
     border: 1px solid var(--border-green);
     color: var(--text-green-dim);
     font-family: var(--font);
-    font-size: clamp(10px, 1.7vw, 13px);
-    padding: 0.5vh 1vw;
+    font-size: clamp(11px, 1.9vw, 14px);
+    padding: 0.7vh 1.2vw;
     cursor: pointer;
-    min-width: 2.2em;
-    min-height: 3.3vh;
+    min-width: 2.5em;
+    min-height: 4.2vh;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -948,14 +960,20 @@ body.retro-amber {
     color: var(--bg);
     border-color: var(--text-green);
 }
+/* CLEAR sits to the left of EDIT, visible only in edit mode (red border;
+   solid red bg when armed). Hidden via display:none outside edit so the
+   macro slots reclaim the space. */
+#macro-clear-btn {
+    color: var(--text-red, #ff4d6a);
+    border-color: var(--text-red, #ff4d6a);
+    display: none;
+}
+body.macros-editing #macro-clear-btn { display: inline-flex; }
 #macro-clear-btn.active {
     background: var(--text-red, #ff4d6a);
     color: var(--bg);
     border-color: var(--text-red, #ff4d6a);
 }
-/* CLEAR is gated behind EDIT — only visible while edit mode is on */
-#macro-clear-btn { display: none; }
-body.macros-editing #macro-clear-btn { display: inline-flex; }
 /* Tap-target hint: macro slots dashed-outlined while edit mode is on */
 body.macros-editing .macro-slot {
     outline: 1px dashed var(--text-green);
@@ -1023,12 +1041,16 @@ body.macros-clearing .macro-slot {
                 inset 0 0 6px hsla(var(--key-hue), 100%, 85%, 0.6);
 }
 .pad-vol-wrap {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 0.4vw;
-    min-width: clamp(90px, 14vw, 160px);
+    width: clamp(110px, 16vw, 180px);
+    min-width: clamp(110px, 16vw, 180px);
+    max-width: clamp(110px, 16vw, 180px);
     padding: 0 0.6vw;
     border: 1px solid var(--border-green);
+    box-sizing: border-box;
 }
 .pad-vol-label {
     font-size: clamp(8px, 1.2vw, 10px);
@@ -1036,31 +1058,131 @@ body.macros-clearing .macro-slot {
     letter-spacing: 0.1em;
     flex: 0 0 auto;
 }
-#pad-vol {
+.pad-rise-label { color: #ff7eb3; }
+
+/* Toggle states: only one of buttons / vol-view / rise-view shows.
+   Each view fills the same fixed-width frame so the wrap doesn't resize. */
+.pad-vol-buttons { display: none; width: 100%; align-items: center; gap: 0.3vw; }
+.pad-vol-view {
+    display: none;
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.2vh;
+    position: relative;
+    padding: 0.3vh 0;
+}
+.pad-vol-wrap[data-state="buttons"] .pad-vol-buttons { display: flex; gap: 0.3vw; }
+.pad-vol-wrap[data-state="vol"]     .pad-vol-only { display: flex; }
+.pad-vol-wrap[data-state="rise"]    .pad-rise-only { display: flex; }
+.pad-vol-view .pad-vol-label {
+    align-self: flex-start;
+}
+.pad-vol-view input[type="range"] {
+    width: 100%;
+}
+.pad-vol-view .pad-rise-value {
+    position: absolute;
+    bottom: 2px;
+    right: 18px;
+    font-size: clamp(8px, 1.05vw, 10px);
+    color: #ff7eb3;
+    opacity: 0.85;
+    min-width: 0;
+}
+
+.pad-mode-btn {
+    flex: 1;
+    background: transparent;
+    border: 1px solid var(--text-green);
+    color: var(--text-green);
+    font-family: var(--font);
+    font-size: clamp(9px, 1.3vw, 11px);
+    letter-spacing: 0.15em;
+    font-weight: bold;
+    padding: 0.6vh 0;
+    cursor: pointer;
+    border-radius: 2px;
+    transition: background 100ms ease, color 100ms ease;
+}
+.pad-mode-btn:hover { background: rgba(0, 212, 170, 0.12); }
+.pad-rise-btn {
+    color: #ff7eb3;
+    border-color: #ff7eb3;
+}
+.pad-rise-btn:hover { background: rgba(255, 126, 179, 0.12); }
+
+.pad-mode-back {
+    position: absolute;
+    top: 1px;
+    right: 2px;
+    background: transparent;
+    border: none;
+    color: var(--text-green-dim);
+    font-size: clamp(13px, 1.6vw, 16px);
+    line-height: 1;
+    padding: 0 4px;
+    cursor: pointer;
+    z-index: 2;
+}
+.pad-mode-back:hover { color: var(--text-green); }
+
+.pad-rise-value {
+    flex: 0 0 auto;
+    font-size: clamp(9px, 1.2vw, 11px);
+    color: var(--text-green);
+    font-family: var(--font);
+    min-width: 3em;
+    text-align: right;
+}
+
+/* When rise mode is armed: outline the pad keys in aurora pink so it's
+   visually distinct from the normal green pad/UI palette. */
+body.pad-rise-armed .pad-key {
+    box-shadow: inset 0 0 0 1px #ff7eb3, 0 0 6px rgba(255, 126, 179, 0.5);
+}
+/* Pad VOL/RISE sliders — styled like the main faders: dark track behind,
+   colored fill that grows from left to current position. JS updates the
+   --pct CSS var as the slider moves so the fill width tracks live. */
+#pad-vol, #pad-rise-secs {
     flex: 1;
     -webkit-appearance: none;
     appearance: none;
-    height: 3px;
-    background: var(--border-green);
+    height: 10px;
+    border: 1px solid var(--border-green);
+    background:
+        linear-gradient(to right,
+            var(--pad-fill-color, var(--text-green)) 0%,
+            var(--pad-fill-color, var(--text-green)) calc(var(--pct, 0) * 1%),
+            rgba(0, 0, 0, 0.55) calc(var(--pct, 0) * 1%),
+            rgba(0, 0, 0, 0.55) 100%);
     outline: none;
     cursor: pointer;
+    box-sizing: border-box;
 }
-#pad-vol::-webkit-slider-thumb {
+#pad-rise-secs {
+    --pad-fill-color: #ff7eb3;
+    border-color: rgba(255, 126, 179, 0.55);
+}
+#pad-vol::-webkit-slider-thumb,
+#pad-rise-secs::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    background: var(--text-green);
+    width: 12px;
+    height: 16px;
+    border-radius: 2px;
+    background: var(--pad-fill-color, var(--text-green));
+    border: 1px solid rgba(0, 0, 0, 0.6);
     cursor: pointer;
 }
-#pad-vol::-moz-range-thumb {
-    width: 14px;
-    height: 14px;
-    border-radius: 50%;
-    background: var(--text-green);
+#pad-vol::-moz-range-thumb,
+#pad-rise-secs::-moz-range-thumb {
+    width: 12px;
+    height: 16px;
+    border-radius: 2px;
+    background: var(--pad-fill-color, var(--text-green));
+    border: 1px solid rgba(0, 0, 0, 0.6);
     cursor: pointer;
-    border: none;
 }
 #pad-fade-btn {
     flex: 0 0 auto;
@@ -1088,12 +1210,13 @@ body.macros-clearing .macro-slot {
 }
 .macro-fill {
     position: absolute;
-    left: 0; top: 0; bottom: 0;
-    width: calc(var(--macro-value, 0) * 100%);
+    top: 0; bottom: 0;
+    left: calc(var(--macro-fill-start, 0) * 100%);
+    width: calc((var(--macro-fill-end, var(--macro-value, 0)) - var(--macro-fill-start, 0)) * 100%);
     background: var(--macro-color);
     opacity: 0.45;
     pointer-events: none;
-    transition: width 30ms linear;
+    transition: left 30ms linear, width 30ms linear;
 }
 .macro-label {
     position: relative;
@@ -1117,6 +1240,57 @@ body.macros-clearing .macro-slot {
 .macro-slot.learn {
     box-shadow: 0 0 8px var(--macro-color), inset 0 0 6px var(--macro-color);
     animation: macro-learn-pulse 1.2s ease-in-out infinite;
+}
+/* Bipolar mode: fill grows from center outward (start/end driven by JS).
+   Center tick gives visual "rest" reference. */
+.macro-slot.bipolar::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 25%;
+    bottom: 25%;
+    width: 1px;
+    background: var(--macro-color);
+    opacity: 0.55;
+    pointer-events: none;
+    z-index: 1;
+}
+.macro-bipolar-btn {
+    position: absolute;
+    bottom: 2px;
+    right: 4px;
+    z-index: 2;
+    background: transparent;
+    border: 1px solid var(--macro-color);
+    color: var(--macro-color);
+    font-family: var(--font);
+    font-size: clamp(9px, 1.2vw, 12px);
+    line-height: 1;
+    padding: 1px 4px;
+    cursor: pointer;
+    border-radius: 2px;
+    opacity: 0.45;
+    pointer-events: none;  /* non-edit: visible indicator only, no tap */
+    transition: opacity 120ms ease, font-size 120ms ease, padding 120ms ease, width 120ms ease, height 120ms ease;
+}
+.macro-slot.bipolar .macro-bipolar-btn {
+    background: var(--macro-color);
+    color: #000;
+    opacity: 0.85;
+}
+/* Edit mode: button grows to ~1/3 slot width for easy finger tap. */
+body.macros-editing .macro-bipolar-btn {
+    pointer-events: auto;
+    opacity: 1;
+    width: 33%;
+    height: 55%;
+    bottom: 2px;
+    right: 2px;
+    font-size: clamp(14px, 2.4vw, 22px);
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 @keyframes macro-learn-pulse {
     0%, 100% { box-shadow: 0 0 4px var(--macro-color), inset 0 0 4px var(--macro-color); }
@@ -1414,14 +1588,17 @@ body.macro-learning #settings-box {
 
 #settings-content {
     flex: 1;
+    /* Vertical scroll when a panel has more content than the modal height
+     * (e.g. PIANO with its 4-band EQ + compressor, GLOBAL with meters + MIDI
+     * map). overflow-x stays hidden so bands/knobs never push a horizontal
+     * bar. See .thin-green-scrollbar below for the styled scrollbar. */
     overflow-y: auto;
     overflow-x: hidden;
-    padding: 1.5vh 2vw;
+    padding: 0.8vh 1.6vw;
 }
 
 .settings-panel {
     display: none;
-    overflow-x: hidden;
 }
 
 .settings-panel.active {
@@ -1478,7 +1655,7 @@ body.macro-learning #settings-box {
 .lfo-dual, .osc-dual {
     display: flex;
     gap: 1.5vw;
-    align-items: flex-start;
+    align-items: stretch;
 }
 .lfo-col, .osc-col {
     flex: 1 1 0;
@@ -1541,6 +1718,322 @@ body.macro-learning #settings-box {
     padding: 0.6vh 0;
     gap: 1.2vw;
 }
+
+/* MOTION sub-tab strip — sits at top of motion panel, secondary visual
+   weight to the main tab strip but using the same green theme. */
+.motion-subtab-strip {
+    display: flex;
+    gap: 0.4vw;
+    margin-bottom: 0.8vh;
+    border-bottom: 1px solid rgba(0, 212, 170, 0.25);
+    padding-bottom: 0.4vh;
+}
+.motion-subtab-btn {
+    background: transparent;
+    border: 1px solid rgba(0, 212, 170, 0.35);
+    color: var(--text-green);
+    font-family: var(--font);
+    font-size: clamp(10px, 1.4vw, 13px);
+    letter-spacing: 0.15em;
+    font-weight: bold;
+    padding: 0.5vh 1.6vw;
+    border-radius: 2px;
+    cursor: pointer;
+    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.motion-subtab-btn:hover { border-color: var(--text-green); }
+.motion-subtab-btn.active {
+    background: var(--text-green);
+    color: var(--bg);
+    border-color: var(--text-green);
+}
+.motion-subpanel { display: none; }
+.motion-subpanel.active { display: block; }
+
+/* OBLIVION — infinite-hold delay toggle. Lives next to WET in the
+   feedback row. Idle: dim purple outline. Active: pulsing magenta glow
+   that reads as "this thing is going to space". */
+.oblivion-btn-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    align-self: center;  /* vertical center within the knob row */
+    cursor: pointer;
+    margin: 0 0.2vw;
+    flex: 0 0 auto;
+}
+.oblivion-btn-wrap .setting-checkbox {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+.oblivion-btn {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    line-height: 1.05;
+    font-family: var(--font);
+    font-size: clamp(9px, 1.25vw, 12px);
+    letter-spacing: 0.12em;
+    font-weight: bold;
+    color: #b06eff;
+    border: 1px solid #b06eff;
+    background: transparent;
+    padding: 0.7vh 0.5vw;
+    border-radius: 3px;
+    min-width: clamp(48px, 5.5vw, 72px);
+    text-align: center;
+    transition: color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+}
+.oblivion-btn-wrap .setting-checkbox:checked ~ .oblivion-btn {
+    color: #fff;
+    background: #b06eff;
+    box-shadow: 0 0 12px #b06eff, 0 0 24px rgba(176, 110, 255, 0.6),
+                inset 0 0 8px rgba(255, 255, 255, 0.4);
+    animation: oblivion-pulse 1.6s ease-in-out infinite;
+}
+@keyframes oblivion-pulse {
+    0%, 100% { box-shadow: 0 0 8px #b06eff, 0 0 16px rgba(176, 110, 255, 0.5); }
+    50%      { box-shadow: 0 0 18px #b06eff, 0 0 36px rgba(176, 110, 255, 0.8); }
+}
+
+/* AURORA — sunrise/rise mode for reverse delay. Same vertical-pill pattern
+   as OBLIVION but pink→orange gradient that glows on activation. */
+.aurora-btn-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    align-self: center;
+    cursor: pointer;
+    margin: 0 0.2vw;
+    flex: 0 0 auto;
+}
+.aurora-btn-wrap .setting-checkbox {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+.aurora-btn {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    line-height: 1.05;
+    font-family: var(--font);
+    font-size: clamp(9px, 1.25vw, 12px);
+    letter-spacing: 0.12em;
+    font-weight: bold;
+    color: #ff7eb3;
+    border: 1px solid #ff7eb3;
+    background: transparent;
+    padding: 0.7vh 0.5vw;
+    border-radius: 3px;
+    min-width: clamp(48px, 5.5vw, 72px);
+    text-align: center;
+    transition: color 120ms ease, background 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+}
+.aurora-btn-wrap .setting-checkbox:checked ~ .aurora-btn {
+    color: #fff;
+    background: linear-gradient(135deg, #ff7eb3 0%, #ff9a3c 100%);
+    border-color: #ff9a3c;
+    box-shadow: 0 0 14px #ff9a3c, 0 0 28px rgba(255, 154, 60, 0.55),
+                inset 0 0 10px rgba(255, 255, 255, 0.4);
+    animation: aurora-pulse 2.2s ease-in-out infinite;
+}
+@keyframes aurora-pulse {
+    0%, 100% { box-shadow: 0 0 10px #ff9a3c, 0 0 20px rgba(255, 154, 60, 0.5); }
+    50%      { box-shadow: 0 0 20px #ff7eb3, 0 0 40px rgba(255, 126, 179, 0.75); }
+}
+
+/* OSC tab title bar — sits ABOVE the dual columns, breaking the column
+   divider line. OSC 1 / [LINK pill] / OSC 2 in one horizontal strip,
+   each side aligned over its column. */
+.osc-title-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.4vw;
+    padding: 0.2vh 0 0.5vh 0;
+    border-bottom: 1px solid rgba(0, 191, 99, 0.25);
+    margin-bottom: 0.4vh;
+}
+.osc-title-side {
+    flex: 1;
+    font-family: var(--font);
+    font-size: clamp(11px, 1.6vw, 14px);
+    color: var(--text-green);
+    letter-spacing: 0.3em;
+    font-weight: 600;
+    text-align: center;
+}
+.osc-link-pill-wrap {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    position: relative;
+}
+.osc-link-pill-wrap .setting-checkbox {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+.osc-link-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.3vw;
+    font-family: var(--font);
+    font-size: clamp(10px, 1.3vw, 13px);
+    letter-spacing: 0.2em;
+    font-weight: bold;
+    color: var(--text-green-dim);
+    border: 1px solid var(--text-green-dim);
+    background: var(--bg);
+    padding: 0.5vh 1.0vw;
+    border-radius: 999px;  /* full pill */
+    transition: color 150ms ease, background 150ms ease, border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
+}
+.osc-link-pill .link-glyph {
+    font-size: clamp(12px, 1.5vw, 15px);
+    line-height: 1;
+}
+/* Active state — bright green pop, glows, slight scale up. */
+.osc-link-pill-wrap .setting-checkbox:checked ~ .osc-link-pill {
+    color: var(--bg);
+    background: var(--text-green);
+    border-color: var(--text-green);
+    box-shadow: 0 0 10px rgba(0, 191, 99, 0.7), 0 0 20px rgba(0, 191, 99, 0.35),
+                inset 0 0 8px rgba(255, 255, 255, 0.3);
+    transform: scale(1.04);
+}
+
+/* OSC tab compact "shared" strip — UNISON / STEREO / SHARED FILTER all in one
+   horizontal row at the bottom of the OSC tab. Designed to be small so the
+   OSC1/OSC2 dual columns dominate the top of the page. */
+.osc-shared-strip {
+    display: flex;
+    gap: 0.8vw;
+    align-items: stretch;
+    margin-top: 0.4vh;
+    padding-top: 0.3vh;
+    border-top: 1px solid rgba(0, 191, 99, 0.25);
+}
+.shared-block {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3vh;
+}
+.shared-filter-block { flex: 1.4; }  /* filter needs more room for L/H */
+.shared-label {
+    font-family: var(--font);
+    font-size: clamp(9px, 1.15vw, 11px);
+    color: var(--text-green);
+    letter-spacing: 0.18em;
+    font-weight: 600;
+}
+.shared-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4vw;
+    flex-wrap: nowrap;
+}
+.shared-mini {
+    font-size: clamp(9px, 1.1vw, 11px);
+    color: var(--text-green-dim);
+    flex: 0 0 auto;
+}
+.mini-slider {
+    flex: 1;
+    min-width: 30px;
+    height: 4px;
+}
+.mini-val {
+    flex: 0 0 auto;
+    font-size: clamp(9px, 1.1vw, 11px);
+    min-width: 2.5em;
+    text-align: right;
+}
+
+/* L/H stacked sliders — two thin sliders sharing the same horizontal track.
+   Filter Min and Max can pass each other freely. L is dim cyan-green, H is
+   warmer green so they read distinctly when overlapping. */
+.lh-stack {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 80px;
+}
+.lh-track {
+    display: flex;
+    align-items: center;
+    gap: 0.3vw;
+}
+.lh-tag {
+    font-family: var(--font);
+    font-size: clamp(8px, 1.0vw, 10px);
+    font-weight: bold;
+    width: 0.9em;
+    text-align: center;
+    flex: 0 0 auto;
+}
+.lh-tag-l { color: #5DD8C8; }   /* low cut — cooler tint */
+.lh-tag-h { color: #00BF63; }   /* high cut — primary green */
+.lh-slider {
+    flex: 1;
+    height: 3px;
+    -webkit-appearance: none;
+    appearance: none;
+    outline: none;
+    cursor: pointer;
+}
+.lh-l { background: #5DD8C8; }
+.lh-h { background: #00BF63; }
+.lh-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 8px;
+    height: 12px;
+    border-radius: 1px;
+    background: var(--bg);
+    border: 1px solid currentColor;
+    cursor: pointer;
+}
+.lh-l::-webkit-slider-thumb { color: #5DD8C8; }
+.lh-h::-webkit-slider-thumb { color: #00BF63; }
+.lh-slider::-moz-range-thumb {
+    width: 8px;
+    height: 12px;
+    border-radius: 1px;
+    background: var(--bg);
+    border: 1px solid currentColor;
+    cursor: pointer;
+}
+.lh-l::-moz-range-thumb { color: #5DD8C8; }
+.lh-h::-moz-range-thumb { color: #00BF63; }
+.lh-val { font-size: clamp(8px, 1.0vw, 10px); min-width: 3.5em; }
+
+/* Setlist row in Global tab — dropdown + rename input + save/load buttons. */
+.setlist-row {
+    gap: 0.6vw;
+    align-items: center;
+}
+.setlist-row #setlist-select { flex: 0 0 auto; min-width: 14vw; }
+.setlist-name-input {
+    flex: 1;
+    background: transparent;
+    border: 1px solid var(--border-green);
+    color: var(--text-green);
+    font-family: var(--font);
+    font-size: clamp(11px, 1.4vw, 13px);
+    padding: 0.5vh 0.6vw;
+    outline: none;
+}
+.setlist-name-input::placeholder { color: var(--text-green-dim); }
 
 /* LFO alignment scope — static preview of both LFO shapes over one cycle.
  * LFO 1 = solid bright trace, LFO 2 = dashed dim trace. User sees the
@@ -1913,17 +2406,31 @@ body.macro-learning #settings-box {
     color: var(--bg);
 }
 
-/* Scrollbar styling */
-#settings-content::-webkit-scrollbar {
-    width: 4px;
+/* Scrollbar theme — thin green to match the rest of the UI.
+ *
+ * History: 2026-04-19 we blanket-hid every scrollbar with `* { display:none }`
+ * to kill a phantom scrollbar on OSC tab. Root cause was actually
+ * `#settings-content { overflow: hidden }` — content that didn't fit was
+ * silently clipped, so users couldn't reach the bottom of PIANO / GLOBAL
+ * panels. Fixed 2026-04-20 by switching #settings-content to overflow-y:auto
+ * and styling the bar so it's intentional and unobtrusive. */
+* {
+    scrollbar-width: thin;            /* Firefox: thin track */
+    scrollbar-color: rgba(0, 191, 99, 0.45) transparent;  /* Firefox: thumb / track */
 }
-
-#settings-content::-webkit-scrollbar-track {
-    background: var(--bg);
+*::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
 }
-
-#settings-content::-webkit-scrollbar-thumb {
-    background: var(--text-green-dim);
+*::-webkit-scrollbar-track {
+    background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+    background: rgba(0, 191, 99, 0.35);
+    border-radius: 3px;
+}
+*::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 191, 99, 0.6);
 }
 
 /* ═══ Low Cut — single row: [ON] [Freq label + slider + Hz] [Slope] ═══ */
@@ -2000,10 +2507,12 @@ body.macro-learning #settings-box {
 }
 
 /* Within OSC columns, labels/values shrink to content so sliders get max room */
-.osc-col .setting-row {
+.osc-col .setting-row,
+.osc-col .setting-row-checkbox {
     gap: 0.6vw;
     padding: 0.3vh 0;
 }
+.osc-col .setting-section { padding: 0.3vh 0 0.1vh 0; }
 .osc-col .setting-label {
     flex: 0 0 auto;
     min-width: 2.5em;
@@ -2052,7 +2561,7 @@ body.macro-learning #settings-box {
 
 .adsr-curve {
     width: 100%;
-    height: clamp(60px, 11vh, 100px);
+    height: clamp(50px, 8.5vh, 80px);
     display: block;
     background: rgba(0, 191, 99, 0.03);
     border: 1px solid rgba(0, 191, 99, 0.15);
@@ -2070,15 +2579,15 @@ body.macro-learning #settings-box {
 }
 
 .knob-row-tight {
-    padding: 0.6vh 0;
-    gap: 1.2vw;
+    padding: 0.3vh 0;
+    gap: 1.0vw;
 }
 .knob-row-tight .knob {
     min-width: 0;
 }
 .knob-row-tight .knob-dial {
-    width: clamp(42px, 8vw, 56px);
-    height: clamp(42px, 8vw, 56px);
+    width: clamp(38px, 7vw, 50px);
+    height: clamp(38px, 7vw, 50px);
 }
 
 /* ═══ Master EQ bands ═══ */
@@ -2109,6 +2618,39 @@ body.macro-learning #settings-box {
     height: clamp(28px, 5vw, 40px);
 }
 .eq-band .setting-value { font-size: clamp(8px, 1.2vw, 10px); }
+
+/* Piano tab: Soundfont + Voicing sharing one row. Default .setting-row label
+ * flex of 22% × 2 would take 44% before selects even start; override so each
+ * label takes only its text width and the two selects share remaining room. */
+.sound-voicing-row .sv-label {
+    flex: 0 0 auto;
+}
+.sound-voicing-row .sv-select {
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+/* Piano 4-band EQ: 2×2 grid (bands stack a bit more vertically than master
+ * EQ's 3-across; 3 knobs per band makes 3-across cramped at tablet widths). */
+.piano-eq-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.6vw;
+    padding: 0.4vh 0;
+}
+.piano-eq-row .eq-band {
+    border: 1px solid rgba(0, 191, 99, 0.15);
+    border-radius: 3px;
+    padding: 0.3vh 0.3vw;
+    background: rgba(0, 191, 99, 0.02);
+}
+.piano-eq-row .eq-band-title {
+    font-size: clamp(9px, 1.3vw, 11px);
+    color: var(--text-green-dim);
+    letter-spacing: 0.15em;
+    text-align: center;
+    padding-bottom: 0.2vh;
+}
 
 /* ═══ Compact select + inline rows ═══ */
 .compact-select {

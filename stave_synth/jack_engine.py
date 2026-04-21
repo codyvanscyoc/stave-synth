@@ -56,6 +56,8 @@ class JackEngine:
         # (current default). Above 0, a copy is mixed into the pad's reverb
         # input so the selected reverb type tails out the piano/organ too.
         self.piano_reverb_send = 0.0
+        # Piano/organ also tap into the ping-pong delay engine when > 0.
+        self.piano_delay_send = 0.0
 
         # MIDI filtering
         self.min_velocity = 10
@@ -548,10 +550,13 @@ class JackEngine:
                                 )
                                 np.multiply(np.sign(piano_pre), _abs, out=piano_pre)
 
-                    # Build external reverb send from piano/organ output.
+                    # Build external reverb / delay sends from piano/organ output.
                     reverb_send_ext = None
                     if piano_pre is not None and self.piano_reverb_send > 0.001:
                         reverb_send_ext = piano_pre * self.piano_reverb_send
+                    delay_send_ext = None
+                    if piano_pre is not None and self.piano_delay_send > 0.001:
+                        delay_send_ext = piano_pre * self.piano_delay_send
 
                     # If bus comp's FX-bypass mode is on, ask synth for dry + fx
                     # separately so we can route fx around the comp.
@@ -559,11 +564,15 @@ class JackEngine:
                     fx_bus = None
                     if self.bus_comp.enabled and self.bus_comp_fx_bypass:
                         stereo, fx_bus = self.synth.render(
-                            bs, separate_fx=True, external_reverb_send=reverb_send_ext
+                            bs, separate_fx=True,
+                            external_reverb_send=reverb_send_ext,
+                            external_delay_send=delay_send_ext,
                         )
                     else:
                         stereo = self.synth.render(
-                            bs, external_reverb_send=reverb_send_ext
+                            bs,
+                            external_reverb_send=reverb_send_ext,
+                            external_delay_send=delay_send_ext,
                         )
                     _render_dt = time.perf_counter() - _render_t0
                     if _render_dt > _slow_threshold_s:
