@@ -89,6 +89,11 @@ DEFAULT_STATE = {
         "filter_range_max": 20000,
         "osc1_filter_enabled": True,
         "osc2_filter_enabled": True,
+        # Analog warmth: subtle-by-default per-voice pitch drift + global
+        # filter drift. Wobble is off by default (kicks in near resonance).
+        "analog_drift_cents": 3.0,
+        "filter_drift_cents": 2.0,
+        "filter_wobble_amount": 0.0,
         "osc1_indep_cutoff": 20000,
         "osc2_indep_cutoff": 20000,
         "reverb_type": "wash",
@@ -202,6 +207,13 @@ DEFAULT_STATE = {
         "tone_range_max": 20000,
         "volume": 0.5,
         "reverb_dry_wet": 0.4,
+        # Piano-room reverb (replaces FluidSynth's legacy internal reverb).
+        # Enabled by default so the piano sounds "in a room" out of the box.
+        "piano_room_enabled": True,
+        # Velocity-aware brightness: soft chords roll off top, hard chords
+        # sparkle. Off by default so existing presets sound unchanged.
+        "vel_bright_enabled": False,
+        "vel_bright_amount": 0.5,
         "comp_enabled": False,
         "comp_threshold_db": -20,
         "comp_ratio": 3.0,

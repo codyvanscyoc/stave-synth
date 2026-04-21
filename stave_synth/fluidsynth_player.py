@@ -41,8 +41,12 @@ SOUNDFONT_PRESETS = {
     # stays linear so it lives on the mid layer with its tremolo character.
     "Salamander": {"file": "Salamander", "program": 0, "tremolo_hz": 0.0, "tremolo_depth": 0.0, "velocity_curve": 1.0},
     "Fluid":      {"file": "FluidR3_GM", "program": 0, "tremolo_hz": 0.0, "tremolo_depth": 0.0, "velocity_curve": 1.0},
-    "Rhodes":     {"file": "Rhodes",     "program": 4, "tremolo_hz": 0.0, "tremolo_depth": 0.0, "velocity_curve": 1.5},
-    "Suitcase":   {"file": "Rhodes",     "program": 4, "tremolo_hz": 5.5, "tremolo_depth": 0.35, "velocity_curve": 1.0},
+    # Rhodes/Suitcase both sourced from FluidR3_GM's GM Electric Piano 1
+    # (program 4). Cleaner and more "classic Rhodes" than the Pianoteq-sampled
+    # Rhodes.sf2 which had a hot barky top layer that slammed into distortion
+    # and a bell tone that clashed with the acoustic voicing's 2.8kHz cut.
+    "Rhodes":     {"file": "FluidR3_GM", "program": 4, "tremolo_hz": 0.0, "tremolo_depth": 0.0, "velocity_curve": 1.0},
+    "Suitcase":   {"file": "FluidR3_GM", "program": 4, "tremolo_hz": 5.5, "tremolo_depth": 0.35, "velocity_curve": 1.0},
 }
 
 # General MIDI program numbers — independent of the voicing (EQ) system.
@@ -229,22 +233,53 @@ class FluidSynthPlayer:
         self.comp_enabled = False
         self._comp_envelope = 0.0  # current envelope level (linear)
 
+        # ── Piano-room reverb (replaces FluidSynth's legacy Schroeder) ──
+        # Loaded lazily on start() so construction cost is paid once, and
+        # any CFFI/.so load failure surfaces there rather than at import.
+        self._piano_room = None
+        self.piano_room_enabled = True
+        self._piano_room_was_enabled = True
+        # reverb_dry_wet (already defined above) doubles as the piano_room
+        # wet level — same semantic, same range, just a different algorithm
+        # behind the fader. No preset migration needed.
+        self._piano_room_wet_cur = float(self.reverb_dry_wet)
+
+        # ── Velocity-aware brightness ──
+        # Tracks a smoothed "recent velocity" level (0..1) updated on every
+        # note_on. In render_block we apply a dynamic lowpass whose cutoff
+        # is a linear function of the tracker — soft notes roll off top, hard
+        # notes sparkle. Off by default so existing presets sound unchanged.
+        self.vel_bright_enabled = False
+        self.vel_bright_amount = 0.5     # 0 = off, 1 = maximum 3kHz-18kHz sweep
+        self._vel_tracker = 0.7          # smoothed recent velocity (0..1)
+        self._vel_tracker_cur = 0.7      # per-block interpolated value
+        self._vel_bright_filter_l = BiquadLowpass(18000.0, 0.707, sample_rate)
+        self._vel_bright_filter_r = BiquadLowpass(18000.0, 0.707, sample_rate)
+        self._vel_bright_last_cutoff = 18000.0
+
     def start(self, soundfont_name: str = "Salamander"):
         """Initialize FluidSynth and load soundfont.
         Audio is rendered via render_block() — no JACK driver needed."""
         self.fs = fluidsynth.Synth(samplerate=float(self.sample_rate))
 
-        # Configure — gain at 1.0 since our pipeline handles volume
+        # Configure — gain at 1.0 since our pipeline handles volume.
+        # FluidSynth's own 1990s Schroeder reverb is DISABLED — piano-room
+        # colour now comes from our dedicated Faust Dattorro (self._piano_room)
+        # which runs in our Python pipeline and mixes properly with the rest
+        # of the chain. Chorus stays off.
         self.fs.setting("synth.polyphony", 64)
         self.fs.setting("synth.gain", 1.0)
-        # FluidSynth's internal reverb stays ON as a dedicated acoustic-room
-        # colour for piano. It's intentionally separate from the global pad
-        # reverb bus — every real piano sits in a physical space with its
-        # own body+room character, so even when the global reverb is on
-        # DRONE or BLOOM we want the piano to still sound like a piano in
-        # a room, not a piano into a drone tank. Chorus stays off.
-        self.fs.setting("synth.reverb.active", 1)
+        self.fs.setting("synth.reverb.active", 0)
         self.fs.setting("synth.chorus.active", 0)
+
+        # Load piano-room reverb .so. Lazy import so a broken build still
+        # starts (piano just won't have room reverb).
+        try:
+            from .faust_piano_room import FaustPianoRoom
+            self._piano_room = FaustPianoRoom(self.sample_rate)
+        except Exception as e:
+            logger.warning("Piano-room reverb unavailable: %s", e)
+            self._piano_room = None
 
         # Resolve the startup name: if it's a preset key, grab the preset's
         # file (and tremolo config). Otherwise treat as a direct file stem
@@ -282,15 +317,6 @@ class FluidSynthPlayer:
 
         if self.sfid is not None:
             logger.info("FluidSynth started (rendered in Python pipeline)")
-            # Piano-room reverb defaults: medium room, fair damp, wide
-            # stereo. Damp raised to 0.5 (from 0.25) so the reverb tail
-            # doesn't accumulate high-frequency hiss when the user opens
-            # the tone fader wide — that's where sustained brightness in
-            # the tail was showing up as static crackle.
-            self.fs.set_reverb_roomsize(0.45)
-            self.fs.set_reverb_damp(0.50)
-            self.fs.set_reverb_width(0.8)
-            self.fs.set_reverb_level(float(self.reverb_dry_wet))
         else:
             logger.warning("FluidSynth started but no soundfont loaded — piano will be silent")
 
@@ -351,6 +377,9 @@ class FluidSynthPlayer:
         self._note_on_count += 1
         self._active_notes += 1
         self._silent_blocks = 0
+        # Velocity-brightness tracker: fast attack, slow-ish blend so a run
+        # of soft notes truly reads as soft even if one loud accent sneaks in.
+        self._vel_tracker = 0.6 * self._vel_tracker + 0.4 * float(velocity)
         logger.debug("PIANO note_on: note=%d vel=%d (count=%d)", note, vel_midi, self._note_on_count)
         with self._lock:
             self.fs.noteon(0, note, vel_midi)
@@ -377,6 +406,10 @@ class FluidSynthPlayer:
         self._comp_envelope = 0.0
         if hasattr(self, "_prev_comp_gain"):
             self._prev_comp_gain = 1.0
+        # Flush piano-room tank so panic truly silences (otherwise the tail
+        # keeps ringing while piano voices are killed).
+        if self._piano_room is not None:
+            self._piano_room.clear()
 
     def midi_callback(self, event_type: str, note: int, velocity: float):
         """Callback to be registered with JackEngine for MIDI forwarding."""
@@ -491,6 +524,28 @@ class FluidSynthPlayer:
             left = left * blend
             right = right * blend
 
+        # ── Velocity-aware brightness ──
+        # Dynamic lowpass whose cutoff tracks a smoothed recent-velocity
+        # value. Soft chord → cutoff drops (~3kHz floor at amount=1), hard
+        # chord → cutoff opens (18kHz = effectively bypass). Sits post-comp
+        # so compression stays predictable; the filter just shapes final tone.
+        if self.vel_bright_enabled and self.vel_bright_amount > 0.001:
+            # Smooth tracker toward its target value (~50ms TC)
+            smooth_a = 1.0 - np.exp(-n_samples / (0.05 * self.sample_rate))
+            self._vel_tracker_cur += smooth_a * (self._vel_tracker - self._vel_tracker_cur)
+            # Map tracker → cutoff. At amount=0 floor=18kHz (no effect).
+            # At amount=1 floor=3kHz and we linearly sweep to 18kHz as vel→1.
+            floor = 18000.0 - self.vel_bright_amount * 15000.0
+            cutoff = floor + (18000.0 - floor) * max(0.0, min(1.0, self._vel_tracker_cur))
+            # Avoid cheap-coefficient-recalc thrash: only push new params
+            # when the cutoff has moved enough to hear.
+            if abs(cutoff - self._vel_bright_last_cutoff) > 10.0:
+                self._vel_bright_filter_l.set_params(cutoff, 0.707)
+                self._vel_bright_filter_r.set_params(cutoff, 0.707)
+                self._vel_bright_last_cutoff = cutoff
+            left = self._vel_bright_filter_l.process(left)
+            right = self._vel_bright_filter_r.process(right)
+
         # Stereo tremolo — Rhodes Suitcase "vibrato" was actually amplitude
         # tremolo on L/R 180° out of phase (auto-pan feel). At depth=0 this
         # block is a no-op, so other presets pay nothing.
@@ -505,6 +560,26 @@ class FluidSynthPlayer:
             amp_r = (1.0 - d) + d * (0.5 + 0.5 * np.sin(2.0 * np.pi * (t + 0.5)))
             left *= amp_l
             right *= amp_r
+
+        # ── Piano-room reverb (replaces FluidSynth's internal Schroeder) ──
+        # 100% wet output from the .so; Python blends dry/wet here. When
+        # enable toggles OFF we clear the tank so re-enable starts quiet.
+        if self._piano_room is not None:
+            if self.piano_room_enabled and self._piano_room_was_enabled is False:
+                self._piano_room_was_enabled = True
+            elif not self.piano_room_enabled and self._piano_room_was_enabled:
+                self._piano_room.clear()
+                self._piano_room_was_enabled = False
+
+            if self.piano_room_enabled and self.reverb_dry_wet > 0.001:
+                smooth_a = 1.0 - np.exp(-n_samples / (0.03 * self.sample_rate))
+                self._piano_room_wet_cur += smooth_a * (
+                    float(self.reverb_dry_wet) - self._piano_room_wet_cur
+                )
+                wet = self._piano_room.process(np.stack([left, right]))
+                w = self._piano_room_wet_cur
+                left = left * (1.0 - w) + wet[0] * w
+                right = right * (1.0 - w) + wet[1] * w
 
         return np.array([left, right])
 
@@ -747,12 +822,23 @@ class FluidSynthPlayer:
         if "filter_lowcut_hz" in params:
             self.set_lowcut(float(params["filter_lowcut_hz"]))
         if "reverb_dry_wet" in params:
-            # Maps directly to FluidSynth's internal reverb level (0..1).
-            # Keeping the state key as `reverb_dry_wet` for backward-compat
-            # with saved presets even though semantically it's "wet level".
+            # Wet level for the dedicated piano-room Faust reverb. State key
+            # is kept for backward-compat with saved presets — the old
+            # FluidSynth-reverb algorithm was replaced 2026-04-21 but the
+            # slider semantic (0 = dry, 1 = fully wet) is identical.
             self.reverb_dry_wet = max(0.0, min(1.0, float(params["reverb_dry_wet"])))
-            if self.fs:
-                self.fs.set_reverb_level(self.reverb_dry_wet)
+        if "piano_room_enabled" in params:
+            self.piano_room_enabled = bool(params["piano_room_enabled"])
+        if "piano_room_size" in params and self._piano_room is not None:
+            v = max(0.0, min(1.0, float(params["piano_room_size"])))
+            self._piano_room.set_zone("size", v)
+        if "piano_room_damp" in params and self._piano_room is not None:
+            v = max(0.0, min(0.99, float(params["piano_room_damp"])))
+            self._piano_room.set_zone("damp", v)
+        if "vel_bright_enabled" in params:
+            self.vel_bright_enabled = bool(params["vel_bright_enabled"])
+        if "vel_bright_amount" in params:
+            self.vel_bright_amount = max(0.0, min(1.0, float(params["vel_bright_amount"])))
         if "comp_enabled" in params:
             self.comp_enabled = bool(params["comp_enabled"])
         if "comp_threshold_db" in params:
@@ -783,6 +869,9 @@ class FluidSynthPlayer:
             "eq_bands": list(self.eq_bands),
             "volume": self.volume,
             "reverb_dry_wet": self.reverb_dry_wet,
+            "piano_room_enabled": self.piano_room_enabled,
+            "vel_bright_enabled": self.vel_bright_enabled,
+            "vel_bright_amount": self.vel_bright_amount,
             "comp_enabled": self.comp_enabled,
             "comp_threshold_db": self.comp_threshold_db,
             "comp_ratio": self.comp_ratio,

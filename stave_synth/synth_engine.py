@@ -1330,6 +1330,10 @@ class Voice:
     shimmer_phases: list = field(default_factory=list)  # shimmer phase (octave up)
     age: int = 0
     faust_slot: int = -1  # index in FaustOscBank (0..15), -1 = unassigned / Python path
+    # Analog-warmth pitch drift: random-walk value in [-1, +1]. Scaled by
+    # SynthEngine.analog_drift_cents at render time. Uncorrelated per voice
+    # so a chord has the classic slight-detune analog quality.
+    drift_val: float = 0.0
 
     def is_active(self):
         return self.adsr_osc1.is_active() or self.adsr_osc2.is_active()
@@ -1382,6 +1386,23 @@ class SynthEngine:
         self.filter_slope = 12  # 12 or 24 dB/oct
         self.filter_range_min = 150.0
         self.filter_range_max = 20000.0
+        # ── Analog warmth ──
+        # Per-voice pitch drift: each voice's pitch wanders on a slow random
+        # walk around its nominal note. analog_drift_cents caps the peak
+        # deviation in cents (100 cents = one semitone). Subtle by default;
+        # 0 = perfectly tuned digital behavior.
+        self.analog_drift_cents = 3.0
+        # Global filter drift: slow wander on the shared filter cutoff to
+        # emulate thermal drift of an analog lowpass stage. Value is the
+        # peak deviation in cents of a pitch-like log-domain offset applied
+        # to cutoff_hz; ±20 cents ≈ ±1.2% cutoff movement.
+        self.filter_drift_cents = 2.0
+        self._filter_drift_val = 0.0
+        # Filter self-resonance wobble: gated on resonance (silent below
+        # 0.5). At amount=1 adds up to ±3% cutoff wander when resonance is
+        # pushed near self-oscillation — the "unstable" analog character.
+        self.filter_wobble_amount = 0.0
+        self._filter_wobble_val = 0.0
         # Highpass (low cut) — filter fader ALT mode
         self.filter_hp_l = BiquadHighpass(20.0, 0.707, sample_rate)
         self.filter_hp_r = BiquadHighpass(20.0, 0.707, sample_rate)
@@ -2503,6 +2524,17 @@ class SynthEngine:
                 continue
 
             base_freq = 440.0 * (2.0 ** ((voice.note - 69) / 12.0))
+            # Per-voice analog drift: slow random walk → slight detune per
+            # voice. Uncorrelated across voices so a chord has the classic
+            # analog "breathing" quality. Zero-cost when drift_cents <= 0.01.
+            if self.analog_drift_cents > 0.01:
+                voice.drift_val += float(np.random.uniform(-0.08, 0.08))
+                voice.drift_val *= 0.998  # weak self-centering restoring force
+                if voice.drift_val > 1.0:
+                    voice.drift_val = 1.0
+                elif voice.drift_val < -1.0:
+                    voice.drift_val = -1.0
+                base_freq *= 2.0 ** (self.analog_drift_cents * voice.drift_val / 1200.0)
             base_inc = TWO_PI * base_freq / self.sample_rate
             voice_shimmer = self._voice_shimmer[voice_idx, :n_samples]
             voice_shimmer[:] = 0
@@ -2729,7 +2761,35 @@ class SynthEngine:
         if abs(filter_mod) > 0.001:
             # ±2 octaves at combined depth = 1
             effective_cutoff = self._filter_cutoff_cur * (2.0 ** (filter_mod * 2.0))
-            effective_cutoff = max(20.0, min(20000.0, effective_cutoff))
+
+        # ── Analog filter drift (global, slow) ──
+        # Simulates thermal drift of a real analog lowpass. One random walk
+        # applied to the shared cutoff. Peak deviation in cents; zero-cost
+        # when drift_cents <= 0.01.
+        if self.filter_drift_cents > 0.01:
+            self._filter_drift_val += float(np.random.uniform(-0.06, 0.06))
+            self._filter_drift_val *= 0.9985
+            if self._filter_drift_val > 1.0:
+                self._filter_drift_val = 1.0
+            elif self._filter_drift_val < -1.0:
+                self._filter_drift_val = -1.0
+            effective_cutoff *= 2.0 ** (self.filter_drift_cents * self._filter_drift_val / 1200.0)
+
+        # ── Filter self-resonance wobble ──
+        # Gated on resonance — silent below 0.5, scales up as res → 1.0 so
+        # the effect is only audible near self-oscillation (analog filters
+        # wobble audibly there; perfectly still at low resonance).
+        if self.filter_wobble_amount > 0.001 and self.filter_resonance > 0.5:
+            self._filter_wobble_val += float(np.random.uniform(-0.12, 0.12))
+            self._filter_wobble_val *= 0.995
+            if self._filter_wobble_val > 1.0:
+                self._filter_wobble_val = 1.0
+            elif self._filter_wobble_val < -1.0:
+                self._filter_wobble_val = -1.0
+            res_scale = (self.filter_resonance - 0.5) * 2.0   # 0..1 as res 0.5..1
+            effective_cutoff *= 1.0 + self.filter_wobble_amount * res_scale * self._filter_wobble_val * 0.03
+
+        effective_cutoff = max(20.0, min(20000.0, effective_cutoff))
 
         # Only recalculate filter coefficients if cutoff or resonance actually changed
         cutoff_changed = (abs(effective_cutoff - self._filter_cutoff_last_set) > 0.1
@@ -3309,6 +3369,12 @@ class SynthEngine:
             self.filter_cutoff = float(params["filter_cutoff_hz"])
         if "filter_resonance" in params:
             self.filter_resonance = float(params["filter_resonance"])
+        if "analog_drift_cents" in params:
+            self.analog_drift_cents = max(0.0, min(20.0, float(params["analog_drift_cents"])))
+        if "filter_drift_cents" in params:
+            self.filter_drift_cents = max(0.0, min(40.0, float(params["filter_drift_cents"])))
+        if "filter_wobble_amount" in params:
+            self.filter_wobble_amount = max(0.0, min(1.0, float(params["filter_wobble_amount"])))
         if "filter_range_min" in params:
             self.filter_range_min = float(params["filter_range_min"])
         if "filter_range_max" in params:
@@ -3564,6 +3630,9 @@ class SynthEngine:
             "filter_slope": self.filter_slope,
             "osc1_filter_enabled": self.osc1_filter_enabled,
             "osc2_filter_enabled": self.osc2_filter_enabled,
+            "analog_drift_cents": self.analog_drift_cents,
+            "filter_drift_cents": self.filter_drift_cents,
+            "filter_wobble_amount": self.filter_wobble_amount,
             "reverb_dry_wet": self.reverb.dry_wet,
             "reverb_wet_gain": self.reverb.wet_gain,
             "reverb_decay_seconds": self.reverb.decay_seconds,

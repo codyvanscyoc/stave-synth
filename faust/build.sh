@@ -47,6 +47,7 @@ build_module bus_comp     StaveBusComp      stave_bus_comp
 build_module organ        StaveOrgan         stave_organ
 build_module plate        StavePlate         stave_plate
 build_module drone        StaveDrone         stave_drone
+build_module piano_room   StavePianoRoom     stave_piano_room
 
 echo
 echo "Faust modules built. Restart the synth to pick up changes."

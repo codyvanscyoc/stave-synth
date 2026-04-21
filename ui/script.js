@@ -2341,7 +2341,8 @@
                 param === "reverb_noise_mod" || param === "piano_reverb_send" ||
                 param === "piano_delay_send" ||
                 param === "comp_wet" || param === "osc1_reverb_send" ||
-                param === "osc2_reverb_send") {
+                param === "osc2_reverb_send" ||
+                param === "filter_wobble_amount" || param === "vel_bright_amount") {
                 sendValue = value / 100;
                 displayValue = Math.round(sendValue * 100) + "%";
                 // MIX knob ↔ fader1-ALT-COMP live sync. Any time the menu
@@ -2351,6 +2352,10 @@
                     fader1CompValue = sendValue;
                     if (fader1AltState === 2) updateFader(1);
                 }
+            } else if (param === "analog_drift_cents" || param === "filter_drift_cents") {
+                // Raw cents (0..15 / 0..30). Display with one decimal + cent sign.
+                sendValue = value;
+                displayValue = (+value).toFixed(1) + "¢";
             } else if (param === "reverb_predelay_ms" || param === "haas_delay_ms" ||
                 ((param.endsWith("attack_ms") || param.endsWith("release_ms") ||
                   param.endsWith("decay_ms")) && !param.startsWith("bus_comp_"))) {
@@ -2945,8 +2950,11 @@
                 param === "reverb_noise_mod" || param === "piano_reverb_send" ||
                 param === "piano_delay_send" ||
                 param === "comp_wet" || param === "osc1_reverb_send" ||
-                param === "osc2_reverb_send") {
+                param === "osc2_reverb_send" ||
+                param === "filter_wobble_amount" || param === "vel_bright_amount") {
                 slider.value = value * 100;
+            } else if (param === "analog_drift_cents" || param === "filter_drift_cents") {
+                slider.value = value;
             } else if (param === "reverb_predelay_ms" || param === "haas_delay_ms" ||
                 ((param.endsWith("attack_ms") || param.endsWith("release_ms") ||
                   param.endsWith("decay_ms") || param.endsWith("sustain_percent")) &&
@@ -3015,8 +3023,11 @@
                 param === "reverb_noise_mod" || param === "piano_reverb_send" ||
                 param === "piano_delay_send" ||
                 param === "comp_wet" || param === "osc1_reverb_send" ||
-                param === "osc2_reverb_send") {
+                param === "osc2_reverb_send" ||
+                param === "filter_wobble_amount" || param === "vel_bright_amount") {
                     valueEl.textContent = Math.round(value * 100) + "%";
+                } else if (param === "analog_drift_cents" || param === "filter_drift_cents") {
+                    valueEl.textContent = (+value).toFixed(1) + "¢";
                 } else if (param === "reverb_predelay_ms" || param === "haas_delay_ms" ||
                     ((param.endsWith("attack_ms") || param.endsWith("release_ms") ||
                       param.endsWith("decay_ms")) && !param.startsWith("bus_comp_"))) {

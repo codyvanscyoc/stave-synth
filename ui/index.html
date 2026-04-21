@@ -13,7 +13,7 @@
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="logo.png">
     <!-- Keep style.css and script.js cache-bust versions in sync -->
-    <link rel="stylesheet" href="style.css?v=156">
+    <link rel="stylesheet" href="style.css?v=157">
 </head>
 <body>
     <div id="app">
@@ -705,10 +705,27 @@
                             <input type="range" class="setting-slider" data-section="piano" data-param="tone_range_max" min="0" max="1000" value="1000" data-hz-min="1000" data-hz-max="20000">
                             <span class="setting-value">20kHz</span>
                         </div>
+                        <div class="setting-row setting-row-checkbox">
+                            <label class="setting-checkbox-label">
+                                <input type="checkbox" class="setting-checkbox" data-section="piano" data-param="piano_room_enabled" checked>
+                                <span>Piano Room Reverb</span>
+                            </label>
+                        </div>
                         <div class="setting-row">
                             <span class="setting-label">Reverb Dry/Wet</span>
                             <input type="range" class="setting-slider" data-section="piano" data-param="reverb_dry_wet" min="0" max="100" value="40">
                             <span class="setting-value">0.40</span>
+                        </div>
+                        <div class="setting-row setting-row-checkbox">
+                            <label class="setting-checkbox-label">
+                                <input type="checkbox" class="setting-checkbox" data-section="piano" data-param="vel_bright_enabled">
+                                <span>Velocity Brightness</span>
+                            </label>
+                        </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Vel Bright Amount</span>
+                            <input type="range" class="setting-slider" data-section="piano" data-param="vel_bright_amount" min="0" max="100" value="50">
+                            <span class="setting-value">0.50</span>
                         </div>
                         <div class="setting-section">COMPRESSOR</div>
                         <div class="setting-row setting-row-checkbox">
@@ -1368,6 +1385,22 @@
 
                     <!-- Global Tab -->
                     <div class="settings-panel" data-panel="global">
+                        <div class="setting-section">ANALOG WARMTH</div>
+                        <div class="setting-row">
+                            <span class="setting-label">Voice Drift</span>
+                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="analog_drift_cents" min="0" max="15" step="0.1" value="3.0">
+                            <span class="setting-value">3.0¢</span>
+                        </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Filter Drift</span>
+                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="filter_drift_cents" min="0" max="30" step="0.1" value="2.0">
+                            <span class="setting-value">2.0¢</span>
+                        </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Reso Wobble</span>
+                            <input type="range" class="setting-slider" data-section="synth_pad" data-param="filter_wobble_amount" min="0" max="100" value="0">
+                            <span class="setting-value">0%</span>
+                        </div>
                         <div class="setting-section">BUS COMPRESSOR</div>
                         <div class="setting-row setting-row-checkbox">
                             <label class="setting-checkbox-label">
@@ -1599,6 +1632,6 @@
 
     </div>
 
-    <script src="script.js?v=135"></script>
+    <script src="script.js?v=136"></script>
 </body>
 </html>
