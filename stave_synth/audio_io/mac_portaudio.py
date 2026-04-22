@@ -66,31 +66,54 @@ class MacPortAudioIO(AudioIO):
         self._stream = None
         self._midi_in = None
 
+        # Preferred output device (name as returned by sounddevice.query_devices).
+        # Empty string means "use system default". Honored at start() and by
+        # switch_output_device(). Set externally via set_preferred_device()
+        # so the selection persists through a hot-swap.
+        self._preferred_device = ""
+        # Human-readable name of the device actually driving the stream right
+        # now — populated after start() / swap, used by list_output_devices()
+        # to render the "active" flag in the UI dropdown.
+        self._active_device_name = ""
+
+    def set_preferred_device(self, name: str) -> None:
+        """Record the user's preferred output device name. Takes effect on
+        the next start() call. Empty string = system default."""
+        self._preferred_device = name or ""
+
     # ── lifecycle ──
     def start(self) -> int:
         try:
-            self._stream = self._sd.OutputStream(
-                samplerate=_DEFAULT_SAMPLE_RATE,
-                blocksize=_DEFAULT_BLOCK_SIZE,
-                channels=_CHANNELS,
-                dtype="float32",
-                callback=self._audio_callback,
-                latency="low",
-            )
-            self._stream.start()
+            self._stream = self._open_stream(self._preferred_device or None)
+            self._active_device_name = self._resolve_device_name(self._stream.device)
             logger.info(
                 "sounddevice output: sr=%d bs=%d latency=%.2fms device='%s'",
                 int(self._stream.samplerate),
                 int(self._stream.blocksize or _DEFAULT_BLOCK_SIZE),
                 float(self._stream.latency) * 1000.0,
-                self._sd.query_devices(self._stream.device, "output")["name"]
-                if self._stream.device is not None
-                else "default",
+                self._active_device_name or "default",
             )
         except Exception as e:
-            logger.error("sounddevice start failed: %s", e)
-            self._shutdown = True
-            return 1
+            logger.error("sounddevice start failed (preferred='%s'): %s",
+                         self._preferred_device, e)
+            # If the preferred device can't be opened, fall back to default
+            # before giving up entirely. Keeps audio working when e.g. a USB
+            # interface that was plugged in last session isn't today.
+            if self._preferred_device:
+                try:
+                    self._stream = self._open_stream(None)
+                    self._active_device_name = self._resolve_device_name(self._stream.device)
+                    logger.warning(
+                        "Preferred device '%s' unavailable — fell back to '%s'",
+                        self._preferred_device, self._active_device_name or "default",
+                    )
+                except Exception as e2:
+                    logger.error("fallback to default also failed: %s", e2)
+                    self._shutdown = True
+                    return 1
+            else:
+                self._shutdown = True
+                return 1
 
         try:
             self._open_midi_input()
@@ -152,6 +175,122 @@ class MacPortAudioIO(AudioIO):
             self._midi_in = None
         self._ring.clear()
         self._residual = None
+
+    # ── Core Audio device selection (Mac-only extensions, not on AudioIO) ──
+    def _open_stream(self, device):
+        """Construct + start a sounddevice OutputStream on `device` (name/index
+        or None for system default). Raises on failure."""
+        stream = self._sd.OutputStream(
+            samplerate=_DEFAULT_SAMPLE_RATE,
+            blocksize=_DEFAULT_BLOCK_SIZE,
+            channels=_CHANNELS,
+            dtype="float32",
+            callback=self._audio_callback,
+            latency="low",
+            device=device,
+        )
+        stream.start()
+        return stream
+
+    def _resolve_device_name(self, device_id) -> str:
+        """Ask PortAudio for the human-readable name of the device currently
+        driving the stream. Returns "" if we can't resolve it."""
+        try:
+            if device_id is None:
+                # Default: ask sounddevice what the default output is.
+                default_out = self._sd.default.device
+                if isinstance(default_out, (list, tuple)):
+                    device_id = default_out[1]
+                else:
+                    device_id = default_out
+            info = self._sd.query_devices(device_id, "output")
+            return str(info.get("name", ""))
+        except Exception as e:
+            logger.debug("couldn't resolve device name (%s): %s", device_id, e)
+            return ""
+
+    def list_output_devices(self) -> list[dict]:
+        """Enumerate Core Audio output devices. Returns one dict per device:
+        {"name": str, "active": bool}. `active` marks the device currently
+        driving our stream so the UI can highlight it in the dropdown."""
+        out = []
+        try:
+            seen_names = set()
+            for info in self._sd.query_devices():
+                if int(info.get("max_output_channels", 0)) < 1:
+                    continue
+                name = str(info.get("name", "")).strip()
+                if not name or name in seen_names:
+                    # PortAudio occasionally reports duplicate names across
+                    # host APIs (CoreAudio vs. AudioUnit). Dedupe by name so
+                    # the dropdown shows each device once.
+                    continue
+                seen_names.add(name)
+                out.append({"name": name, "active": name == self._active_device_name})
+        except Exception as e:
+            logger.warning("list_output_devices failed: %s", e)
+        return out
+
+    def switch_output_device(self, name: str) -> tuple[bool, str]:
+        """Hot-swap the output stream to `name`. Empty/None = system default.
+        Returns (success, error_message). On failure attempts to restore the
+        previous stream so audio isn't left completely dead."""
+        target = name or None
+        old_active = self._active_device_name
+
+        if not self._started or self._stream is None:
+            # Not running yet — defer to next start().
+            self._preferred_device = name or ""
+            return True, ""
+
+        # Pause the producer; write_stereo() exits its backpressure loop
+        # when _started flips to False, so the render thread won't spin.
+        self._started = False
+        old_stream = self._stream
+        try:
+            old_stream.stop()
+            old_stream.close()
+        except Exception as e:
+            logger.warning("stopping old stream for swap: %s", e)
+
+        # sounddevice's callback can't fire once close() returns, so the ring
+        # is now owned by no-one. Clear stale audio so the new device starts
+        # on fresh timing.
+        self._ring.clear()
+        self._residual = None
+
+        try:
+            new_stream = self._open_stream(target)
+        except Exception as e:
+            logger.error("switch to '%s' failed: %s — reverting", name, e)
+            # Best-effort: reopen whatever we had before (or default if that
+            # name no longer resolves). If this also fails, the synth is
+            # effectively muted and is_shutdown() will report it.
+            try:
+                fallback = self._open_stream(old_active or None)
+                self._stream = fallback
+                self._active_device_name = self._resolve_device_name(fallback.device)
+                self._started = True
+            except Exception as e2:
+                logger.error("revert to '%s' also failed: %s", old_active, e2)
+                self._stream = None
+                self._shutdown = True
+            return False, str(e)
+
+        self._stream = new_stream
+        self._preferred_device = name or ""
+        self._active_device_name = self._resolve_device_name(new_stream.device)
+        self._started = True
+        logger.info(
+            "sounddevice output swapped: '%s' → '%s' (latency=%.2fms)",
+            old_active or "default", self._active_device_name or "default",
+            float(new_stream.latency) * 1000.0,
+        )
+        return True, ""
+
+    def get_active_device_name(self) -> str:
+        """Name of the device currently playing audio; "" if unknown."""
+        return self._active_device_name
 
     # ── device info ──
     def get_sample_rate(self) -> int:
