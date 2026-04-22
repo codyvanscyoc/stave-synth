@@ -17,6 +17,10 @@ logger = logging.getLogger(__name__)
 
 _IS_LINUX = sys.platform.startswith("linux")
 
+# Shared-library suffix for Faust-compiled native DSP modules.
+# Linux / FreeBSD: .so; macOS: .dylib; Windows: .dll (not supported yet).
+LIB_SUFFIX = ".dylib" if sys.platform == "darwin" else ".so"
+
 
 def set_realtime_priority(priority: int = 80) -> bool:
     """Request realtime scheduling for the current thread.

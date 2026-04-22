@@ -15,8 +15,10 @@ from cffi import FFI
 
 logger = logging.getLogger(__name__)
 
+from .audio_io.platform import LIB_SUFFIX
+
 _HERE = Path(__file__).parent.parent / "faust"
-_LIB = _HERE / "libstave_bus_comp.so"
+_LIB = _HERE / f"libstave_bus_comp{LIB_SUFFIX}"
 
 
 _ffi = FFI()

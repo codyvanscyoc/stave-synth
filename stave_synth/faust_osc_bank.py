@@ -18,8 +18,10 @@ from cffi import FFI
 
 logger = logging.getLogger(__name__)
 
+from .audio_io.platform import LIB_SUFFIX
+
 _HERE = Path(__file__).parent.parent / "faust"
-_LIB = _HERE / "libstave_osc_bank.so"
+_LIB = _HERE / f"libstave_osc_bank{LIB_SUFFIX}"
 
 NVOICES = 16  # must match NVOICES in osc_bank.dsp
 

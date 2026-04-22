@@ -1939,8 +1939,12 @@ def main():
 
     app.start()
 
-    # Check if we have a display for native window
-    has_display = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    # Native window available? Linux needs a real display server; Mac/Windows
+    # always have one (a GUI user session is implicit).
+    if sys.platform == "linux":
+        has_display = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    else:
+        has_display = True
     use_gui = has_display and "--no-gui" not in sys.argv
 
     if use_gui:

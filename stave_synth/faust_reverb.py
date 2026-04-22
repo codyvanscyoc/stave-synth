@@ -18,8 +18,10 @@ from cffi import FFI
 
 logger = logging.getLogger(__name__)
 
+from .audio_io.platform import LIB_SUFFIX
+
 _HERE = Path(__file__).parent.parent / "faust"
-_LIB = _HERE / "libstave_reverb.so"
+_LIB = _HERE / f"libstave_reverb{LIB_SUFFIX}"
 
 
 _ffi = FFI()
