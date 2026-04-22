@@ -410,14 +410,10 @@ class FluidSynthPlayer:
             if path.exists():
                 return path
 
-        # Try common system locations
+        # Try common system locations (Linux: /usr/share/*; macOS: Homebrew prefixes).
         import os
-        system_dirs = [
-            "/usr/share/sounds/sf2",
-            "/usr/share/soundfonts",
-            "/usr/local/share/soundfonts",
-        ]
-        for d in system_dirs:
+        from .paths import soundfont_search_dirs
+        for d in soundfont_search_dirs():
             for ext in (".sf2", ".sf3"):
                 path = os.path.join(d, f"{name}{ext}")
                 if os.path.exists(path):

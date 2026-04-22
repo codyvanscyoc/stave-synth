@@ -7,9 +7,11 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-CONFIG_DIR = Path.home() / ".config" / "stave-synth"
+from .paths import config_dir, data_dir
+
+CONFIG_DIR = config_dir()
 PRESETS_DIR = CONFIG_DIR / "presets"
-DATA_DIR = Path.home() / ".local" / "share" / "stave-synth"
+DATA_DIR = data_dir()
 SOUNDFONT_DIR = DATA_DIR / "soundfonts"
 STATE_FILE = CONFIG_DIR / "current_state.json"
 

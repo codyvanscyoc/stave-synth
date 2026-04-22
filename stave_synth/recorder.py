@@ -31,11 +31,11 @@ from typing import Optional
 
 import numpy as np
 
-from .config import SAMPLE_RATE
+from .config import SAMPLE_RATE, DATA_DIR
 
 logger = logging.getLogger(__name__)
 
-RECORDINGS_DIR = Path.home() / ".local" / "share" / "stave-synth" / "recordings"
+RECORDINGS_DIR = DATA_DIR / "recordings"
 MAX_QUEUE = 400  # ~2 s of 256-sample blocks at 48 kHz
 MAX_TAKE_SECONDS = 30 * 60  # hard cap to prevent runaway disk fills
 

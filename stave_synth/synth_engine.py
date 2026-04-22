@@ -2301,7 +2301,8 @@ class SynthEngine:
         Creates the directory if it doesn't exist so users can drop files in."""
         from pathlib import Path
         if pad_dir is None:
-            pad_dir = Path.home() / ".local" / "share" / "stave-synth" / "pad_samples"
+            from .config import DATA_DIR
+            pad_dir = DATA_DIR / "pad_samples"
         pad_dir = Path(pad_dir)
         pad_dir.mkdir(parents=True, exist_ok=True)
         self._pad_samples_dir = pad_dir
