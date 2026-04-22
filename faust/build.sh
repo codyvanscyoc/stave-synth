@@ -16,14 +16,25 @@ for arg in "$@"; do
     esac
 done
 
-CFLAGS="-shared -fPIC -O3 -ffast-math -include $(pwd)/faust_cprelude.h"
+# Platform: Linux uses gcc + .so; macOS uses clang + .dylib.
+if [[ "$(uname)" == "Darwin" ]]; then
+    COMPILER="clang"
+    LIBEXT="dylib"
+    LINK_FLAGS="-dynamiclib"   # Mac's equivalent of -shared; emits a proper .dylib
+else
+    COMPILER="gcc"
+    LIBEXT="so"
+    LINK_FLAGS="-shared -fPIC"
+fi
+
+CFLAGS="${LINK_FLAGS} -O3 -ffast-math -include $(pwd)/faust_cprelude.h"
 
 build_module() {
     local name=$1       # dsp file stem (no extension)
     local cname=$2      # C class name passed to faust -cn
-    local libname=$3    # output library stem (libNAME.so)
+    local libname=$3    # output library stem (libNAME.<so|dylib>)
 
-    local out="lib${libname}.so"
+    local out="lib${libname}.${LIBEXT}"
     if [ "$FORCE" -eq 0 ] && [ -f "$out" ] && [ "$out" -nt "${name}.dsp" ] && [ "$out" -nt "faust_cprelude.h" ]; then
         echo "─── $name → $out  (up-to-date, skip)"
         return
@@ -33,7 +44,7 @@ build_module() {
     # OOMed the Pi 5 trying to compile the unrolled 16-voice osc_bank code
     # (5+ min, 1.3GB RAM, didn't finish). Sticking with scalar.
     faust -lang c -cn "$cname" -o "${name}.c" "${name}.dsp"
-    gcc $CFLAGS -o "$out" "${name}.c"
+    ${COMPILER} ${CFLAGS} -o "$out" "${name}.c"
     ls -la "$out"
 }
 
