@@ -21,13 +21,18 @@ if [[ "$(uname)" == "Darwin" ]]; then
     COMPILER="clang"
     LIBEXT="dylib"
     LINK_FLAGS="-dynamiclib"   # Mac's equivalent of -shared; emits a proper .dylib
+    # Homebrew installs faust headers under $(brew --prefix)/include/, which
+    # clang does NOT search by default on macOS. Inject the brew include path.
+    BREW_PREFIX="$(brew --prefix 2>/dev/null || echo /opt/homebrew)"
+    EXTRA_INCLUDES="-I${BREW_PREFIX}/include"
 else
     COMPILER="gcc"
     LIBEXT="so"
     LINK_FLAGS="-shared -fPIC"
+    EXTRA_INCLUDES=""
 fi
 
-CFLAGS="${LINK_FLAGS} -O3 -ffast-math -include $(pwd)/faust_cprelude.h"
+CFLAGS="${LINK_FLAGS} -O3 -ffast-math ${EXTRA_INCLUDES} -include $(pwd)/faust_cprelude.h"
 
 build_module() {
     local name=$1       # dsp file stem (no extension)

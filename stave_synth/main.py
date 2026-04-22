@@ -59,7 +59,12 @@ def ensure_jack_running():
     stave-synth.sh both prepend it), so by the time this runs the JACK
     API is already shimmed onto PipeWire. The old direct-jackd fallback
     was never reachable on this hardware — removed.
+
+    On non-Linux platforms the audio backend is MacPortAudioIO (Core Audio
+    directly); there is no JACK server to probe, so skip the check.
     """
+    if not sys.platform.startswith("linux"):
+        return True
     try:
         result = subprocess.run(
             ["jack_lsp"], capture_output=True, timeout=3
@@ -1799,7 +1804,13 @@ class StaveSynth:
         pgrep fails (no existing process), we spawn one. On restart, the
         old a2jmidid is usually killed by the cgroup cleanup anyway — but
         the gate is cheap belt-and-suspenders if not.
+
+        macOS: MIDI is handled directly by MacPortAudioIO via python-rtmidi
+        (Core MIDI sees USB devices natively); a2jmidid and the jack_lsp-based
+        port watcher don't apply.
         """
+        if not sys.platform.startswith("linux"):
+            return
         try:
             # pgrep returns 0 if any process matches — skip spawn if so.
             existing = subprocess.run(

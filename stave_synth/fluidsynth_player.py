@@ -403,8 +403,9 @@ class FluidSynthPlayer:
         else:
             logger.warning("FluidSynth started but no soundfont loaded — piano will be silent")
 
-    def _find_soundfont(self, name: str):
-        """Search for a soundfont file by name."""
+    def _find_exact(self, name: str):
+        """Look up a soundfont by exact name in user and system locations;
+        no fallback to other names. Returns Path-like or None."""
         for ext in (".sf2", ".sf3", ".SF2", ".SF3"):
             path = SOUNDFONT_DIR / f"{name}{ext}"
             if path.exists():
@@ -418,17 +419,26 @@ class FluidSynthPlayer:
                 path = os.path.join(d, f"{name}{ext}")
                 if os.path.exists(path):
                     return path
+        return None
+
+    def _find_soundfont(self, name: str):
+        """Search for a soundfont file by name, falling back to Salamander,
+        FluidR3_GM, or any GM default if the named one isn't present."""
+        hit = self._find_exact(name)
+        if hit:
+            return hit
 
         # Fallback chain — Salamander is the default, FluidR3_GM the backup.
-        # TimGM6mb was dropped 2026-04-20 (too thin).
-        fallbacks = ["Salamander", "FluidR3_GM", "default-GM"]
-        for fb in fallbacks:
-            if fb != name:
-                logger.info("Trying fallback soundfont: %s", fb)
-                result = self._find_soundfont(fb)
-                if result:
-                    return result
-
+        # TimGM6mb was dropped 2026-04-20 (too thin). The recursion used
+        # to walk back through _find_soundfont and could loop forever when
+        # neither Salamander nor FluidR3_GM existed (e.g. fresh Mac).
+        for fb in ("Salamander", "FluidR3_GM", "default-GM"):
+            if fb == name:
+                continue
+            logger.info("Trying fallback soundfont: %s", fb)
+            result = self._find_exact(fb)
+            if result:
+                return result
         return None
 
     def set_sound(self, sound_name: str):

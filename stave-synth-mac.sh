@@ -23,5 +23,5 @@ export STAVE_FAUST_REVERB STAVE_FAUST_PING_PONG STAVE_FAUST_OSC_BANK \
 pkill -f "stave_synth.main" 2>/dev/null || true
 sleep 1
 
-# GUI defaults on. Add --no-gui if launching headless (UI still reachable at :8080).
-exec ./venv/bin/python -m stave_synth.main
+# GUI defaults on. Pass --no-gui as an argument to launch headless (UI still reachable at :8080).
+exec ./venv/bin/python -m stave_synth.main "$@"

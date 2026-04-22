@@ -7,6 +7,7 @@ build/
 *.egg
 .eggs/
 *.so
+*.dylib
 venv/
 .venv/
 env/
