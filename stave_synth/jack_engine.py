@@ -20,6 +20,7 @@ from .synth_engine import (SynthEngine, BiquadLowpass, BiquadHighpass,
                            fader_to_amplitude, blend_to_amplitude)
 from .config import SAMPLE_RATE, BTL_MODE
 from .audio_io import create_audio_io
+from .audio_io.platform import set_realtime_priority, try_malloc_trim, get_rss_kb
 import os as _os
 USE_FAUST_MASTER_FX = _os.environ.get("STAVE_FAUST_MASTER_FX", "0") not in ("0", "", "false", "False")
 USE_FAUST_BUS_COMP  = _os.environ.get("STAVE_FAUST_BUS_COMP",  "0") not in ("0", "", "false", "False")
@@ -542,11 +543,7 @@ class JackEngine:
             logger.info("render thread: Python GC disabled")
         except Exception as e:
             logger.warning("gc.disable failed: %s", e)
-        try:
-            os.sched_setscheduler(0, os.SCHED_FIFO, os.sched_param(80))
-            logger.info("render thread: SCHED_FIFO priority 80")
-        except Exception as e:
-            logger.warning("couldn't set realtime priority: %s", e)
+        set_realtime_priority(80)
 
         _last_iter_ts = time.perf_counter()
         while self.running:
@@ -947,26 +944,8 @@ class JackEngine:
         MIN_FULL_GC_INTERVAL_S = 82800   # ≈23 hr — prevents repeat firings in the hour
         SILENCE_CYCLES_REQUIRED = 3      # 3 × 30 s = 90 s of confirmed silence
 
-        # Resolve glibc's malloc_trim() via ctypes. If it's not glibc
-        # (musl, alternate libc) we just skip the trim; gen-0 GC still runs.
-        _malloc_trim = None
-        try:
-            _libc = ctypes.CDLL("libc.so.6", use_errno=False)
-            _libc.malloc_trim.argtypes = [ctypes.c_size_t]
-            _libc.malloc_trim.restype = ctypes.c_int
-            _malloc_trim = _libc.malloc_trim
-        except Exception as e:
-            logger.info("malloc_trim unavailable (not glibc?): %s", e)
-
-        def _rss_kb():
-            try:
-                with open("/proc/self/status") as f:
-                    for line in f:
-                        if line.startswith("VmRSS:"):
-                            return int(line.split()[1])
-            except Exception:
-                pass
-            return 0
+        # Platform-gated: Linux gets libc.malloc_trim; Mac/others get None.
+        _malloc_trim = try_malloc_trim()
 
         _silent_cycles = 0
         _last_full = 0.0
@@ -980,7 +959,7 @@ class JackEngine:
                 _silent_cycles = 0
                 continue
             _silent_cycles += 1
-            rss_before = _rss_kb()
+            rss_before = get_rss_kb()
             t0 = time.perf_counter()
             try:
                 collected = gc.collect(0)
@@ -996,7 +975,7 @@ class JackEngine:
                 except Exception as e:
                     logger.warning("malloc_trim failed: %s", e)
                 trim_ms = (time.perf_counter() - t1) * 1000.0
-            rss_after = _rss_kb()
+            rss_after = get_rss_kb()
             freed_kb = rss_before - rss_after
             logger.info("idle GC gen0: collected=%d freed=%dKB rss=%dKB "
                         "gc=%.1fms trim=%.1fms",
@@ -1025,7 +1004,7 @@ class JackEngine:
                     _last_full = now
                     logger.info("DAILY full GC: collected=%d rss=%dKB "
                                 "gc=%.1fms trim=%.1fms (silence=%ds)",
-                                full_collected, _rss_kb(),
+                                full_collected, get_rss_kb(),
                                 full_ms, full_trim_ms,
                                 _silent_cycles * int(CHECK_INTERVAL_S))
 
