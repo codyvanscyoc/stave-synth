@@ -19,15 +19,13 @@ from .synth_engine import (SynthEngine, BiquadLowpass, BiquadHighpass,
                            BusCompressor,
                            fader_to_amplitude, blend_to_amplitude)
 from .config import SAMPLE_RATE, BTL_MODE
+from .audio_io import create_audio_io
 import os as _os
 USE_FAUST_MASTER_FX = _os.environ.get("STAVE_FAUST_MASTER_FX", "0") not in ("0", "", "false", "False")
 USE_FAUST_BUS_COMP  = _os.environ.get("STAVE_FAUST_BUS_COMP",  "0") not in ("0", "", "false", "False")
 from .recorder import Recorder
 
 logger = logging.getLogger(__name__)
-
-# Locate the C bridge shared library next to this file
-_BRIDGE_PATH = os.path.join(os.path.dirname(__file__), "jack_bridge.so")
 
 
 class LookaheadLimiter:
@@ -289,14 +287,8 @@ class JackEngine:
         self._midi_events_seen = 0
         self._midi_notes_triggered = 0
 
-        # Load C bridge
-        if not os.path.exists(_BRIDGE_PATH):
-            raise RuntimeError(
-                f"jack_bridge.so not found at {_BRIDGE_PATH}. "
-                "Run: gcc -shared -fPIC -O2 -o jack_bridge.so jack_bridge.c -ljack -lpthread"
-            )
-        self._bridge = ctypes.CDLL(_BRIDGE_PATH)
-        self._setup_bridge_types()
+        # Platform audio/MIDI I/O (LinuxJackIO wraps jack_bridge.so; Mac TBD)
+        self._audio = create_audio_io()
 
     @property
     def master_volume(self):
@@ -308,9 +300,9 @@ class JackEngine:
         self._push_master_to_bridge()
 
     def _push_master_to_bridge(self):
-        if hasattr(self, '_bridge'):
+        if hasattr(self, '_audio'):
             amp = fader_to_amplitude(self._master_volume) * self._fade_gain
-            self._bridge.bridge_set_master_volume(ctypes.c_float(amp))
+            self._audio.set_master_volume(amp)
 
     def start_fade(self, target: float, duration_s: float = 5.0) -> float:
         """Ramp fade_gain to target (0.0 or 1.0) over duration_s with an S-curve.
@@ -489,47 +481,19 @@ class JackEngine:
             return self._generate_bpm_sidechain(n), None
         return None, None  # self
 
-    def _setup_bridge_types(self):
-        b = self._bridge
-        b.bridge_start.restype = ctypes.c_int
-        b.bridge_stop.restype = None
-        b.bridge_write_audio.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_int]
-        b.bridge_write_audio.restype = ctypes.c_int
-        b.bridge_write_stereo.argtypes = [
-            ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float), ctypes.c_int
-        ]
-        b.bridge_write_stereo.restype = ctypes.c_int
-        b.bridge_set_master_volume.argtypes = [ctypes.c_float]
-        b.bridge_set_master_volume.restype = None
-        b.bridge_read_midi.argtypes = [ctypes.POINTER(ctypes.c_uint8)]
-        b.bridge_read_midi.restype = ctypes.c_int
-        b.bridge_get_sample_rate.restype = ctypes.c_int
-        b.bridge_get_buffer_size.restype = ctypes.c_int
-        b.bridge_get_callback_count.restype = ctypes.c_int
-        b.bridge_get_peak_output.restype = ctypes.c_float
-        b.bridge_get_xrun_count.restype = ctypes.c_int
-        b.bridge_get_underrun_count.restype = ctypes.c_int
-        b.bridge_get_midi_event_count.restype = ctypes.c_int
-        b.bridge_get_ring_fill.restype = ctypes.c_int
-        b.bridge_set_btl_mode.argtypes = [ctypes.c_int]
-        b.bridge_set_btl_mode.restype = None
-        b.bridge_is_shutdown.restype = ctypes.c_int
-
     def start(self):
         """Start the C bridge JACK client."""
-        ret = self._bridge.bridge_start()
+        ret = self._audio.start()
         if ret != 0:
-            raise RuntimeError(f"bridge_start() failed with code {ret}")
+            raise RuntimeError(f"audio_io.start() failed with code {ret}")
 
-        sr = self._bridge.bridge_get_sample_rate()
-        bs = self._bridge.bridge_get_buffer_size()
+        sr = self._audio.get_sample_rate()
+        bs = self._audio.get_buffer_size()
         logger.info("JACK C bridge active: sr=%d, blocksize=%d", sr, bs)
 
         self._push_master_to_bridge()
-        self._bridge.bridge_set_btl_mode(1 if BTL_MODE else 0)
-        # Verify BTL mode was set correctly
-        self._bridge.bridge_get_btl_mode.restype = ctypes.c_int
-        btl_actual = self._bridge.bridge_get_btl_mode()
+        self._audio.set_btl_mode(1 if BTL_MODE else 0)
+        btl_actual = self._audio.get_btl_mode()
         logger.info("BTL mode: config=%s, bridge=%d (0=stereo, 1=mono-invert)", BTL_MODE, btl_actual)
         self.running = True
 
@@ -553,8 +517,8 @@ class JackEngine:
     def _render_loop(self):
         """Continuously render synth audio and keep the ring buffer full."""
         import gc
-        bs = self._bridge.bridge_get_buffer_size()
-        sr = self._bridge.bridge_get_sample_rate()
+        bs = self._audio.get_buffer_size()
+        sr = self._audio.get_sample_rate()
         block_time = bs / sr
         consecutive_errors = 0
         MAX_CONSECUTIVE_ERRORS = 20
@@ -597,12 +561,12 @@ class JackEngine:
                                    _iter_gap * 1000, block_time * 500, time.time())
 
                 # Exit if JACK server disappeared — systemd will restart us
-                if self._bridge.bridge_is_shutdown():
+                if self._audio.is_shutdown():
                     logger.critical("JACK server shut down — exiting for systemd restart")
                     os._exit(1)
 
                 # Check ring buffer fill level
-                fill = self._bridge.bridge_get_ring_fill()
+                fill = self._audio.get_ring_fill()
 
                 # STARVATION: ring dropped to 0 or 1 → C bridge is producing
                 # (or about to produce) silence. Log the event.
@@ -933,7 +897,7 @@ class JackEngine:
                     if self.recorder.is_recording():
                         self.recorder.feed(left_f32, right_f32)
 
-                    self._bridge.bridge_write_stereo(
+                    self._audio.write_stereo(
                         left_f32.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
                         right_f32.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
                         bs
@@ -1073,7 +1037,7 @@ class JackEngine:
 
         while self.running:
             while True:
-                n = self._bridge.bridge_read_midi(midi_buf)
+                n = self._audio.read_midi(midi_buf)
                 if n == 0:
                     break
 
@@ -1240,5 +1204,5 @@ class JackEngine:
         self.synth.all_notes_off()
         self.running = False
         time.sleep(0.1)
-        self._bridge.bridge_stop()
+        self._audio.stop()
         logger.info("JACK engine stopped")
