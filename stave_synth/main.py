@@ -1146,7 +1146,23 @@ class StaveSynth:
         return {"type": "octave_ack", "instrument": instrument, "octave": octave}
 
     def _handle_get_audio_outputs(self) -> dict:
-        """List available audio sinks via pw-jack."""
+        """List available audio sinks.
+
+        Mac (MacPortAudioIO): enumerate Core Audio output devices via
+        sounddevice.query_devices. Branch is selected by duck-typing — any
+        AudioIO impl that exposes list_output_devices takes this path.
+
+        Linux (LinuxJackIO): fall through to the pw-jack jack_lsp probe.
+        """
+        audio = getattr(self.jack, "_audio", None) if self.jack else None
+        if audio is not None and hasattr(audio, "list_output_devices"):
+            try:
+                return {"type": "audio_outputs",
+                        "outputs": audio.list_output_devices()}
+            except Exception as e:
+                logger.error("list_output_devices failed: %s", e)
+                return {"type": "audio_outputs", "outputs": []}
+
         outputs = []
         current = None
         try:
@@ -1193,8 +1209,29 @@ class StaveSynth:
         whether the routing actually succeeded. Previously this always
         returned success:True, so a failed connect looked identical to a
         working one from the user's side (no audio but UI says OK).
+
+        Mac branch (taken when the audio backend exposes
+        switch_output_device): hot-swap the sounddevice stream to the
+        selected Core Audio device and persist the selection to state so it
+        survives restarts.
         """
         target = msg.get("name", "")
+        audio = getattr(self.jack, "_audio", None) if self.jack else None
+        if audio is not None and hasattr(audio, "switch_output_device"):
+            ok, err = audio.switch_output_device(target)
+            if ok:
+                self.state.setdefault("master", {})["audio_output"] = target
+                # Save immediately — audio-device selection is something the
+                # user expects to stick even if they kill the app hard before
+                # the autosave loop fires.
+                try:
+                    save_state(self.state)
+                except Exception as e:
+                    logger.warning("save_state after audio-output swap: %s", e)
+                return {"type": "audio_output_set", "name": target, "success": True}
+            return {"type": "audio_output_set", "name": target,
+                    "success": False, "error": err}
+
         error_msg = None
         try:
             # Disconnect all current output connections
@@ -1764,6 +1801,13 @@ class StaveSynth:
                     int(master.get("eq_lowcut_slope", 12)),
                     True,
                 )
+            # Push preferred output device name (Mac-only — LinuxJackIO
+            # doesn't implement set_preferred_device, so hasattr gates it).
+            # MacPortAudioIO.start() falls back to system default if the
+            # named device can't be opened.
+            audio = getattr(self.jack, "_audio", None)
+            if audio is not None and hasattr(audio, "set_preferred_device"):
+                audio.set_preferred_device(master.get("audio_output", "") or "")
             self.jack.start()
         except Exception as e:
             logger.error("Failed to start JACK engine: %s", e)

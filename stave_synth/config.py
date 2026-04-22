@@ -247,6 +247,10 @@ DEFAULT_STATE = {
         "transpose_semitones": 0,
         "piano_octave": 0,
         "instrument_mode": "piano",
+        # Output device name (Mac: Core Audio device name as reported by
+        # sounddevice.query_devices; Linux: ignored — pw-jack routing is
+        # managed through separate jack_connect calls). Empty = system default.
+        "audio_output": "",
         "eq_bands": [
             {"freq_hz": 200, "gain_db": 0.0, "q": 1.5},
             {"freq_hz": 1000, "gain_db": 0.0, "q": 1.5},
