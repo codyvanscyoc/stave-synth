@@ -15,6 +15,10 @@ N_SLOTS = 16;
 TWO_PI  = 2.0 * ma.PI;
 SR      = ma.SR;
 STEREO_DETUNE = 1.003;      // R phasor runs 0.3% faster for stereo width
+// Beat-frequency cap in Hz: above ~1 kHz the 0.3 % ratio yields a beat
+// rate that feels like tremolo instead of chorus (6 Hz at C7). Capping
+// the absolute detune at 3 Hz keeps high-register resonances chorus-y.
+MAX_BEAT_HZ = 3.0;
 
 // Gain smoother with ~150 ms time constant — matches Python's
 // `decay_rate = exp(-1/(0.15 * SR))` per-sample ramp toward target.
@@ -31,7 +35,12 @@ symp_gate(i) = hslider("symp_gate_s%i", 0, 0, 1, 0.001) : symp_smoother;
 slot_stereo(i) = sin(TWO_PI * phasor_l) * g, sin(TWO_PI * phasor_r) * g
 with {
     inc_l    = symp_freq(i) / SR;
-    inc_r    = symp_freq(i) * STEREO_DETUNE / SR;
+    // Detune = min(freq * ratio, freq + MAX_BEAT_HZ). Ratio dominates at
+    // low registers (below ~1 kHz where 0.3 % < 3 Hz); absolute-offset
+    // dominates above that, capping flutter at MAX_BEAT_HZ so high notes
+    // don't turn into a fast tremolo.
+    detuned  = min(symp_freq(i) * STEREO_DETUNE, symp_freq(i) + MAX_BEAT_HZ);
+    inc_r    = detuned / SR;
     phasor_l = (+(inc_l) : ma.frac) ~ _;
     phasor_r = (+(inc_r) : ma.frac) ~ _;
     g        = symp_gate(i) * sym_level;

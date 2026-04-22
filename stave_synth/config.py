@@ -1,32 +1,25 @@
 """Default configuration and paths for Stave Synth."""
 
 import json
+import logging
 import os
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 CONFIG_DIR = Path.home() / ".config" / "stave-synth"
 PRESETS_DIR = CONFIG_DIR / "presets"
 DATA_DIR = Path.home() / ".local" / "share" / "stave-synth"
 SOUNDFONT_DIR = DATA_DIR / "soundfonts"
 STATE_FILE = CONFIG_DIR / "current_state.json"
-CONFIG_FILE = CONFIG_DIR / "config.json"
 
 # Audio
 SAMPLE_RATE = 48000
-BIT_DEPTH = 24
 
 # Network
 WEBSOCKET_HOST = "0.0.0.0"
 WEBSOCKET_PORT = 8765
 HTTP_PORT = 8080
-
-# Synth limits
-MAX_SYNTH_VOICES = 16
-MAX_FLUIDSYNTH_POLYPHONY = 64
-
-# Transpose
-TRANSPOSE_MIN = -12
-TRANSPOSE_MAX = 12
 
 # Auto-save interval in seconds
 AUTOSAVE_INTERVAL = 30
@@ -186,14 +179,19 @@ DEFAULT_STATE = {
         "drone_enabled": False,
         "drone_key": None,       # MIDI note currently held by the pad player, or null
         "drone_level": 1.0,      # pad-player volume multiplier (0..1)
-        "volume": 0.8,
+        # "volume": removed 2026-04-21 — no reader anywhere. Legacy state
+        # from before the OSC-blend-based volume model took over. _deep_merge
+        # on load harmlessly preserves saved copies but this default is gone.
         "osc1_octave": 0,
         "osc2_octave": 0,
     },
     "piano": {
         "enabled": True,
         "soundfont": "Salamander",
-        "sound": "acoustic_grand_piano",
+        # "sound": removed 2026-04-21 — superseded by soundfont + voicing.
+        # SOUNDFONT_PRESETS own the GM program number directly; the old
+        # sound dropdown no longer exists in the UI and no code path reads
+        # state["piano"]["sound"].
         "voicing": "acoustic",
         "eq_bands": [
             {"freq_hz": 100.0,   "gain_db": 0.0, "q": 0.8, "enabled": True},
@@ -343,8 +341,15 @@ def load_state():
                     sp["adsr_osc2"] = dict(sp["adsr"])
                 sp.pop("adsr", None)
             state = _deep_merge(defaults, saved)
-        except (json.JSONDecodeError, OSError):
-            pass
+        except (json.JSONDecodeError, OSError) as e:
+            # Previously silent-swallowed — which meant a corrupted state
+            # file silently reset every preset/fader to defaults with no
+            # indication to the user. Log loudly so a stage-side surprise
+            # is at least findable in the journal.
+            logger.warning(
+                "Failed to load saved state from %s: %s — falling back to defaults",
+                STATE_FILE, e,
+            )
 
     # Migration: pad preset arrays if they're shorter than current default
     # (handles users upgrading from 5-slot → 10-slot layout).

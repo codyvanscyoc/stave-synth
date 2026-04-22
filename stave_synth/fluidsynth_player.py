@@ -44,7 +44,7 @@ SOUNDFONT_PRESETS = {
     # Rhodes.sf2 which had a hot barky top layer that slammed into distortion
     # and a bell tone that clashed with the acoustic voicing's 2.8kHz cut.
     "Rhodes":     {"file": "FluidR3_GM", "program": 4, "tremolo_hz": 0.0, "tremolo_depth": 0.0, "velocity_curve": 1.0},
-    "Suitcase":   {"file": "FluidR3_GM", "program": 4, "tremolo_hz": 5.5, "tremolo_depth": 0.35, "velocity_curve": 1.0},
+    "Suitcase":   {"file": "FluidR3_GM", "program": 4, "tremolo_hz": 5.5, "tremolo_depth": 0.50, "velocity_curve": 1.0},
 }
 
 # General MIDI program numbers — independent of the voicing (EQ) system.
@@ -73,73 +73,90 @@ SOUNDS = {
 #
 # Bands are ordered low → high (convention). Each: freq_hz, gain_db, q.
 PIANO_VOICINGS = {
-    # Baseline Salamander correction (flat grand character).
+    # Baseline Salamander correction (flat grand character). The reference
+    # chain is a Yamaha C5 recorded with two AKG C414s in AB position 12 cm
+    # above the strings — close-mic'd, no room capture. That chain has three
+    # fingerprints we correct for: hot 2.5-3 kHz (C414 presence × close-mic
+    # hammer strike), low-mid buildup 200-400 Hz (AB spaced pair proximity),
+    # and short "air" above 10 kHz (no room tail). See project_piano_voicings
+    # memory for the full rationale.
     "acoustic": {
-        "lowcut_hz": 40.0, "highcut_hz": 18000.0,
+        "lowcut_hz": 40.0, "highcut_hz": 20000.0,
         "bands": [
-            (150.0,    2.0, 0.8),   # body/warmth
-            (300.0,   -2.5, 1.0),   # cut low-mid mud
-            (2800.0,  -3.0, 1.5),   # tame close-mic harshness
-            (10000.0, -1.5, 0.7),   # gentle air shelf-feel
+            (180.0,    1.5, 0.7),   # body/warmth, gentle wide Q
+            (250.0,   -2.0, 1.0),   # textbook Salamander mud cut
+            (2800.0,  -2.0, 1.2),   # tame close-mic presence (gentler than before)
+            (12000.0,  1.5, 0.7),   # LIFT air (was -1.5 @ 10k — flipped to restore room feel)
         ],
     },
-    # Forward + airy — sparkly studio feel.
+    # Forward + airy — sparkly studio feel. Air now lives up at 13k where
+    # real air lives, not at 10k where upper-mid sits.
     "bright": {
         "lowcut_hz": 50.0, "highcut_hz": 20000.0,
         "bands": [
-            (120.0,    1.0, 0.8),
+            (100.0,    0.5, 0.8),
             (300.0,   -1.5, 1.0),
-            (4000.0,   2.5, 1.2),
-            (10000.0,  2.0, 0.7),
+            (4000.0,   2.0, 1.2),   # softened from +2.5 to keep from compounding with shared filter
+            (13000.0,  2.5, 0.7),   # air, not upper-mid
         ],
     },
-    # Rolled top, sweet top-mids. Not dark — just soft.
+    # Rolled top, sweet top-mids. Not dark — just soft. Gentler 2.8k cut +
+    # a small 5k dip replaces the old -4 @ 2.8k / -2 @ 7k / LP9k stack,
+    # which was scooping the piano into "under-a-blanket" territory.
     "mellow": {
-        "lowcut_hz": 40.0, "highcut_hz": 9000.0,
+        "lowcut_hz": 40.0, "highcut_hz": 10000.0,
         "bands": [
             (150.0,    1.0, 0.8),
-            (300.0,   -2.0, 1.0),
-            (2800.0,  -4.0, 1.3),
-            (7000.0,  -2.0, 0.9),
+            (250.0,   -1.5, 1.0),
+            (2800.0,  -2.5, 1.2),
+            (5000.0,  -2.5, 1.0),
         ],
     },
-    # Fat low-mid body, gentle top. Full-bodied character.
+    # Fat low-mid body, gentle top. Rewritten to body-boost + low-mid cut,
+    # the classic "warm piano" shape. The old +3 @ 200 + +1 @ 500 was a
+    # broad low boost that bloomed into muddy territory.
     "warm": {
         "lowcut_hz": 50.0, "highcut_hz": 14000.0,
         "bands": [
-            (200.0,    3.0, 0.7),
-            (500.0,    1.0, 1.0),
-            (2800.0,  -2.5, 1.3),
-            (10000.0, -1.0, 0.8),
+            (180.0,    2.0, 0.8),   # body
+            (700.0,   -1.5, 1.0),   # CUT "wool" — key change
+            (2800.0,  -2.0, 1.2),
+            (10000.0, -1.5, 0.8),
         ],
     },
-    # Heavy top roll + cut presence. Late-night/lounge.
+    # Heavy top roll + cut presence. Late-night/lounge. Old curve stacked
+    # -5 @ 4.5k on top of LP 5k — double-cutting into muted-piano land.
+    # New curve is dark from one coherent slope, still playable.
     "dark": {
-        "lowcut_hz": 60.0, "highcut_hz": 5000.0,
+        "lowcut_hz": 60.0, "highcut_hz": 6500.0,
         "bands": [
-            (180.0,    2.5, 0.8),
-            (350.0,   -1.0, 1.0),
-            (2000.0,  -3.0, 1.5),
-            (4500.0,  -5.0, 1.0),
+            (180.0,    2.0, 0.8),
+            (300.0,   -1.0, 1.0),
+            (2500.0,  -2.5, 1.3),
+            (4000.0,  -3.5, 1.0),
         ],
     },
-    # Honky mid-forward with narrow band — "old upright".
+    # Honky mid-forward with narrow band — "old upright". HP was 90 Hz
+    # (aggressive); pulled back to 70 to keep low fundamentals. Tape-feel
+    # top rolloff pushed harder for more character.
     "vintage": {
-        "lowcut_hz": 90.0, "highcut_hz": 9000.0,
+        "lowcut_hz": 70.0, "highcut_hz": 9000.0,
         "bands": [
             (200.0,   -1.0, 1.0),
-            (500.0,    2.5, 1.2),
-            (2800.0,  -2.0, 1.3),
-            (6000.0,  -2.0, 0.9),
+            (500.0,    2.5, 1.2),   # signature "honk" of vintage recordings
+            (3000.0,  -2.5, 1.2),
+            (6500.0,  -2.5, 0.9),
         ],
     },
-    # Tight low punch, crisp attack — live performance tone.
+    # Tight low punch, crisp attack — live performance tone. Low lift
+    # moved up to 150 Hz (stays out of bass-guitar fundamentals) and a
+    # deeper 350 Hz scoop gives the classic "cut through the mix" shape.
     "stage": {
         "lowcut_hz": 70.0, "highcut_hz": 18000.0,
         "bands": [
-            (100.0,    1.5, 0.7),
-            (400.0,   -1.5, 1.0),
-            (2800.0,  -1.5, 1.2),
+            (150.0,    1.5, 0.8),
+            (350.0,   -2.0, 1.0),
+            (2500.0,  -1.5, 1.2),
             (6000.0,   2.0, 1.0),
         ],
     },
@@ -248,7 +265,7 @@ class FluidSynthPlayer:
         # is a linear function of the tracker — soft notes roll off top, hard
         # notes sparkle. Off by default so existing presets sound unchanged.
         self.vel_bright_enabled = False
-        self.vel_bright_amount = 0.5     # 0 = off, 1 = maximum 3kHz-18kHz sweep
+        self.vel_bright_amount = 0.5     # 0 = off, 1 = maximum 1.5kHz-18kHz sweep
         self._vel_tracker = 0.7          # smoothed recent velocity (0..1)
         self._vel_tracker_cur = 0.7      # per-block interpolated value
         self._vel_bright_filter_l = BiquadLowpass(18000.0, 0.707, sample_rate)
@@ -256,8 +273,21 @@ class FluidSynthPlayer:
         self._vel_bright_last_cutoff = 18000.0
 
     def start(self, soundfont_name: str = "Salamander"):
-        """Initialize FluidSynth and load soundfont.
-        Audio is rendered via render_block() — no JACK driver needed."""
+        """Initialize FluidSynth and PRE-LOAD every available soundfont so
+        mid-set preset switching never blocks the audio render thread.
+
+        Audio is rendered via render_block() — no JACK driver needed.
+
+        Pre-loading all soundfonts at startup trades a few seconds of
+        boot time for instant live switching. Previously `set_soundfont`
+        called `sfunload` + `sfload` under the render lock — a Salamander
+        reload is hundreds of ms of cold disk read and dropped audio mid-song.
+        With every preset's .sf2 resident in memory, a preset change is a
+        3-call `program_select` that takes microseconds.
+
+        Memory cost on the Pi 5 (8 GB): Salamander ~1.2 GB + FluidR3_GM
+        ~150 MB = ~1.35 GB resident. Fine.
+        """
         self.fs = fluidsynth.Synth(samplerate=float(self.sample_rate))
 
         # Configure — gain at 1.0 since our pipeline handles volume.
@@ -279,6 +309,40 @@ class FluidSynthPlayer:
             logger.warning("Piano-room reverb unavailable: %s", e)
             self._piano_room = None
 
+        # ─── Pre-load every preset's underlying .sf2 ─────────────────
+        # Dedupe by resolved file path so Rhodes + Suitcase (both FluidR3_GM)
+        # share a single sfload. Map by preset["file"] (the canonical key
+        # used at switch time).
+        self._sfid_by_file = {}         # preset["file"] → sfid
+        _sfid_by_path = {}              # resolved abs path → sfid (dedup)
+        for preset_name, preset in SOUNDFONT_PRESETS.items():
+            file_key = preset["file"]
+            if file_key in self._sfid_by_file:
+                continue
+            sf_path = self._find_soundfont(file_key)
+            if sf_path is None:
+                logger.warning("Soundfont not found for preset '%s' (file=%s) — "
+                               "preset will be unavailable", preset_name, file_key)
+                continue
+            path_str = str(sf_path)
+            if path_str in _sfid_by_path:
+                self._sfid_by_file[file_key] = _sfid_by_path[path_str]
+                logger.info("Preset '%s' (file=%s) reuses sfid for %s",
+                             preset_name, file_key, path_str)
+            else:
+                try:
+                    sfid = self.fs.sfload(path_str)
+                except Exception as e:
+                    logger.error("sfload crashed for %s: %s", path_str, e)
+                    continue
+                if sfid < 0:
+                    logger.warning("sfload returned %d for %s", sfid, path_str)
+                    continue
+                self._sfid_by_file[file_key] = sfid
+                _sfid_by_path[path_str] = sfid
+                logger.info("Preloaded soundfont file='%s' path='%s' sfid=%d",
+                             file_key, path_str, sfid)
+
         # Resolve the startup name: if it's a preset key, grab the preset's
         # file (and tremolo config). Otherwise treat as a direct file stem
         # (legacy + fallback chain).
@@ -295,26 +359,47 @@ class FluidSynthPlayer:
             startup_program = SOUNDS.get(self.current_sound, 0)
 
         self.current_soundfont = preset_name or soundfont_name
-        sf_path = self._find_soundfont(file_stem)
-        if sf_path:
-            self.sfid = self.fs.sfload(str(sf_path))
-            if self.sfid >= 0:
-                self._loaded_file = Path(sf_path).stem
-                if preset_name is None:
+
+        # Prefer the pre-loaded sfid for the requested startup preset.
+        startup_sfid = self._sfid_by_file.get(file_stem)
+        if startup_sfid is not None:
+            self.sfid = startup_sfid
+            self._loaded_file = file_stem
+            self.fs.program_select(0, self.sfid, 0, startup_program)
+            logger.info("Startup soundfont: preset=%s file=%s prog=%d id=%d",
+                         self.current_soundfont, file_stem, startup_program, self.sfid)
+        elif file_stem and preset_name is None:
+            # Legacy path: caller asked for a direct file stem that isn't in
+            # SOUNDFONT_PRESETS. Fall through to a one-off sfload so existing
+            # installs with ad-hoc soundfont names still boot.
+            sf_path = self._find_soundfont(file_stem)
+            if sf_path:
+                self.sfid = self.fs.sfload(str(sf_path))
+                if self.sfid >= 0:
+                    self._loaded_file = Path(sf_path).stem
                     self.current_soundfont = self._loaded_file
-                self.fs.program_select(0, self.sfid, 0, startup_program)
-                logger.info("Loaded soundfont: %s (preset=%s prog=%d id=%d)",
-                            sf_path, self.current_soundfont, startup_program, self.sfid)
+                    self.fs.program_select(0, self.sfid, 0, startup_program)
+                    # Register in cache so subsequent switches are instant too.
+                    self._sfid_by_file[file_stem] = self.sfid
+                    logger.info("Loaded soundfont (legacy path): %s id=%d",
+                                 sf_path, self.sfid)
+                else:
+                    logger.error("Failed to load soundfont: %s — piano disabled", sf_path)
+                    self.sfid = None
+                    self.enabled = False
             else:
-                logger.error("Failed to load soundfont: %s — piano disabled", sf_path)
-                self.sfid = None
+                logger.error("No soundfont found (tried %s + fallbacks) — piano disabled",
+                              file_stem)
                 self.enabled = False
         else:
-            logger.error("No soundfont found (tried %s + fallbacks) — piano disabled", file_stem)
+            logger.error("Startup preset '%s' not pre-loaded — piano disabled",
+                          self.current_soundfont)
+            self.sfid = None
             self.enabled = False
 
         if self.sfid is not None:
-            logger.info("FluidSynth started (rendered in Python pipeline)")
+            logger.info("FluidSynth started (rendered in Python pipeline) — %d soundfont(s) resident",
+                         len(self._sfid_by_file))
         else:
             logger.warning("FluidSynth started but no soundfont loaded — piano will be silent")
 
@@ -532,8 +617,9 @@ class FluidSynthPlayer:
             smooth_a = 1.0 - np.exp(-n_samples / (0.05 * self.sample_rate))
             self._vel_tracker_cur += smooth_a * (self._vel_tracker - self._vel_tracker_cur)
             # Map tracker → cutoff. At amount=0 floor=18kHz (no effect).
-            # At amount=1 floor=3kHz and we linearly sweep to 18kHz as vel→1.
-            floor = 18000.0 - self.vel_bright_amount * 15000.0
+            # At amount=1 floor=1.5kHz — soft playing now actually sounds
+            # soft (the old 3kHz floor was still "pretty bright").
+            floor = 18000.0 - self.vel_bright_amount * 16500.0
             cutoff = floor + (18000.0 - floor) * max(0.0, min(1.0, self._vel_tracker_cur))
             # Avoid cheap-coefficient-recalc thrash: only push new params
             # when the cutoff has moved enough to hear.
@@ -696,68 +782,57 @@ class FluidSynthPlayer:
         self.velocity_curve = float(preset.get("velocity_curve", 1.0))
 
         target_file = preset["file"]
-        # Same underlying file as what's already loaded → nothing else to do.
-        # `current_soundfont` is the preset NAME (UI-facing); `_loaded_file`
-        # is the underlying sf stem. Track separately so Rhodes↔Suitcase can
-        # piggyback without a full reload.
         target_program = int(preset.get("program", 0))
-        loaded_file = getattr(self, "_loaded_file", None)
-        if loaded_file == target_file and self.fs is not None and self.sfid is not None:
-            self.current_soundfont = name
-            try:
-                with self._lock:
-                    # Flush any held voices from the previous preset (e.g. a
-                    # Suitcase note that was ringing when the user flipped to
-                    # plain Rhodes) — otherwise its tremolo-modulated voice
-                    # stays active until the envelope ends, mixing under the
-                    # new preset. system_reset zeros all voices AND the internal
-                    # reverb tail, which is the only thing that could carry
-                    # tremolo-phase content across the switch.
-                    self.fs.system_reset()
-                    self.fs.set_reverb_level(self.reverb_dry_wet)
-                    self.fs.program_select(0, self.sfid, 0, target_program)
-            except Exception as e:
-                logger.warning("program_select %d failed on in-place switch: %s", target_program, e)
-            logger.info("Soundfont preset switched in place: %s (file unchanged, prog=%d, trem=%.1fHz/%.2f vel^(1/%.2f))",
-                        name, target_program, self.tremolo_hz, self.tremolo_depth, self.velocity_curve)
-            return
+
+        # Every preset's .sf2 is pre-loaded at start(); switching is just a
+        # program_select on the already-resident sfid. No sfload/sfunload on
+        # the audio path → no dropped audio mid-song.
+        new_sfid = getattr(self, "_sfid_by_file", {}).get(target_file)
 
         if self.fs is None:
+            # Pre-start state update (set_soundfont called before start())
             self.current_soundfont = name
             self._loaded_file = target_file
             return
-        sf_path = self._find_soundfont(target_file)
-        if sf_path is None:
-            logger.warning("Soundfont file not found: %s — keeping %s",
-                           target_file, self.current_soundfont)
-            return
-        with self._lock:
-            for note in range(128):
-                self.fs.noteoff(0, note)
-            if self.sfid is not None:
-                try:
-                    self.fs.sfunload(self.sfid, 1)
-                except Exception as e:
-                    logger.warning("sfunload failed (%s) — continuing", e)
-            new_id = self.fs.sfload(str(sf_path))
-            if new_id >= 0:
-                self.sfid = new_id
-                self.current_soundfont = name
-                self._loaded_file = target_file
-                # system_reset clears reverb tail + any straggler voices from
-                # the previous soundfont. Without this, the decay from the
-                # old patch keeps ringing through FluidSynth's internal
-                # reverb for several seconds, audibly mixing with new notes.
+
+        if new_sfid is None:
+            # Pre-load miss — could happen if the preset's file wasn't found
+            # on disk at startup. One-off sfload on the lock as a last resort
+            # (rare; shouldn't hit during normal live use).
+            logger.warning("Preset '%s' file='%s' not preloaded — attempting one-off sfload",
+                           name, target_file)
+            sf_path = self._find_soundfont(target_file)
+            if sf_path is None:
+                logger.warning("Soundfont file not found: %s — keeping %s",
+                               target_file, self.current_soundfont)
+                return
+            with self._lock:
+                loaded_id = self.fs.sfload(str(sf_path))
+                if loaded_id < 0:
+                    logger.error("one-off sfload failed for %s", sf_path)
+                    return
+                self._sfid_by_file[target_file] = loaded_id
+                new_sfid = loaded_id
+
+        # Instant switch: flush voices + internal reverb tail so the previous
+        # patch's decay doesn't bleed in, then program_select to the target.
+        try:
+            with self._lock:
                 self.fs.system_reset()
                 self.fs.set_reverb_level(self.reverb_dry_wet)
-                self.fs.program_select(0, self.sfid, 0, target_program)
-                logger.info("Soundfont preset loaded: %s (file=%s prog=%d id=%d, trem=%.1fHz/%.2f vel^(1/%.2f))",
-                            name, sf_path, target_program, new_id,
-                            self.tremolo_hz, self.tremolo_depth, self.velocity_curve)
-            else:
-                logger.error("sfload failed for preset %s (file=%s)", name, sf_path)
-                self.sfid = None
-                self.enabled = False
+                self.fs.program_select(0, new_sfid, 0, target_program)
+        except Exception as e:
+            logger.warning("program_select %d failed on preset switch: %s",
+                           target_program, e)
+            return
+
+        self.sfid = new_sfid
+        self.current_soundfont = name
+        self._loaded_file = target_file
+        logger.info("Soundfont switched: %s (file=%s prog=%d id=%d, trem=%.1fHz/%.2f vel^(1/%.2f))",
+                    name, target_file, target_program, new_sfid,
+                    self.tremolo_hz, self.tremolo_depth, self.velocity_curve)
+
         self._active_notes = 0
         self._silent_blocks = 0
         self._comp_envelope = 0.0
@@ -856,29 +931,6 @@ class FluidSynthPlayer:
             self.comp_release_ms = max(5.0, min(2000.0, float(params["comp_release_ms"])))
         if "comp_drive_db" in params:
             self.comp_drive_db = max(-12.0, min(12.0, float(params["comp_drive_db"])))
-
-    def get_params(self) -> dict:
-        return {
-            "enabled": self.enabled,
-            "soundfont": self.current_soundfont,
-            "voicing": self.current_voicing,
-            "sound": self.current_sound,
-            "filter_highcut_hz": self.highcut_hz,
-            "filter_lowcut_hz": self.lowcut_hz,
-            "eq_bands": list(self.eq_bands),
-            "volume": self.volume,
-            "reverb_dry_wet": self.reverb_dry_wet,
-            "piano_room_enabled": self.piano_room_enabled,
-            "vel_bright_enabled": self.vel_bright_enabled,
-            "vel_bright_amount": self.vel_bright_amount,
-            "comp_enabled": self.comp_enabled,
-            "comp_threshold_db": self.comp_threshold_db,
-            "comp_ratio": self.comp_ratio,
-            "comp_makeup_db": self.comp_makeup_db,
-            "comp_knee_db": self.comp_knee_db,
-            "comp_drive_db": self.comp_drive_db,
-            "comp_wet": self.comp_wet,
-        }
 
     def stop(self):
         """Shut down FluidSynth."""

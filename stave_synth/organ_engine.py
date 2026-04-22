@@ -12,11 +12,7 @@ Matches FluidSynthPlayer's interface for seamless swapping on fader 1.
 import threading
 import numpy as np
 
-try:
-    from scipy.signal import lfilter
-    HAS_SCIPY = True
-except ImportError:
-    HAS_SCIPY = False
+from scipy.signal import lfilter
 
 from .config import SAMPLE_RATE
 from .synth_engine import (
@@ -173,14 +169,13 @@ class OrganEngine:
         """Generate the B3 key-click sample: filtered noise with fast decay."""
         click_len = int(0.003 * sample_rate)  # 3ms
         raw_noise = np.random.default_rng(42).standard_normal(click_len)
-        if HAS_SCIPY:
-            # Bandpass: 1kHz highpass + 4kHz lowpass
-            w_hp = TWO_PI * 1000.0 / sample_rate
-            a_hp = 1.0 / (1.0 + w_hp)
-            raw_noise = lfilter(np.array([a_hp, -a_hp]), np.array([1.0, -a_hp]), raw_noise)
-            w_lp = TWO_PI * 4000.0 / sample_rate
-            a_lp = w_lp / (1.0 + w_lp)
-            raw_noise = lfilter(np.array([a_lp]), np.array([1.0, -(1.0 - a_lp)]), raw_noise)
+        # Bandpass: 1kHz highpass + 4kHz lowpass
+        w_hp = TWO_PI * 1000.0 / sample_rate
+        a_hp = 1.0 / (1.0 + w_hp)
+        raw_noise = lfilter(np.array([a_hp, -a_hp]), np.array([1.0, -a_hp]), raw_noise)
+        w_lp = TWO_PI * 4000.0 / sample_rate
+        a_lp = w_lp / (1.0 + w_lp)
+        raw_noise = lfilter(np.array([a_lp]), np.array([1.0, -(1.0 - a_lp)]), raw_noise)
         # Fast exponential decay
         decay = np.exp(-np.arange(click_len, dtype=np.float64) / (0.0008 * sample_rate))
         return (raw_noise * decay).astype(np.float64)
@@ -540,21 +535,3 @@ class OrganEngine:
         if "width" in params:
             self.set_width(float(params["width"]))
 
-    def get_params(self) -> dict:
-        return {
-            "enabled": self.enabled,
-            "preset": self.preset,
-            "drawbars": list(self.drawbars),
-            "leslie_speed": self.leslie_speed,
-            "leslie_depth": self.leslie_depth,
-            "click_enabled": self.click_enabled,
-            "click_level": self.click_level,
-            "attack_ms": self.attack_ms,
-            "release_ms": self.release_ms,
-            "drive": self.drive,
-            "filter_highcut_hz": self.highcut_hz,
-            "filter_lowcut_hz": self.lowcut_hz,
-            "volume": self.volume,
-            "tone_tilt": self.tone_tilt,
-            "width": self.width,
-        }

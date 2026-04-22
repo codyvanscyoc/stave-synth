@@ -5,7 +5,7 @@ import logging
 import os
 from pathlib import Path
 
-from .config import PRESETS_DIR, DEFAULT_STATE, ensure_dirs
+from .config import PRESETS_DIR, ensure_dirs
 
 logger = logging.getLogger(__name__)
 
@@ -96,14 +96,6 @@ class PresetManager:
         except OSError as e:
             logger.error("Failed to delete preset %d: %s", slot, e)
             return False
-
-    def list_presets(self) -> list[dict]:
-        """List all preset slots with their existence status."""
-        presets = []
-        for i in range(self.num_slots):
-            path = self._slot_path(i)
-            presets.append({"slot": i, "exists": path.exists()})
-        return presets
 
     def init_defaults(self):
         """Initialize preset system."""

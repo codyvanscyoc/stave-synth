@@ -17,6 +17,12 @@ Environment=XDG_RUNTIME_DIR=/run/user/%U
 Environment=MALLOC_ARENA_MAX=2
 Restart=on-failure
 RestartSec=5
+# Tolerate extended restart attempts: a transient startup failure (missing
+# Faust .so after a rebuild, PipeWire not ready yet, etc.) shouldn't mark
+# the unit as failed and give up mid-set. 50 attempts over 10 minutes ≈
+# the time it takes the user to notice and intervene manually.
+StartLimitBurst=50
+StartLimitIntervalSec=600
 
 [Install]
 WantedBy=default.target

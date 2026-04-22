@@ -273,7 +273,15 @@ class FaustReverb:
         FDN with param variants (shimmer_fb/noise_mod pick up BLOOM/GHOST).
 
         If the requested type's .so is unavailable, falls back to WASH and
-        logs a warning rather than crashing the audio thread."""
+        logs a warning rather than crashing the audio thread.
+        """
+        # Idempotency guard — preset crossfade pushes reverb_type 40+ times
+        # per 800 ms fade (once per tick). Without this guard, every tick
+        # re-applies all preset params (predelay, decay, low/high cut,
+        # shimmer_fb, noise_mod, wet_gain) which rewrites biquad coefficients
+        # redundantly and can thrash the `_last_set` caches downstream.
+        if name == self.type:
+            return
         preset = REVERB_PRESETS.get(name)
         if preset is None:
             logger.warning("Unknown reverb type %r — keeping %r", name, self.type)

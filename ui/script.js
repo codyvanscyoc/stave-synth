@@ -94,6 +94,9 @@
             statusIndicator.textContent = "CONN";
             statusIndicator.className = "connected";
             ws.send(JSON.stringify({ type: "get_state" }));
+            // Re-hydrate MIDI CC map — otherwise a mid-set reconnect leaves
+            // ccMap frozen at whatever it was when the socket dropped.
+            ws.send(JSON.stringify({ type: "get_cc_map" }));
         };
 
         ws.onmessage = function (event) {
@@ -103,7 +106,14 @@
             } catch (e) {
                 return;
             }
-            handleServerMessage(msg);
+            // Guard dispatch separately from parse: a malformed field from a
+            // future backend change would otherwise throw and silently break
+            // all subsequent messages until the user reloads the page.
+            try {
+                handleServerMessage(msg);
+            } catch (e) {
+                console.error("handleServerMessage threw:", e, "msg:", msg);
+            }
         };
 
         ws.onclose = function () {
@@ -476,7 +486,19 @@
             satEnabled = s.master.saturation_enabled ?? false;
             if (satBtn) satBtn.classList.toggle("active", satEnabled);
         }
-        if (s.piano) {
+        // Fader 1 binds to piano OR organ depending on instrument_mode.
+        // Read BOTH sources up-front so applyState writes the right alt
+        // values for the current mode (previously only piano paths were read,
+        // so a reload in organ mode showed stale piano values on ALT cycles
+        // until the user touched the fader).
+        var _instMode = (s.master && s.master.instrument_mode) || instrumentMode || "piano";
+        if (_instMode === "organ" && s.organ) {
+            faderValues[1] = s.organ.volume ?? 1.0;
+            // Fader 1 ALT=1 in organ mode = tone_tilt (0..1 direct map)
+            altFaderValues[1] = Math.max(0, Math.min(1, s.organ.tone_tilt ?? 0.5));
+            // Fader 1 ALT=2 in organ mode = leslie_depth (0..1 direct map)
+            fader1CompValue = Math.max(0, Math.min(1, s.organ.leslie_depth ?? 0.0));
+        } else if (s.piano) {
             faderValues[1] = s.piano.volume ?? 0.5;
             // Map piano highcut freq back to 0-1 using configured range
             var tMin = (s.piano.tone_range_min ?? 200);
@@ -487,6 +509,8 @@
             // Sync fader1 COMP-mode value from piano.comp_wet so reload / state
             // broadcast (e.g. after PERFECT preset) updates the fader visual.
             fader1CompValue = s.piano.comp_wet ?? 1.0;
+        }
+        if (s.piano) {
             pianoEnabled = s.piano.enabled !== false;
             pianoBtn.classList.toggle("active", pianoEnabled);
             pianoBtn.classList.toggle("off", !pianoEnabled);
@@ -615,6 +639,30 @@
     var faderLastSendTime = [0, 0, 0, 0, 0];
     var faderPendingSend = [null, null, null, null, null];
     var FADER_THROTTLE_MS = 30;
+
+    // Mirror-slider send throttle (LINK OSC / LINK LFO). When a linked knob
+    // is dragged, the primary slider fires per-input-event sends at pointer
+    // rate (~120 Hz on touch) AND the mirror also fires an equal-rate send —
+    // doubling WS traffic on every link move. Coalesce mirror sends to one
+    // per animation frame: each param stores its most-recent value in the
+    // map; a single rAF callback flushes them all on the next paint.
+    var _mirrorPending = {};        // param → {section, value}
+    var _mirrorRafId = 0;
+    var _mirrorSchedule = (typeof requestAnimationFrame === "function")
+        ? requestAnimationFrame
+        : function (fn) { return setTimeout(fn, 16); };
+    function _mirrorFlush() {
+        _mirrorRafId = 0;
+        for (var key in _mirrorPending) {
+            var entry = _mirrorPending[key];
+            send({ type: "setting", section: entry.section, param: key, value: entry.value });
+        }
+        _mirrorPending = {};
+    }
+    function scheduleMirrorSend(section, param, value) {
+        _mirrorPending[param] = { section: section, value: value };
+        if (!_mirrorRafId) _mirrorRafId = _mirrorSchedule(_mirrorFlush);
+    }
 
     function setFaderValue(id, normalizedValue) {
         normalizedValue = Math.max(0, Math.min(1, normalizedValue));
@@ -2283,7 +2331,6 @@
         "eq_low_freq": true, "eq_mid_freq": true, "eq_high_freq": true,
         "eq_lowcut_hz": true,
         "bus_comp_sc_hpf_hz": true,
-        "drone_cutoff_hz": true,
         "delay_low_cut_hz": true, "delay_high_cut_hz": true,
         "pad_mellow_cutoff_hz": true, "pad_rise_cutoff_hz": true,
         "eq_band0_freq": true, "eq_band1_freq": true,
@@ -2334,8 +2381,7 @@
                 param === "reverb_space" || param === "unison_spread" ||
                 param === "osc1_max" || param === "osc2_max" ||
                 param === "leslie_depth" || param === "click_level" ||
-                param === "drive" || param === "drone_wash_mix" ||
-                param === "drone_air_mix" || param === "drone_double_mix" ||
+                param === "drive" ||
                 param === "width" || param === "tone_tilt" ||
                 param === "reverb_damp" || param === "reverb_shimmer_fb" ||
                 param === "reverb_noise_mod" || param === "piano_reverb_send" ||
@@ -2502,7 +2548,12 @@
                     if (twinValEl) twinValEl.textContent = displayValue;
                     var twinKnob = twinSlider.closest(".knob");
                     if (twinKnob && typeof updateKnobRotation === "function") updateKnobRotation(twinKnob);
-                    send({ type: "setting", section: "synth_pad", param: mirrorTwin, value: sendValue });
+                    // rAF-coalesce mirror sends: a long drag at pointer rate
+                    // (~120 Hz touch) would otherwise double the WS traffic
+                    // on every linked knob move. Throttling to one send per
+                    // frame caps at 60 Hz — plenty for audible smoothness,
+                    // and the final drag-end value always lands.
+                    scheduleMirrorSend("synth_pad", mirrorTwin, sendValue);
                 }
             }
 
@@ -2526,7 +2577,7 @@
                     if (lfoTwinValEl) lfoTwinValEl.textContent = displayValue;
                     var lfoTwinKnob = lfoTwinSlider.closest(".knob");
                     if (lfoTwinKnob && typeof updateKnobRotation === "function") updateKnobRotation(lfoTwinKnob);
-                    send({ type: "setting", section: "synth_pad", param: lfoTwin, value: sendValue });
+                    scheduleMirrorSend("synth_pad", lfoTwin, sendValue);
                 }
             }
 
@@ -3013,7 +3064,24 @@
 
         var activeNode = 0;
 
+        // rAF-coalesced piano EQ redraw. Slider drag input fires at pointer
+        // rate (up to ~120 Hz on touch); coalescing to one paint per frame
+        // cuts SVG rebuilds ~5-8× without visible lag. Same pattern as the
+        // ADSR + LFO scope redraws elsewhere in this file.
+        var _eqPending = false;
+        var _eqSchedule = (typeof requestAnimationFrame === "function")
+            ? requestAnimationFrame
+            : function (fn) { setTimeout(fn, 16); };
         function redrawCurve() {
+            if (_eqPending) return;
+            _eqPending = true;
+            _eqSchedule(function () {
+                _eqPending = false;
+                _redrawCurveNow();
+            });
+        }
+
+        function _redrawCurveNow() {
             var bands = [];
             for (var i = 0; i < N_USER; i++) {
                 var b = readBand(i);
@@ -3203,8 +3271,7 @@
                 param === "reverb_space" || param === "unison_spread" ||
                 param === "osc1_max" || param === "osc2_max" ||
                 param === "leslie_depth" || param === "click_level" ||
-                param === "drive" || param === "drone_wash_mix" ||
-                param === "drone_air_mix" || param === "drone_double_mix" ||
+                param === "drive" ||
                 param === "width" || param === "tone_tilt" ||
                 param === "reverb_damp" || param === "reverb_shimmer_fb" ||
                 param === "reverb_noise_mod" || param === "piano_reverb_send" ||

@@ -1,5 +1,6 @@
 """Stave Synth — main entry point. Wires all components together."""
 
+import copy
 import json
 import logging
 import os
@@ -11,8 +12,8 @@ import time
 from pathlib import Path
 
 from .config import (
-    DEFAULT_STATE, AUTOSAVE_INTERVAL, HTTP_PORT, SAMPLE_RATE,
-    ensure_dirs, load_state, save_state,
+    DEFAULT_STATE, AUTOSAVE_INTERVAL, HTTP_PORT,
+    ensure_dirs, load_state, save_state, _deep_merge,
 )
 from .synth_engine import SynthEngine
 from .jack_engine import JackEngine
@@ -52,51 +53,24 @@ def _run_with_hard_timeout(cmd, timeout_s: float = 3.0, hard_timeout_s: float = 
 
 
 def ensure_jack_running():
-    """Start JACK server if not already running, targeting USB audio."""
-    # Check if JACK is already running
+    """Confirm JACK/PipeWire-JACK is reachable.
+
+    The app is always launched via the `pw-jack` prefix (systemd unit +
+    stave-synth.sh both prepend it), so by the time this runs the JACK
+    API is already shimmed onto PipeWire. The old direct-jackd fallback
+    was never reachable on this hardware — removed.
+    """
     try:
         result = subprocess.run(
             ["jack_lsp"], capture_output=True, timeout=3
         )
         if result.returncode == 0:
-            logger.info("JACK server already running")
+            logger.info("JACK server reachable")
             return True
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
-
-    logger.info("Starting JACK server...")
-    script = Path(__file__).parent.parent / "start_jack.sh"
-    if script.exists():
-        subprocess.Popen(
-            [str(script)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        time.sleep(2)  # Give JACK time to initialize
-        return True
-
-    # Fallback: start JACK directly
-    # Find USB audio card
-    try:
-        result = subprocess.run(
-            ["aplay", "-l"], capture_output=True, text=True, timeout=5
-        )
-        card = "0"
-        for line in result.stdout.splitlines():
-            if "USB" in line and "Audio" in line:
-                card = line.split("card ")[1].split(":")[0]
-                break
-        subprocess.Popen(
-            ["jackd", "-R", "-d", "alsa", "-d", f"hw:{card}",
-             "-r", str(SAMPLE_RATE), "-p", "128", "-n", "2", "-S"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        time.sleep(2)
-        return True
-    except Exception as e:
-        logger.error("Failed to start JACK: %s", e)
-        return False
+    logger.error("JACK not reachable via pw-jack — audio will be silent")
+    return False
 
 
 _NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
@@ -434,7 +408,6 @@ class StaveSynth:
         setlists[slot] = {
             "name": name, "presets": presets_snapshot, "labels": labels[:10],
         }
-        from .config import save_state
         save_state(self.state)
         return {"type": "setlist_save_ack", "slot": slot, "name": name}
 
@@ -456,7 +429,6 @@ class StaveSynth:
         labels = sl.get("labels") or [""] * 10
         ui["preset_labels"] = list(labels)[:10] + [""] * max(0, 10 - len(labels))
         self._rebuild_preset_saved()
-        from .config import save_state
         save_state(self.state)
         if self.ws_server:
             self.ws_server.broadcast_sync({"type": "state", "state": self.state})
@@ -475,11 +447,12 @@ class StaveSynth:
         slot = msg.get("slot", 0)
         state = self.presets.load(slot)
         if state:
-            # Merge with defaults so new params added since preset was saved exist
-            from .config import _deep_merge
-            import json
-            defaults = json.loads(json.dumps(DEFAULT_STATE))
-            old_state = json.loads(json.dumps(self.state))  # snapshot current
+            # Merge with defaults so new params added since preset was saved exist.
+            # Switched from json.loads(json.dumps(...)) to copy.deepcopy — same
+            # result, no string round-trip, ~5× faster on the WS thread so the
+            # render loop doesn't wait as long on preset load.
+            defaults = copy.deepcopy(DEFAULT_STATE)
+            old_state = copy.deepcopy(self.state)  # snapshot current
             self.state = _deep_merge(defaults, state)
             # Rebuild preset_saved from disk — never trust the snapshot
             self._rebuild_preset_saved()
@@ -812,7 +785,6 @@ class StaveSynth:
     }
 
     def _pad_dir(self):
-        from pathlib import Path
         p = Path.home() / ".local" / "share" / "stave-synth" / "pad_samples"
         p.mkdir(parents=True, exist_ok=True)
         return p
@@ -840,7 +812,6 @@ class StaveSynth:
     def _handle_save_to_pad_slot(self, msg: dict) -> dict:
         """Copy a take from the recordings dir into a pad slot. Reloads that slot."""
         import shutil
-        from pathlib import Path
         source_filename = str(msg.get("source", ""))
         note = int(msg.get("note", -1))
         if note not in self._PAD_NOTE_FILENAMES:
@@ -987,17 +958,10 @@ class StaveSynth:
         return {"type": "macro_value_ack", "idx": idx, "value": value}
 
     def _handle_macro_assign(self, msg: dict) -> dict:
-        """Add, remove, toggle, or clear a macro's assignments.
-        action in {"toggle", "add", "remove", "clear", "set_bipolar", "set_center"}."""
+        """Toggle, clear, or set bipolar on a macro's assignments.
+        UI sends action in {"toggle", "clear", "set_bipolar"}."""
         action = str(msg.get("action", "toggle"))
         macros = self.state.get("macros", [])
-        if action == "clear_all":
-            for m in macros:
-                m["assignments"] = []
-            return {
-                "type": "macros_clear_all_ack",
-                "macros": [m["assignments"] for m in macros],
-            }
         idx = int(msg.get("idx", 0))
         if idx < 0 or idx >= len(macros):
             return {"type": "error", "message": f"Invalid macro idx {idx}"}
@@ -1007,20 +971,6 @@ class StaveSynth:
                 "type": "macro_assign_ack",
                 "idx": idx,
                 "bipolar": macros[idx]["bipolar"],
-                "assignments": macros[idx]["assignments"],
-            }
-        if action == "set_center":
-            ai = int(msg.get("assignment_idx", -1))
-            assigns = macros[idx]["assignments"]
-            if 0 <= ai < len(assigns):
-                if "center" in msg and msg["center"] is not None:
-                    assigns[ai]["center"] = float(msg["center"])
-                else:
-                    assigns[ai].pop("center", None)
-            return {
-                "type": "macro_assign_ack",
-                "idx": idx,
-                "bipolar": macros[idx].get("bipolar", False),
                 "assignments": macros[idx]["assignments"],
             }
         if action == "clear":
@@ -1063,12 +1013,11 @@ class StaveSynth:
                     "kind": "param", "section": section, "param": param,
                     "min": mn, "max": mx, "is_bool": is_bool,
                 }
-            if action == "remove" or (action == "toggle" and existing):
-                if existing:
-                    assigns.remove(existing)
-            else:  # add or toggle-add
-                if not existing:
-                    assigns.append(new_entry)
+            # Toggle: remove if an equivalent assignment exists, else add.
+            if action == "toggle" and existing:
+                assigns.remove(existing)
+            elif not existing:
+                assigns.append(new_entry)
         return {
             "type": "macro_assign_ack",
             "idx": idx,
@@ -1233,8 +1182,15 @@ class StaveSynth:
         return {"type": "audio_outputs", "outputs": outputs}
 
     def _handle_set_audio_output(self, msg: dict) -> dict:
-        """Route StaveSynth JACK output to the selected sink."""
+        """Route StaveSynth JACK output to the selected sink.
+
+        Collects the exit status of every disconnect/connect so the UI knows
+        whether the routing actually succeeded. Previously this always
+        returned success:True, so a failed connect looked identical to a
+        working one from the user's side (no audio but UI says OK).
+        """
         target = msg.get("name", "")
+        error_msg = None
         try:
             # Disconnect all current output connections
             result = _run_with_hard_timeout(
@@ -1242,7 +1198,8 @@ class StaveSynth:
                 timeout_s=3.0, hard_timeout_s=5.0,
             )
             if result is None:
-                return {"type": "audio_output_set", "name": target, "success": False}
+                return {"type": "audio_output_set", "name": target,
+                        "success": False, "error": "jack_lsp timed out"}
             lines = result.stdout.strip().split("\n")
             for i, line in enumerate(lines):
                 stripped = line.strip()
@@ -1252,25 +1209,49 @@ class StaveSynth:
                     j = i + 1
                     while j < len(lines) and lines[j].startswith("   "):
                         dest = lines[j].strip()
-                        _run_with_hard_timeout(
+                        d_res = _run_with_hard_timeout(
                             ["pw-jack", "jack_disconnect", stripped, dest],
                             timeout_s=3.0, hard_timeout_s=5.0,
                         )
+                        # Disconnect failures are non-fatal (the port may
+                        # already be disconnected by the time we get here)
+                        # but we still log them.
+                        if d_res is None:
+                            logger.warning("jack_disconnect timed out: %s -> %s", stripped, dest)
+                        elif d_res.returncode != 0:
+                            logger.warning("jack_disconnect failed (rc=%d): %s -> %s: %s",
+                                           d_res.returncode, stripped, dest,
+                                           (d_res.stderr or "").strip())
                         j += 1
-            # Connect to new target
-            _run_with_hard_timeout(
-                ["pw-jack", "jack_connect", "StaveSynth:out_L", f"{target}:playback_FL"],
-                timeout_s=3.0, hard_timeout_s=5.0,
-            )
-            _run_with_hard_timeout(
-                ["pw-jack", "jack_connect", "StaveSynth:out_R", f"{target}:playback_FR"],
-                timeout_s=3.0, hard_timeout_s=5.0,
-            )
+            # Connect to new target — these MUST succeed or the user gets no audio.
+            for src, dst in (
+                ("StaveSynth:out_L", f"{target}:playback_FL"),
+                ("StaveSynth:out_R", f"{target}:playback_FR"),
+            ):
+                c_res = _run_with_hard_timeout(
+                    ["pw-jack", "jack_connect", src, dst],
+                    timeout_s=3.0, hard_timeout_s=5.0,
+                )
+                if c_res is None:
+                    error_msg = f"jack_connect timed out ({src} -> {dst})"
+                    break
+                if c_res.returncode != 0:
+                    # "already connected" is harmless — most jack builds
+                    # return rc=1 with an "Already" message. Anything else is real.
+                    err_txt = (c_res.stderr or "").strip()
+                    if "already" not in err_txt.lower():
+                        error_msg = f"jack_connect failed (rc={c_res.returncode}): {err_txt or 'unknown'}"
+                        break
+            if error_msg:
+                logger.error("Audio output route failed: %s (target=%s)", error_msg, target)
+                return {"type": "audio_output_set", "name": target,
+                        "success": False, "error": error_msg}
             logger.info("Audio output routed to: %s", target)
             return {"type": "audio_output_set", "name": target, "success": True}
         except Exception as e:
             logger.error("Failed to set audio output: %s", e)
-            return {"type": "audio_output_set", "name": target, "success": False}
+            return {"type": "audio_output_set", "name": target,
+                    "success": False, "error": str(e)}
 
     # Canonical "perfect" piano compressor preset — the optical-tube-style
     # settings that give the piano that smooth, musical, slow-onset glue.
@@ -1811,14 +1792,31 @@ class StaveSynth:
         logger.info("  UI: http://localhost:%d", HTTP_PORT)
 
     def _setup_midi_bridge(self):
-        """Start a2jmidid and kick off the MIDI auto-connect watcher."""
+        """Start a2jmidid and kick off the MIDI auto-connect watcher.
+
+        Idempotent: checks for an existing a2jmidid before spawning so
+        systemd restarts don't stack zombie children. On a clean boot the
+        pgrep fails (no existing process), we spawn one. On restart, the
+        old a2jmidid is usually killed by the cgroup cleanup anyway — but
+        the gate is cheap belt-and-suspenders if not.
+        """
         try:
-            subprocess.Popen(
-                ["a2jmidid", "-e"],
+            # pgrep returns 0 if any process matches — skip spawn if so.
+            existing = subprocess.run(
+                ["pgrep", "-x", "a2jmidid"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                timeout=2,
             )
-            time.sleep(1)
+            if existing.returncode != 0:
+                subprocess.Popen(
+                    ["a2jmidid", "-e"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                time.sleep(1)
+            else:
+                logger.info("a2jmidid already running — reusing existing instance")
         except Exception as e:
             logger.warning("Failed to start a2jmidid: %s", e)
 

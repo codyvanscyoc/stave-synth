@@ -18,10 +18,6 @@ class MidiHandler:
         logger.info("Transpose set to: %+d", self.transpose)
         return self.transpose
 
-    def increment_transpose(self, delta: int) -> int:
-        """Change transpose by delta semitones. Returns new value."""
-        return self.set_transpose(self.transpose + delta)
-
     def on_note_on(self, note: int, velocity: float):
         """Track a note-on event."""
         self.active_notes.add(note)
@@ -33,6 +29,3 @@ class MidiHandler:
     def all_notes_off(self):
         """Clear all active notes."""
         self.active_notes.clear()
-
-    def get_active_count(self) -> int:
-        return len(self.active_notes)

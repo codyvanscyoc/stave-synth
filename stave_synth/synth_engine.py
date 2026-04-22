@@ -13,15 +13,24 @@ from .config import (
     USE_FAUST_REVERB, USE_FAUST_PING_PONG, USE_FAUST_OSC_BANK, USE_FAUST_SYMPATHETIC,
 )
 
-try:
-    from scipy.signal import lfilter
-    HAS_SCIPY = True
-except ImportError:
-    HAS_SCIPY = False
+from scipy.signal import lfilter
 
 logger = logging.getLogger(__name__)
 
 TWO_PI = 2.0 * np.pi
+
+# Butterworth 4-pole decomposition — two cascaded biquads with STAGGERED Q.
+# Used for the 24 dB/oct filter slope. Previously both stages shared Q=0.707
+# (user's `filter_resonance`), which is a biquad² cascade with an effective
+# passband Q ≈ 0.54 AND a squared resonance peak — "24 dB mode felt MORE
+# resonant than 12 dB" because it literally was by ~6 dB. Butterworth 4-pole
+# needs Q=0.5412 (damped) on stage 1 and Q=1.3066 (resonant) on stage 2; the
+# two combine to flat passband + proper 24 dB slope. The ratios below scale
+# the user's `filter_resonance` so that at the default res=0.707 the cascade
+# lands exactly on Butterworth, and increasing res scales both stages up
+# together to add resonance character.
+_Q24_S1_RATIO = 0.5412 / 0.707   # ≈ 0.7654 — stage 1 damping factor
+_Q24_S2_RATIO = 1.3066 / 0.707   # ≈ 1.8480 — stage 2 resonance factor
 
 # dB volume curves: maps a 0-1 fader to amplitude via exponential (dB) scaling.
 # Hard digital zero at fader=0.
@@ -204,17 +213,7 @@ class OnePole6dBLowpass:
         self._a[1] = -(1.0 - a)
 
     def process(self, samples: np.ndarray) -> np.ndarray:
-        if HAS_SCIPY:
-            out, self._zi = lfilter(self._b, self._a, samples, zi=self._zi)
-            return out
-        # Fallback: per-sample loop
-        a = self._b[0]
-        y1 = self._zi[0]
-        out = np.empty(len(samples), dtype=np.float64)
-        for i in range(len(samples)):
-            y1 += a * (samples[i] - y1)
-            out[i] = y1
-        self._zi[0] = y1
+        out, self._zi = lfilter(self._b, self._a, samples, zi=self._zi)
         return out
 
     def reset(self):
@@ -242,19 +241,7 @@ class OnePole6dBHighpass:
         self._a_coeff[1] = -a
 
     def process(self, samples: np.ndarray) -> np.ndarray:
-        if HAS_SCIPY:
-            out, self._zi = lfilter(self._b, self._a_coeff, samples, zi=self._zi)
-            return out
-        # Fallback: per-sample loop
-        a = self._b[0]
-        x1 = self._zi[0] / a if a > 0 else 0.0  # recover x1 from zi state
-        y1 = self._zi[0]
-        out = np.empty(len(samples), dtype=np.float64)
-        for i in range(len(samples)):
-            y1 = a * (y1 + samples[i] - x1)
-            x1 = samples[i]
-            out[i] = y1
-        self._zi[0] = y1
+        out, self._zi = lfilter(self._b, self._a_coeff, samples, zi=self._zi)
         return out
 
     def reset(self):
@@ -289,9 +276,8 @@ class BiquadLowpass:
         self.a[2] = (1.0 - alpha) / a0
 
     def process(self, samples: np.ndarray) -> np.ndarray:
-        if HAS_SCIPY:
-            out, self.zi = lfilter(self.b, self.a, samples, zi=self.zi)
-            return out
+        out, self.zi = lfilter(self.b, self.a, samples, zi=self.zi)
+        return out
         n = len(samples)
         out = np.empty(n, dtype=np.float64)
         z1, z2 = self.zi[0], self.zi[1]
@@ -338,9 +324,8 @@ class BiquadHighpass:
         self.a[2] = (1.0 - alpha) / a0
 
     def process(self, samples: np.ndarray) -> np.ndarray:
-        if HAS_SCIPY:
-            out, self.zi = lfilter(self.b, self.a, samples, zi=self.zi)
-            return out
+        out, self.zi = lfilter(self.b, self.a, samples, zi=self.zi)
+        return out
         n = len(samples)
         out = np.empty(n, dtype=np.float64)
         z1, z2 = self.zi[0], self.zi[1]
@@ -388,9 +373,8 @@ class BiquadPeakingEQ:
         self.a[2] = (1.0 - alpha / A) / a0
 
     def process(self, samples: np.ndarray) -> np.ndarray:
-        if HAS_SCIPY:
-            out, self.zi = lfilter(self.b, self.a, samples, zi=self.zi)
-            return out
+        out, self.zi = lfilter(self.b, self.a, samples, zi=self.zi)
+        return out
         n = len(samples)
         out = np.empty(n, dtype=np.float64)
         z1, z2 = self.zi[0], self.zi[1]
@@ -440,9 +424,8 @@ class BiquadLowShelf:
         self.a[2] = ((A + 1.0) + (A - 1.0) * cos_w0 - two_sqrtA_alpha) / a0
 
     def process(self, samples: np.ndarray) -> np.ndarray:
-        if HAS_SCIPY:
-            out, self.zi = lfilter(self.b, self.a, samples, zi=self.zi)
-            return out
+        out, self.zi = lfilter(self.b, self.a, samples, zi=self.zi)
+        return out
         n = len(samples)
         out = np.empty(n, dtype=np.float64)
         z1, z2 = self.zi[0], self.zi[1]
@@ -872,12 +855,11 @@ class FeedbackDelayReverb:
 
         # ── Batched feedback filtering (3 lfilter calls instead of 24) ──
         fb_signals = mixed * fb  # (8, n)
-        if HAS_SCIPY:
-            fb_signals, self._damp_zi = lfilter(b_lp, a_lp, fb_signals, zi=self._damp_zi, axis=-1)
-            lc_b, lc_a = self.fb_lowcut.b, self.fb_lowcut.a
-            hc_b, hc_a = self.fb_highcut.b, self.fb_highcut.a
-            fb_signals, self._fb_lc_zi = lfilter(lc_b, lc_a, fb_signals, zi=self._fb_lc_zi, axis=-1)
-            fb_signals, self._fb_hc_zi = lfilter(hc_b, hc_a, fb_signals, zi=self._fb_hc_zi, axis=-1)
+        fb_signals, self._damp_zi = lfilter(b_lp, a_lp, fb_signals, zi=self._damp_zi, axis=-1)
+        lc_b, lc_a = self.fb_lowcut.b, self.fb_lowcut.a
+        hc_b, hc_a = self.fb_highcut.b, self.fb_highcut.a
+        fb_signals, self._fb_lc_zi = lfilter(lc_b, lc_a, fb_signals, zi=self._fb_lc_zi, axis=-1)
+        fb_signals, self._fb_hc_zi = lfilter(hc_b, hc_a, fb_signals, zi=self._fb_hc_zi, axis=-1)
 
         # Stereo FDN input: even lines get L, odd lines get R
         # Freeze smoothly ramps input gain to zero (and back) to avoid artifacts
@@ -1267,11 +1249,8 @@ class BusCompressor:
 
         # ── RMS envelope (one-pole on squared signal) ──
         sq = sc * sc
-        if HAS_SCIPY:
-            a = self._rms_alpha
-            rms, self._rms_state = lfilter([a], [1.0, -(1.0 - a)], sq, zi=self._rms_state)
-        else:
-            rms = sq  # fallback: no smoothing
+        a = self._rms_alpha
+        rms, self._rms_state = lfilter([a], [1.0, -(1.0 - a)], sq, zi=self._rms_state)
         rms = np.maximum(rms, 1e-12)
         env_db = 10.0 * np.log10(rms)
 
@@ -1466,7 +1445,13 @@ class SynthEngine:
         self.shimmer_high = False  # False = +12 (2x), True = +24 (4x)
         self.shimmer_send = 1.0    # CLOUD knob: wet level of pre-reverb multi-tap bouncing delay
         self._shimmer_mix_cur = 0.5
-        self._shimmer_hp = BiquadHighpass(1200.0, 0.707, sample_rate)  # low cut — keep sparkle + upper fundamentals
+        # Shimmer low-cut — keeps sparkle in the top half while letting
+        # shimmer fundamentals through. Cutoff depends on shimmer_high:
+        # +24 mode (4×) → 1200 Hz (the original sparkle-HP).
+        # +12 mode (2×) → 400 Hz so C3/C4-range shimmer actually sounds.
+        # Previously fixed at 1200 Hz, which killed +12 shimmer below A4.
+        self._shimmer_hp = BiquadHighpass(1200.0, 0.707, sample_rate)
+        self._shimmer_hp_high_last = True  # tracks which cutoff is current
 
         # Shimmer pre-reverb "cloud": multi-tap stereo delay for sporadic bouncing.
         # Irregular tap times (L vs R offset) create stereo motion without hard echoes.
@@ -1493,8 +1478,6 @@ class SynthEngine:
 
         # Reverb freeze state
         self.freeze_enabled = False
-        self._freeze_prev_feedback = 0.0
-        self._freeze_prev_damp = 0.0
 
         # Sympathetic resonance: piano notes reinforce the pad subtly
         self.sympathetic_enabled = False
@@ -2203,12 +2186,6 @@ class SynthEngine:
 
         self._shimmer_delay_idx = (idx + n) % buf_len
 
-    def sympathetic_fade_out(self):
-        """Set all active sympathetic voices to fade toward zero. Lets held notes
-        re-arm naturally from jack_engine's per-buffer sync after a preset switch."""
-        for st in self._sympathetic_state.values():
-            st["target"] = 0.0
-
     def sympathetic_set_suppress(self, suppress: bool):
         """Block sympathetic rendering and re-arm. Used during preset crossfade so
         held keys don't keep pumping tone into the reverb at changing levels."""
@@ -2218,12 +2195,34 @@ class SynthEngine:
                 st["target"] = 0.0
 
     def set_sympathetic_notes(self, notes: set):
-        """Update which piano notes resonate sympathetically (with fade envelopes)."""
+        """Update which piano notes resonate sympathetically (with fade envelopes).
+
+        Faust path uses a fixed 16-slot bank. When all slots are taken and a
+        new note arrives (17+-note sustain-pedal chord), steal the oldest
+        active slot instead of silently tracking the new note with slot=-1
+        (which would be book-kept but produce no sound).
+        """
         for n in notes:
             if n not in self._sympathetic_state:
                 slot = -1
-                if self._faust_sympathetic is not None and self._faust_symp_slot_free:
-                    slot = self._faust_symp_slot_free.pop(0)
+                if self._faust_sympathetic is not None:
+                    if self._faust_symp_slot_free:
+                        slot = self._faust_symp_slot_free.pop(0)
+                    else:
+                        # Pool empty → steal oldest. Dict iteration order is
+                        # insertion order, so the first entry with an active
+                        # slot is the oldest sympathetic note. Clear it from
+                        # Faust and evict it from state so the new note takes
+                        # its place audibly.
+                        victim_note = None
+                        for old_n, old_st in self._sympathetic_state.items():
+                            if old_st.get("faust_slot", -1) >= 0:
+                                victim_note = old_n
+                                slot = old_st["faust_slot"]
+                                break
+                        if victim_note is not None:
+                            self._faust_sympathetic.clear_slot(slot)
+                            del self._sympathetic_state[victim_note]
                 self._sympathetic_state[n] = {
                     "phase_l": 0.0, "phase_r": 0.0,
                     "gain": 0.0, "target": 1.0,
@@ -2234,19 +2233,6 @@ class SynthEngine:
         for n in list(self._sympathetic_state):
             if n not in notes:
                 self._sympathetic_state[n]["target"] = 0.0
-
-    def set_drone_chord(self, notes: list):
-        """Latch drone to the lowest held note at first call after enable.
-        Ignored once latched — drone stays put as a pad underneath subsequent playing."""
-        if not notes or self._drone_latched:
-            return
-        root = min(notes)
-        drone_root = max(24, root - 12)
-        drone_fifth = max(24, root - 12 + 7)
-        self._drone_root_freq = 440.0 * (2.0 ** ((drone_root - 69) / 12.0))
-        self._drone_fifth_freq = 440.0 * (2.0 ** ((drone_fifth - 69) / 12.0))
-        self._drone_gain_target = 0.5
-        self._drone_latched = True
 
     def set_drone_key(self, root_note: int):
         """Force the drone to a specific root note (pad-player UI).
@@ -2358,11 +2344,6 @@ class SynthEngine:
         for p in self._pad_samples.values():
             if p.active:
                 p.release()
-
-    def pad_sample_slot_loaded(self, note: int) -> bool:
-        """True if a WAV is loaded for this MIDI note slot."""
-        p = self._pad_samples.get(int(note))
-        return p is not None and p.loaded
 
     def render(self, n_samples: int, separate_fx: bool = False,
                external_reverb_send: np.ndarray = None,
@@ -2829,27 +2810,45 @@ class SynthEngine:
         if cutoff_changed:
             self._filter_cutoff_last_set = effective_cutoff
             self._filter_res_last_set = self.filter_resonance
-            self.filter_l.set_params(effective_cutoff, self.filter_resonance)
-            self.filter_r.set_params(effective_cutoff, self.filter_resonance)
+            # For 24 dB slope we cascade two biquads with STAGGERED Q
+            # (Butterworth 4-pole) instead of biquad². See _Q24_S*_RATIO
+            # comment at module top.
             if self.filter_slope == 24:
-                self.filter2_l.set_params(effective_cutoff, self.filter_resonance)
-                self.filter2_r.set_params(effective_cutoff, self.filter_resonance)
+                q_s1 = self.filter_resonance * _Q24_S1_RATIO
+                q_s2 = self.filter_resonance * _Q24_S2_RATIO
+                self.filter_l.set_params(effective_cutoff, q_s1)
+                self.filter_r.set_params(effective_cutoff, q_s1)
+                self.filter2_l.set_params(effective_cutoff, q_s2)
+                self.filter2_r.set_params(effective_cutoff, q_s2)
+            else:
+                self.filter_l.set_params(effective_cutoff, self.filter_resonance)
+                self.filter_r.set_params(effective_cutoff, self.filter_resonance)
             if self.reverb_filter_enabled:
-                self.reverb_filter_l.set_params(effective_cutoff, self.filter_resonance)
-                self.reverb_filter_r.set_params(effective_cutoff, self.filter_resonance)
                 if self.filter_slope == 24:
-                    self.reverb_filter2_l.set_params(effective_cutoff, self.filter_resonance)
-                    self.reverb_filter2_r.set_params(effective_cutoff, self.filter_resonance)
+                    q_s1 = self.filter_resonance * _Q24_S1_RATIO
+                    q_s2 = self.filter_resonance * _Q24_S2_RATIO
+                    self.reverb_filter_l.set_params(effective_cutoff, q_s1)
+                    self.reverb_filter_r.set_params(effective_cutoff, q_s1)
+                    self.reverb_filter2_l.set_params(effective_cutoff, q_s2)
+                    self.reverb_filter2_r.set_params(effective_cutoff, q_s2)
+                else:
+                    self.reverb_filter_l.set_params(effective_cutoff, self.filter_resonance)
+                    self.reverb_filter_r.set_params(effective_cutoff, self.filter_resonance)
             # Reverb-send path filter tracks master cutoff so the weighted
             # pre-filter osc sum reaches the reverb with the same tonal shape
             # the dry signal has. Only bites when sends differ from 1.0, but
             # keeping the instance warm avoids a cold-filter click the first
             # time a user moves a send slider.
-            self._rev_send_filter_l.set_params(effective_cutoff, self.filter_resonance)
-            self._rev_send_filter_r.set_params(effective_cutoff, self.filter_resonance)
             if self.filter_slope == 24:
-                self._rev_send_filter2_l.set_params(effective_cutoff, self.filter_resonance)
-                self._rev_send_filter2_r.set_params(effective_cutoff, self.filter_resonance)
+                q_s1 = self.filter_resonance * _Q24_S1_RATIO
+                q_s2 = self.filter_resonance * _Q24_S2_RATIO
+                self._rev_send_filter_l.set_params(effective_cutoff, q_s1)
+                self._rev_send_filter_r.set_params(effective_cutoff, q_s1)
+                self._rev_send_filter2_l.set_params(effective_cutoff, q_s2)
+                self._rev_send_filter2_r.set_params(effective_cutoff, q_s2)
+            else:
+                self._rev_send_filter_l.set_params(effective_cutoff, self.filter_resonance)
+                self._rev_send_filter_r.set_params(effective_cutoff, self.filter_resonance)
 
         if not self.osc1_filter_enabled:
             lc = np.log(max(self._osc1_indep_cutoff_cur, 20.0))
@@ -3135,6 +3134,14 @@ class SynthEngine:
             np.copyto(reverb_in_r, filtered_r)
 
         if render_shimmer and voice_idx > 0:
+            # Update shimmer HP cutoff when the mode flips so +12 mode
+            # (2× pitch) gets a 400 Hz HP that actually lets fundamentals
+            # through, instead of the 1200 Hz HP that made +12 silent below A4.
+            if self.shimmer_high != self._shimmer_hp_high_last:
+                self._shimmer_hp.set_params(
+                    1200.0 if self.shimmer_high else 400.0, 0.707,
+                )
+                self._shimmer_hp_high_last = self.shimmer_high
             shimmer_filtered = self._shimmer_hp.process(shimmer_sines)
             # Smooth shimmer mix (~20ms time constant)
             self._shimmer_mix_cur += alpha_s * (self.shimmer_mix - self._shimmer_mix_cur)
@@ -3211,7 +3218,16 @@ class SynthEngine:
                 final_gains = gain_ramps[:, -1]
 
                 inc_l = TWO_PI * freqs / self.sample_rate
-                inc_r = TWO_PI * (freqs * 1.003) / self.sample_rate
+                # R channel detune: 0.3% ratio (~5.2 cents) gives pleasant
+                # chorus at low registers, but the *beat frequency* scales
+                # linearly with pitch — so at C7 (2093 Hz) the flutter is
+                # 6.3 Hz (too fast). Cap at +3 Hz offset so high registers
+                # max out at a 3 Hz beat, which is chorus-y rather than
+                # tremolo-fast. np.minimum picks the smaller of the two:
+                #   - ratio detune dominates below ~1 kHz (0.3 % < 3 Hz)
+                #   - absolute-offset detune dominates above ~1 kHz
+                detuned_freqs_r = np.minimum(freqs * 1.003, freqs + 3.0)
+                inc_r = TWO_PI * detuned_freqs_r / self.sample_rate
                 ph_l_2d = ph_l_init[:, None] + inc_l[:, None] * indices[None, :]
                 ph_r_2d = ph_r_init[:, None] + inc_r[:, None] * indices[None, :]
                 g_scaled = gain_ramps * (sym_level * rolloffs)[:, None]
@@ -3253,10 +3269,30 @@ class SynthEngine:
         self._stereo_out[1, :n_samples] = reverb_in_r
         reverb_out = self.reverb.process(self._stereo_out[:, :n_samples])
 
-        # Optionally filter the reverb wet output through main filter
+        # Upstream NaN trap. A feedback-net reverb (FDN, drone resonators)
+        # that somehow ingests a NaN will propagate NaN forever through its
+        # recurrence — every subsequent block is silent by the time tanh and
+        # nan_to_num at the master stage clamp it. Catch here and reset the
+        # reverb so the next block recovers instead of staying silent.
+        # Fast path: np.isfinite on two 256-length floats ~= 15 µs on Pi 5.
+        if not np.isfinite(reverb_out).all():
+            logger.warning(
+                "REVERB_NAN detected — zeroing wet buffer + panicking reverb state"
+            )
+            np.nan_to_num(reverb_out, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
+            try:
+                self.reverb.panic()
+            except Exception as _e:
+                logger.warning("reverb.panic() failed during NaN recovery: %s", _e)
+
+        # Optionally filter the reverb wet output through main filter.
+        # NO filter_comp here — the fast path already tapped `output_l/r`
+        # (which was compensated at :2938) into reverb_in, so applying comp
+        # a second time on the wet double-dips by up to -30 dB at low cutoff,
+        # making the reverb vanish under a closed filter. Review #7 fix.
         if self.reverb_filter_enabled:
-            reverb_out[0] = self.reverb_filter_l.process(reverb_out[0]) * filter_comp
-            reverb_out[1] = self.reverb_filter_r.process(reverb_out[1]) * filter_comp
+            reverb_out[0] = self.reverb_filter_l.process(reverb_out[0])
+            reverb_out[1] = self.reverb_filter_r.process(reverb_out[1])
             if self.filter_slope == 24:
                 reverb_out[0] = self.reverb_filter2_l.process(reverb_out[0])
                 reverb_out[1] = self.reverb_filter2_r.process(reverb_out[1])
@@ -3637,87 +3673,4 @@ class SynthEngine:
                 self._pad_mellow_lp_r.reset()
         if "pad_mellow_cutoff_hz" in params:
             self.pad_mellow_cutoff_hz = max(100.0, min(8000.0, float(params["pad_mellow_cutoff_hz"])))
-            if not self.drone_enabled:
-                self.drone_off()
 
-    def get_params(self) -> dict:
-        return {
-            "osc1_blend": self.osc1_blend,
-            "osc2_blend": self.osc2_blend,
-            "osc1_waveform": self.osc1_waveform,
-            "osc2_waveform": self.osc2_waveform,
-            "unison_voices": self.unison_voices,
-            "unison_detune": self.unison_detune,
-            "unison_spread": self.unison_spread,
-            "osc1_pan": self.osc1_pan,
-            "osc2_pan": self.osc2_pan,
-            "osc_hard_pan": self.osc_hard_pan,
-            "adsr_osc1": {
-                "attack_ms": self.adsr_osc1_config.attack_ms,
-                "decay_ms": self.adsr_osc1_config.decay_ms,
-                "sustain_percent": self.adsr_osc1_config.sustain_percent,
-                "release_ms": self.adsr_osc1_config.release_ms,
-            },
-            "adsr_osc2": {
-                "attack_ms": self.adsr_osc2_config.attack_ms,
-                "decay_ms": self.adsr_osc2_config.decay_ms,
-                "sustain_percent": self.adsr_osc2_config.sustain_percent,
-                "release_ms": self.adsr_osc2_config.release_ms,
-            },
-            "filter_cutoff_hz": self.filter_cutoff,
-            "filter_resonance": self.filter_resonance,
-            "filter_slope": self.filter_slope,
-            "osc1_filter_enabled": self.osc1_filter_enabled,
-            "osc2_filter_enabled": self.osc2_filter_enabled,
-            "analog_drift_cents": self.analog_drift_cents,
-            "filter_drift_cents": self.filter_drift_cents,
-            "filter_wobble_amount": self.filter_wobble_amount,
-            "reverb_dry_wet": self.reverb.dry_wet,
-            "reverb_wet_gain": self.reverb.wet_gain,
-            "reverb_decay_seconds": self.reverb.decay_seconds,
-            "reverb_type": getattr(self.reverb, "type", "wash"),
-            "reverb_low_cut": self.reverb.low_cut_hz,
-            "reverb_high_cut": self.reverb.high_cut_hz,
-            "reverb_space": self.reverb.space,
-            "reverb_predelay_ms": self.reverb.predelay_ms,
-            "reverb_filter_enabled": self.reverb_filter_enabled,
-            "shimmer_enabled": self.shimmer_enabled,
-            "shimmer_mix": self.shimmer_mix,
-            "shimmer_high": self.shimmer_high,
-            "shimmer_send": self.shimmer_send,
-            "lfo_enabled": self.lfo_enabled,
-            "lfo_rate_hz": self.lfo_rate_hz,
-            "lfo_rate_mode": self.lfo_rate_mode,
-            "lfo_rate_multiplier": self.lfo_rate_multiplier,
-            "lfo_depth": self.lfo_depth,
-            "lfo_shape": self.lfo_shape,
-            "lfo_target": self.lfo_target,
-            "lfo_spread": self.lfo_spread,
-            "lfo_key_sync": self.lfo_key_sync,
-            "lfo_invert": self.lfo_invert,
-            "lfo_offset_ms": self.lfo_offset_ms,
-            "lfo_haas_compensate": self.lfo_haas_compensate,
-            "lfo2_enabled": self.lfo2_enabled,
-            "lfo2_rate_hz": self.lfo2_rate_hz,
-            "lfo2_rate_mode": self.lfo2_rate_mode,
-            "lfo2_rate_multiplier": self.lfo2_rate_multiplier,
-            "lfo2_depth": self.lfo2_depth,
-            "lfo2_shape": self.lfo2_shape,
-            "lfo2_target": self.lfo2_target,
-            "lfo2_spread": self.lfo2_spread,
-            "lfo2_key_sync": self.lfo2_key_sync,
-            "lfo2_invert": self.lfo2_invert,
-            "lfo2_offset_ms": self.lfo2_offset_ms,
-            "lfo2_haas_compensate": self.lfo2_haas_compensate,
-            "delay_enabled": self.delay_enabled,
-            "delay_time_mode": self.delay_time_mode,
-            "delay_time_ms": self.delay_time_ms,
-            "delay_offset_ms": self.delay_offset_ms,
-            "delay_feedback": self.delay_feedback,
-            "delay_wet": self.delay_wet,
-            "motion_mix": self.motion_mix,
-            "freeze_enabled": self.freeze_enabled,
-            "sympathetic_enabled": self.sympathetic_enabled,
-            "sympathetic_level": self.sympathetic_level,
-            "volume": self.volume,
-        }

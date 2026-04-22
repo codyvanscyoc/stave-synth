@@ -55,11 +55,18 @@ tone_freq(i) = root_freq * tone_ratio(i);
 // b1·s / (s² + s/Q + 1)). Passing gain=1/Q normalises the peak to unity so
 // the loop gain equals `feedback` cleanly — without this, Q=20 implies 20×
 // boost per pass and the loop blows up to NaN inside a few hundred samples.
+// Extra 0.9995 safety factor inside the loop: fi.resonbp's bilinear-
+// transformed peak at Q=14 can measure fractionally above unity due to
+// frequency warping, so "feedback = 0.9995" at the slider max could
+// still leave effective loop gain ≥ 1.0 on certain sample-rate/freq
+// combinations — silent-runaway NaN risk during long FREEZE. The extra
+// 0.9995 guarantees strict sub-unity regardless of setting; the decay-
+// time cost is undetectable (0.05 % per loop iteration).
 resonator(freq, Q) = + ~ loop
 with {
     period_samples = ma.SR / max(freq, 20.0);
     bp             = fi.resonbp(freq, Q, 1.0 / Q);
-    loop           = de.fdelay(MAX_DEL, period_samples) : bp : *(feedback);
+    loop           = de.fdelay(MAX_DEL, period_samples) : bp : *(feedback * 0.9995);
 };
 
 // Q=14 — narrow enough to produce pitched tail, broad enough to avoid the
@@ -122,7 +129,8 @@ broad_resonator = + ~ loop
 with {
     period_samples = ma.SR / BROAD_FREQ;
     bp             = fi.resonbp(BROAD_FREQ, BROAD_Q, 1.0 / BROAD_Q);
-    loop           = de.fdelay(MAX_DEL, period_samples) : bp : *(BROAD_FB);
+    // Same sub-unity safety as the tuned resonators (see comment above).
+    loop           = de.fdelay(MAX_DEL, period_samples) : bp : *(BROAD_FB * 0.9995);
 };
 
 // Stereo tap: 4 panned chord tones + 1 centered broadband. tanh soft-limit

@@ -30,6 +30,103 @@ logger = logging.getLogger(__name__)
 _BRIDGE_PATH = os.path.join(os.path.dirname(__file__), "jack_bridge.so")
 
 
+class LookaheadLimiter:
+    """Brickwall peak limiter with lookahead — stereo-linked.
+
+    Maintains |output| ≤ `ceiling` transparently. Introduces `lookahead_ms` of
+    fixed delay (default 1.5 ms ≈ 72 samples at 48 kHz — imperceptible for
+    live keyboard work) but preserves transients that a naive tanh soft-clip
+    would squash. Gain is derived from max(|L|, |R|) so the stereo image
+    doesn't collapse under limiting.
+
+    Replaces the old `np.tanh` soft-clip that was secretly relying on the
+    C-bridge hard clipper to do the actual ceiling — any peak above ~0.76
+    used to lose transient energy to tanh compression before the bridge
+    ever saw it.
+    """
+
+    def __init__(self, sample_rate, lookahead_ms=1.5, release_ms=60.0, ceiling=0.98):
+        la = max(2, int(round(sample_rate * lookahead_ms / 1000.0)))
+        self.lookahead = la
+        self.ceiling = float(ceiling)
+        # Per-sample release coefficient, exponential toward 1.0 (transparent).
+        # 60 ms lets the limiter recover from a peak without pumping sustained
+        # material.
+        self.release = float(np.exp(-1.0 / (sample_rate * release_ms * 0.001)))
+        self._dl = np.zeros(la, dtype=np.float64)
+        self._dr = np.zeros(la, dtype=np.float64)
+        self._dp = np.zeros(la, dtype=np.float64)
+        self._gain = 1.0
+
+    def process_inplace(self, stereo):
+        """Limit stereo[0]/stereo[1] in place. stereo shape = (2, n).
+
+        The output is the input delayed by `lookahead` samples with gain
+        applied. The first `lookahead` samples emitted right after a reset
+        are silence (zero-padded delay line) — acceptable as startup latency.
+        """
+        n = stereo.shape[1]
+        if n == 0:
+            return
+        la = self.lookahead
+        ceiling = self.ceiling
+        rel = self.release
+
+        # Stereo-linked peak detect: gain reduction is driven by max(|L|, |R|)
+        # so the stereo image doesn't collapse under limiting.
+        peak_in = np.maximum(np.abs(stereo[0]), np.abs(stereo[1]))
+
+        # Full stream = stored delay-line tail + incoming samples.
+        # For output index i (length n), the sample being emitted was input
+        # `la` samples ago; it lives at full[i] and we look ahead `la` more
+        # samples to anticipate peaks.
+        full_l = np.concatenate([self._dl, stereo[0]])
+        full_r = np.concatenate([self._dr, stereo[1]])
+        full_p = np.concatenate([self._dp, peak_in])
+
+        # Rolling max over the lookahead window for each output sample.
+        from numpy.lib.stride_tricks import sliding_window_view
+        windowed = sliding_window_view(full_p, la + 1)  # shape (n, la+1)
+        ahead = windowed.max(axis=1)
+
+        # Target gain per sample: scale peaks above ceiling down to ceiling.
+        target = np.where(ahead > ceiling,
+                          ceiling / np.maximum(ahead, 1e-9),
+                          1.0)
+
+        # Envelope: instant attack (gain snaps to target), exponential release.
+        # The `la`-sample lookahead means the gain reduction is already in
+        # place by the time the actual peak is emitted — no distortion.
+        env = np.empty(n, dtype=np.float64)
+        gain = self._gain
+        one_m_rel = 1.0 - rel
+        for i in range(n):
+            t = target[i]
+            if t < gain:
+                gain = t
+            else:
+                gain = rel * gain + one_m_rel
+            env[i] = gain
+        self._gain = gain
+
+        # Apply envelope to the DELAYED signal (first n entries of full buffer).
+        stereo[0] = full_l[:n] * env
+        stereo[1] = full_r[:n] * env
+
+        # Retain the last `la` samples for the next call.
+        self._dp[:] = full_p[-la:]
+        self._dl[:] = full_l[-la:]
+        self._dr[:] = full_r[-la:]
+
+    def reset(self):
+        """Flush delay lines and release gain reduction. Used on panic so the
+        next note doesn't inherit a pumped-down state from a pre-panic peak."""
+        self._dl[:] = 0.0
+        self._dr[:] = 0.0
+        self._dp[:] = 0.0
+        self._gain = 1.0
+
+
 class JackEngine:
     """Manages JACK audio via C bridge with MIDI input."""
 
@@ -48,7 +145,13 @@ class JackEngine:
         self._fade_target = 1.0  # 1.0 = normal, 0.0 = faded out
         self._fade_thread = None
         self._fade_cancel = threading.Event()
-        self.pre_gain = 2.0  # pre-gain into limiter — drive into tanh for louder sustained material
+        # Pre-gain into the master comp + limiter. Dropped from 2.0 (+6 dB)
+        # to 1.5 (+3.5 dB) in Review #7 — the old value was calibrated
+        # against a ~50 % Pi system-volume ghost that used to silently
+        # attenuate the output. With the ART USB DI honouring system volume
+        # at 100 %, 2.0 was +6 dB hot into the limiter and audibly squashing
+        # transients on piano chords.
+        self.pre_gain = 1.5
         self.transpose = 0
         self.piano_octave = 0  # -3 to +3 octaves for piano
 
@@ -112,10 +215,32 @@ class JackEngine:
         self._shuffler_shelf = BiquadLowShelf(250.0, 0.0, 0.707, SAMPLE_RATE)
         self._shuffler_space_last = -1.0
 
-        # Saturation (SAT button): optional asymmetric drive before the tanh
-        # soft limiter. Off by default — tanh alone is the clean path.
+        # Saturation (SAT button): optional asymmetric drive before the
+        # master limiter. Off by default — the limiter alone is the clean path.
         self.saturation_enabled = False
         self._sat_scratch = np.empty((2, 512), dtype=np.float64)
+        # DC block after SAT — the asymmetric drive injects a rectified
+        # positive bias (+|x|·0.09) that eats ~1-2 dB of positive-side
+        # headroom at the limiter. A 15 Hz one-pole HP strips the DC
+        # transparently without touching program content.
+        self._sat_dc_l = OnePole6dBHighpass(15.0, SAMPLE_RATE)
+        self._sat_dc_r = OnePole6dBHighpass(15.0, SAMPLE_RATE)
+
+        # Brickwall lookahead limiter — replaces the old np.tanh soft-clip.
+        # 1.5 ms lookahead keeps transients clean; the bridge hard-clip at
+        # ±1.0 remains as belt-and-suspenders if the limiter ever undershoots.
+        self._limiter = LookaheadLimiter(
+            SAMPLE_RATE, lookahead_ms=1.5, release_ms=60.0, ceiling=0.98,
+        )
+
+        # Pre-allocated scratch buffers for the master chain. Sized once at
+        # startup and resized-in-place if block size ever grows. Eliminates
+        # per-block allocations of piano×send and stereo.astype(float32) that
+        # previously went through the glibc allocator every 5 ms at 256-frame
+        # blocks (several hundred KB/s pressure on the GC/malloc pool).
+        self._send_scratch = np.empty((2, 512), dtype=np.float64)
+        self._f32_scratch_l = np.empty(512, dtype=np.float32)
+        self._f32_scratch_r = np.empty(512, dtype=np.float32)
 
         # ═══ Bus compressor (SSL G-style) ═══
         # Sits on the master bus pre-saturation, pre-limiter. Sources:
@@ -522,15 +647,27 @@ class JackEngine:
                         if self.organ_filter_enabled:
                             cutoff = self.synth._filter_cutoff_cur
                             res = self.synth.filter_resonance
-                            self._organ_filter_l.set_params(cutoff, res)
-                            self._organ_filter_r.set_params(cutoff, res)
-                            piano_pre[0] = self._organ_filter_l.process(piano_pre[0])
-                            piano_pre[1] = self._organ_filter_r.process(piano_pre[1])
+                            # Match the staggered-Q Butterworth decomposition
+                            # used by the synth's main filter (see _Q24_S*_RATIO
+                            # in synth_engine). Avoids the biquad² resonance
+                            # doubling that 24 dB mode had prior to Review #7.
                             if self.synth.filter_slope == 24:
-                                self._organ_filter2_l.set_params(cutoff, res)
-                                self._organ_filter2_r.set_params(cutoff, res)
+                                from .synth_engine import _Q24_S1_RATIO, _Q24_S2_RATIO
+                                q_s1 = res * _Q24_S1_RATIO
+                                q_s2 = res * _Q24_S2_RATIO
+                                self._organ_filter_l.set_params(cutoff, q_s1)
+                                self._organ_filter_r.set_params(cutoff, q_s1)
+                                piano_pre[0] = self._organ_filter_l.process(piano_pre[0])
+                                piano_pre[1] = self._organ_filter_r.process(piano_pre[1])
+                                self._organ_filter2_l.set_params(cutoff, q_s2)
+                                self._organ_filter2_r.set_params(cutoff, q_s2)
                                 piano_pre[0] = self._organ_filter2_l.process(piano_pre[0])
                                 piano_pre[1] = self._organ_filter2_r.process(piano_pre[1])
+                            else:
+                                self._organ_filter_l.set_params(cutoff, res)
+                                self._organ_filter_r.set_params(cutoff, res)
+                                piano_pre[0] = self._organ_filter_l.process(piano_pre[0])
+                                piano_pre[1] = self._organ_filter_r.process(piano_pre[1])
 
                         # Soft-clip piano bus: linear below 0.85, asymptotes
                         # to 1.0 above. Prevents FluidSynth note-start
@@ -551,12 +688,24 @@ class JackEngine:
                                 np.multiply(np.sign(piano_pre), _abs, out=piano_pre)
 
                     # Build external reverb / delay sends from piano/organ output.
+                    # Uses pre-allocated scratch to avoid per-block malloc.
+                    # Grow the scratch if block size ever exceeds our cached one.
+                    if piano_pre is not None and self._send_scratch.shape[1] < bs:
+                        self._send_scratch = np.empty((2, bs), dtype=np.float64)
                     reverb_send_ext = None
                     if piano_pre is not None and self.piano_reverb_send > 0.001:
-                        reverb_send_ext = piano_pre * self.piano_reverb_send
+                        reverb_send_ext = self._send_scratch[:, :bs]
+                        np.multiply(piano_pre, self.piano_reverb_send, out=reverb_send_ext)
                     delay_send_ext = None
                     if piano_pre is not None and self.piano_delay_send > 0.001:
-                        delay_send_ext = piano_pre * self.piano_delay_send
+                        # Separate buffer needed only if both sends are active.
+                        # Reverb send reuses _send_scratch; delay send allocates
+                        # just when needed (rare path).
+                        if reverb_send_ext is not None:
+                            delay_send_ext = piano_pre * self.piano_delay_send
+                        else:
+                            delay_send_ext = self._send_scratch[:, :bs]
+                            np.multiply(piano_pre, self.piano_delay_send, out=delay_send_ext)
 
                     # If bus comp's FX-bypass mode is on, ask synth for dry + fx
                     # separately so we can route fx around the comp.
@@ -671,7 +820,19 @@ class JackEngine:
                                 stereo[1] = self._master_hp12_r.process(stereo[1])
 
                     if not use_faust_master:
-                        # ═══ Bus compressor (SSL G-style) — pre-saturation, pre-limiter ═══
+                        # ═══ Pre-gain → bus comp → fx sum → limiter (Review #7) ═══
+                        # The bus comp now sits AFTER the pre-gain so it sees
+                        # the final summed level — that's the textbook
+                        # master-bus placement (comp feeds the limiter, not
+                        # the raw EQ output). Apply pre-gain to BOTH the dry
+                        # path and the FX bypass bus so the wet/dry ratio is
+                        # preserved; otherwise pre-gaining only the dry
+                        # shifts the mix toward the dry.
+                        stereo *= self.pre_gain
+                        if fx_bus is not None:
+                            fx_bus[0] *= self.pre_gain
+                            fx_bus[1] *= self.pre_gain
+
                         if self.bus_comp.enabled:
                             # Faust bus comp only handles self-sidechain mode;
                             # external SC (piano/lfo/bpm) stays on Python path.
@@ -696,19 +857,17 @@ class JackEngine:
                                     skip_hpf=(self.bus_comp_source == "bpm"),
                                 )
 
-                        # FX-bypass routing: sum the untouched FX bus back in post-comp
-                        # so the reverb/delay tail isn't ducked by the sidechain pump.
+                        # FX-bypass routing: sum the untouched (pre-gained) FX
+                        # bus back in post-comp so the reverb/delay tail isn't
+                        # ducked by the sidechain pump.
                         if fx_bus is not None:
                             stereo[0] += fx_bus[0]
                             stereo[1] += fx_bus[1]
-
-                        # Pre-gain: boost into limiter for more headroom
-                        stereo *= self.pre_gain
                     elif fx_bus is not None:
                         # Faust master path: bus comp disabled, but if FX-bypass
                         # was enabled in the UI we still need to sum the FX bus.
-                        # This happens AFTER Faust already limited — the bypass
-                        # can re-push us into clipping. Rare but documented.
+                        # Faust already applied its own pre_gain internally, so
+                        # don't double-gain here.
                         stereo[0] += fx_bus[0]
                         stereo[1] += fx_bus[1]
 
@@ -740,20 +899,35 @@ class JackEngine:
 
                     if not use_faust_master:
                         # Optional asymmetric drive (SAT button) — injects 2nd
-                        # harmonic for tape/transformer-style warmth. Skipped when
-                        # off so the limiter stays purely clean tanh.
+                        # harmonic for tape/transformer-style warmth. Skipped
+                        # when off so the chain stays purely clean.
                         if self.saturation_enabled:
                             scratch = self._sat_scratch[:, :bs]
                             np.abs(stereo, out=scratch)
                             scratch *= 0.09
                             stereo *= 1.01
                             stereo += scratch
+                            # Strip the DC that +|x|·0.09 injected so the
+                            # limiter sees a symmetric waveform.
+                            stereo[0] = self._sat_dc_l.process(stereo[0])
+                            stereo[1] = self._sat_dc_r.process(stereo[1])
 
-                        # Soft limiter (tanh) — clean when SAT is off
-                        np.tanh(stereo, out=stereo)
+                        # Brickwall lookahead limiter — keeps |output| ≤ 0.98
+                        # transparently. Replaces the old np.tanh soft-clip,
+                        # which secretly relied on the bridge hard-clip to do
+                        # the actual ceiling and cost ~4 dB of transient clarity.
+                        self._limiter.process_inplace(stereo)
 
-                    left_f32 = stereo[0].astype(np.float32)
-                    right_f32 = stereo[1].astype(np.float32)
+                    # Down-cast float64 master into pre-allocated float32 scratch
+                    # buffers. astype() used to allocate a fresh array every
+                    # block — now resized once if block size grows.
+                    if self._f32_scratch_l.shape[0] < bs:
+                        self._f32_scratch_l = np.empty(bs, dtype=np.float32)
+                        self._f32_scratch_r = np.empty(bs, dtype=np.float32)
+                    left_f32 = self._f32_scratch_l[:bs]
+                    right_f32 = self._f32_scratch_r[:bs]
+                    np.copyto(left_f32, stereo[0], casting="unsafe")
+                    np.copyto(right_f32, stereo[1], casting="unsafe")
 
                     # Tap for the recorder (no-op when not recording).
                     if self.recorder.is_recording():
@@ -1034,13 +1208,17 @@ class JackEngine:
         )
 
     def panic(self):
-        """Clear sustain pedal, note-maps, and active-note sets so no ghost state remains."""
+        """Clear sustain pedal, note-maps, active-note sets, and master-chain
+        transient state so no ghost state bleeds into the next note."""
         self._sustain_on = False
         self._physically_held.clear()
         self._sustained_notes.clear()
         self._note_map.clear()
         self._pad_notes_active.clear()
         self._piano_notes_active.clear()
+        # Release the brickwall limiter so the next hit doesn't inherit
+        # a pumped-down gain from whatever peak we were catching at panic time.
+        self._limiter.reset()
 
     def get_and_reset_peak(self) -> float:
         """Return post-limiter peak level. Reflects actual output after tanh + master volume."""

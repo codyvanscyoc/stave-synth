@@ -56,9 +56,6 @@ class Recorder:
     def is_recording(self) -> bool:
         return self._recording
 
-    def frames_written(self) -> int:
-        return self._frames_written
-
     def current_duration_seconds(self) -> float:
         return self._frames_written / float(self.sample_rate)
 

@@ -48,7 +48,12 @@ reverse_window_ms = hslider("reverse_window_ms", 500.0, 50.0, 15000.0, 1.0);
 reverse_feedback  = hslider("reverse_feedback", 0.0, 0.0, 0.7, 0.001) : si.smoo;
 
 MAX_DELAY = 65536;  // >1.3s at 48k, with headroom for mod read offsets
-REVERSE_MAX = 1500000;  // ~31s at 48k — covers 15s aurora × 2× offset rate
+// Reverse-path max offset = 2 × window_ms × SR_K + 1. At 48 kHz with the
+// 15 s window ceiling that's 1,440,001 samples — the old 1.5M only had 4 %
+// headroom. At 96 kHz the same max window would need 2.88M, which would
+// overflow and click. Bumped to 3,000,000 so the reverse engine is clean
+// at any SR up to 96 kHz. Cost: ~12 MB stereo buffer. Trivial on a Pi 5.
+REVERSE_MAX = 3000000;
 
 // ═══════════════════════════════════════════════════════════════════════
 // Helpers
