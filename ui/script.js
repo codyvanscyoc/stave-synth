@@ -2592,22 +2592,31 @@
         var dial = knob.querySelector(".knob-dial");
         var indicatorBar = knob.querySelector(".knob-indicator");
         if (dial) {
-            dial.style.borderColor = w.color;
-            dial.style.boxShadow = w.glow > 0 ? "0 0 " + w.glow + "px " + w.color : "none";
+            // Cache per-dial last values so dragging a non-warmth knob's neighbors
+            // doesn't thrash style recalc on this dial for unchanged values.
+            if (dial._lastWarmColor !== w.color || dial._lastWarmGlow !== w.glow) {
+                dial.style.borderColor = w.color;
+                dial.style.boxShadow = w.glow > 0 ? "0 0 " + w.glow + "px " + w.color : "none";
+                dial._lastWarmColor = w.color;
+                dial._lastWarmGlow = w.glow;
+            }
         }
-        if (indicatorBar) {
+        if (indicatorBar && indicatorBar._lastWarmColor !== w.color) {
             // The indicator's ::before is the visible bar; tint via CSS custom prop
             indicatorBar.style.setProperty("--warm-color", w.color);
+            indicatorBar._lastWarmColor = w.color;
         }
     }
 
+    var _masterFaderLastColor = null, _masterFaderLastGlow = -1;
     function applyWarmthToMasterFader(trim) {
         var col = faderColumns[4];
         if (!col) return;
+        var w = warmFromTrim(trim);
+        if (w.color === _masterFaderLastColor && w.glow === _masterFaderLastGlow) return;
         var fill = col.querySelector(".fader-fill");
         var track = col.querySelector(".fader-track");
         var label = col.querySelector(".fader-label");
-        var w = warmFromTrim(trim);
         if (fill) {
             fill.style.background = w.color;
             fill.style.boxShadow = w.glow > 0 ? "0 0 " + w.glow + "px " + w.color : "none";
@@ -2618,9 +2627,13 @@
         if (label) {
             label.style.color = w.color;
         }
+        _masterFaderLastColor = w.color;
+        _masterFaderLastGlow = w.glow;
     }
 
     function clearMasterFaderWarmth() {
+        _masterFaderLastColor = null;
+        _masterFaderLastGlow = -1;
         var col = faderColumns[4];
         if (!col) return;
         var fill = col.querySelector(".fader-fill");
@@ -2904,6 +2917,253 @@
             send({ type: "piano_comp_preset", preset: "perfect" });
         });
     }
+
+    // ═══ Piano graphic EQ ═══
+    // 3 editable parametric bands (indices 0-2) drawn as draggable nodes on
+    // a log-freq / linear-dB response curve. Band 3 (air shelf) is locked to
+    // the selected voicing and contributes to the curve but isn't draggable.
+    (function initPianoGraphicEq() {
+        var svg = document.getElementById("piano-eq-graph");
+        if (!svg) return;
+        var gridGroup = svg.querySelector(".geq-grid");
+        var curvePath = svg.querySelector(".geq-curve");
+        var nodesGroup = svg.querySelector(".geq-nodes");
+        var pills = svg.parentElement.querySelectorAll(".eq-node-pill");
+        var resetBtn = document.getElementById("piano-eq-reset");
+        var knobGroups = document.querySelectorAll(".piano-eq-knob-group");
+        if (!gridGroup || !curvePath || !nodesGroup) return;
+
+        var VB_W = 400, VB_H = 160;
+        var L = 28, R = 394, T = 10, B = 148;
+        var GW = R - L, GH = B - T;
+        var F_MIN = 20, F_MAX = 20000;
+        var DB_MAX = 12;
+        var N_USER = 4;
+        // Flat factory defaults applied by RESET. Nodes spread log-evenly
+        // across the audible range (100Hz / 1kHz / 4kHz / 10kHz), 0dB, medium Q.
+        var EQ_DEFAULTS = [
+            { f: 100,   g: 0, q: 0.8 },
+            { f: 1000,  g: 0, q: 0.8 },
+            { f: 4000,  g: 0, q: 0.8 },
+            { f: 10000, g: 0, q: 0.7 },
+        ];
+
+        function hzToX(hz) {
+            var t = Math.log(hz / F_MIN) / Math.log(F_MAX / F_MIN);
+            return L + Math.max(0, Math.min(1, t)) * GW;
+        }
+        function xToHz(x) {
+            var t = (x - L) / GW;
+            t = Math.max(0, Math.min(1, t));
+            return F_MIN * Math.pow(F_MAX / F_MIN, t);
+        }
+        function dbToY(db) {
+            var t = (db + DB_MAX) / (2 * DB_MAX);
+            return B - Math.max(0, Math.min(1, t)) * GH;
+        }
+        function yToDb(y) {
+            var t = (B - y) / GH;
+            return Math.max(-DB_MAX, Math.min(DB_MAX, (t * 2 - 1) * DB_MAX));
+        }
+
+        // Static grid: octave lines at 100/1k/10k, dB lines at ±6, 0.
+        function buildGrid() {
+            var xml = "";
+            [100, 1000, 10000].forEach(function (hz) {
+                var x = hzToX(hz);
+                xml += '<line x1="' + x + '" x2="' + x + '" y1="' + T + '" y2="' + B + '"/>';
+                var lbl = hz >= 1000 ? (hz / 1000) + "k" : String(hz);
+                xml += '<text x="' + x + '" y="' + (B + 9) + '" text-anchor="middle">' + lbl + '</text>';
+            });
+            [-6, 0, 6].forEach(function (db) {
+                var y = dbToY(db);
+                xml += '<line x1="' + L + '" x2="' + R + '" y1="' + y + '" y2="' + y + '"/>';
+                var lbl = (db > 0 ? "+" : "") + db;
+                xml += '<text x="' + (L - 3) + '" y="' + (y + 3) + '" text-anchor="end">' + lbl + '</text>';
+            });
+            gridGroup.innerHTML = xml;
+        }
+        buildGrid();
+
+        // Read band values straight from the hidden/shown sliders so we're
+        // always consistent with the state-sync machinery.
+        function readBand(i) {
+            var fs = document.querySelector('input[data-param="eq_band' + i + '_freq"]');
+            var gs = document.querySelector('input[data-param="eq_band' + i + '_gain"]');
+            var qs = document.querySelector('input[data-param="eq_band' + i + '_q"]');
+            if (!fs || !gs || !qs) return null;
+            var minHz = parseFloat(fs.dataset.hzMin || "20");
+            var maxHz = parseFloat(fs.dataset.hzMax || "20000");
+            var f = sliderToHz(parseFloat(fs.value) / 1000, minHz, maxHz);
+            return {
+                freq: f,
+                gainDb: parseFloat(gs.value) / 10,
+                q: parseFloat(qs.value),
+                freqSlider: fs, gainSlider: gs, qSlider: qs,
+                minHz: minHz, maxHz: maxHz,
+            };
+        }
+
+        function bellDb(f, f0, gainDb, q) {
+            if (!f0 || f0 <= 0) return 0;
+            var octaves = Math.log(f / f0) / Math.log(2);
+            var bell = Math.exp(-Math.pow(octaves * q * 1.2, 2));
+            return gainDb * bell;
+        }
+
+        var activeNode = 0;
+
+        function redrawCurve() {
+            var bands = [];
+            for (var i = 0; i < N_USER; i++) {
+                var b = readBand(i);
+                if (b) bands.push(b);
+            }
+            if (!bands.length) return;
+            var steps = 80;
+            var d = "";
+            for (var s = 0; s <= steps; s++) {
+                var t = s / steps;
+                var f = F_MIN * Math.pow(F_MAX / F_MIN, t);
+                var dbSum = 0;
+                for (var j = 0; j < bands.length; j++) {
+                    dbSum += bellDb(f, bands[j].freq, bands[j].gainDb, bands[j].q);
+                }
+                var x = L + t * GW;
+                var y = dbToY(dbSum);
+                d += (s === 0 ? "M" : "L") + x.toFixed(1) + "," + y.toFixed(1);
+            }
+            curvePath.setAttribute("d", d);
+
+            var nodesXml = "";
+            for (var k = 0; k < N_USER; k++) {
+                var bk = bands[k];
+                if (!bk) continue;
+                var cx = hzToX(bk.freq);
+                var cy = dbToY(bk.gainDb);
+                var cls = k === activeNode ? "geq-node active" : "geq-node";
+                nodesXml += '<circle class="' + cls + '" data-node="' + k + '" '
+                    + 'cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="7"/>';
+                nodesXml += '<text x="' + cx.toFixed(1) + '" y="' + (cy + 3).toFixed(1) + '" '
+                    + 'text-anchor="middle" style="font-size:8px;fill:var(--bg);pointer-events:none;font-weight:700">'
+                    + (k + 1) + '</text>';
+            }
+            nodesGroup.innerHTML = nodesXml;
+            attachNodeDrag();
+        }
+
+        function selectNode(idx) {
+            activeNode = idx;
+            pills.forEach(function (p) {
+                p.classList.toggle("active", parseInt(p.dataset.node, 10) === idx);
+            });
+            knobGroups.forEach(function (g) {
+                g.style.display = parseInt(g.dataset.bandGroup, 10) === idx ? "" : "none";
+            });
+            redrawCurve();
+        }
+
+        pills.forEach(function (p) {
+            p.addEventListener("click", function () {
+                selectNode(parseInt(p.dataset.node, 10));
+            });
+        });
+
+        // Node drag: pointer-based, pixel-accurate via CTM inverse.
+        function attachNodeDrag() {
+            nodesGroup.querySelectorAll(".geq-node").forEach(function (node) {
+                node.addEventListener("pointerdown", function (e) {
+                    e.preventDefault();
+                    node.setPointerCapture(e.pointerId);
+                    var idx = parseInt(node.dataset.node, 10);
+                    selectNode(idx);
+                    var band = readBand(idx);
+                    if (!band) return;
+
+                    function svgCoord(ev) {
+                        var rect = svg.getBoundingClientRect();
+                        var x = (ev.clientX - rect.left) * (VB_W / rect.width);
+                        var y = (ev.clientY - rect.top) * (VB_H / rect.height);
+                        return { x: x, y: y };
+                    }
+
+                    function onMove(ev) {
+                        var p = svgCoord(ev);
+                        var hz = xToHz(p.x);
+                        var db = yToDb(p.y);
+                        // Clamp freq to the band's registered hz-min/hz-max
+                        hz = Math.max(band.minHz, Math.min(band.maxHz, hz));
+                        var sliderVal = Math.round(hzToSlider(hz, band.minHz, band.maxHz) * 1000);
+                        if (band.freqSlider.value !== String(sliderVal)) {
+                            band.freqSlider.value = sliderVal;
+                            band.freqSlider.dispatchEvent(new Event("input", { bubbles: true }));
+                            var fk = band.freqSlider.closest(".knob");
+                            if (fk && typeof updateKnobRotation === "function") updateKnobRotation(fk);
+                        }
+                        var gainRaw = Math.round(db * 10);
+                        gainRaw = Math.max(-120, Math.min(120, gainRaw));
+                        if (band.gainSlider.value !== String(gainRaw)) {
+                            band.gainSlider.value = gainRaw;
+                            band.gainSlider.dispatchEvent(new Event("input", { bubbles: true }));
+                            var gk = band.gainSlider.closest(".knob");
+                            if (gk && typeof updateKnobRotation === "function") updateKnobRotation(gk);
+                        }
+                    }
+                    function onUp(ev) {
+                        node.releasePointerCapture(ev.pointerId);
+                        svg.removeEventListener("pointermove", onMove);
+                        svg.removeEventListener("pointerup", onUp);
+                        svg.removeEventListener("pointercancel", onUp);
+                    }
+                    svg.addEventListener("pointermove", onMove);
+                    svg.addEventListener("pointerup", onUp);
+                    svg.addEventListener("pointercancel", onUp);
+                });
+            });
+        }
+
+        // Redraw whenever any band's freq/gain/q changes (user drag, knob
+        // move, voicing change, preset load — all flow through slider input).
+        document.addEventListener("input", function (e) {
+            var t = e.target;
+            if (!t || !t.dataset) return;
+            var p = t.dataset.param || "";
+            if (p.indexOf("eq_band") === 0 && (p.endsWith("_freq") || p.endsWith("_gain") || p.endsWith("_q"))) {
+                redrawCurve();
+            }
+        }, true);
+
+        // Reset: push EQ_DEFAULTS into each band's hidden sliders and dispatch
+        // input events so the existing send path fires + sound changes. We
+        // dispatch on sliders (not raw messages) so the UI visually snaps too.
+        if (resetBtn) {
+            resetBtn.addEventListener("click", function () {
+                for (var i = 0; i < N_USER; i++) {
+                    var band = readBand(i);
+                    if (!band) continue;
+                    var def = EQ_DEFAULTS[i];
+                    var fVal = Math.round(hzToSlider(def.f, band.minHz, band.maxHz) * 1000);
+                    band.freqSlider.value = fVal;
+                    band.freqSlider.dispatchEvent(new Event("input", { bubbles: true }));
+                    band.gainSlider.value = Math.round(def.g * 10);
+                    band.gainSlider.dispatchEvent(new Event("input", { bubbles: true }));
+                    band.qSlider.value = def.q;
+                    band.qSlider.dispatchEvent(new Event("input", { bubbles: true }));
+                    if (typeof updateKnobRotation === "function") {
+                        [band.freqSlider, band.gainSlider, band.qSlider].forEach(function (s) {
+                            var k = s.closest(".knob");
+                            if (k) updateKnobRotation(k);
+                        });
+                    }
+                }
+            });
+        }
+
+        // Initial draw (state may not be loaded yet; applyState will trigger
+        // slider input events which re-invoke redrawCurve).
+        selectNode(0);
+        setTimeout(redrawCurve, 50);
+    })();
     var reverbTypeSel = document.querySelector('[data-param="reverb_type"]');
     if (reverbTypeSel) {
         reverbTypeSel.addEventListener("change", updateReverbTypeDesc);
@@ -3264,25 +3524,40 @@
         return el ? parseFloat(el.value) : 0;
     }
 
+    // ADSR curve redraw — rAF-throttled. Slider drag input fires at up to
+    // ~120Hz on touch devices; coalesce every drag burst into one frame.
+    var _adsrPending = { osc1: false, osc2: false };
+    var _adsrRafId = 0;
+    var _adsrLastPts = {};
+    function _adsrFlush() {
+        _adsrRafId = 0;
+        ["osc1", "osc2"].forEach(function (osc) {
+            if (!_adsrPending[osc]) return;
+            _adsrPending[osc] = false;
+            var poly = document.getElementById("adsr-path-" + osc);
+            if (!poly) return;
+            var a = Math.min(1, getAdsrSliderVal(osc, "attack_ms") / 1000);
+            var d = Math.min(1, getAdsrSliderVal(osc, "decay_ms") / 2000);
+            var s = Math.max(0, Math.min(1, getAdsrSliderVal(osc, "sustain_percent") / 100));
+            var r = Math.min(1, getAdsrSliderVal(osc, "release_ms") / 3000);
+            // attack starts at x=0 (no hardcoded offset) so attack_ms=0 draws a
+            // true vertical rise; any offset misleads at the bottom of the knob.
+            var ax = a * 45;
+            var dx = ax + 10 + d * 35;
+            var sx = 140;
+            var rx = sx + 15 + r * 40;
+            var sustainY = 5 + (1 - s) * 50;
+            var pts = "0,58 " + ax + ",5 " + dx + "," + sustainY + " " + sx + "," + sustainY + " " + rx + ",58";
+            if (_adsrLastPts[osc] !== pts) {
+                poly.setAttribute("points", pts);
+                _adsrLastPts[osc] = pts;
+            }
+        });
+    }
     function updateAdsrCurve(osc) {
-        if (!osc) { updateAdsrCurve("osc1"); updateAdsrCurve("osc2"); return; }
-        var poly = document.getElementById("adsr-path-" + osc);
-        if (!poly) return;
-        var a = Math.min(1, getAdsrSliderVal(osc, "attack_ms") / 1000);
-        var d = Math.min(1, getAdsrSliderVal(osc, "decay_ms") / 2000);
-        var s = Math.max(0, Math.min(1, getAdsrSliderVal(osc, "sustain_percent") / 100));
-        var r = Math.min(1, getAdsrSliderVal(osc, "release_ms") / 3000);
-        // attack starts at x=0 (no hardcoded offset) so attack_ms=0 draws a
-        // true vertical rise; any offset misleads at the bottom of the knob.
-        var ax = a * 45;
-        var dx = ax + 10 + d * 35;
-        var sx = 140;
-        var rx = sx + 15 + r * 40;
-        var sustainY = 5 + (1 - s) * 50;
-        poly.setAttribute(
-            "points",
-            "0,58 " + ax + ",5 " + dx + "," + sustainY + " " + sx + "," + sustainY + " " + rx + ",58"
-        );
+        if (!osc) { _adsrPending.osc1 = true; _adsrPending.osc2 = true; }
+        else { _adsrPending[osc] = true; }
+        if (!_adsrRafId) _adsrRafId = requestAnimationFrame(_adsrFlush);
     }
 
     document.querySelectorAll(".knob").forEach(function (knob) {

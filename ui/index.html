@@ -13,7 +13,7 @@
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="logo.png">
     <!-- Keep style.css and script.js cache-bust versions in sync -->
-    <link rel="stylesheet" href="style.css?v=157">
+    <link rel="stylesheet" href="style.css?v=162">
 </head>
 <body>
     <div id="app">
@@ -288,7 +288,6 @@
         <div id="settings-modal" class="hidden">
             <div id="settings-box">
                 <div id="settings-header">
-                    <button class="settings-tab" data-tab="bank">BANK</button>
                     <button class="settings-tab active" data-tab="osc">OSC</button>
                     <button class="settings-tab" data-tab="reverb">REVERB</button>
                     <button class="settings-tab" data-tab="motion">MOTION</button>
@@ -296,6 +295,7 @@
                     <button class="settings-tab" data-tab="organ">ORGAN</button>
                     <button class="settings-tab" data-tab="record">RECORD</button>
                     <button class="settings-tab" data-tab="global">GLOBAL</button>
+                    <button class="settings-tab" data-tab="bank">BANK</button>
                     <button id="settings-close" class="ctrl-btn">X</button>
                 </div>
                 <div id="settings-content">
@@ -317,7 +317,7 @@
                             <div class="osc-title-side osc-title-left">OSC 1</div>
                             <label class="osc-link-pill-wrap" title="Link OSC 2 to OSC 1">
                                 <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc_levels_linked">
-                                <span class="osc-link-pill"><span class="link-glyph">⛓</span><span class="link-word">LINK</span></span>
+                                <span class="osc-link-pill"><span class="link-word">LINK</span></span>
                             </label>
                             <div class="osc-title-side osc-title-right">OSC 2</div>
                         </div>
@@ -588,7 +588,7 @@
                                 <option value="stage">Stage</option>
                             </select>
                         </div>
-                        <div class="setting-section">EQ</div>
+                        <div class="setting-section">EQ &amp; COMPRESSOR</div>
                         <div class="setting-row">
                             <span class="setting-label">Low Cut (Hz)</span>
                             <input type="range" class="setting-slider" data-section="piano" data-param="filter_lowcut_hz" min="0" max="1000" value="0" data-hz-min="20" data-hz-max="2000">
@@ -599,97 +599,159 @@
                             <input type="range" class="setting-slider" data-section="piano" data-param="filter_highcut_hz" min="0" max="1000" value="1000" data-hz-min="200" data-hz-max="20000">
                             <span class="setting-value">20kHz</span>
                         </div>
-                        <!-- 4-band parametric EQ, pre-compressor. Defaults set by current voicing. -->
-                        <div class="piano-eq-row">
-                            <div class="eq-band">
-                                <div class="eq-band-title">BAND 1</div>
-                                <div class="knob-row knob-row-tight">
-                                    <div class="knob">
-                                        <div class="knob-label">FREQ</div>
-                                        <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                        <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="eq_band0_freq" min="0" max="1000" value="500" data-hz-min="40" data-hz-max="500">
-                                        <span class="setting-value">150Hz</span>
+                        <!-- Graphic EQ (left) + Compressor (right). 3 editable bands expose
+                             body/mud/presence; band 4 (air shelf) is locked to voicing. -->
+                        <div class="piano-eq-comp-wrap">
+                            <div class="piano-geq-col">
+                                <div class="piano-geq-header">
+                                    <div class="eq-node-selector">
+                                        <button type="button" class="eq-node-pill active" data-node="0">1</button>
+                                        <button type="button" class="eq-node-pill" data-node="1">2</button>
+                                        <button type="button" class="eq-node-pill" data-node="2">3</button>
+                                        <button type="button" class="eq-node-pill" data-node="3">4</button>
                                     </div>
-                                    <div class="knob">
-                                        <div class="knob-label">GAIN</div>
-                                        <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                        <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="eq_band0_gain" min="-120" max="120" value="20">
-                                        <span class="setting-value">+2dB</span>
+                                    <button type="button" class="eq-reset-btn" id="piano-eq-reset" title="Reset all 4 bands to flat defaults (100Hz / 1kHz / 4kHz / 10kHz)">RESET</button>
+                                </div>
+                                <svg id="piano-eq-graph" class="piano-eq-graph" viewBox="0 0 400 160" preserveAspectRatio="none">
+                                    <g class="geq-grid"></g>
+                                    <path class="geq-curve" d=""></path>
+                                    <g class="geq-nodes"></g>
+                                </svg>
+                                <!-- Shared FREQ/GAIN/Q knob triplet. Only the row
+                                     for the selected node is displayed. -->
+                                <div class="piano-eq-knob-group" data-band-group="0">
+                                    <div class="knob-row knob-row-tight">
+                                        <div class="knob">
+                                            <div class="knob-label">FREQ</div>
+                                            <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                            <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="eq_band0_freq" min="0" max="1000" value="233" data-hz-min="20" data-hz-max="20000">
+                                            <span class="setting-value">100Hz</span>
+                                        </div>
+                                        <div class="knob">
+                                            <div class="knob-label">GAIN</div>
+                                            <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                            <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="eq_band0_gain" min="-120" max="120" value="0">
+                                            <span class="setting-value">0dB</span>
+                                        </div>
+                                        <div class="knob">
+                                            <div class="knob-label">Q</div>
+                                            <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                            <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="eq_band0_q" min="0.2" max="4" step="0.1" value="0.8">
+                                            <span class="setting-value">0.8</span>
+                                        </div>
                                     </div>
-                                    <div class="knob">
-                                        <div class="knob-label">Q</div>
-                                        <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                        <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="eq_band0_q" min="0.2" max="4" step="0.1" value="0.8">
-                                        <span class="setting-value">0.8</span>
+                                </div>
+                                <div class="piano-eq-knob-group" data-band-group="1" style="display:none">
+                                    <div class="knob-row knob-row-tight">
+                                        <div class="knob">
+                                            <div class="knob-label">FREQ</div>
+                                            <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                            <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="eq_band1_freq" min="0" max="1000" value="566" data-hz-min="20" data-hz-max="20000">
+                                            <span class="setting-value">1.0kHz</span>
+                                        </div>
+                                        <div class="knob">
+                                            <div class="knob-label">GAIN</div>
+                                            <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                            <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="eq_band1_gain" min="-120" max="120" value="0">
+                                            <span class="setting-value">0dB</span>
+                                        </div>
+                                        <div class="knob">
+                                            <div class="knob-label">Q</div>
+                                            <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                            <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="eq_band1_q" min="0.2" max="4" step="0.1" value="0.8">
+                                            <span class="setting-value">0.8</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="piano-eq-knob-group" data-band-group="2" style="display:none">
+                                    <div class="knob-row knob-row-tight">
+                                        <div class="knob">
+                                            <div class="knob-label">FREQ</div>
+                                            <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                            <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="eq_band2_freq" min="0" max="1000" value="767" data-hz-min="20" data-hz-max="20000">
+                                            <span class="setting-value">4.0kHz</span>
+                                        </div>
+                                        <div class="knob">
+                                            <div class="knob-label">GAIN</div>
+                                            <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                            <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="eq_band2_gain" min="-120" max="120" value="0">
+                                            <span class="setting-value">0dB</span>
+                                        </div>
+                                        <div class="knob">
+                                            <div class="knob-label">Q</div>
+                                            <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                            <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="eq_band2_q" min="0.2" max="4" step="0.1" value="0.8">
+                                            <span class="setting-value">0.8</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="piano-eq-knob-group" data-band-group="3" style="display:none">
+                                    <div class="knob-row knob-row-tight">
+                                        <div class="knob">
+                                            <div class="knob-label">FREQ</div>
+                                            <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                            <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="eq_band3_freq" min="0" max="1000" value="900" data-hz-min="20" data-hz-max="20000">
+                                            <span class="setting-value">10kHz</span>
+                                        </div>
+                                        <div class="knob">
+                                            <div class="knob-label">GAIN</div>
+                                            <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                            <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="eq_band3_gain" min="-120" max="120" value="0">
+                                            <span class="setting-value">0dB</span>
+                                        </div>
+                                        <div class="knob">
+                                            <div class="knob-label">Q</div>
+                                            <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                            <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="eq_band3_q" min="0.2" max="4" step="0.1" value="0.7">
+                                            <span class="setting-value">0.7</span>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
-                            <div class="eq-band">
-                                <div class="eq-band-title">BAND 2</div>
-                                <div class="knob-row knob-row-tight">
-                                    <div class="knob">
-                                        <div class="knob-label">FREQ</div>
-                                        <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                        <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="eq_band1_freq" min="0" max="1000" value="500" data-hz-min="150" data-hz-max="1200">
-                                        <span class="setting-value">300Hz</span>
-                                    </div>
-                                    <div class="knob">
-                                        <div class="knob-label">GAIN</div>
-                                        <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                        <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="eq_band1_gain" min="-120" max="120" value="-25">
-                                        <span class="setting-value">-2.5dB</span>
-                                    </div>
-                                    <div class="knob">
-                                        <div class="knob-label">Q</div>
-                                        <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                        <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="eq_band1_q" min="0.2" max="4" step="0.1" value="1.0">
-                                        <span class="setting-value">1.0</span>
-                                    </div>
+                            <div class="piano-comp-col">
+                                <div class="piano-comp-header">
+                                    <label class="setting-checkbox-label">
+                                        <input type="checkbox" class="setting-checkbox" data-section="piano" data-param="comp_enabled">
+                                        <span>COMPRESSOR</span>
+                                    </label>
+                                    <button class="ctrl-btn ctrl-btn-sm preset-reset-btn" id="piano-comp-perfect" title="Apply the smooth optical-style preset (threshold/ratio/attack/release/knee all at musical defaults)">PERFECT</button>
                                 </div>
-                            </div>
-                            <div class="eq-band">
-                                <div class="eq-band-title">BAND 3</div>
-                                <div class="knob-row knob-row-tight">
+                                <div class="piano-comp-grid">
                                     <div class="knob">
-                                        <div class="knob-label">FREQ</div>
+                                        <div class="knob-label">DRIVE</div>
                                         <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                        <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="eq_band2_freq" min="0" max="1000" value="500" data-hz-min="800" data-hz-max="6000">
-                                        <span class="setting-value">2.8kHz</span>
+                                        <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="comp_drive_db" min="-12" max="12" value="0">
+                                        <span class="setting-value">0dB</span>
                                     </div>
                                     <div class="knob">
-                                        <div class="knob-label">GAIN</div>
+                                        <div class="knob-label">THRESH</div>
                                         <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                        <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="eq_band2_gain" min="-120" max="120" value="-30">
-                                        <span class="setting-value">-3dB</span>
+                                        <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="comp_threshold_db" min="-30" max="0" value="-20">
+                                        <span class="setting-value">-20dB</span>
                                     </div>
                                     <div class="knob">
-                                        <div class="knob-label">Q</div>
+                                        <div class="knob-label">RATIO</div>
                                         <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                        <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="eq_band2_q" min="0.2" max="4" step="0.1" value="1.5">
-                                        <span class="setting-value">1.5</span>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="eq-band">
-                                <div class="eq-band-title">BAND 4</div>
-                                <div class="knob-row knob-row-tight">
-                                    <div class="knob">
-                                        <div class="knob-label">FREQ</div>
-                                        <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                        <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="eq_band3_freq" min="0" max="1000" value="500" data-hz-min="4000" data-hz-max="16000">
-                                        <span class="setting-value">10kHz</span>
+                                        <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="comp_ratio" min="1" max="10" value="3" step="0.5">
+                                        <span class="setting-value">3:1</span>
                                     </div>
                                     <div class="knob">
-                                        <div class="knob-label">GAIN</div>
+                                        <div class="knob-label">MAKEUP</div>
                                         <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                        <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="eq_band3_gain" min="-120" max="120" value="-15">
-                                        <span class="setting-value">-1.5dB</span>
+                                        <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="comp_makeup_db" min="0" max="12" value="0">
+                                        <span class="setting-value">0dB</span>
                                     </div>
                                     <div class="knob">
-                                        <div class="knob-label">Q</div>
+                                        <div class="knob-label">KNEE</div>
                                         <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                        <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="eq_band3_q" min="0.2" max="4" step="0.1" value="0.7">
-                                        <span class="setting-value">0.7</span>
+                                        <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="comp_knee_db" min="0" max="24" value="12">
+                                        <span class="setting-value">12dB</span>
+                                    </div>
+                                    <div class="knob">
+                                        <div class="knob-label">MIX</div>
+                                        <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                        <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="comp_wet" min="0" max="100" value="100">
+                                        <span class="setting-value">100%</span>
                                     </div>
                                 </div>
                             </div>
@@ -726,56 +788,6 @@
                             <span class="setting-label">Vel Bright Amount</span>
                             <input type="range" class="setting-slider" data-section="piano" data-param="vel_bright_amount" min="0" max="100" value="50">
                             <span class="setting-value">0.50</span>
-                        </div>
-                        <div class="setting-section">COMPRESSOR</div>
-                        <div class="setting-row setting-row-checkbox">
-                            <label class="setting-checkbox-label">
-                                <input type="checkbox" class="setting-checkbox" data-section="piano" data-param="comp_enabled">
-                                <span>Compressor Enabled</span>
-                            </label>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">Restore</span>
-                            <button class="ctrl-btn ctrl-btn-sm preset-reset-btn" id="piano-comp-perfect" title="Apply the smooth optical-style preset (threshold/ratio/attack/release/knee all at musical defaults)">PERFECT</button>
-                            <span class="preset-desc">Optical-style glue — slow attack, soft knee, musical release. Good starting point.</span>
-                        </div>
-                        <div class="knob-row knob-row-tight">
-                            <div class="knob">
-                                <div class="knob-label">DRIVE</div>
-                                <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="comp_drive_db" min="-12" max="12" value="0">
-                                <span class="setting-value">0dB</span>
-                            </div>
-                            <div class="knob">
-                                <div class="knob-label">THRESH</div>
-                                <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="comp_threshold_db" min="-30" max="0" value="-20">
-                                <span class="setting-value">-20dB</span>
-                            </div>
-                            <div class="knob">
-                                <div class="knob-label">RATIO</div>
-                                <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="comp_ratio" min="1" max="10" value="3" step="0.5">
-                                <span class="setting-value">3:1</span>
-                            </div>
-                            <div class="knob">
-                                <div class="knob-label">MAKEUP</div>
-                                <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="comp_makeup_db" min="0" max="12" value="0">
-                                <span class="setting-value">0dB</span>
-                            </div>
-                            <div class="knob">
-                                <div class="knob-label">KNEE</div>
-                                <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="comp_knee_db" min="0" max="24" value="12">
-                                <span class="setting-value">12dB</span>
-                            </div>
-                            <div class="knob">
-                                <div class="knob-label">MIX</div>
-                                <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                <input type="range" class="setting-slider knob-slider" data-section="piano" data-param="comp_wet" min="0" max="100" value="100">
-                                <span class="setting-value">100%</span>
-                            </div>
                         </div>
                     </div>
 
@@ -1632,6 +1644,6 @@
 
     </div>
 
-    <script src="script.js?v=136"></script>
+    <script src="script.js?v=142"></script>
 </body>
 </html>

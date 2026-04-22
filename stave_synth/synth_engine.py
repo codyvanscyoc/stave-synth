@@ -8,7 +8,10 @@ import math
 import numpy as np
 from dataclasses import dataclass, field
 
-from .config import USE_FAUST_REVERB, USE_FAUST_PING_PONG, USE_FAUST_OSC_BANK, USE_FAUST_SYMPATHETIC
+from .config import (
+    SAMPLE_RATE,
+    USE_FAUST_REVERB, USE_FAUST_PING_PONG, USE_FAUST_OSC_BANK, USE_FAUST_SYMPATHETIC,
+)
 
 try:
     from scipy.signal import lfilter
@@ -18,7 +21,6 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-SAMPLE_RATE = 48000
 TWO_PI = 2.0 * np.pi
 
 # dB volume curves: maps a 0-1 fader to amplitude via exponential (dB) scaling.
@@ -1659,6 +1661,22 @@ class SynthEngine:
 
         self.voices: list[Voice] = []
         self._age_counter = 0
+        # ── Voice pool ──
+        # Pre-allocate Voice instances (and their ADSR envelopes) at init
+        # rather than constructing them on every note_on. Allocations in the
+        # audio-facing render path are the classic cause of Python GC pauses
+        # blocking the next block. Pool is kept on `_voice_pool` as a stack
+        # of free instances; note_on pops, dead-voice cleanup + voice stealing
+        # push back. `voices` still holds the active subset like before.
+        # The ADSR holds a reference to the engine's shared config, so live
+        # config edits continue to apply to pooled voices automatically.
+        self._voice_pool: list[Voice] = [
+            Voice(
+                adsr_osc1=ADSREnvelope(self.adsr_osc1_config, sample_rate),
+                adsr_osc2=ADSREnvelope(self.adsr_osc2_config, sample_rate),
+            )
+            for _ in range(max_voices)
+        ]
 
         # Faust 16-voice oscillator bank (opt-in via STAVE_FAUST_OSC_BANK=1).
         # Python still owns voice allocation + ADSR + shimmer + Haas; Faust
@@ -1788,26 +1806,39 @@ class SynthEngine:
             # accumulator keeps flowing without click (new freq is written
             # first thing in render's Faust path).
             stolen_slot = victim.faust_slot
+            victim.faust_slot = -1
             self.voices.remove(victim)
+            self._voice_pool.append(victim)
+
+        # Grab a recycled Voice from the pool. Pool is sized to max_voices
+        # and steal-path always returns one first, so this should never miss.
+        if not self._voice_pool:
+            logger.warning("voice pool empty at note_on; dropping note %d", note)
+            return
+        voice = self._voice_pool.pop()
+
+        # Reset voice state for reuse. ADSR config reference stays bound to
+        # the engine's shared config — live edits to attack/decay/etc. still
+        # propagate to in-flight voices.
+        voice.note = note
+        voice.velocity = velocity
+        voice.age = self._age_counter
+        voice.drift_val = 0.0
+        voice.faust_slot = -1
+        voice.adsr_osc1.stage = ADSREnvelope.OFF
+        voice.adsr_osc1.level = 0.0
+        voice.adsr_osc2.stage = ADSREnvelope.OFF
+        voice.adsr_osc2.level = 0.0
 
         # Randomize unison starting phases so detuned voices decorrelate from
         # the first sample — classic supersaw trick. Aligned phases (all 0)
         # cause audible beating/LFO-phasing when detune is small.
         n_u = self.unison_voices
-        rand_phases_osc1 = list(np.random.uniform(0.0, TWO_PI, n_u))
-        rand_phases_osc2 = list(np.random.uniform(0.0, TWO_PI, n_u))
-        rand_phases_shim = list(np.random.uniform(0.0, TWO_PI, n_u))
-        voice = Voice(
-            note=note,
-            velocity=velocity,
-            adsr_osc1=ADSREnvelope(self.adsr_osc1_config, self.sample_rate),
-            adsr_osc2=ADSREnvelope(self.adsr_osc2_config, self.sample_rate),
-            phases=[0.0] * n_u,
-            osc1_phases=rand_phases_osc1,
-            osc2_phases=rand_phases_osc2,
-            shimmer_phases=rand_phases_shim,
-            age=self._age_counter,
-        )
+        voice.phases = [0.0] * n_u
+        voice.osc1_phases = list(np.random.uniform(0.0, TWO_PI, n_u))
+        voice.osc2_phases = list(np.random.uniform(0.0, TWO_PI, n_u))
+        voice.shimmer_phases = list(np.random.uniform(0.0, TWO_PI, n_u))
+
         voice.adsr_osc1.trigger()
         voice.adsr_osc2.trigger()
         self._age_counter += 1
@@ -2719,6 +2750,7 @@ class SynthEngine:
                 self._faust_slot_free.append(v.faust_slot)
                 v.faust_slot = -1
             self.voices.remove(v)
+            self._voice_pool.append(v)
 
         # Smooth filter cutoff in log space (~80ms time constant)
         alpha_s = 1.0 - np.exp(-n_samples / (0.08 * self.sample_rate))
@@ -2895,8 +2927,8 @@ class SynthEngine:
         f_pos = np.log(max(self._filter_cutoff_cur, f_min) / f_min) / np.log(f_max / f_min)
         f_pos = max(0.0, min(1.0, f_pos))
         # Shallow power curve: spreads compensation evenly across the range
-        # f_pos^1.3 with -21dB max: even attenuation from low-mids through highs
-        filter_comp = 10.0 ** (-21.0 * f_pos ** 1.3 / 20.0)
+        # f_pos^1.3 with -15dB max: even attenuation from low-mids through highs
+        filter_comp = 10.0 ** (-15.0 * f_pos ** 1.3 / 20.0)
 
         output_l = self._output_l[:n_samples]
         output_l[:] = 0
@@ -3335,9 +3367,16 @@ class SynthEngine:
         if "osc2_pan" in params:
             self.osc2_pan = max(-1.0, min(1.0, float(params["osc2_pan"])))
         if "osc_hard_pan" in params:
-            self.osc_hard_pan = bool(params["osc_hard_pan"])
+            new_hard_pan = bool(params["osc_hard_pan"])
+            if new_hard_pan != self.osc_hard_pan:
+                self._haas_buf_l[:] = 0.0
+                self._haas_buf_r[:] = 0.0
+            self.osc_hard_pan = new_hard_pan
         if "haas_delay_ms" in params:
             ms = max(5.0, min(40.0, float(params["haas_delay_ms"])))
+            if abs(ms - self.haas_delay_ms) > 0.01:
+                self._haas_buf_l[:] = 0.0
+                self._haas_buf_r[:] = 0.0
             self.haas_delay_ms = ms
             self._haas_delay_samples = int(ms * 0.001 * self.sample_rate)
         if "volume" in params:

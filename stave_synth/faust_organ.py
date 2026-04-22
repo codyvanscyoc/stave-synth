@@ -21,12 +21,13 @@ try:
 except ImportError:
     HAS_SCIPY = False
 
+from .config import SAMPLE_RATE
+
 logger = logging.getLogger(__name__)
 
 _HERE = Path(__file__).parent.parent / "faust"
 _LIB = _HERE / "libstave_organ.so"
 
-SAMPLE_RATE = 48000
 TWO_PI = 2.0 * np.pi
 N_SLOTS = 16
 

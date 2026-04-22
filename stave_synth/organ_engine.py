@@ -18,12 +18,12 @@ try:
 except ImportError:
     HAS_SCIPY = False
 
+from .config import SAMPLE_RATE
 from .synth_engine import (
     OnePole6dBLowpass, OnePole6dBHighpass,
     BiquadLowpass, BiquadHighpass, BiquadPeakingEQ,
 )
 
-SAMPLE_RATE = 48000
 TWO_PI = 2.0 * np.pi
 
 # Hammond B3 drawbar harmonic ratios (footage → frequency multiplier)

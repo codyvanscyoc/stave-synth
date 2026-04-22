@@ -25,8 +25,14 @@
 
 static float ring_l[RING_SLOTS][MAX_BLOCK];
 static float ring_r[RING_SLOTS][MAX_BLOCK];
-static volatile uint32_t ring_read  = 0;
-static volatile uint32_t ring_write = 0;
+/* ring_read / ring_write are accessed via __atomic_{load,store}_n with
+ * ACQUIRE/RELEASE semantics. No `volatile` — atomics imply the ordering we
+ * need and volatile adds nothing. On aarch64 the relaxed memory model lets
+ * plain loads of ring_write hoist *above* subsequent slot[] reads, which
+ * could return stale samples. ACQUIRE on the reader pairs with RELEASE on
+ * the writer so slot data is guaranteed visible when the index is. */
+static uint32_t ring_read  = 0;
+static uint32_t ring_write = 0;
 static volatile uint32_t ring_block_size = 512;
 
 /* ── MIDI ring buffer ── */
@@ -38,8 +44,8 @@ typedef struct {
 } midi_event_t;
 
 static midi_event_t midi_ring[MIDI_RING_SIZE];
-static volatile uint32_t midi_read  = 0;
-static volatile uint32_t midi_write = 0;
+static uint32_t midi_read  = 0;
+static uint32_t midi_write = 0;
 
 /* ── JACK state ── */
 static jack_client_t *client     = NULL;
@@ -61,15 +67,37 @@ static volatile float    stat_peak        = 0.0f;
 /* ── JACK shutdown flag ── */
 static volatile int jack_shutdown_flag = 0;
 
-/* ── Helpers ── */
-
-static inline uint32_t ring_readable(void) {
-    uint32_t w = ring_write, r = ring_read;
+/* ── Helpers ──
+ *
+ * ring_readable_acq is called by the JACK callback (consumer); it needs an
+ * ACQUIRE load of ring_write so subsequent slot reads see fresh data. The
+ * matching RELEASE store happens in the producer's bridge_write_* after the
+ * memcpy completes.
+ *
+ * ring_writable_acq is called by the Python producer; it needs an ACQUIRE
+ * load of ring_read so the producer knows when a slot has really been
+ * consumed before it overwrites it. The matching RELEASE store happens in
+ * process_callback after the slot has been drained.
+ */
+static inline uint32_t ring_readable_acq(void) {
+    uint32_t w = __atomic_load_n(&ring_write, __ATOMIC_ACQUIRE);
+    uint32_t r = __atomic_load_n(&ring_read, __ATOMIC_RELAXED);
     return (w >= r) ? (w - r) : (RING_SLOTS - r + w);
 }
 
-static inline uint32_t ring_writable(void) {
-    return RING_SLOTS - 1 - ring_readable();
+static inline uint32_t ring_writable_acq(void) {
+    uint32_t w = __atomic_load_n(&ring_write, __ATOMIC_RELAXED);
+    uint32_t r = __atomic_load_n(&ring_read, __ATOMIC_ACQUIRE);
+    uint32_t readable = (w >= r) ? (w - r) : (RING_SLOTS - r + w);
+    return RING_SLOTS - 1 - readable;
+}
+
+/* Read-side helper for stats and diagnostics — relaxed everywhere, no
+ * ordering requirement against data. Used by bridge_get_ring_fill. */
+static inline uint32_t ring_readable_relaxed(void) {
+    uint32_t w = __atomic_load_n(&ring_write, __ATOMIC_RELAXED);
+    uint32_t r = __atomic_load_n(&ring_read, __ATOMIC_RELAXED);
+    return (w >= r) ? (w - r) : (RING_SLOTS - r + w);
 }
 
 /* ── JACK process callback ── */
@@ -80,8 +108,9 @@ static int process_callback(jack_nframes_t nframes, void *arg) {
     float *out_l = (float *)jack_port_get_buffer(port_out_l, nframes);
     float *out_r = (float *)jack_port_get_buffer(port_out_r, nframes);
 
-    if (ring_readable() > 0 && nframes <= MAX_BLOCK) {
-        uint32_t slot = ring_read % RING_SLOTS;
+    if (ring_readable_acq() > 0 && nframes <= MAX_BLOCK) {
+        uint32_t r = __atomic_load_n(&ring_read, __ATOMIC_RELAXED);
+        uint32_t slot = r % RING_SLOTS;
         const float *src_l = ring_l[slot];
         const float *src_r = ring_r[slot];
         float vol_target = master_volume;
@@ -116,8 +145,10 @@ static int process_callback(jack_nframes_t nframes, void *arg) {
         }
         stat_peak = peak;
 
-        __sync_synchronize();
-        ring_read = (ring_read + 1) % RING_SLOTS;
+        /* RELEASE: ensures the slot reads above are complete before the
+         * producer sees the freed index. Producer's matching ACQUIRE is in
+         * ring_writable_acq. */
+        __atomic_store_n(&ring_read, (r + 1) % RING_SLOTS, __ATOMIC_RELEASE);
     } else {
         /* Underrun — output silence */
         memset(out_l, 0, nframes * sizeof(float));
@@ -134,13 +165,16 @@ static int process_callback(jack_nframes_t nframes, void *arg) {
         if (jack_midi_event_get(&ev, midi_buf, i) != 0) break;
         if (ev.size > 4) continue;
 
-        uint32_t next = (midi_write + 1) % MIDI_RING_SIZE;
-        if (next == midi_read) continue;  /* full, drop */
+        uint32_t w = __atomic_load_n(&midi_write, __ATOMIC_RELAXED);
+        uint32_t next = (w + 1) % MIDI_RING_SIZE;
+        uint32_t r = __atomic_load_n(&midi_read, __ATOMIC_ACQUIRE);
+        if (next == r) continue;  /* full, drop */
 
-        memcpy((void *)midi_ring[midi_write].data, ev.buffer, ev.size);
-        midi_ring[midi_write].size = ev.size;
-        __sync_synchronize();
-        midi_write = next;
+        memcpy((void *)midi_ring[w].data, ev.buffer, ev.size);
+        midi_ring[w].size = ev.size;
+        /* RELEASE: event payload must be visible before Python sees the new
+         * write index (matching ACQUIRE in bridge_read_midi). */
+        __atomic_store_n(&midi_write, next, __ATOMIC_RELEASE);
         stat_midi_events++;
     }
 
@@ -207,28 +241,30 @@ void bridge_stop(void) {
 /* Push one mono block into the ring buffer (duplicated to both channels).
  * Returns 1 on success, 0 if ring is full (caller should wait). */
 int bridge_write_audio(const float *samples, int nframes) {
-    if (ring_writable() == 0) return 0;  /* full */
+    if (ring_writable_acq() == 0) return 0;  /* full */
     if (nframes > MAX_BLOCK) nframes = MAX_BLOCK;
 
-    uint32_t slot = ring_write % RING_SLOTS;
+    uint32_t w = __atomic_load_n(&ring_write, __ATOMIC_RELAXED);
+    uint32_t slot = w % RING_SLOTS;
     memcpy(ring_l[slot], samples, nframes * sizeof(float));
     memcpy(ring_r[slot], samples, nframes * sizeof(float));
-    __sync_synchronize();
-    ring_write = (ring_write + 1) % RING_SLOTS;
+    /* RELEASE: audio payload must be visible before the JACK callback sees
+     * the new write index (matching ACQUIRE in ring_readable_acq). */
+    __atomic_store_n(&ring_write, (w + 1) % RING_SLOTS, __ATOMIC_RELEASE);
     return 1;
 }
 
 /* Push one stereo block (separate L/R arrays) into the ring buffer.
  * Returns 1 on success, 0 if ring is full (caller should wait). */
 int bridge_write_stereo(const float *left, const float *right, int nframes) {
-    if (ring_writable() == 0) return 0;  /* full */
+    if (ring_writable_acq() == 0) return 0;  /* full */
     if (nframes > MAX_BLOCK) nframes = MAX_BLOCK;
 
-    uint32_t slot = ring_write % RING_SLOTS;
+    uint32_t w = __atomic_load_n(&ring_write, __ATOMIC_RELAXED);
+    uint32_t slot = w % RING_SLOTS;
     memcpy(ring_l[slot], left, nframes * sizeof(float));
     memcpy(ring_r[slot], right, nframes * sizeof(float));
-    __sync_synchronize();
-    ring_write = (ring_write + 1) % RING_SLOTS;
+    __atomic_store_n(&ring_write, (w + 1) % RING_SLOTS, __ATOMIC_RELEASE);
     return 1;
 }
 
@@ -242,11 +278,16 @@ void bridge_set_btl_mode(int enabled) {
 
 /* Read one MIDI event. Returns byte count (0 = empty). */
 int bridge_read_midi(uint8_t *out) {
-    if (midi_read == midi_write) return 0;
-    uint32_t sz = midi_ring[midi_read].size;
-    memcpy(out, (void *)midi_ring[midi_read].data, sz);
-    __sync_synchronize();
-    midi_read = (midi_read + 1) % MIDI_RING_SIZE;
+    uint32_t r = __atomic_load_n(&midi_read, __ATOMIC_RELAXED);
+    /* ACQUIRE pairs with the RELEASE in process_callback's MIDI producer so
+     * the event payload is visible before we read it. */
+    uint32_t w = __atomic_load_n(&midi_write, __ATOMIC_ACQUIRE);
+    if (r == w) return 0;
+    uint32_t sz = midi_ring[r].size;
+    memcpy(out, (void *)midi_ring[r].data, sz);
+    /* RELEASE: ensures the consumer's reads complete before the slot is
+     * reported as free to the producer. */
+    __atomic_store_n(&midi_read, (r + 1) % MIDI_RING_SIZE, __ATOMIC_RELEASE);
     return (int)sz;
 }
 
@@ -258,6 +299,6 @@ float bridge_get_peak_output(void)    { return stat_peak; }
 int   bridge_get_xrun_count(void)     { return (int)stat_xruns; }
 int   bridge_get_underrun_count(void) { return (int)stat_underruns; }
 int   bridge_get_midi_event_count(void) { return (int)stat_midi_events; }
-int   bridge_get_ring_fill(void)      { return (int)ring_readable(); }
+int   bridge_get_ring_fill(void)      { return (int)ring_readable_relaxed(); }
 int   bridge_get_btl_mode(void)       { return btl_mode; }
 int   bridge_is_shutdown(void)        { return jack_shutdown_flag; }

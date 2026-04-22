@@ -20,25 +20,23 @@ logger = logging.getLogger(__name__)
 # Soundfont presets: what the UI dropdown actually lists. Each preset maps
 # a user-facing name → the underlying .sf2/.sf3 file stem + optional tremolo
 # effect. Two presets can share the same file (e.g. "Rhodes" and "Suitcase"
-# both load Rhodes.sf2; Suitcase layers the characteristic Rhodes-Suitcase
+# both load FluidR3_GM program 4; Suitcase layers the Rhodes-Suitcase
 # tremolo on top, which is what acoustically distinguishes the two models).
 #
 # A preset is only shown in the dropdown when its `file` exists in
 # SOUNDFONT_DIR — keeps the UI honest about what's actually installed.
 SOUNDFONT_PRESETS = {
     # `program` is the GM program number inside the underlying SF2. Salamander
-    # and FluidR3_GM put the acoustic grand at program 0; Rhodes MKII stores
-    # the Rhodes patch at program 4 (GM "Electric Piano 1"). Getting this
+    # and FluidR3_GM put the acoustic grand at program 0; Rhodes/Suitcase
+    # both use FluidR3_GM's GM "Electric Piano 1" at program 4. Getting this
     # right per-preset is essential — the old code relied on a stored
     # `sound` state key and broke when switching between files with
     # different program layouts.
     #
-    # `velocity_curve` (default 1.0) is an exponential velocity bias. A curve
-    # of 1.5 makes `vel_out = velocity ** (1/1.5)` — mid-velocity notes get
-    # pushed up (0.5 → 0.63) toward a soundfont's hard/top layer, while max
-    # velocity stays at 1.0 (no clip, no hot-layer slam). Rhodes at 1.5
-    # reaches the MKII sf2's barky top layer on normal playing; Suitcase
-    # stays linear so it lives on the mid layer with its tremolo character.
+    # `velocity_curve` (default 1.0) is an exponential velocity bias. 1.0
+    # keeps response linear; a higher value would bias toward a soundfont's
+    # hard/top layer. FluidR3_GM's EP1 sits well at 1.0, so all current
+    # presets stay neutral.
     "Salamander": {"file": "Salamander", "program": 0, "tremolo_hz": 0.0, "tremolo_depth": 0.0, "velocity_curve": 1.0},
     "Fluid":      {"file": "FluidR3_GM", "program": 0, "tremolo_hz": 0.0, "tremolo_depth": 0.0, "velocity_curve": 1.0},
     # Rhodes/Suitcase both sourced from FluidR3_GM's GM Electric Piano 1
@@ -796,9 +794,10 @@ class FluidSynthPlayer:
             if target != self.current_voicing:
                 self.set_voicing(target)
         # "sound" state key is vestigial — SOUNDFONT_PRESETS own the GM
-        # program now (Rhodes.sf2 at prog 4, Salamander at prog 0, etc.).
-        # Ignoring it prevents stale saved state from trying to select a
-        # program the active preset's SF2 doesn't have.
+        # program now (FluidR3_GM EP1 at prog 4 for Rhodes/Suitcase,
+        # Salamander acoustic grand at prog 0, etc.). Ignoring it prevents
+        # stale saved state from selecting a program the active preset's
+        # SF2 doesn't have.
         if "eq_bands" in params and isinstance(params["eq_bands"], list):
             for i, band in enumerate(params["eq_bands"]):
                 if i >= len(self.eq_bands) or not isinstance(band, dict):

@@ -16,6 +16,17 @@ class PresetManager:
     def __init__(self, num_slots: int = 10):
         self.num_slots = num_slots
         ensure_dirs()
+        # Sweep stale .tmp files left behind by a crash-during-save (or by
+        # the 500-iter stress test killing mid-write). Safe to delete at
+        # startup because no legitimate save is in-flight here.
+        try:
+            for tmp in PRESETS_DIR.glob("*.json.tmp"):
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+        except OSError:
+            pass
 
     def _slot_path(self, slot: int) -> Path:
         return PRESETS_DIR / f"preset_{slot + 1}.json"

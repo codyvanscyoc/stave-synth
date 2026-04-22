@@ -238,30 +238,6 @@ if [ "$INSTALL_SALAMANDER" = "1" ]; then
     fi
 fi
 
-# Rhodes MKII — free CC-BY 3.0 SF2, ~73MB. Powers both the "Rhodes" and
-# "Suitcase" soundfont presets (Suitcase = same file + internal tremolo LFO).
-# Installed by default; tied to the same --no-salamander flag because if
-# you're on a tight install you probably want to skip both.
-if [ "$INSTALL_SALAMANDER" = "1" ]; then
-    if [ ! -f "$SOUNDFONT_DIR/Rhodes.sf2" ]; then
-        echo "  Downloading Rhodes MKII Piano (~73MB)..."
-        RHODES_URL="https://musical-artifacts.com/artifacts/5001/Rhodes_MKII_Piano.sf2"
-        if wget -q --show-progress -U "Mozilla/5.0" "$RHODES_URL" -O "$SOUNDFONT_DIR/Rhodes.sf2"; then
-            echo -e "${GREEN}  Installed Rhodes MKII Piano (CC-BY 3.0)${NC}"
-        else
-            echo -e "${ORANGE}  Rhodes download failed — Rhodes/Suitcase presets will be unavailable${NC}"
-            rm -f "$SOUNDFONT_DIR/Rhodes.sf2"
-        fi
-    else
-        echo -e "${GREEN}  Rhodes MKII Piano already installed${NC}"
-    fi
-    # Copy Rhodes attribution next to the file.
-    BUNDLED_RHODES_LIC="$SCRIPT_DIR/soundfonts/RHODES-LICENSE.txt"
-    if [ -f "$BUNDLED_RHODES_LIC" ]; then
-        cp "$BUNDLED_RHODES_LIC" "$SOUNDFONT_DIR/Rhodes-LICENSE.txt"
-    fi
-fi
-
 # Fallback: FluidR3_GM (via apt `fluid-soundfont-gm`). Always present on a
 # Debian-based install after the apt step above, and gives us something piano-
 # capable even when Salamander isn't available (slow link, --no-salamander,

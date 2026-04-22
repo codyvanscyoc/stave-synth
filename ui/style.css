@@ -1895,10 +1895,6 @@ body.macro-learning #settings-box {
     border-radius: 999px;  /* full pill */
     transition: color 150ms ease, background 150ms ease, border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
 }
-.osc-link-pill .link-glyph {
-    font-size: clamp(12px, 1.5vw, 15px);
-    line-height: 1;
-}
 /* Active state — bright green pop, glows, slight scale up. */
 .osc-link-pill-wrap .setting-checkbox:checked ~ .osc-link-pill {
     color: var(--bg);
@@ -2630,26 +2626,129 @@ body.macro-learning #settings-box {
     min-width: 0;
 }
 
-/* Piano 4-band EQ: 2×2 grid (bands stack a bit more vertically than master
- * EQ's 3-across; 3 knobs per band makes 3-across cramped at tablet widths). */
-.piano-eq-row {
+/* Piano graphic EQ + compressor side-by-side. Graphic EQ owns 3 draggable
+ * parametric bands (body/mud/presence). Band 4 stays voicing-locked (air
+ * shelf). Compressor is a 3×2 knob grid for density. */
+.piano-eq-comp-wrap {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 0.6vw;
+    gap: 0.8vw;
     padding: 0.4vh 0;
+    align-items: start;
 }
-.piano-eq-row .eq-band {
-    border: 1px solid rgba(0, 191, 99, 0.15);
-    border-radius: 3px;
-    padding: 0.3vh 0.3vw;
-    background: rgba(0, 191, 99, 0.02);
+.piano-geq-col {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3vh;
+    min-width: 0;
 }
-.piano-eq-row .eq-band-title {
-    font-size: clamp(9px, 1.3vw, 11px);
+.piano-geq-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 0.2vw;
+}
+.eq-node-selector {
+    display: flex;
+    gap: 0.35vw;
+}
+.eq-node-pill {
+    font-family: var(--font);
+    font-size: clamp(9px, 1.2vw, 11px);
+    font-weight: 700;
+    letter-spacing: 0.1em;
     color: var(--text-green-dim);
-    letter-spacing: 0.15em;
+    border: 1px solid var(--text-green-dim);
+    background: var(--bg);
+    padding: 0.3vh 0.7vw;
+    border-radius: 3px;
+    cursor: pointer;
+    min-width: 2.2em;
     text-align: center;
-    padding-bottom: 0.2vh;
+    transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+.eq-node-pill:hover { color: var(--text-green); border-color: var(--text-green); }
+.eq-node-pill.active {
+    color: var(--bg);
+    background: var(--text-green);
+    border-color: var(--text-green);
+}
+.eq-reset-btn {
+    font-family: var(--font);
+    font-size: clamp(8px, 1.1vw, 10px);
+    font-weight: 600;
+    letter-spacing: 0.15em;
+    color: var(--text-green-dim);
+    border: 1px solid rgba(0, 191, 99, 0.3);
+    background: var(--bg);
+    padding: 0.3vh 0.6vw;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: color 120ms ease, border-color 120ms ease;
+}
+.eq-reset-btn:hover { color: var(--text-green); border-color: var(--text-green); }
+.piano-eq-graph {
+    width: 100%;
+    height: clamp(110px, 18vh, 180px);
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid rgba(0, 191, 99, 0.2);
+    border-radius: 3px;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+}
+.piano-eq-graph .geq-grid line {
+    stroke: rgba(0, 191, 99, 0.12);
+    stroke-width: 1;
+    vector-effect: non-scaling-stroke;
+}
+.piano-eq-graph .geq-grid text {
+    fill: rgba(0, 191, 99, 0.45);
+    font-family: var(--font);
+    font-size: 8px;
+}
+.piano-eq-graph .geq-curve {
+    fill: none;
+    stroke: var(--text-green);
+    stroke-width: 1.6;
+    vector-effect: non-scaling-stroke;
+}
+.piano-eq-graph .geq-node {
+    stroke: var(--text-green);
+    stroke-width: 1.2;
+    vector-effect: non-scaling-stroke;
+    fill: rgba(0, 0, 0, 0.55);
+    cursor: grab;
+}
+.piano-eq-graph .geq-node.active {
+    fill: var(--text-green);
+    stroke: #fff;
+}
+.piano-eq-knob-group { margin-top: 0.3vh; }
+.piano-eq-knob-group .knob-row { padding: 0.2vh 0; gap: 1.2vw; }
+
+.piano-comp-col {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4vh;
+    min-width: 0;
+}
+.piano-comp-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1.0vh 0.2vw 0.4vh 1.0vw;
+    gap: 0.5vw;
+}
+.piano-comp-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1.6vh 0.8vw;
+    padding: 0.3vh 0;
+}
+.piano-comp-grid .knob-dial {
+    width: clamp(38px, 7vw, 50px);
+    height: clamp(38px, 7vw, 50px);
 }
 
 /* ═══ Compact select + inline rows ═══ */

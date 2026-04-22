@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from .config import (
-    DEFAULT_STATE, AUTOSAVE_INTERVAL, HTTP_PORT,
+    DEFAULT_STATE, AUTOSAVE_INTERVAL, HTTP_PORT, SAMPLE_RATE,
     ensure_dirs, load_state, save_state,
 )
 from .synth_engine import SynthEngine
@@ -27,6 +27,28 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+import re as _re
+_EQ_BAND_RE = _re.compile(r"^eq_band(\d+)_(freq|gain|q|enabled)$")
+
+
+def _run_with_hard_timeout(cmd, timeout_s: float = 3.0, hard_timeout_s: float = 5.0):
+    """subprocess.run with a thread-level hard timeout. subprocess.timeout
+    alone can't unblock a child wedged against PipeWire (uninterruptible
+    wait on the JACK client socket); running it in a daemon thread lets
+    the UI move on even if the child never dies."""
+    box = []
+    def _runner():
+        try:
+            box.append(subprocess.run(
+                cmd, capture_output=True, text=True, timeout=timeout_s
+            ))
+        except Exception:
+            box.append(None)
+    t = threading.Thread(target=_runner, daemon=True)
+    t.start()
+    t.join(hard_timeout_s)
+    return box[0] if box else None
 
 
 def ensure_jack_running():
@@ -66,7 +88,7 @@ def ensure_jack_running():
                 break
         subprocess.Popen(
             ["jackd", "-R", "-d", "alsa", "-d", f"hw:{card}",
-             "-r", "48000", "-p", "128", "-n", "2", "-S"],
+             "-r", str(SAMPLE_RATE), "-p", "128", "-n", "2", "-S"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -1174,11 +1196,17 @@ class StaveSynth:
         outputs = []
         current = None
         try:
-            # Get all JACK playback ports (sinks)
-            result = subprocess.run(
+            # Get all JACK playback ports (sinks). pw-jack jack_lsp has been
+            # observed to wedge against PipeWire in ways subprocess.timeout
+            # alone doesn't unblock — use a thread-level hard timeout so the
+            # UI can never hang waiting for the audio-output list.
+            result = _run_with_hard_timeout(
                 ["pw-jack", "jack_lsp", "-t"],
-                capture_output=True, text=True, timeout=3
+                timeout_s=3.0, hard_timeout_s=5.0,
             )
+            if result is None:
+                logger.warning("audio-output list timed out")
+                return {"type": "audio_outputs", "outputs": []}
             lines = result.stdout.strip().split("\n")
             sinks = set()
             for line in lines:
@@ -1188,16 +1216,17 @@ class StaveSynth:
                     if name != "StaveSynth":
                         sinks.add(name)
             # Check current connections
-            result2 = subprocess.run(
+            result2 = _run_with_hard_timeout(
                 ["pw-jack", "jack_lsp", "-c"],
-                capture_output=True, text=True, timeout=3
+                timeout_s=3.0, hard_timeout_s=5.0,
             )
-            conn_lines = result2.stdout.strip().split("\n")
-            for i, line in enumerate(conn_lines):
-                if line.strip() == "StaveSynth:out_L" and i + 1 < len(conn_lines):
-                    connected_to = conn_lines[i + 1].strip()
-                    current = connected_to.split(":playback_FL")[0]
-                    break
+            if result2 is not None:
+                conn_lines = result2.stdout.strip().split("\n")
+                for i, line in enumerate(conn_lines):
+                    if line.strip() == "StaveSynth:out_L" and i + 1 < len(conn_lines):
+                        connected_to = conn_lines[i + 1].strip()
+                        current = connected_to.split(":playback_FL")[0]
+                        break
             outputs = [{"name": s, "active": s == current} for s in sorted(sinks)]
         except Exception as e:
             logger.error("Failed to list audio outputs: %s", e)
@@ -1208,10 +1237,12 @@ class StaveSynth:
         target = msg.get("name", "")
         try:
             # Disconnect all current output connections
-            result = subprocess.run(
+            result = _run_with_hard_timeout(
                 ["pw-jack", "jack_lsp", "-c"],
-                capture_output=True, text=True, timeout=3
+                timeout_s=3.0, hard_timeout_s=5.0,
             )
+            if result is None:
+                return {"type": "audio_output_set", "name": target, "success": False}
             lines = result.stdout.strip().split("\n")
             for i, line in enumerate(lines):
                 stripped = line.strip()
@@ -1221,19 +1252,19 @@ class StaveSynth:
                     j = i + 1
                     while j < len(lines) and lines[j].startswith("   "):
                         dest = lines[j].strip()
-                        subprocess.run(
+                        _run_with_hard_timeout(
                             ["pw-jack", "jack_disconnect", stripped, dest],
-                            capture_output=True, timeout=3
+                            timeout_s=3.0, hard_timeout_s=5.0,
                         )
                         j += 1
             # Connect to new target
-            subprocess.run(
+            _run_with_hard_timeout(
                 ["pw-jack", "jack_connect", "StaveSynth:out_L", f"{target}:playback_FL"],
-                capture_output=True, timeout=3
+                timeout_s=3.0, hard_timeout_s=5.0,
             )
-            subprocess.run(
+            _run_with_hard_timeout(
                 ["pw-jack", "jack_connect", "StaveSynth:out_R", f"{target}:playback_FR"],
-                capture_output=True, timeout=3
+                timeout_s=3.0, hard_timeout_s=5.0,
             )
             logger.info("Audio output routed to: %s", target)
             return {"type": "audio_output_set", "name": target, "success": True}
@@ -1346,7 +1377,24 @@ class StaveSynth:
                 self.state["synth_pad"]["adsr_osc2"][adsr_key] = value
                 self.synth.update_params({"adsr_osc1": {adsr_key: value}, "adsr_osc2": {adsr_key: value}})
         elif section == "piano":
-            if param in self.state["piano"]:
+            # Per-band EQ knobs ship as synthetic params (eq_band{N}_{freq|gain|q|enabled})
+            # and aren't top-level state keys. Route them into the eq_bands list
+            # and forward to the player, which knows how to unpack the key.
+            _eq_match = _EQ_BAND_RE.match(param) if param else None
+            if _eq_match:
+                idx = int(_eq_match.group(1))
+                field_map = {"freq": "freq_hz", "gain": "gain_db",
+                             "q": "q", "enabled": "enabled"}
+                field = field_map[_eq_match.group(2)]
+                bands = self.state["piano"].setdefault("eq_bands", [])
+                while len(bands) <= idx:
+                    bands.append({"freq_hz": 1000.0, "gain_db": 0.0,
+                                  "q": 1.0, "enabled": True})
+                bands[idx][field] = (bool(value) if field == "enabled"
+                                     else float(value))
+                if self.piano:
+                    self.piano.update_params({param: value})
+            elif param in self.state["piano"]:
                 self.state["piano"][param] = value
                 if self.piano:
                     self.piano.update_params({param: value})
