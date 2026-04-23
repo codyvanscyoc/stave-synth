@@ -19,7 +19,7 @@ from .synth_engine import SynthEngine
 from .jack_engine import JackEngine
 from .midi_handler import MidiHandler
 from .fluidsynth_player import FluidSynthPlayer
-from .soundfont_bootstrap import ensure_soundfonts
+from .soundfont_bootstrap import ensure_soundfonts, already_installed
 from .organ_engine import OrganEngine
 from .preset_manager import PresetManager
 from .websocket_server import WebSocketServer
@@ -1073,6 +1073,55 @@ class StaveSynth:
         logger.info("Instrument mode: %s", self.instrument_mode)
         return {"type": "instrument_mode", "mode": self.instrument_mode}
 
+    def _bootstrap_piano_async(self):
+        """Background worker: download Salamander (~1.2 GB) on first launch,
+        then boot FluidSynth and wire it into the running jack engine.
+
+        Runs as a daemon thread so app startup is never blocked on the network.
+        Progress is pushed to the UI via WebSocket so the browser can show a
+        banner. If the download fails, the piano stays None — the synth keeps
+        running, the user can retry by launching again with a connection."""
+        def _progress(pct, mb_done, mb_total, phase):
+            if not self.ws_server:
+                return
+            self.ws_server.broadcast_sync({
+                "type": "soundfont_download",
+                "phase": phase,
+                "pct": int(pct),
+                "mb_done": round(float(mb_done), 1),
+                "mb_total": round(float(mb_total), 1),
+            })
+
+        ok = ensure_soundfonts(progress_cb=_progress)
+        if not ok:
+            logger.error("Soundfont bootstrap failed — piano will remain silent")
+            return
+
+        try:
+            piano = FluidSynthPlayer()
+            piano.start(self.state.get("piano", {}).get("soundfont", "Salamander"))
+            piano.update_params(self.state.get("piano", {}))
+        except Exception as e:
+            logger.error("Background FluidSynth init failed: %s", e)
+            return
+
+        # Publish the new player to the engine. `piano_player` is read by the
+        # render loop without a lock; assignment of a Python reference is
+        # atomic under the GIL, so this is safe without further synchronization.
+        self.piano = piano
+        if self.jack is not None:
+            self.jack.piano_player = piano
+            self.jack.piano_callback = piano.midi_callback
+        # Re-apply instrument mode so piano/organ routing picks up the new player.
+        try:
+            self._apply_instrument_mode()
+        except Exception as e:
+            logger.warning("post-bootstrap _apply_instrument_mode: %s", e)
+
+        logger.info("Piano ready — Salamander loaded in the background")
+        if self.ws_server:
+            self.ws_server.broadcast_sync({"type": "soundfont_download", "phase": "done", "pct": 100})
+
     def _apply_instrument_mode(self):
         """Enable/disable piano and organ based on current instrument mode."""
         if self.instrument_mode == "piano":
@@ -1755,21 +1804,34 @@ class StaveSynth:
         # Initialize presets
         self.presets.init_defaults()
 
-        # Soundfont bootstrap — downloads Salamander on first launch so a fresh
-        # checkout produces audible piano without running the installer script.
-        # No-op when a soundfont is already present.
-        ensure_soundfonts()
-
-        # Start FluidSynth
-        try:
-            self.piano = FluidSynthPlayer()
-            self.piano.start(
-                self.state.get("piano", {}).get("soundfont", "Salamander")
-            )
-            self.piano.update_params(self.state.get("piano", {}))
-        except Exception as e:
-            logger.warning("FluidSynth not available: %s (piano disabled)", e)
-            self.piano = None
+        # Soundfont bootstrap.
+        #
+        # Fast path (already installed): pull FluidSynth up synchronously so the
+        # piano is audible the moment the UI loads — matches prior behavior.
+        #
+        # Slow path (first launch / missing): the ~1.2 GB Salamander download
+        # takes a few minutes. Blocking startup on it leaves the UI dark and
+        # the user staring at a silent browser tab. Instead, we spawn a daemon
+        # thread that downloads + boots FluidSynth + attaches it to the jack
+        # engine once ready, and we broadcast progress over WebSocket so the UI
+        # can show a download banner. Piano stays silent until it's done.
+        self.piano = None
+        if already_installed():
+            try:
+                self.piano = FluidSynthPlayer()
+                self.piano.start(
+                    self.state.get("piano", {}).get("soundfont", "Salamander")
+                )
+                self.piano.update_params(self.state.get("piano", {}))
+            except Exception as e:
+                logger.warning("FluidSynth not available: %s (piano disabled)", e)
+                self.piano = None
+        else:
+            threading.Thread(
+                target=self._bootstrap_piano_async,
+                name="soundfont-bootstrap",
+                daemon=True,
+            ).start()
 
         # Start organ engine (lightweight, no external deps).
         # STAVE_FAUST_ORGAN=1 routes through libstave_organ.so (native tonewheel

@@ -194,6 +194,8 @@
                 faderColumns[1].classList.remove("alt-mode");
             }
             updateFader(1);
+        } else if (msg.type === "soundfont_download") {
+            updateSoundfontBanner(msg);
         } else if (msg.type === "midi_activity") {
             flashMidiIndicator();
         } else if (msg.type === "peak_level") {
@@ -1698,6 +1700,56 @@
         midiFlashTimeout = setTimeout(function () {
             midiIndicator.classList.remove("flash");
         }, 80);
+    }
+
+    // Soundfont download banner — rendered when the app's background
+    // bootstrap thread is fetching Salamander on first launch.
+    var sfBanner = document.getElementById("sf-download-banner");
+    var sfBannerFill = sfBanner ? sfBanner.querySelector(".sf-banner-fill") : null;
+    var sfBannerStatus = sfBanner ? sfBanner.querySelector(".sf-banner-status") : null;
+    var sfBannerTitle = sfBanner ? sfBanner.querySelector(".sf-banner-title") : null;
+    var sfBannerHideTimer = null;
+
+    function updateSoundfontBanner(msg) {
+        if (!sfBanner) return;
+        var phase = msg.phase || "downloading";
+        var pct = typeof msg.pct === "number" ? msg.pct : 0;
+
+        if (phase === "done") {
+            sfBannerFill.style.width = "100%";
+            sfBannerTitle.textContent = "Piano ready";
+            sfBannerStatus.textContent = "Salamander loaded";
+            if (sfBannerHideTimer) clearTimeout(sfBannerHideTimer);
+            sfBannerHideTimer = setTimeout(function () {
+                sfBanner.classList.add("hidden");
+                sfBanner.classList.remove("err");
+            }, 2500);
+            return;
+        }
+
+        if (phase === "failed") {
+            sfBanner.classList.add("err");
+            sfBanner.classList.remove("hidden");
+            sfBannerTitle.textContent = "Download failed";
+            sfBannerStatus.textContent = "Check your connection and relaunch the app";
+            return;
+        }
+
+        sfBanner.classList.remove("hidden");
+        sfBannerFill.style.width = Math.max(0, Math.min(100, pct)) + "%";
+        sfBannerTitle.textContent = "Downloading piano sounds";
+        var mbDone = typeof msg.mb_done === "number" ? msg.mb_done : 0;
+        var mbTotal = typeof msg.mb_total === "number" ? msg.mb_total : 0;
+        if (phase === "starting") {
+            sfBannerStatus.textContent = "Connecting…";
+        } else if (phase === "extracting") {
+            sfBannerStatus.textContent = "Extracting archive…";
+        } else if (mbTotal > 0) {
+            sfBannerStatus.textContent = pct + "% — " +
+                mbDone.toFixed(1) + " / " + mbTotal.toFixed(1) + " MB";
+        } else {
+            sfBannerStatus.textContent = pct + "%";
+        }
     }
 
 

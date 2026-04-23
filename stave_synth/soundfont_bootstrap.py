@@ -11,6 +11,7 @@ source the Linux installer uses. ~296 MB compressed → ~1.2 GB on disk.
 import logging
 import os
 import shutil
+import ssl
 import tarfile
 import tempfile
 import urllib.request
@@ -49,14 +50,28 @@ def _already_installed() -> bool:
     return False
 
 
-def _download_with_progress(url: str, dest: Path) -> None:
+def _download_with_progress(url: str, dest: Path, progress_cb=None) -> None:
     """Stream URL to dest, logging percent + MB every ~5%.
+
+    `progress_cb(pct, mb_done, mb_total, phase)` is called on each log tick if
+    provided — main.py uses it to broadcast status to the UI via WebSocket.
 
     Uses urllib so we don't add a runtime dep on requests; the synth's
     render thread never touches this code, so perf doesn't matter."""
     logger.info("Downloading soundfont: %s", url)
     req = urllib.request.Request(url, headers={"User-Agent": "stave-synth/1.0"})
-    with urllib.request.urlopen(req, timeout=60) as resp, open(dest, "wb") as out:
+    # Homebrew / python.org Python on macOS ships with no system CA bundle,
+    # so the default SSL context can't verify freepats.zenvoid.org's cert.
+    # Prefer certifi's bundle when the package is installed (it's in
+    # requirements-mac.txt); fall back to the default otherwise so Linux
+    # (which has a real /etc/ssl/certs) still works with no extra deps.
+    ctx = None
+    try:
+        import certifi
+        ctx = ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        pass
+    with urllib.request.urlopen(req, timeout=60, context=ctx) as resp, open(dest, "wb") as out:
         total = int(resp.headers.get("Content-Length", "0")) or None
         read = 0
         last_logged_pct = -1
@@ -69,9 +84,17 @@ def _download_with_progress(url: str, dest: Path) -> None:
             read += len(buf)
             if total:
                 pct = int(read * 100 / total)
-                if pct >= last_logged_pct + 5:
-                    logger.info("  %3d%% (%.1f / %.1f MB)",
-                                pct, read / 1_048_576, total / 1_048_576)
+                if pct >= last_logged_pct + 2:
+                    mb_done = read / 1_048_576
+                    mb_total = total / 1_048_576
+                    if pct >= last_logged_pct + 5:
+                        logger.info("  %3d%% (%.1f / %.1f MB)", pct, mb_done, mb_total)
+                    if progress_cb is not None:
+                        try:
+                            progress_cb(pct, mb_done, mb_total, "downloading")
+                        except Exception:
+                            # Never let a UI callback take down the download.
+                            pass
                     last_logged_pct = pct
     logger.info("Download complete: %.1f MB", read / 1_048_576)
 
@@ -104,8 +127,17 @@ def _extract_salamander(tar_path: Path, dest_dir: Path) -> bool:
     return True
 
 
-def ensure_soundfonts() -> bool:
+def already_installed() -> bool:
+    """Public wrapper — main.py uses this to decide fast-path vs. async boot."""
+    return _already_installed()
+
+
+def ensure_soundfonts(progress_cb=None) -> bool:
     """Bootstrap a usable soundfont if none exists. Safe to call every startup.
+
+    `progress_cb(pct, mb_done, mb_total, phase)` gets called during download +
+    extract so callers can surface progress to the UI. Phases emitted:
+    "starting", "downloading", "extracting", "done", "failed".
 
     Returns True if a soundfont is available after the call (either pre-existing
     or newly installed), False if the download/extract failed and the user will
@@ -120,15 +152,27 @@ def ensure_soundfonts() -> bool:
     )
     SOUNDFONT_DIR.mkdir(parents=True, exist_ok=True)
 
+    def _emit(phase, pct=0, mb_done=0.0, mb_total=0.0):
+        if progress_cb is not None:
+            try:
+                progress_cb(pct, mb_done, mb_total, phase)
+            except Exception:
+                pass
+
+    _emit("starting")
+
     with tempfile.NamedTemporaryFile(suffix=".tar.xz", delete=False) as f:
         tar_path = Path(f.name)
     try:
-        _download_with_progress(_SALAMANDER_URL, tar_path)
+        _download_with_progress(_SALAMANDER_URL, tar_path, progress_cb=progress_cb)
+        _emit("extracting", pct=100)
         if not _extract_salamander(tar_path, SOUNDFONT_DIR):
+            _emit("failed")
             return False
     except Exception as e:
         logger.error("Soundfont bootstrap failed: %s — piano will be silent "
                      "until a .sf2 is placed in %s", e, SOUNDFONT_DIR)
+        _emit("failed")
         return False
     finally:
         try:
@@ -136,4 +180,5 @@ def ensure_soundfonts() -> bool:
         except Exception:
             pass
 
+    _emit("done", pct=100)
     return True

@@ -13,10 +13,17 @@
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="logo.png">
     <!-- Keep style.css and script.js cache-bust versions in sync -->
-    <link rel="stylesheet" href="style.css?v=167">
+    <link rel="stylesheet" href="style.css?v=168">
 </head>
 <body>
     <div id="app">
+        <!-- First-launch soundfont download banner. Populated by the
+             "soundfont_download" WebSocket message; hidden otherwise. -->
+        <div id="sf-download-banner" class="hidden">
+            <div class="sf-banner-title">Downloading piano sounds</div>
+            <div class="sf-banner-bar"><div class="sf-banner-fill"></div></div>
+            <div class="sf-banner-status">Preparing…</div>
+        </div>
         <!-- Top Bar -->
         <div id="top-bar">
             <div id="transpose-controls">
@@ -1643,6 +1650,6 @@
 
     </div>
 
-    <script src="script.js?v=148"></script>
+    <script src="script.js?v=149"></script>
 </body>
 </html>

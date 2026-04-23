@@ -566,6 +566,48 @@ body.retro-amber {
     box-shadow: 0 4px 12px rgba(0,0,0,0.5);
 }
 #output-menu.hidden { display: none; }
+
+/* First-launch soundfont download banner. Overlays the top of the app so
+   the user sees at-a-glance that piano is still initializing. Hidden when
+   a soundfont is already installed (the common case) or after "done". */
+#sf-download-banner {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 500;
+    padding: 1.2vh 2vw;
+    background: #1a1a1a;
+    border-bottom: 1px solid var(--border-green, #4a4);
+    color: var(--text-green, #9cf09c);
+    font-size: clamp(10px, 1.6vw, 13px);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6vh;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.6);
+}
+#sf-download-banner.hidden { display: none; }
+.sf-banner-title { font-weight: 600; }
+.sf-banner-bar {
+    height: 6px;
+    background: #0c1a0c;
+    border: 1px solid #2a4a2a;
+    overflow: hidden;
+}
+.sf-banner-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #4a8a4a, #7acc7a);
+    transition: width 0.25s ease;
+}
+.sf-banner-status {
+    font-size: 0.85em;
+    color: var(--text-muted, #6a9a6a);
+    letter-spacing: 0.1em;
+}
+#sf-download-banner.err { border-bottom-color: #cc4444; }
+#sf-download-banner.err .sf-banner-fill { background: #cc4444; }
+#sf-download-banner.err .sf-banner-title { color: #ff8888; }
 .output-option {
     padding: 8px 12px;
     font-size: 12px;

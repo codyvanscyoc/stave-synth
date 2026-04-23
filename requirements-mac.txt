@@ -2,3 +2,6 @@
 # install-mac.sh. Linux doesn't need these (C bridge handles audio + MIDI).
 sounddevice>=0.4.6      # PortAudio wrapper — replaces the JACK C bridge on Mac.
 python-rtmidi>=1.5.0    # Core MIDI access — replaces the a2jmidid bridge.
+certifi>=2024.2.2       # CA bundle for urllib — stock Homebrew/python.org venvs
+                        # on macOS have no usable cafile, which breaks the
+                        # first-launch Salamander download over HTTPS.
