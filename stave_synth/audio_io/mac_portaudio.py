@@ -31,8 +31,16 @@ _DEFAULT_SAMPLE_RATE = 48000
 # Normal vs. Low Latency block sizes. Linux swaps ring depth at runtime;
 # on Mac the equivalent lever is the PortAudio block size — smaller blocks
 # mean shorter Core Audio round trip. The ring stays 24 slots either way.
-_BLOCK_SIZE_NORMAL = 128
-_BLOCK_SIZE_LOW_LATENCY = 48
+#
+# 256 frames / 48 kHz = 5.33 ms per callback — roughly the JACK default on
+# the Pi and enough headroom for Python GC sweeps (~7-40 ms every 30 s) to
+# happen without draining the ring to zero. 128 frames was too aggressive
+# for Mac: without SCHED_FIFO (macOS doesn't grant it to Python), any GC
+# blip overran the 2.7 ms budget and produced audible pops on held chords.
+# Low Latency swap drops to 128 frames (same budget Linux defaults to) —
+# still tighter round trip, but not tight enough to starve on a GC pause.
+_BLOCK_SIZE_NORMAL = 256
+_BLOCK_SIZE_LOW_LATENCY = 128
 _DEFAULT_BLOCK_SIZE = _BLOCK_SIZE_NORMAL
 _CHANNELS = 2
 
