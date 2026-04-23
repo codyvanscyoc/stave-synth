@@ -139,6 +139,16 @@
                 populateSoundfontDropdown(msg.soundfonts_available);
             }
             applyState(msg.state);
+            // Refresh the CONN indicator from the server's view of the live
+            // device. Prefer `audio_output_active` (what the engine is really
+            // driving) and fall back to the saved master.audio_output (which
+            // can go stale if the preferred device was unplugged and the
+            // engine fell back to the system default).
+            var master = (msg.state && msg.state.master) || {};
+            var activeName = msg.audio_output_active || master.audio_output;
+            if (activeName) {
+                statusIndicator.textContent = shortOutputName(activeName);
+            }
         } else if (msg.type === "transpose_ack") {
             transposeValue = msg.semitones;
             updateTransposeDisplay();

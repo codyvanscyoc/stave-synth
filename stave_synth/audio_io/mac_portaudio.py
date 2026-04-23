@@ -137,12 +137,22 @@ class MacPortAudioIO(AudioIO):
     def _open_midi_input(self) -> None:
         mi = self._rtmidi.MidiIn()
         ports = mi.get_ports()
-        # Skip loopback / software ports; prefer a hardware-sounding name
-        # (MPKmini2, piano, keyboard, etc.) if present.
+        logger.info("Core MIDI ports seen by rtmidi: %s", ports)
+        # Ordered keyword match — known controller brands first, then generic
+        # "midi interface" names (covers cheap 5-pin DIN → USB cables that
+        # show up as H4MIDI, USB MIDI Interface, UM-ONE etc.). Falls back to
+        # port 0 if nothing matches and falls through to a virtual port only
+        # when rtmidi genuinely sees no hardware.
         preferred_idx = None
+        _KEYWORDS = (
+            "mpk", "keystation", "launchkey", "piano", "keyboard",
+            "yamaha", "roland", "korg", "casio", "nektar",
+            "h4midi", "um-one", "uno",  # common generic USB-DIN adapters
+            "midi interface", "usb midi",
+        )
         for idx, name in enumerate(ports):
             low = name.lower()
-            if any(k in low for k in ("mpk", "keyboard", "piano", "keystation", "launchkey")):
+            if any(k in low for k in _KEYWORDS):
                 preferred_idx = idx
                 break
         if preferred_idx is None and ports:

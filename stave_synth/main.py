@@ -205,7 +205,23 @@ class StaveSynth:
                 sf_list = FluidSynthPlayer.list_available_soundfonts()
             except Exception:
                 sf_list = []
-            return {"type": "state", "state": self.state, "soundfonts_available": sf_list}
+            # Report the device the audio engine is actually driving right now.
+            # The saved master.audio_output can go stale (e.g. the user saved
+            # "Thunderbolt Dock" yesterday but the dock is unplugged today —
+            # MacPortAudioIO fell back to the system default on start).
+            active_out = ""
+            audio = getattr(self.jack, "_audio", None) if self.jack else None
+            if audio is not None and hasattr(audio, "get_active_device_name"):
+                try:
+                    active_out = audio.get_active_device_name() or ""
+                except Exception:
+                    active_out = ""
+            return {
+                "type": "state",
+                "state": self.state,
+                "soundfonts_available": sf_list,
+                "audio_output_active": active_out,
+            }
         elif msg_type == "debug":
             # Piano diagnostics
             piano_info = {}
