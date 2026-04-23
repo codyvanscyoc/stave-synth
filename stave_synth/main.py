@@ -19,6 +19,7 @@ from .synth_engine import SynthEngine
 from .jack_engine import JackEngine
 from .midi_handler import MidiHandler
 from .fluidsynth_player import FluidSynthPlayer
+from .soundfont_bootstrap import ensure_soundfonts
 from .organ_engine import OrganEngine
 from .preset_manager import PresetManager
 from .websocket_server import WebSocketServer
@@ -1753,6 +1754,11 @@ class StaveSynth:
 
         # Initialize presets
         self.presets.init_defaults()
+
+        # Soundfont bootstrap — downloads Salamander on first launch so a fresh
+        # checkout produces audible piano without running the installer script.
+        # No-op when a soundfont is already present.
+        ensure_soundfonts()
 
         # Start FluidSynth
         try:
