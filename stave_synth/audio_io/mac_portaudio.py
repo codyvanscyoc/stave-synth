@@ -507,22 +507,41 @@ class MacPortAudioIO(AudioIO):
         self._ring.clear()
         self._residual = None
 
+        # Reopen on whatever device was actually driving audio before the swap,
+        # not on `_preferred_device`. The preferred name is what the user saved
+        # last session and can easily be stale (e.g. Thunderbolt dock was saved
+        # but isn't plugged in today — start() already fell back to the system
+        # default, and a swap using the saved name would fail outright and take
+        # the stream with it). `_active_device_name` tracks the live device; if
+        # it's empty we let sounddevice pick the current system default.
+        live_device = self._active_device_name or None
+
         try:
-            new_stream = self._open_stream(self._preferred_device or None)
+            new_stream = self._open_stream(live_device)
         except Exception as e:
             logger.error(
-                "low-latency swap to blocksize=%d failed: %s — reverting",
-                target_bs, e,
+                "low-latency swap to blocksize=%d failed on device %r: %s — reverting",
+                target_bs, live_device, e,
             )
-            # Fall back to the previous block size so audio comes back.
+            # Restore the old block size so the revert has a fighting chance,
+            # and let sounddevice re-resolve the default if the live device has
+            # also gone away in the meantime.
             self._block_size = _BLOCK_SIZE_NORMAL if enabled else _BLOCK_SIZE_LOW_LATENCY
             try:
-                new_stream = self._open_stream(self._preferred_device or None)
+                new_stream = self._open_stream(live_device)
             except Exception as e2:
-                logger.error("revert after failed latency swap also failed: %s", e2)
-                self._stream = None
-                self._shutdown = True
-                return 0
+                logger.warning(
+                    "revert on %r failed (%s) — retrying on system default",
+                    live_device, e2,
+                )
+                try:
+                    new_stream = self._open_stream(None)
+                    self._active_device_name = self._resolve_device_name(new_stream.device)
+                except Exception as e3:
+                    logger.error("revert to system default also failed: %s", e3)
+                    self._stream = None
+                    self._shutdown = True
+                    return 0
 
         self._stream = new_stream
         self._active_device_name = self._resolve_device_name(new_stream.device)
