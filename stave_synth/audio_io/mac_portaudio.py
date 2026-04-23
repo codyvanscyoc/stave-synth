@@ -24,9 +24,14 @@ from .base import AudioIO
 
 logger = logging.getLogger(__name__)
 
-# Match the Linux C bridge so the engine's `fill < 10` threshold and
-# steady-state latency calculations carry over unchanged.
-_RING_SLOTS = 24
+# Ring depth. The Linux C bridge uses 16/6 depending on latency mode and
+# relies on SCHED_FIFO to keep the render thread ahead of the callback.
+# macOS won't grant RT priority to Python threads (platform.py no-ops it),
+# so the render can be preempted by other threads — GC, the UI autosave
+# thread, pywebview, whatever. A deeper ring absorbs those stalls: at the
+# 256-frame default, 48 slots = 256 ms of buffered audio, plenty to ride
+# out a 20-30 ms GC blip without the callback hitting fill=0.
+_RING_SLOTS = 48
 _DEFAULT_SAMPLE_RATE = 48000
 # Normal vs. Low Latency block sizes. Linux swaps ring depth at runtime;
 # on Mac the equivalent lever is the PortAudio block size — smaller blocks
