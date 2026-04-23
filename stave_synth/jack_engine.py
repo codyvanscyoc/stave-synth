@@ -139,6 +139,11 @@ class JackEngine:
         self.piano_player = piano_player  # FluidSynthPlayer for rendered mixing
         self.running = False
 
+        # Render-ahead ring fill threshold. Matches NORMAL mode (8 = refill
+        # when fewer than 8 of 16 slots are queued). set_low_latency_mode()
+        # updates this and the C-side g_active_slots together.
+        self.ring_threshold = 8
+
         # Master volume and transpose (set from outside)
         self._master_volume = 0.85
         self._fade_gain = 1.0  # multiplied with master before bridge; 0.0 = silent
@@ -360,6 +365,26 @@ class JackEngine:
         if self.synth:
             self.synth.update_params({"bpm": float(bpm)})
 
+    def set_low_latency_mode(self, enabled: bool):
+        """Switch ring depth between Low Latency (6/3) and Normal (16/8).
+        The C bridge briefly mutes (~20 ms) while the ring is reset."""
+        if enabled:
+            slots, threshold = 6, 3
+            label = "ON — ring 6/3 (~16ms render-ahead)"
+        else:
+            slots, threshold = 16, 8
+            label = "OFF — ring 16/8 (~43ms render-ahead)"
+        try:
+            ret = self._bridge.bridge_set_ring_slots(slots)
+            if ret != 0:
+                logger.warning("bridge_set_ring_slots(%d) returned %d", slots, ret)
+                return
+        except Exception as e:
+            logger.warning("bridge_set_ring_slots failed: %s", e)
+            return
+        self.ring_threshold = threshold
+        logger.info("Low Latency Mode %s", label)
+
     def _warm_dsp_state(self, n_blocks: int = 16):
         """Push ~85ms of low-level noise through every stateful filter so the
         first real keystroke doesn't excite a cold filter/compressor from DC
@@ -475,8 +500,8 @@ class JackEngine:
             return piano_buf[0], piano_buf[1]
         if source == "lfo":
             # Use the LFO's current rectified amplitude as a DC-ish sidechain.
-            # Only meaningful when the user has LFO enabled with depth > 0.
-            if self.synth.lfo_enabled:
+            # Only meaningful when depth > 0 (which is the sole gate now).
+            if self.synth.lfo_depth > 0.001:
                 # Advance_lfo already ran this block; use the last computed mod value
                 amp = abs(self.synth._lfo_mod_a_last) * 0.7
                 if n > self._sc_scratch.shape[0]:
@@ -513,6 +538,9 @@ class JackEngine:
         b.bridge_get_ring_fill.restype = ctypes.c_int
         b.bridge_set_btl_mode.argtypes = [ctypes.c_int]
         b.bridge_set_btl_mode.restype = None
+        b.bridge_set_ring_slots.argtypes = [ctypes.c_int]
+        b.bridge_set_ring_slots.restype = ctypes.c_int
+        b.bridge_get_ring_slots.restype = ctypes.c_int
         b.bridge_is_shutdown.restype = ctypes.c_int
 
     def start(self):
@@ -615,12 +643,7 @@ class JackEngine:
                 elif fill >= 4:
                     _in_starvation = False
 
-                # Render whenever ring has less than 10 slots filled (was 6).
-                # With a 24-slot ring, steady-state fill is ~10 (~53 ms latency).
-                # A 50 ms Python stall drains 10→0 (gap), but most GC/FFI pauses
-                # under RT priority are <20 ms, so we stay safe. Bigger ring +
-                # higher threshold is the buffer-starvation safety margin.
-                if fill < 10:
+                if fill < self.ring_threshold:
                     # Snapshot note sets — the MIDI thread mutates these
                     # concurrently, and iterating live sets would raise a
                     # RuntimeError mid-render that gets swallowed silently.

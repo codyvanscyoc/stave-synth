@@ -479,6 +479,17 @@ body.retro-amber {
 .sys-val { color: var(--text-green); font-weight: bold; min-width: 3ch; display: inline-block; }
 .sys-val.warn { color: #FFB020; }
 .sys-val.crit { color: #FF4D6A; }
+.sys-readout-checkbox { margin-left: auto; }
+
+.sys-readout-help {
+    margin: 0.4vh 0 0;
+    padding: 0 1vw;
+    line-height: 1.4;
+    font-size: clamp(8px, 1.2vw, 10px);
+    color: var(--text-green-dim);
+    background: transparent;
+    border: none;
+}
 
 #limit-midi-stack {
     display: flex;

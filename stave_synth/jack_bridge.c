@@ -13,18 +13,23 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <time.h>
 
 /* ── Audio ring buffer ──
  * Fixed number of slots, each holding one JACK block.
  * Writer (Python) advances write_pos, reader (JACK callback) advances read_pos.
  * Lock-free: single producer, single consumer.
+ *
+ * Ring depth is runtime-switchable between Low Latency (6 slots) and Normal
+ * (16 slots) via bridge_set_ring_slots(). Arrays are sized to RING_SLOTS_MAX
+ * so the upper bound is fixed; g_active_slots controls the live modulo.
  */
 
-#define MAX_BLOCK   2048   /* max samples per JACK block */
-#define RING_SLOTS  24     /* number of blocks buffered ahead (was 8) */
+#define MAX_BLOCK        2048   /* max samples per JACK block */
+#define RING_SLOTS_MAX   16     /* compile-time array size — max allowed depth */
 
-static float ring_l[RING_SLOTS][MAX_BLOCK];
-static float ring_r[RING_SLOTS][MAX_BLOCK];
+static float ring_l[RING_SLOTS_MAX][MAX_BLOCK];
+static float ring_r[RING_SLOTS_MAX][MAX_BLOCK];
 /* ring_read / ring_write are accessed via __atomic_{load,store}_n with
  * ACQUIRE/RELEASE semantics. No `volatile` — atomics imply the ordering we
  * need and volatile adds nothing. On aarch64 the relaxed memory model lets
@@ -34,6 +39,13 @@ static float ring_r[RING_SLOTS][MAX_BLOCK];
 static uint32_t ring_read  = 0;
 static uint32_t ring_write = 0;
 static volatile uint32_t ring_block_size = 512;
+
+/* Runtime-variable ring depth. Default matches NORMAL mode (16 slots).
+ * Switched by bridge_set_ring_slots(). Readers ACQUIRE-load this and use
+ * the snapshotted value for modulo math; the setter gates changes behind
+ * g_transition_flag so producer/consumer don't race with a reset. */
+static volatile uint32_t g_active_slots    = 16;
+static volatile uint32_t g_transition_flag = 0;
 
 /* ── MIDI ring buffer ── */
 #define MIDI_RING_SIZE 512
@@ -80,24 +92,27 @@ static volatile int jack_shutdown_flag = 0;
  * process_callback after the slot has been drained.
  */
 static inline uint32_t ring_readable_acq(void) {
+    uint32_t slots = __atomic_load_n(&g_active_slots, __ATOMIC_ACQUIRE);
     uint32_t w = __atomic_load_n(&ring_write, __ATOMIC_ACQUIRE);
     uint32_t r = __atomic_load_n(&ring_read, __ATOMIC_RELAXED);
-    return (w >= r) ? (w - r) : (RING_SLOTS - r + w);
+    return (w >= r) ? (w - r) : (slots - r + w);
 }
 
 static inline uint32_t ring_writable_acq(void) {
+    uint32_t slots = __atomic_load_n(&g_active_slots, __ATOMIC_ACQUIRE);
     uint32_t w = __atomic_load_n(&ring_write, __ATOMIC_RELAXED);
     uint32_t r = __atomic_load_n(&ring_read, __ATOMIC_ACQUIRE);
-    uint32_t readable = (w >= r) ? (w - r) : (RING_SLOTS - r + w);
-    return RING_SLOTS - 1 - readable;
+    uint32_t readable = (w >= r) ? (w - r) : (slots - r + w);
+    return slots - 1 - readable;
 }
 
 /* Read-side helper for stats and diagnostics — relaxed everywhere, no
  * ordering requirement against data. Used by bridge_get_ring_fill. */
 static inline uint32_t ring_readable_relaxed(void) {
+    uint32_t slots = __atomic_load_n(&g_active_slots, __ATOMIC_RELAXED);
     uint32_t w = __atomic_load_n(&ring_write, __ATOMIC_RELAXED);
     uint32_t r = __atomic_load_n(&ring_read, __ATOMIC_RELAXED);
-    return (w >= r) ? (w - r) : (RING_SLOTS - r + w);
+    return (w >= r) ? (w - r) : (slots - r + w);
 }
 
 /* ── JACK process callback ── */
@@ -108,9 +123,18 @@ static int process_callback(jack_nframes_t nframes, void *arg) {
     float *out_l = (float *)jack_port_get_buffer(port_out_l, nframes);
     float *out_r = (float *)jack_port_get_buffer(port_out_r, nframes);
 
+    /* During a ring-depth switch, output silence so we don't race with the
+     * reset of read/write positions. MIDI input still processed below. */
+    if (__atomic_load_n(&g_transition_flag, __ATOMIC_ACQUIRE)) {
+        memset(out_l, 0, nframes * sizeof(float));
+        memset(out_r, 0, nframes * sizeof(float));
+        goto midi_in;
+    }
+
     if (ring_readable_acq() > 0 && nframes <= MAX_BLOCK) {
+        uint32_t slots = __atomic_load_n(&g_active_slots, __ATOMIC_ACQUIRE);
         uint32_t r = __atomic_load_n(&ring_read, __ATOMIC_RELAXED);
-        uint32_t slot = r % RING_SLOTS;
+        uint32_t slot = r % slots;
         const float *src_l = ring_l[slot];
         const float *src_r = ring_r[slot];
         float vol_target = master_volume;
@@ -148,7 +172,7 @@ static int process_callback(jack_nframes_t nframes, void *arg) {
         /* RELEASE: ensures the slot reads above are complete before the
          * producer sees the freed index. Producer's matching ACQUIRE is in
          * ring_writable_acq. */
-        __atomic_store_n(&ring_read, (r + 1) % RING_SLOTS, __ATOMIC_RELEASE);
+        __atomic_store_n(&ring_read, (r + 1) % slots, __ATOMIC_RELEASE);
     } else {
         /* Underrun — output silence */
         memset(out_l, 0, nframes * sizeof(float));
@@ -156,6 +180,7 @@ static int process_callback(jack_nframes_t nframes, void *arg) {
         stat_underruns++;
     }
 
+midi_in:
     /* ── MIDI input ── */
     void *midi_buf = jack_port_get_buffer(port_midi, nframes);
     uint32_t nevents = jack_midi_get_event_count(midi_buf);
@@ -241,30 +266,34 @@ void bridge_stop(void) {
 /* Push one mono block into the ring buffer (duplicated to both channels).
  * Returns 1 on success, 0 if ring is full (caller should wait). */
 int bridge_write_audio(const float *samples, int nframes) {
+    if (__atomic_load_n(&g_transition_flag, __ATOMIC_ACQUIRE)) return 0;
     if (ring_writable_acq() == 0) return 0;  /* full */
     if (nframes > MAX_BLOCK) nframes = MAX_BLOCK;
 
+    uint32_t slots = __atomic_load_n(&g_active_slots, __ATOMIC_ACQUIRE);
     uint32_t w = __atomic_load_n(&ring_write, __ATOMIC_RELAXED);
-    uint32_t slot = w % RING_SLOTS;
+    uint32_t slot = w % slots;
     memcpy(ring_l[slot], samples, nframes * sizeof(float));
     memcpy(ring_r[slot], samples, nframes * sizeof(float));
     /* RELEASE: audio payload must be visible before the JACK callback sees
      * the new write index (matching ACQUIRE in ring_readable_acq). */
-    __atomic_store_n(&ring_write, (w + 1) % RING_SLOTS, __ATOMIC_RELEASE);
+    __atomic_store_n(&ring_write, (w + 1) % slots, __ATOMIC_RELEASE);
     return 1;
 }
 
 /* Push one stereo block (separate L/R arrays) into the ring buffer.
  * Returns 1 on success, 0 if ring is full (caller should wait). */
 int bridge_write_stereo(const float *left, const float *right, int nframes) {
+    if (__atomic_load_n(&g_transition_flag, __ATOMIC_ACQUIRE)) return 0;
     if (ring_writable_acq() == 0) return 0;  /* full */
     if (nframes > MAX_BLOCK) nframes = MAX_BLOCK;
 
+    uint32_t slots = __atomic_load_n(&g_active_slots, __ATOMIC_ACQUIRE);
     uint32_t w = __atomic_load_n(&ring_write, __ATOMIC_RELAXED);
-    uint32_t slot = w % RING_SLOTS;
+    uint32_t slot = w % slots;
     memcpy(ring_l[slot], left, nframes * sizeof(float));
     memcpy(ring_r[slot], right, nframes * sizeof(float));
-    __atomic_store_n(&ring_write, (w + 1) % RING_SLOTS, __ATOMIC_RELEASE);
+    __atomic_store_n(&ring_write, (w + 1) % slots, __ATOMIC_RELEASE);
     return 1;
 }
 
@@ -274,6 +303,35 @@ void bridge_set_master_volume(float vol) {
 
 void bridge_set_btl_mode(int enabled) {
     btl_mode = enabled;
+}
+
+/* Switch the active ring depth. Legal range [4, RING_SLOTS_MAX].
+ * Raises transition flag, waits for in-flight callbacks to finish, zeros the
+ * ring, resets read/write positions, updates g_active_slots, clears flag.
+ * Audio mutes for ~20-30 ms during the transition. Call from non-RT thread. */
+int bridge_set_ring_slots(int slots) {
+    if (slots < 4 || slots > RING_SLOTS_MAX) return -1;
+
+    __atomic_store_n(&g_transition_flag, 1, __ATOMIC_RELEASE);
+
+    /* One JACK period at 256 frames / 48 kHz = ~5.3 ms. 20 ms covers ≥3
+     * callback cycles + any in-flight Python bridge_write_* calls that ran
+     * their atomic check before we set the flag. */
+    struct timespec ts = {0, 20000000L};
+    nanosleep(&ts, NULL);
+
+    memset(ring_l, 0, sizeof(ring_l));
+    memset(ring_r, 0, sizeof(ring_r));
+    __atomic_store_n(&ring_read,  0, __ATOMIC_RELAXED);
+    __atomic_store_n(&ring_write, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_active_slots, (uint32_t)slots, __ATOMIC_RELEASE);
+
+    __atomic_store_n(&g_transition_flag, 0, __ATOMIC_RELEASE);
+    return 0;
+}
+
+int bridge_get_ring_slots(void) {
+    return (int)__atomic_load_n(&g_active_slots, __ATOMIC_RELAXED);
 }
 
 /* Read one MIDI event. Returns byte count (0 = empty). */

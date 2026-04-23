@@ -61,7 +61,10 @@ with {
                     0.0);
 
     // ── Ballistic smoothing: attack when rising, release when falling ──
-    gr_db = gr_target : si.lag_ud(attack_ms * 0.001, release_ms * 0.001);
+    // Routed through hbargraph("gr_db") so Python can read it for the UI's
+    // GR LED without affecting the audio chain.
+    gr_db = gr_target : si.lag_ud(attack_ms * 0.001, release_ms * 0.001)
+                      : hbargraph("gr_db", 0, 24);
 
     // ── Gain in linear amplitude ──
     gain_db = 0.0 - gr_db + makeup_db;
