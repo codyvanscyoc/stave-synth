@@ -2701,8 +2701,12 @@
         if (knob) applyWarmthToKnob(knob, value);
     }
 
-    // Snap LFO 2 params to match LFO 1 when LINK LFOs is enabled. Covers all
-    // user-facing LFO state: toggles, dropdowns, and continuous knobs.
+    // Snap LFO 2 timing to match LFO 1 when LINK LFOs is enabled. Only the
+    // timing + motion-depth params mirror — rate, depth, spread, smooth,
+    // offset, rate_mode, rate_multiplier. Shape, target, and the per-LFO
+    // checkboxes (enabled via depth, key_sync, invert, poly, haas_compensate)
+    // stay independent so the two LFOs keep their own identity: same tempo,
+    // different motions (e.g. LFO1 on filter + LFO2 on amp).
     function snapLfo2ToLfo1() {
         var sliderPairs = [
             ["lfo_rate_hz", "lfo2_rate_hz"],
@@ -2720,8 +2724,6 @@
             }
         });
         var selectPairs = [
-            ["lfo_shape", "lfo2_shape"],
-            ["lfo_target", "lfo2_target"],
             ["lfo_rate_mode", "lfo2_rate_mode"],
             ["lfo_rate_multiplier", "lfo2_rate_multiplier"],
         ];
@@ -2730,21 +2732,6 @@
             var dst = document.querySelector('.setting-select[data-param="' + pair[1] + '"]');
             if (src && dst && dst.value !== src.value) {
                 dst.value = src.value;
-                dst.dispatchEvent(new Event("change", { bubbles: true }));
-            }
-        });
-        var cbPairs = [
-            ["lfo_enabled", "lfo2_enabled"],
-            ["lfo_key_sync", "lfo2_key_sync"],
-            ["lfo_invert", "lfo2_invert"],
-            ["lfo_haas_compensate", "lfo2_haas_compensate"],
-            ["lfo_poly", "lfo2_poly"],
-        ];
-        cbPairs.forEach(function (pair) {
-            var src = document.querySelector('.setting-checkbox[data-param="' + pair[0] + '"]');
-            var dst = document.querySelector('.setting-checkbox[data-param="' + pair[1] + '"]');
-            if (src && dst && dst.checked !== src.checked) {
-                dst.checked = src.checked;
                 dst.dispatchEvent(new Event("change", { bubbles: true }));
             }
         });
@@ -2800,6 +2787,30 @@
         }
     }
 
+    // Per-OSC LFO recv is only meaningful when the LFO modulates per-OSC signals
+    // (Amp, Pan). Filter uses a single shared filter and Sidechain applies
+    // post-reverb on the stereo bus — per-OSC routing has no effect in either
+    // case, so hide the checkboxes (and the LFO RECV section header when both
+    // LFOs are off per-OSC paths) to keep the UI honest. State is preserved
+    // when you switch back.
+    function updateLfoRecvVisibility() {
+        var lfo1Sel = document.querySelector('[data-param="lfo_target"]');
+        var lfo2Sel = document.querySelector('[data-param="lfo2_target"]');
+        var lfo1Uses = !!(lfo1Sel && (lfo1Sel.value === "amp" || lfo1Sel.value === "pan"));
+        var lfo2Uses = !!(lfo2Sel && (lfo2Sel.value === "amp" || lfo2Sel.value === "pan"));
+        document.querySelectorAll('input[data-param$="_recv_lfo1"]').forEach(function (cb) {
+            var row = cb.closest(".setting-row");
+            if (row) row.style.display = lfo1Uses ? "" : "none";
+        });
+        document.querySelectorAll('input[data-param$="_recv_lfo2"]').forEach(function (cb) {
+            var row = cb.closest(".setting-row");
+            if (row) row.style.display = lfo2Uses ? "" : "none";
+        });
+        document.querySelectorAll(".lfo-recv-section").forEach(function (h) {
+            h.style.display = (lfo1Uses || lfo2Uses) ? "" : "none";
+        });
+    }
+
     // Settings checkboxes
     function updateIndepFilterVisibility() {
         var osc1cb = document.querySelector('[data-param="osc1_filter_enabled"]');
@@ -2847,28 +2858,13 @@
                 }
             }
 
-            // LINK (LFO): toggle snapshot + twin-mirror for lfo/lfo2 checkboxes
+            // LINK (LFO): toggle snapshot only. Checkboxes and per-LFO
+            // identity (shape/target) are intentionally NOT mirrored — LINK
+            // pairs timing only, so LFO1 and LFO2 can run at the same rate
+            // but target different paths.
             if (p === "lfo_link") {
                 lfoLink = checkbox.checked;
                 if (lfoLink) snapLfo2ToLfo1();
-            }
-            var lfoCbTwin = null;
-            if (p === "lfo_enabled") lfoCbTwin = "lfo2_enabled";
-            else if (p === "lfo_key_sync") lfoCbTwin = "lfo2_key_sync";
-            else if (p === "lfo_invert") lfoCbTwin = "lfo2_invert";
-            else if (p === "lfo_haas_compensate") lfoCbTwin = "lfo2_haas_compensate";
-            else if (p === "lfo_poly") lfoCbTwin = "lfo2_poly";
-            else if (p === "lfo2_enabled") lfoCbTwin = "lfo_enabled";
-            else if (p === "lfo2_key_sync") lfoCbTwin = "lfo_key_sync";
-            else if (p === "lfo2_invert") lfoCbTwin = "lfo_invert";
-            else if (p === "lfo2_haas_compensate") lfoCbTwin = "lfo_haas_compensate";
-            else if (p === "lfo2_poly") lfoCbTwin = "lfo_poly";
-            if (lfoLink && lfoCbTwin) {
-                var lfoTwinCb = document.querySelector('.setting-checkbox[data-param="' + lfoCbTwin + '"]');
-                if (lfoTwinCb && lfoTwinCb.checked !== checkbox.checked) {
-                    lfoTwinCb.checked = checkbox.checked;
-                    send({ type: "setting", section: "synth_pad", param: lfoCbTwin, value: checkbox.checked });
-                }
             }
 
             updateIndepFilterVisibility();
@@ -2898,14 +2894,12 @@
             });
             if (p && p.indexOf("bus_comp_") === 0) markBusCompCustom();
 
-            // LINK (LFO): mirror lfo_*  ↔ lfo2_* dropdown edits
+            // LINK (LFO): mirror only timing selects (rate_mode, rate_multiplier).
+            // Shape + target are left per-LFO so the two can target
+            // different paths while staying tempo-locked.
             var lfoSelTwin = null;
-            if (p === "lfo_shape") lfoSelTwin = "lfo2_shape";
-            else if (p === "lfo_target") lfoSelTwin = "lfo2_target";
-            else if (p === "lfo_rate_mode") lfoSelTwin = "lfo2_rate_mode";
+            if (p === "lfo_rate_mode") lfoSelTwin = "lfo2_rate_mode";
             else if (p === "lfo_rate_multiplier") lfoSelTwin = "lfo2_rate_multiplier";
-            else if (p === "lfo2_shape") lfoSelTwin = "lfo_shape";
-            else if (p === "lfo2_target") lfoSelTwin = "lfo_target";
             else if (p === "lfo2_rate_mode") lfoSelTwin = "lfo_rate_mode";
             else if (p === "lfo2_rate_multiplier") lfoSelTwin = "lfo_rate_multiplier";
             if (lfoLink && lfoSelTwin) {
@@ -3227,15 +3221,22 @@
             });
         }
 
-        // Initial draw (state may not be loaded yet; applyState will trigger
-        // slider input events which re-invoke redrawCurve).
+        // Initial draw. State may not be loaded on first pass (the IIFE runs
+        // before the first WebSocket `state` message). applyState calls
+        // window.redrawPianoEqCurve() after syncing sliders so the curve
+        // reflects the saved bands without needing a user interaction.
         selectNode(0);
         setTimeout(redrawCurve, 50);
+        window.redrawPianoEqCurve = redrawCurve;
     })();
     var reverbTypeSel = document.querySelector('[data-param="reverb_type"]');
     if (reverbTypeSel) {
         reverbTypeSel.addEventListener("change", updateReverbTypeDesc);
     }
+    // Bus target → grey out per-OSC recv checkboxes (they don't apply).
+    document.querySelectorAll('[data-param="lfo_target"], [data-param="lfo2_target"]').forEach(function (sel) {
+        sel.addEventListener("change", updateLfoRecvVisibility);
+    });
 
     function updateSettingsSliders() {
         if (!state) return;
@@ -3451,10 +3452,19 @@
         // Sync the reverb type description after the select value updates.
         if (typeof updateReverbTypeDesc === "function") updateReverbTypeDesc();
 
+        // Grey per-OSC LFO recv checkboxes when their LFO target is "bus".
+        if (typeof updateLfoRecvVisibility === "function") updateLfoRecvVisibility();
+
         // Refresh pre-limiter warmth class from current value
         var warmSlider = document.querySelector('[data-param="pre_limiter_trim"]');
         if (warmSlider) {
             updateWarmthClass(warmSlider, parseFloat(warmSlider.value) / 100);
+        }
+
+        // Redraw the piano EQ curve from freshly-synced slider values.
+        // Without this the graph opens flat until the user touches a node.
+        if (typeof window.redrawPianoEqCurve === "function") {
+            window.redrawPianoEqCurve();
         }
 
         syncKnobRotations();

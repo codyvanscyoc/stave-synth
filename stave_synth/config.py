@@ -121,7 +121,6 @@ DEFAULT_STATE = {
         "shimmer_mix": 0.5,
         "shimmer_high": False,
         "shimmer_send": 1.0,
-        "lfo_enabled": False,
         "lfo_rate_hz": 1.0,
         "lfo_rate_mode": "FREE",
         "lfo_rate_multiplier": 1.0,
@@ -135,7 +134,6 @@ DEFAULT_STATE = {
         "lfo_haas_compensate": False,
         "lfo_smooth": 0.0,  # 0..1 — one-pole LP on LFO mod, kills sidebands at high rate
         "lfo_poly": False,  # per-voice phase via Faust (AMP target only)
-        "lfo2_enabled": False,
         "lfo2_rate_hz": 1.0,
         "lfo2_rate_mode": "FREE",
         "lfo2_rate_multiplier": 1.0,
@@ -281,6 +279,9 @@ DEFAULT_STATE = {
         # piano or PLATE on organ is a one-knob choice.
         "piano_reverb_send": 0.0,
         "piano_delay_send": 0.0,
+        # Latency mode: False = Normal (ring 16/8, ~43ms render-ahead),
+        # True = Low Latency (ring 6/3, ~16ms render-ahead). Toggle from Global tab.
+        "low_latency_mode": False,
     },
     "midi_cc_map": {},
     "macros": [

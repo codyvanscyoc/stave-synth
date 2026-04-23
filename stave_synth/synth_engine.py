@@ -1580,8 +1580,8 @@ class SynthEngine:
 
         # ═══ LFO (Motion tab) ═══
         # Single control-rate LFO. Cheap because it updates once per block, not per sample.
-        # Targets: filter / amp / pan. (Pitch target deferred — needs voice-level wiring.)
-        self.lfo_enabled = False
+        # Targets: filter / amp / pan / sidechain. Depth is the sole gate — when
+        # depth × motion_mix < 0.001 the LFO is idle.
         self.lfo_rate_hz = 1.0         # 0.05-20 Hz (used when lfo_rate_mode == "FREE")
         self.lfo_rate_mode = "FREE"    # "FREE" or subdivision ("1/4", "1/8", "1/8T", ...)
         self.lfo_rate_multiplier = 1.0  # tempo-sync rate multiplier: >1 = faster, <1 = slower
@@ -1620,7 +1620,6 @@ class SynthEngine:
         # LFO 2 — independent second modulator. Can target filter/amp/pan same
         # as LFO 1; outputs stack additively at each target. Keeps its own
         # phase + tempo-sync + key-sync state so the two LFOs don't interlock.
-        self.lfo2_enabled = False
         self.lfo2_rate_hz = 1.0
         self.lfo2_rate_mode = "FREE"
         self.lfo2_rate_multiplier = 1.0
@@ -2071,7 +2070,7 @@ class SynthEngine:
 
         depth = getattr(self, pfx + "_depth")
         effective_depth = depth * self.motion_mix
-        if not getattr(self, pfx + "_enabled") or effective_depth < 0.001:
+        if effective_depth < 0.001:
             # Zero the per-block "last" mod values so a downstream consumer
             # (e.g. bus comp with sidechain="lfo") doesn't get a frozen
             # constant pump from whatever was here when the LFO was last on.
@@ -2488,9 +2487,11 @@ class SynthEngine:
             # Poly-LFO push: only the AMP target gets per-voice mod here.
             # Pan/Filter targets continue to apply globally via Python below.
             if hasattr(self._faust_osc_bank, "set_lfo_params"):
-                lfo1_active = (self.lfo_poly and self.lfo_enabled
+                lfo1_active = (self.lfo_poly
+                               and (self.lfo_depth * self.motion_mix) > 0.001
                                and self.lfo_target == "amp")
-                lfo2_active = (self.lfo2_poly and self.lfo2_enabled
+                lfo2_active = (self.lfo2_poly
+                               and (self.lfo2_depth * self.motion_mix) > 0.001
                                and self.lfo2_target == "amp")
                 # Effective rate (matches _advance_lfo logic) — Faust LFO
                 # phasor uses this Hz value directly.
@@ -2766,9 +2767,9 @@ class SynthEngine:
         # (deferred — see project_next_work memo).
         any_recv_lfo1 = self.osc1_recv_lfo1 or self.osc2_recv_lfo1
         any_recv_lfo2 = self.osc1_recv_lfo2 or self.osc2_recv_lfo2
-        if any_recv_lfo1 and self.lfo_enabled and self.lfo_target == "filter" and lfo1_d > 0.001:
+        if any_recv_lfo1 and self.lfo_target == "filter" and lfo1_d > 0.001:
             filter_mod += lfo1_a * lfo1_d
-        if any_recv_lfo2 and self.lfo2_enabled and self.lfo2_target == "filter" and lfo2_d > 0.001:
+        if any_recv_lfo2 and self.lfo2_target == "filter" and lfo2_d > 0.001:
             filter_mod += lfo2_a * lfo2_d
 
         effective_cutoff = self._filter_cutoff_cur
@@ -3010,7 +3011,7 @@ class SynthEngine:
             # Pan target always stays Python-side regardless of poly setting.
             lfo1_amp_via_faust = use_faust and self.lfo_poly and self.lfo_target == "amp"
             lfo2_amp_via_faust = use_faust and self.lfo2_poly and self.lfo2_target == "amp"
-            if recv1 and self.lfo_enabled and lfo1_d > 0.001:
+            if recv1 and lfo1_d > 0.001:
                 r1a = np.linspace(self._lfo_mod_a_last, lfo1_a, n_samples, dtype=np.float64)
                 r1b = np.linspace(self._lfo_mod_b_last, lfo1_b, n_samples, dtype=np.float64)
                 r1a, self._lfo_smooth_a_state = _smooth_one_pole(r1a, self._lfo_smooth_a_state, self.lfo_smooth)
@@ -3021,7 +3022,7 @@ class SynthEngine:
                 elif self.lfo_target == "pan":
                     pmod_l = r1a * lfo1_d * 0.5
                     pmod_r = -r1a * lfo1_d * 0.5
-            if recv2 and self.lfo2_enabled and lfo2_d > 0.001:
+            if recv2 and lfo2_d > 0.001:
                 r2a = np.linspace(self._lfo2_mod_a_last, lfo2_a, n_samples, dtype=np.float64)
                 r2b = np.linspace(self._lfo2_mod_b_last, lfo2_b, n_samples, dtype=np.float64)
                 r2a, self._lfo2_smooth_a_state = _smooth_one_pole(r2a, self._lfo2_smooth_a_state, self.lfo2_smooth)
@@ -3083,6 +3084,29 @@ class SynthEngine:
                 split2_l *= (1.0 + p2l); split2_r *= (1.0 + p2r)
             output_l[:] = split1_l + split2_l
             output_r[:] = split1_r + split2_r
+        # Bus-target amp mod — computed once using the previous block's ramp
+        # end values (_lfo_mod_a_last is not yet updated below). Stored here,
+        # applied post-reverb on stereo_out so the full pad + reverb tail
+        # pumps like a sidechain, instead of just the dry OSC signal.
+        bus_amul_l = None
+        bus_amul_r = None
+        if self.lfo_target == "bus" and lfo1_d > 0.001:
+            r1a = np.linspace(self._lfo_mod_a_last, lfo1_a, n_samples, dtype=np.float64)
+            r1b = np.linspace(self._lfo_mod_b_last, lfo1_b, n_samples, dtype=np.float64)
+            r1a, self._lfo_smooth_a_state = _smooth_one_pole(r1a, self._lfo_smooth_a_state, self.lfo_smooth)
+            r1b, self._lfo_smooth_b_state = _smooth_one_pole(r1b, self._lfo_smooth_b_state, self.lfo_smooth)
+            bus_amul_l = _amp_gate(r1a, lfo1_d)
+            bus_amul_r = _amp_gate(r1b, lfo1_d)
+        if self.lfo2_target == "bus" and lfo2_d > 0.001:
+            r2a = np.linspace(self._lfo2_mod_a_last, lfo2_a, n_samples, dtype=np.float64)
+            r2b = np.linspace(self._lfo2_mod_b_last, lfo2_b, n_samples, dtype=np.float64)
+            r2a, self._lfo2_smooth_a_state = _smooth_one_pole(r2a, self._lfo2_smooth_a_state, self.lfo2_smooth)
+            r2b, self._lfo2_smooth_b_state = _smooth_one_pole(r2b, self._lfo2_smooth_b_state, self.lfo2_smooth)
+            g2l = _amp_gate(r2a, lfo2_d)
+            g2r = _amp_gate(r2b, lfo2_d)
+            bus_amul_l = g2l if bus_amul_l is None else bus_amul_l * g2l
+            bus_amul_r = g2r if bus_amul_r is None else bus_amul_r * g2r
+
         # Remember this block's end values (normalized) for the next block's ramp start
         self._lfo_mod_a_last = lfo1_a
         self._lfo_mod_b_last = lfo1_b
@@ -3102,6 +3126,41 @@ class SynthEngine:
         else:
             _pre_fx_dry_l = None
             _pre_fx_dry_r = None
+
+        # Per-OSC FX Bypass: carve the bypassed osc's fraction out of output_l/r
+        # before delay + reverb so they process only the non-bypass portion.
+        # The carved fraction (bypass_l/r) is added back post-FX at full dry
+        # level, so bypassed oscs stay audible at any wet/dry setting and do
+        # not pump with the bus-target LFO. Magnitude ratio approximation is
+        # exact for single-osc-playing cases and close-enough for dual.
+        bypass_ratio = 0.0
+        bypass_l = None
+        bypass_r = None
+        if self.osc1_fx_bypass or self.osc2_fx_bypass:
+            o1l = self._osc1_pre_l[:n_samples]
+            o1r = self._osc1_pre_r[:n_samples]
+            o2l = self._osc2_pre_l[:n_samples]
+            o2r = self._osc2_pre_r[:n_samples]
+            m1 = float(np.abs(o1l).sum() + np.abs(o1r).sum())
+            m2 = float(np.abs(o2l).sum() + np.abs(o2r).sum())
+            tot = m1 + m2
+            if tot > 1e-6:
+                bypass_mag = 0.0
+                if self.osc1_fx_bypass:
+                    bypass_mag += m1
+                if self.osc2_fx_bypass:
+                    bypass_mag += m2
+                bypass_ratio = bypass_mag / tot
+            if bypass_ratio > 1e-6:
+                if not hasattr(self, "_bypass_snap_l") or self._bypass_snap_l.shape[0] < n_samples:
+                    self._bypass_snap_l = np.empty(max(n_samples, self._buf_size), dtype=np.float64)
+                    self._bypass_snap_r = np.empty(max(n_samples, self._buf_size), dtype=np.float64)
+                bypass_l = self._bypass_snap_l[:n_samples]
+                bypass_r = self._bypass_snap_r[:n_samples]
+                np.multiply(output_l, bypass_ratio, out=bypass_l)
+                np.multiply(output_r, bypass_ratio, out=bypass_r)
+                output_l *= (1.0 - bypass_ratio)
+                output_r *= (1.0 - bypass_ratio)
 
         # ─── Ping-pong delay (pre-reverb so taps get cathedral treatment) ───
         self._process_ping_pong(output_l, output_r)
@@ -3310,6 +3369,21 @@ class SynthEngine:
         stereo_out[0] = output_l * dry_gain + reverb_out[0] * wet_gain_val
         stereo_out[1] = output_r * dry_gain + reverb_out[1] * wet_gain_val
 
+        # Post-FX bus-target LFO amp mod. Applied here so the dry pad AND the
+        # reverb tail both pump together — delivers sidechain "breathing" feel
+        # instead of the pre-FX "amp" target's OSC-only tremolo. Applied BEFORE
+        # the bypass add-back so bypassed oscs stay anchored (they're
+        # intentionally out of the sidechain bus).
+        if bus_amul_l is not None:
+            stereo_out[0] *= bus_amul_l
+            stereo_out[1] *= bus_amul_r
+
+        # Add bypass portion at full dry level. Bypassed oscs get no reverb,
+        # no delay, no sidechain — just clean dry audible at any wet setting.
+        if bypass_l is not None:
+            stereo_out[0] += bypass_l
+            stereo_out[1] += bypass_r
+
         # Pad sample playback → dedicated stereo scratch so we can also add it
         # to dry_bus in fx-bypass mode. Each SamplePlayer applies its own
         # attack/release envelope + loop crossfade.
@@ -3342,11 +3416,14 @@ class SynthEngine:
         stereo_out[1] += drone_low + pad_r * pad_vol
 
         if separate_fx:
-            # dry bus = pre-FX pad × dry_gain + drone + pad samples
+            # dry bus = pre-FX pad × eff_dry_gain + drone + pad samples
             # fx bus = final − dry = delay taps × dry_gain + reverb wet × wet_gain_val.
+            # eff_dry_gain accounts for per-OSC fx_bypass: the bypass fraction
+            # stays at unity regardless of dry/wet, the rest tracks dry_gain.
+            eff_dry_gain = bypass_ratio + (1.0 - bypass_ratio) * dry_gain
             dry_bus = np.empty((2, n_samples), dtype=np.float64)
-            dry_bus[0] = _pre_fx_dry_l * dry_gain + drone_low + pad_l * pad_vol
-            dry_bus[1] = _pre_fx_dry_r * dry_gain + drone_low + pad_r * pad_vol
+            dry_bus[0] = _pre_fx_dry_l * eff_dry_gain + drone_low + pad_l * pad_vol
+            dry_bus[1] = _pre_fx_dry_r * eff_dry_gain + drone_low + pad_r * pad_vol
             fx_bus = np.empty((2, n_samples), dtype=np.float64)
             fx_bus[0] = stereo_out[0] - dry_bus[0]
             fx_bus[1] = stereo_out[1] - dry_bus[1]
@@ -3532,8 +3609,6 @@ class SynthEngine:
             self.shimmer_high = bool(params["shimmer_high"])
         if "shimmer_send" in params:
             self.shimmer_send = max(0.0, min(2.0, float(params["shimmer_send"])))
-        if "lfo_enabled" in params:
-            self.lfo_enabled = bool(params["lfo_enabled"])
         if "lfo_rate_hz" in params:
             self.lfo_rate_hz = max(0.05, min(20.0, float(params["lfo_rate_hz"])))
         if "lfo_rate_mode" in params:
@@ -3546,6 +3621,13 @@ class SynthEngine:
             self.lfo_key_sync = bool(params["lfo_key_sync"])
         if "lfo_depth" in params:
             self.lfo_depth = max(0.0, min(1.0, float(params["lfo_depth"])))
+        # Legacy migration: the "Enabled" checkbox has been retired; depth is
+        # now the sole gate. Old state files still carry lfo_enabled; when
+        # False we zero depth here (AFTER lfo_depth is processed, so this
+        # overrides) to preserve the user's off state. Live UI no longer
+        # sends this key.
+        if "lfo_enabled" in params and not bool(params["lfo_enabled"]):
+            self.lfo_depth = 0.0
         if "lfo_shape" in params:
             s = str(params["lfo_shape"])
             if s in ("sine", "triangle", "square", "saw", "ramp", "peak", "sh"):
@@ -3562,16 +3644,22 @@ class SynthEngine:
             self.lfo_poly = bool(params["lfo_poly"])
         if "lfo_target" in params:
             t = str(params["lfo_target"])
-            if t in ("filter", "amp", "pan"):
+            if t in ("filter", "amp", "pan", "bus") and t != self.lfo_target:
                 self.lfo_target = t
                 # Reset filter cache so modulation takes over cleanly
                 self._filter_cutoff_last_set = -1.0
+                # Zero per-block ramp + smoothing state. Without this the new
+                # target's first block ramps from the old target's final mod
+                # value (and inherits the old target's smoother state),
+                # producing a one-block glitch or click when switching.
+                self._lfo_mod_a_last = 0.0
+                self._lfo_mod_b_last = 0.0
+                self._lfo_smooth_a_state = 0.0
+                self._lfo_smooth_b_state = 0.0
         if "lfo_spread" in params:
             self.lfo_spread = max(0.0, min(1.0, float(params["lfo_spread"])))
 
         # LFO 2 — parallel routing
-        if "lfo2_enabled" in params:
-            self.lfo2_enabled = bool(params["lfo2_enabled"])
         if "lfo2_rate_hz" in params:
             self.lfo2_rate_hz = max(0.05, min(20.0, float(params["lfo2_rate_hz"])))
         if "lfo2_rate_mode" in params:
@@ -3584,6 +3672,9 @@ class SynthEngine:
             self.lfo2_key_sync = bool(params["lfo2_key_sync"])
         if "lfo2_depth" in params:
             self.lfo2_depth = max(0.0, min(1.0, float(params["lfo2_depth"])))
+        # Legacy migration — see lfo_enabled block above.
+        if "lfo2_enabled" in params and not bool(params["lfo2_enabled"]):
+            self.lfo2_depth = 0.0
         if "lfo2_shape" in params:
             s = str(params["lfo2_shape"])
             if s in ("sine", "triangle", "square", "saw", "ramp", "peak", "sh"):
@@ -3600,9 +3691,13 @@ class SynthEngine:
             self.lfo2_poly = bool(params["lfo2_poly"])
         if "lfo2_target" in params:
             t = str(params["lfo2_target"])
-            if t in ("filter", "amp", "pan"):
+            if t in ("filter", "amp", "pan", "bus") and t != self.lfo2_target:
                 self.lfo2_target = t
                 self._filter_cutoff_last_set = -1.0
+                self._lfo2_mod_a_last = 0.0
+                self._lfo2_mod_b_last = 0.0
+                self._lfo2_smooth_a_state = 0.0
+                self._lfo2_smooth_b_state = 0.0
         if "lfo2_spread" in params:
             self.lfo2_spread = max(0.0, min(1.0, float(params["lfo2_spread"])))
         if "delay_enabled" in params:

@@ -82,3 +82,18 @@ class AudioIO(ABC):
 
     @abstractmethod
     def get_callback_count(self) -> int: ...
+
+    # ── latency mode ──
+    @abstractmethod
+    def set_low_latency_mode(self, enabled: bool) -> int:
+        """Switch the transport between normal and low-latency modes.
+
+        Platform meaning:
+          - Linux: swap the C bridge's ring depth (16/8 ↔ 6/3).
+          - Mac: close and reopen the sounddevice stream at a smaller
+            block size.
+
+        Returns the render-ahead threshold the engine should use with
+        this mode (or 0 / unchanged if the platform doesn't want to
+        move the threshold). The engine stores it on `ring_threshold`.
+        """

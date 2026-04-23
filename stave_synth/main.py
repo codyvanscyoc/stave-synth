@@ -595,6 +595,11 @@ class StaveSynth:
         if 0 <= slot < len(labels):
             labels[slot] = label
             save_state(self.state)
+            # Broadcast fresh state so any state-driven re-render on other
+            # clients (or a later tick on this one) doesn't clobber the
+            # just-typed label with the stale pre-edit value.
+            if self.ws_server:
+                self.ws_server.broadcast_sync({"type": "state", "state": self.state})
             return {"type": "preset_labeled", "slot": slot, "label": label}
         return {"type": "error", "message": f"Invalid preset slot {slot}"}
 
@@ -1462,6 +1467,11 @@ class StaveSynth:
                 self.state["master"][param] = bool(value)
                 if self.jack:
                     self.jack.saturation_enabled = bool(value)
+            elif param == "low_latency_mode":
+                enabled = bool(value)
+                self.state["master"][param] = enabled
+                if self.jack:
+                    self.jack.set_low_latency_mode(enabled)
             elif param == "bpm":
                 self.state["master"]["bpm"] = max(40, min(300, int(float(value))))
                 # Delay engine will query this when present
@@ -1673,9 +1683,16 @@ class StaveSynth:
             stats_counter += 1
 
             if self.jack and self.ws_server:
-                # GR reading — broadcast every tick (20 Hz) for beat-accurate LED
+                # GR reading — broadcast every tick (20 Hz) for beat-accurate LED.
+                # Prefer the Faust path's bargraph when it's active (self-sidechain
+                # + STAVE_FAUST_BUS_COMP=1); fall back to Python otherwise.
                 try:
-                    gr_db = float(self.jack.bus_comp.current_gr_db) if hasattr(self.jack, "bus_comp") else 0.0
+                    gr_db = 0.0
+                    faust_bc = getattr(self.jack, "_faust_bus_comp", None)
+                    if faust_bc is not None and getattr(self.jack, "bus_comp_source", "self") == "self":
+                        gr_db = float(faust_bc.current_gr_db)
+                    elif hasattr(self.jack, "bus_comp"):
+                        gr_db = float(self.jack.bus_comp.current_gr_db)
                     self.ws_server.broadcast_sync({
                         "type": "bus_comp_gr",
                         "gr_db": round(gr_db, 2),
@@ -1808,6 +1825,10 @@ class StaveSynth:
             audio = getattr(self.jack, "_audio", None)
             if audio is not None and hasattr(audio, "set_preferred_device"):
                 audio.set_preferred_device(master.get("audio_output", "") or "")
+            # Apply saved low-latency preference before start. Linux picks up
+            # the new ring depth on first callback; Mac caches the preference
+            # and opens its stream at the right block size in start().
+            self.jack.set_low_latency_mode(bool(master.get("low_latency_mode", False)))
             self.jack.start()
         except Exception as e:
             logger.error("Failed to start JACK engine: %s", e)

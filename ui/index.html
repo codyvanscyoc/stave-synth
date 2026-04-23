@@ -13,7 +13,7 @@
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="logo.png">
     <!-- Keep style.css and script.js cache-bust versions in sync -->
-    <link rel="stylesheet" href="style.css?v=164">
+    <link rel="stylesheet" href="style.css?v=167">
 </head>
 <body>
     <div id="app">
@@ -404,7 +404,7 @@
                                     </label>
                                 </div>
 
-                                <div class="setting-section">LFO RECV</div>
+                                <div class="setting-section lfo-recv-section">LFO RECV</div>
                                 <div class="setting-row setting-row-checkbox">
                                     <label class="setting-checkbox-label">
                                         <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc1_recv_lfo1" checked>
@@ -501,7 +501,7 @@
                                     </label>
                                 </div>
 
-                                <div class="setting-section">LFO RECV</div>
+                                <div class="setting-section lfo-recv-section">LFO RECV</div>
                                 <div class="setting-row setting-row-checkbox">
                                     <label class="setting-checkbox-label">
                                         <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc2_recv_lfo1" checked>
@@ -923,10 +923,6 @@
                                 <div class="lfo-col-title">LFO 1</div>
                                 <div class="setting-row setting-row-checkbox">
                                     <label class="setting-checkbox-label">
-                                        <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="lfo_enabled">
-                                        <span>Enabled</span>
-                                    </label>
-                                    <label class="setting-checkbox-label">
                                         <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="lfo_key_sync">
                                         <span>Key Sync</span>
                                     </label>
@@ -968,6 +964,7 @@
                                         <option value="filter" selected>Filter</option>
                                         <option value="amp">Amp</option>
                                         <option value="pan">Pan</option>
+                                        <option value="bus">Sidechain</option>
                                     </select>
                                 </div>
                                 <div class="setting-row">
@@ -1024,10 +1021,6 @@
                                 <div class="lfo-col-title">LFO 2</div>
                                 <div class="setting-row setting-row-checkbox">
                                     <label class="setting-checkbox-label">
-                                        <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="lfo2_enabled">
-                                        <span>Enabled</span>
-                                    </label>
-                                    <label class="setting-checkbox-label">
                                         <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="lfo2_key_sync">
                                         <span>Key Sync</span>
                                     </label>
@@ -1069,6 +1062,7 @@
                                         <option value="filter">Filter</option>
                                         <option value="amp">Amp</option>
                                         <option value="pan" selected>Pan</option>
+                                        <option value="bus">Sidechain</option>
                                     </select>
                                 </div>
                                 <div class="setting-row">
@@ -1636,7 +1630,12 @@
                         <div id="sys-readout" class="sys-readout">
                             <span>CPU <span id="sys-cpu" class="sys-val">--</span>%</span>
                             <span>RAM <span id="sys-ram" class="sys-val">--</span> MB</span>
+                            <label class="setting-checkbox-label sys-readout-checkbox">
+                                <input type="checkbox" class="setting-checkbox" data-section="master" data-param="low_latency_mode">
+                                <span>Low Latency</span>
+                            </label>
                         </div>
+                        <p class="sys-readout-help">Shrinks the audio buffer so notes respond ~27 ms faster. Effects can cause brief dropouts — shimmer, sympathetic, unison, and bus comp stacked are the usual suspects. Toggling briefly mutes (~20 ms).</p>
                     </div>
                 </div>
             </div>
@@ -1644,6 +1643,6 @@
 
     </div>
 
-    <script src="script.js?v=145"></script>
+    <script src="script.js?v=148"></script>
 </body>
 </html>

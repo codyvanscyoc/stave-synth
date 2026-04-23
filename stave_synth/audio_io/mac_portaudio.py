@@ -28,7 +28,12 @@ logger = logging.getLogger(__name__)
 # steady-state latency calculations carry over unchanged.
 _RING_SLOTS = 24
 _DEFAULT_SAMPLE_RATE = 48000
-_DEFAULT_BLOCK_SIZE = 256
+# Normal vs. Low Latency block sizes. Linux swaps ring depth at runtime;
+# on Mac the equivalent lever is the PortAudio block size — smaller blocks
+# mean shorter Core Audio round trip. The ring stays 24 slots either way.
+_BLOCK_SIZE_NORMAL = 128
+_BLOCK_SIZE_LOW_LATENCY = 48
+_DEFAULT_BLOCK_SIZE = _BLOCK_SIZE_NORMAL
 _CHANNELS = 2
 
 
@@ -65,6 +70,11 @@ class MacPortAudioIO(AudioIO):
         self._shutdown = False
         self._stream = None
         self._midi_in = None
+
+        # Current + preferred sounddevice block size. set_low_latency_mode()
+        # updates both; start() / switch_output_device() read _block_size when
+        # opening a new stream so the preference sticks across hot-swaps.
+        self._block_size = _DEFAULT_BLOCK_SIZE
 
         # Preferred output device (name as returned by sounddevice.query_devices).
         # Empty string means "use system default". Honored at start() and by
@@ -182,7 +192,7 @@ class MacPortAudioIO(AudioIO):
         or None for system default). Raises on failure."""
         stream = self._sd.OutputStream(
             samplerate=_DEFAULT_SAMPLE_RATE,
-            blocksize=_DEFAULT_BLOCK_SIZE,
+            blocksize=self._block_size,
             channels=_CHANNELS,
             dtype="float32",
             callback=self._audio_callback,
@@ -300,9 +310,12 @@ class MacPortAudioIO(AudioIO):
 
     def get_buffer_size(self) -> int:
         # Engine queries this once after start() and uses it as its render
-        # block size; we report our target blocksize so ring slots = render
-        # blocks 1:1 in the steady state.
-        return _DEFAULT_BLOCK_SIZE
+        # block size; we report our current blocksize so ring slots = render
+        # blocks 1:1 in the steady state. Value moves under the engine's feet
+        # if low-latency mode is toggled — the engine re-queries on restart
+        # but mid-run swaps are small enough that the existing residual path
+        # in _audio_callback absorbs the mismatch.
+        return int(self._block_size)
 
     # ── audio out ──
     def write_stereo(self, left_ptr, right_ptr, n: int) -> int:
@@ -444,3 +457,70 @@ class MacPortAudioIO(AudioIO):
 
     def get_callback_count(self) -> int:
         return self._callback_count
+
+    # ── latency mode ──
+    def set_low_latency_mode(self, enabled: bool) -> int:
+        """Reopen the sounddevice stream with a smaller block size. On Mac
+        the Core Audio round trip dominates latency, so shrinking the PortAudio
+        block is the equivalent of Linux's ring-depth swap. If called before
+        start() we just remember the choice; start() opens at the right size.
+
+        Ring depth on Mac stays 24 slots, so the render threshold doesn't move
+        — we return 0 to tell the engine to keep its current value."""
+        target_bs = _BLOCK_SIZE_LOW_LATENCY if enabled else _BLOCK_SIZE_NORMAL
+        if target_bs == self._block_size and self._started:
+            # Already there. No-op keeps the toggle idempotent on startup when
+            # main.py applies saved state and then the user flips the UI.
+            return 0
+
+        self._block_size = target_bs
+
+        if not self._started or self._stream is None:
+            # Not running yet — start() will pick up _block_size.
+            return 0
+
+        # Mute the producer the same way switch_output_device does, so the
+        # render thread exits its backpressure spin while we're tearing down.
+        self._started = False
+        old_stream = self._stream
+        try:
+            old_stream.stop()
+            old_stream.close()
+        except Exception as e:
+            logger.warning("stopping stream for latency swap: %s", e)
+
+        # ~20 ms quiet window mirrors the Linux bridge transition mute. Gives
+        # Core Audio a beat to release the old unit before we allocate a new
+        # one at a different block size.
+        time.sleep(0.020)
+
+        self._ring.clear()
+        self._residual = None
+
+        try:
+            new_stream = self._open_stream(self._preferred_device or None)
+        except Exception as e:
+            logger.error(
+                "low-latency swap to blocksize=%d failed: %s — reverting",
+                target_bs, e,
+            )
+            # Fall back to the previous block size so audio comes back.
+            self._block_size = _BLOCK_SIZE_NORMAL if enabled else _BLOCK_SIZE_LOW_LATENCY
+            try:
+                new_stream = self._open_stream(self._preferred_device or None)
+            except Exception as e2:
+                logger.error("revert after failed latency swap also failed: %s", e2)
+                self._stream = None
+                self._shutdown = True
+                return 0
+
+        self._stream = new_stream
+        self._active_device_name = self._resolve_device_name(new_stream.device)
+        self._started = True
+        logger.info(
+            "Low Latency Mode %s — blocksize=%d latency=%.2fms",
+            "ON" if enabled else "OFF",
+            int(new_stream.blocksize or self._block_size),
+            float(new_stream.latency) * 1000.0,
+        )
+        return 0

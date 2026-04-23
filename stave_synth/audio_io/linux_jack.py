@@ -64,6 +64,9 @@ class LinuxJackIO(AudioIO):
         b.bridge_set_btl_mode.argtypes = [ctypes.c_int]
         b.bridge_set_btl_mode.restype = None
         b.bridge_get_btl_mode.restype = ctypes.c_int
+        b.bridge_set_ring_slots.argtypes = [ctypes.c_int]
+        b.bridge_set_ring_slots.restype = ctypes.c_int
+        b.bridge_get_ring_slots.restype = ctypes.c_int
         b.bridge_is_shutdown.restype = ctypes.c_int
 
     # ── lifecycle ──
@@ -119,3 +122,15 @@ class LinuxJackIO(AudioIO):
 
     def get_callback_count(self) -> int:
         return self._lib.bridge_get_callback_count()
+
+    # ── latency mode ──
+    def set_low_latency_mode(self, enabled: bool) -> int:
+        """Swap the C bridge's ring depth. Normal = 16 slots with render
+        threshold 8 (~43 ms ahead). Low Latency = 6 slots with threshold 3
+        (~16 ms ahead). The bridge briefly mutes (~20 ms) during the swap."""
+        slots, threshold = (6, 3) if enabled else (16, 8)
+        ret = self._lib.bridge_set_ring_slots(slots)
+        if ret != 0:
+            logger.warning("bridge_set_ring_slots(%d) returned %d", slots, ret)
+            return 0
+        return threshold

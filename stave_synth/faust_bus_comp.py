@@ -90,6 +90,14 @@ class FaustBusComp:
         except Exception:
             pass
 
+    @property
+    def current_gr_db(self) -> float:
+        """Positive dB of gain reduction, exposed via the Faust gr_db
+        bargraph. Zero when the bargraph zone is unavailable (e.g. an
+        older build of libstave_bus_comp.so without the export)."""
+        z = self._zones.get("gr_db")
+        return float(z[0]) if z else 0.0
+
     def set_params(self, enabled: bool, threshold_db: float, ratio: float,
                    attack_ms: float, release_ms: float, knee_db: float,
                    makeup_db: float, mix: float, sc_hpf_hz: float):
@@ -141,7 +149,7 @@ def _install_ui_callbacks(dsp, zones: dict):
     def _sl(u, l, z, i, lo, hi, st): zones[_ffi.string(l).decode()] = z  # noqa: E701
 
     @_ffi.callback("void(void*, const char*, float*, float, float)")
-    def _bar(u, l, z, lo, hi): pass  # noqa: E701
+    def _bar(u, l, z, lo, hi): zones[_ffi.string(l).decode()] = z  # noqa: E701
 
     @_ffi.callback("void(void*, const char*, const char*, void**)")
     def _sf(u, l, url, s): pass  # noqa: E701
