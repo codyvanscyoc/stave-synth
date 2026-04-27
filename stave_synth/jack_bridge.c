@@ -334,6 +334,25 @@ int bridge_get_ring_slots(void) {
     return (int)__atomic_load_n(&g_active_slots, __ATOMIC_RELAXED);
 }
 
+/* Flush the ring without changing the slot count.
+ * Used by panic so the ~80ms (16-slot) of pre-rendered audio doesn't keep
+ * playing the pre-panic howl/feedback after the user mashed STOP.
+ * Same transition-flag pattern as bridge_set_ring_slots. ~20ms mute. */
+int bridge_clear_ring(void) {
+    __atomic_store_n(&g_transition_flag, 1, __ATOMIC_RELEASE);
+
+    struct timespec ts = {0, 20000000L};
+    nanosleep(&ts, NULL);
+
+    memset(ring_l, 0, sizeof(ring_l));
+    memset(ring_r, 0, sizeof(ring_r));
+    __atomic_store_n(&ring_read,  0, __ATOMIC_RELAXED);
+    __atomic_store_n(&ring_write, 0, __ATOMIC_RELAXED);
+
+    __atomic_store_n(&g_transition_flag, 0, __ATOMIC_RELEASE);
+    return 0;
+}
+
 /* Read one MIDI event. Returns byte count (0 = empty). */
 int bridge_read_midi(uint8_t *out) {
     uint32_t r = __atomic_load_n(&midi_read, __ATOMIC_RELAXED);

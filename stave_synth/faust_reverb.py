@@ -174,15 +174,20 @@ class FaustReverb:
         # We import the modules but don't instantiate (saves RAM until used);
         # an OSError from dlopen happens at module-import time so a successful
         # import here means the .so loaded.
+        # Eagerly construct plate + drone at startup so the first user-tap on
+        # those reverb types doesn't dlopen + alloc on the WS thread mid-service
+        # (was a ~10ms GIL stall = audible click). Both are RAM-cheap (~70KB each).
         self.plate_available = False
         self.drone_available = False
         try:
-            from . import faust_plate  # noqa: F401
+            from .faust_plate import FaustPlate
+            self._plate = FaustPlate(self.sample_rate)
             self.plate_available = True
         except Exception as e:
             logger.warning("plate reverb unavailable (%s); PLATE will fall back to WASH", e)
         try:
-            from . import faust_drone  # noqa: F401
+            from .faust_drone import FaustDrone
+            self._drone = FaustDrone(self.sample_rate)
             self.drone_available = True
         except Exception as e:
             logger.warning("drone reverb unavailable (%s); DRONE will fall back to WASH", e)

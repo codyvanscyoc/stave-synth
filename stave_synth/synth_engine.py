@@ -5,6 +5,7 @@ Performance-critical: all audio processing uses vectorized NumPy.
 
 import logging
 import math
+import threading
 import numpy as np
 from dataclasses import dataclass, field
 
@@ -530,7 +531,13 @@ _HADAMARD = _hadamard8()
 
 
 class FeedbackDelayReverb:
-    """Cathedral reverb: early reflections → diffusion → 8-line Hadamard FDN → stereo.
+    """⚠ FALLBACK PATH — DON'T DELETE. Faust port at `faust/reverb.dsp` + `faust_reverb.py`
+    is the default on Pi (selected by `STAVE_FAUST_REVERB=1` in systemd unit). This
+    Python class is load-bearing for: (1) Mac port where the .so isn't built,
+    (2) `STAVE_FAUST_REVERB=0` env opt-out for A/B testing, (3) crash safety if the
+    .so dlopen fails at runtime. See `project_mac_port_corrections.md`.
+
+    Cathedral reverb: early reflections → diffusion → 8-line Hadamard FDN → stereo.
 
     What makes this musical:
     1. Early reflections give body and spatial cues before the tail builds.
@@ -1156,7 +1163,13 @@ class SamplePlayer:
 
 
 class BusCompressor:
-    """SSL G-style stereo bus compressor.
+    """⚠ FALLBACK PATH — DON'T DELETE. Even on Pi (Faust default), the Faust bus_comp
+    only handles `bus_comp_source = "self"`. Sources `piano`, `lfo`, `bpm` ALWAYS
+    route through this Python class (see `jack_engine.py:277-278`). Also the Mac
+    port + `STAVE_FAUST_BUS_COMP=0` opt-out rely on it. See
+    `project_mac_port_corrections.md`.
+
+    SSL G-style stereo bus compressor.
 
     Block-level detection with per-sample linear ramp for ballistic smoothness —
     good enough for a bus comp where attack/release times are always slow relative
@@ -1315,6 +1328,13 @@ class Voice:
     # SynthEngine.analog_drift_cents at render time. Uncorrelated per voice
     # so a chord has the classic slight-detune analog quality.
     drift_val: float = 0.0
+    # LAYER (split): per-source weights latched at note_on. Multiplied into
+    # each source's gate every render block; 1.0 = full, 0.0 = silenced for
+    # this voice. Value reflects the note's position in the source's key
+    # range (smoothstep interpolation across xfade tails).
+    osc1_weight: float = 1.0
+    osc2_weight: float = 1.0
+    shimmer_weight: float = 1.0
 
     def is_active(self):
         return self.adsr_osc1.is_active() or self.adsr_osc2.is_active()
@@ -1323,7 +1343,7 @@ class Voice:
 class SynthEngine:
     """Main synth pad engine managing voices, oscillators, and effects."""
 
-    def __init__(self, sample_rate: int = SAMPLE_RATE, max_voices: int = 16):
+    def __init__(self, sample_rate: int = SAMPLE_RATE, max_voices: int = 24):
         self.sample_rate = sample_rate
         self.max_voices = max_voices
 
@@ -1528,8 +1548,6 @@ class SynthEngine:
         self._drone_gain_target = 0.0
         self._drone_latched = False  # locks drone pitch after first note
 
-        self.volume = 0.8
-
         # ═══ Motion bus mix — scales all MOTION effects together ═══
         # Set by the FX fader's 3rd ALT state ("MOTION"). Multiplies into LFO
         # depth and ping-pong wet so one fader can bring all motion in/out live.
@@ -1586,6 +1604,7 @@ class SynthEngine:
         self.lfo_rate_mode = "FREE"    # "FREE" or subdivision ("1/4", "1/8", "1/8T", ...)
         self.lfo_rate_multiplier = 1.0  # tempo-sync rate multiplier: >1 = faster, <1 = slower
         self.lfo_depth = 0.0           # 0..1
+        self.lfo_active = True         # master gate; multiplies depth by 0 when off
         self.lfo_shape = "sine"        # sine, triangle, square, sh
         self.lfo_target = "filter"     # filter, amp, pan
         self.lfo_spread = 0.0          # 0..1, 180° R/L offset at max
@@ -1624,6 +1643,7 @@ class SynthEngine:
         self.lfo2_rate_mode = "FREE"
         self.lfo2_rate_multiplier = 1.0
         self.lfo2_depth = 0.0
+        self.lfo2_active = True
         self.lfo2_shape = "sine"
         self.lfo2_target = "pan"       # default pan so a "second LFO on" feels different from LFO 1
         self.lfo2_spread = 0.0
@@ -1666,11 +1686,38 @@ class SynthEngine:
         self._faust_osc_bank = None
         self._faust_slot_free: list[int] = []
         self._faust_drone_out = None  # cached drone output from osc_bank.process()
+        self._faust_nvoices = 0  # populated below if Faust path activates
+
+        # Pitch bend (MIDI 0xE0). _semitones is the live offset applied to
+        # base_freq in render. Range default ±2 (industry standard); user can
+        # widen later. Pad-only — piano/organ get pitch bend via their own
+        # paths (FluidSynth native handler / Faust organ).
+        self._pitch_bend_semitones = 0.0
+        self._pitch_bend_range = 2.0
+
+        # LAYER (split) — per-source MIDI ranges with crossfade tails. When
+        # split_enabled is False, compute_split_weights returns all 1.0 (no
+        # gate) so the engine behaves identically to pre-split state.
+        self.split_enabled = False
+        self.osc1_split_low = 0;     self.osc1_split_high = 127;    self.osc1_split_xfade = 0
+        self.osc2_split_low = 0;     self.osc2_split_high = 127;    self.osc2_split_xfade = 0
+        self.shimmer_split_low = 0;  self.shimmer_split_high = 127; self.shimmer_split_xfade = 0
+
+        # Render serializes against control-thread mutators (note_on/off,
+        # all_notes_off, multi-step transactions in update_params, panic).
+        # RLock so re-entry (e.g. panic-from-render) is safe. Held for ~5ms
+        # per render block — control-thread waits at most one block.
+        self._render_lock = threading.RLock()
+        # Panic is requested from any thread but executed at the top of the
+        # next render block (single thread of mutation). request_panic()
+        # is the public hook; _apply_panic() does the work.
+        self._panic_pending = False
         if USE_FAUST_OSC_BANK:
             try:
                 from .faust_osc_bank import FaustOscBank, NVOICES as _FN
                 self._faust_osc_bank = FaustOscBank(sample_rate)
                 self._faust_slot_free = list(range(_FN))
+                self._faust_nvoices = _FN
                 logger.info("osc bank: Faust native path (STAVE_FAUST_OSC_BANK=1)")
                 if self.unison_voices != 3:
                     logger.warning("osc bank: Faust iteration only supports unison=3; "
@@ -1708,6 +1755,33 @@ class SynthEngine:
         self._voice_osc2_r = np.zeros((max_voices, self._buf_size), dtype=np.float64)
         self._voice_shimmer = np.zeros((max_voices, self._buf_size), dtype=np.float64)
 
+        # Render-path scratch buffers (Tier-1 perf cleanup) — previously
+        # hasattr-lazy-allocated on first use inside the audio thread, or
+        # `np.empty(...)` allocated every block. Pre-allocating both here
+        # AND in _ensure_buffers (in case block size grows past 512) keeps
+        # the render block free of malloc.
+        self._drone_low      = np.zeros(self._buf_size, dtype=np.float64)
+        self._dry_snap_l     = np.zeros(self._buf_size, dtype=np.float64)
+        self._dry_snap_r     = np.zeros(self._buf_size, dtype=np.float64)
+        self._bypass_snap_l  = np.zeros(self._buf_size, dtype=np.float64)
+        self._bypass_snap_r  = np.zeros(self._buf_size, dtype=np.float64)
+        self._pad_sample_l   = np.zeros(self._buf_size, dtype=np.float64)
+        self._pad_sample_r   = np.zeros(self._buf_size, dtype=np.float64)
+        self._lfo_ramp_a1    = np.zeros(self._buf_size, dtype=np.float64)
+        self._lfo_ramp_b1    = np.zeros(self._buf_size, dtype=np.float64)
+        self._lfo_ramp_a2    = np.zeros(self._buf_size, dtype=np.float64)
+        self._lfo_ramp_b2    = np.zeros(self._buf_size, dtype=np.float64)
+        # Cached [0..1] t-axis for linspace replacement. Built lazily on first
+        # use when block size becomes known. Slicing a fixed-length cache
+        # gives WRONG values (denominator is fixed), so we (re)build per n.
+        self._linspace_t     = None
+        self._linspace_t_n   = -1
+        self._dry_bus_scratch = np.zeros((2, self._buf_size), dtype=np.float64)
+        self._fx_bus_scratch  = np.zeros((2, self._buf_size), dtype=np.float64)
+        self._smooth_b = np.zeros(1, dtype=np.float64)
+        self._smooth_a = np.zeros(2, dtype=np.float64); self._smooth_a[0] = 1.0
+        self._smooth_zi = np.zeros(1, dtype=np.float64)
+
         # Cached filter cutoff to avoid redundant set_params trig calls
         self._filter_cutoff_last_set = -1.0
         self._filter_res_last_set = -1.0
@@ -1738,23 +1812,64 @@ class SynthEngine:
             self._voice_osc2_l = np.zeros((self.max_voices, n_samples), dtype=np.float64)
             self._voice_osc2_r = np.zeros((self.max_voices, n_samples), dtype=np.float64)
             self._voice_shimmer = np.zeros((self.max_voices, n_samples), dtype=np.float64)
+            # Render-path scratch buffers — previously hasattr-lazy-allocated on
+            # first use inside the audio thread. Pre-allocating here keeps the
+            # render block free of malloc(), which idle GC otherwise has to
+            # sweep up. See review #8 / Tier-1 perf cleanup.
+            self._drone_low      = np.zeros(n_samples, dtype=np.float64)
+            self._dry_snap_l     = np.zeros(n_samples, dtype=np.float64)
+            self._dry_snap_r     = np.zeros(n_samples, dtype=np.float64)
+            self._bypass_snap_l  = np.zeros(n_samples, dtype=np.float64)
+            self._bypass_snap_r  = np.zeros(n_samples, dtype=np.float64)
+            self._pad_sample_l   = np.zeros(n_samples, dtype=np.float64)
+            self._pad_sample_r   = np.zeros(n_samples, dtype=np.float64)
+            # LFO ramp scratches: 2 LFOs × 2 channels (a/b) used to be 4-8
+            # per-block np.linspace allocs. We now compute the ramp in-place
+            # via `t * (b-a) + a` against a cached t = arange(n)/(n-1).
+            self._lfo_ramp_a1    = np.zeros(n_samples, dtype=np.float64)
+            self._lfo_ramp_b1    = np.zeros(n_samples, dtype=np.float64)
+            self._lfo_ramp_a2    = np.zeros(n_samples, dtype=np.float64)
+            self._lfo_ramp_b2    = np.zeros(n_samples, dtype=np.float64)
+            # _linspace_t is rebuilt lazily by _fill_ramp() since the
+            # denominator depends on the actual block size in use, not the
+            # max-allocation size.
+            # FX-bypass split-path bus scratches (used when bus_comp_fx_bypass=True).
+            self._dry_bus_scratch = np.zeros((2, n_samples), dtype=np.float64)
+            self._fx_bus_scratch  = np.zeros((2, n_samples), dtype=np.float64)
+            # _smooth_one_pole biquad coefs — 2 floats each, scalar at runtime
+            # but as 1-element arrays so scipy.lfilter accepts them. Reused
+            # across all 4 LFO ramps per block.
+            self._smooth_b = np.zeros(1, dtype=np.float64)
+            self._smooth_a = np.zeros(2, dtype=np.float64)
+            self._smooth_a[0] = 1.0
+            self._smooth_zi = np.zeros(1, dtype=np.float64)
 
-    def note_on(self, note: int, velocity: float = 1.0):
+    def note_on(self, note: int, velocity: float = 1.0,
+                osc1_weight: float = 1.0, osc2_weight: float = 1.0,
+                shimmer_weight: float = 1.0):
+        """Trigger a pad voice. Per-source weights default to 1.0 so callers
+        that don't know about LAYER (split) get unchanged behavior. With
+        split on, jack_engine passes computed weights from compute_split_weights."""
+        with self._render_lock:
+            self._note_on_locked(note, velocity, osc1_weight, osc2_weight, shimmer_weight)
+
+    def _note_on_locked(self, note: int, velocity: float,
+                        osc1_weight: float = 1.0, osc2_weight: float = 1.0,
+                        shimmer_weight: float = 1.0):
         # Key-synced LFOs: each independently resets phase on note_on so
         # modulation sweeps are reproducible per note. Matches classic
         # analog-synth behavior.
+        # Phase resets to 0 for reproducible sweeps, but DON'T zero _lfo_mod_*_last —
+        # the per-sample linspace ramp (see _osc_amp_pan) uses it as its smooth
+        # anchor; zeroing it here re-introduces the click we paid the ramp to avoid.
         if self.lfo_key_sync:
             self._lfo_phase = 0.0
             self._lfo_sh_value = 0.0
             self._lfo_sh_value_r = 0.0
-            self._lfo_mod_a_last = 0.0
-            self._lfo_mod_b_last = 0.0
         if self.lfo2_key_sync:
             self._lfo2_phase = 0.0
             self._lfo2_sh_value = 0.0
             self._lfo2_sh_value_r = 0.0
-            self._lfo2_mod_a_last = 0.0
-            self._lfo2_mod_b_last = 0.0
 
         for v in self.voices:
             # "Still held" = neither envelope has been user-released. release()
@@ -1786,9 +1901,13 @@ class SynthEngine:
             victim.adsr_osc2.stage = ADSREnvelope.OFF
             # Transfer Faust slot to the replacement voice so the slot's phase
             # accumulator keeps flowing without click (new freq is written
-            # first thing in render's Faust path).
+            # first thing in render's Faust path). Clear gate immediately —
+            # otherwise the slot rings with the victim's old freq+gate for
+            # half a block before the next set_voice overwrites it (chirp).
             stolen_slot = victim.faust_slot
             victim.faust_slot = -1
+            if stolen_slot >= 0 and self._faust_osc_bank is not None:
+                self._faust_osc_bank.clear_voice(stolen_slot)
             self.voices.remove(victim)
             self._voice_pool.append(victim)
 
@@ -1807,6 +1926,9 @@ class SynthEngine:
         voice.age = self._age_counter
         voice.drift_val = 0.0
         voice.faust_slot = -1
+        voice.osc1_weight = osc1_weight
+        voice.osc2_weight = osc2_weight
+        voice.shimmer_weight = shimmer_weight
         voice.adsr_osc1.stage = ADSREnvelope.OFF
         voice.adsr_osc1.level = 0.0
         voice.adsr_osc2.stage = ADSREnvelope.OFF
@@ -1825,14 +1947,20 @@ class SynthEngine:
         voice.adsr_osc2.trigger()
         self._age_counter += 1
         # Faust slot assignment: steal if replacing a voice, else pop from pool.
+        # Use try/except instead of `if list: pop()` because the render thread's
+        # dead-voice cleanup can `.append` between the check and the pop, but
+        # MORE importantly two MIDI notes hitting back-to-back can both pass
+        # the `if` guard then race on the pop — one gets IndexError, one wins.
+        # try/except is GIL-atomic per CPython op semantics.
         if self._faust_osc_bank is not None:
             if stolen_slot >= 0:
                 voice.faust_slot = stolen_slot
-            elif self._faust_slot_free:
-                voice.faust_slot = self._faust_slot_free.pop(0)
             else:
-                voice.faust_slot = -1  # shouldn't happen; pool sized to max_voices
-                logger.warning("faust osc bank: no free slot at note_on (pool empty)")
+                try:
+                    voice.faust_slot = self._faust_slot_free.pop(0)
+                except IndexError:
+                    voice.faust_slot = -1  # shouldn't happen; pool sized to max_voices
+                    logger.warning("faust osc bank: no free slot at note_on (pool empty)")
             if voice.faust_slot >= 0:
                 # Fresh random phase offsets — matches Python's np.random.uniform
                 # init of osc1/osc2 phase lists at note_on. Prevents osc1+osc2
@@ -1847,18 +1975,75 @@ class SynthEngine:
         self.voices.append(voice)
 
     def note_off(self, note: int):
-        for v in self.voices:
-            if v.note == note and v.adsr_osc1.stage != ADSREnvelope.RELEASE:
+        with self._render_lock:
+            for v in self.voices:
+                if v.note == note and v.adsr_osc1.stage != ADSREnvelope.RELEASE:
+                    v.adsr_osc1.release()
+                    v.adsr_osc2.release()
+
+    def all_notes_off(self):
+        with self._render_lock:
+            for v in self.voices:
                 v.adsr_osc1.release()
                 v.adsr_osc2.release()
 
-    def all_notes_off(self):
-        for v in self.voices:
-            v.adsr_osc1.release()
-            v.adsr_osc2.release()
+    def set_pitch_bend(self, value: float):
+        """value in [-1, +1] — bipolar normalized. Maps to ±range semitones.
+        Called from MIDI thread; render reads _pitch_bend_semitones (single
+        float assignment is GIL-atomic, no lock needed)."""
+        v = max(-1.0, min(1.0, float(value)))
+        self._pitch_bend_semitones = v * self._pitch_bend_range
+
+    @staticmethod
+    def split_weight(note: int, low: int, high: int, xfade: int) -> float:
+        """Smoothstep-interpolated note weight for a source whose key range
+        is [low..high] with `xfade` keys of crossfade tail on each side.
+
+          note < low - xfade           → 0.0  (fully outside)
+          low - xfade <= note < low    → smoothstep ramp 0..1 across the tail
+          low <= note <= high          → 1.0  (in body)
+          high < note <= high + xfade  → smoothstep ramp 1..0 across the tail
+          note > high + xfade          → 0.0
+
+        Cubic smoothstep (`t*t*(3-2t)`) feels more natural across the boundary
+        than a linear ramp — slow at the edges, faster in the middle."""
+        if xfade <= 0:
+            return 1.0 if (low <= note <= high) else 0.0
+        if note < low - xfade or note > high + xfade:
+            return 0.0
+        if note < low:
+            t = (note - (low - xfade)) / xfade
+        elif note > high:
+            t = ((high + xfade) - note) / xfade
+        else:
+            return 1.0
+        t = max(0.0, min(1.0, t))
+        return t * t * (3.0 - 2.0 * t)
+
+    def compute_split_weights(self, note: int):
+        """Return (osc1_w, osc2_w, shimmer_w) for the given MIDI note. When
+        split is off, all are 1.0 — engine behaves identically to pre-split."""
+        if not self.split_enabled:
+            return 1.0, 1.0, 1.0
+        return (
+            self.split_weight(note, self.osc1_split_low,    self.osc1_split_high,    self.osc1_split_xfade),
+            self.split_weight(note, self.osc2_split_low,    self.osc2_split_high,    self.osc2_split_xfade),
+            self.split_weight(note, self.shimmer_split_low, self.shimmer_split_high, self.shimmer_split_xfade),
+        )
 
     def panic(self):
-        """Hard-silence everything: kill voices, drone, sympathetic, freeze, flush buffers."""
+        """Public hook — set pending flag; render thread executes at next
+        block start. Lets the WS thread return immediately and avoids the
+        race where panic clears state mid-render iteration."""
+        self._panic_pending = True
+
+    def _apply_panic(self):
+        """Hard-silence everything: kill voices, drone, sympathetic, freeze, flush buffers.
+        Always called from the render thread under _render_lock."""
+        # Center the pitch bend. A stuck/abandoned bend (MPK strip, disconnected
+        # keyboard mid-bend) otherwise leaves the pad detuned with no MIDI
+        # event coming to clear it — only STOP gets you out.
+        self._pitch_bend_semitones = 0.0
         for v in self.voices:
             v.adsr_osc1.stage = ADSREnvelope.OFF
             v.adsr_osc1.level = 0.0
@@ -1866,7 +2051,7 @@ class SynthEngine:
             v.adsr_osc2.level = 0.0
         if self._faust_osc_bank is not None:
             self._faust_osc_bank.panic()
-            self._faust_slot_free = list(range(16))
+            self._faust_slot_free = list(range(self._faust_nvoices))
             for v in self.voices:
                 v.faust_slot = -1
         self._drone_root_freq = 0.0
@@ -2233,50 +2418,10 @@ class SynthEngine:
             if n not in notes:
                 self._sympathetic_state[n]["target"] = 0.0
 
-    def set_drone_key(self, root_note: int):
-        """Force the drone to a specific root note (pad-player UI).
-
-        Behavior:
-          * First trigger or re-tap after fade-out → set freqs immediately and
-            ramp gain in.
-          * Switching keys while drone is audibly playing → queue the new
-            freqs as 'pending', ramp gain to 0 (fade out). Once silent, the
-            render loop swaps in the new freqs and ramps gain back up.
-            Net effect: slow cross-fade (fade out → silent swap → fade in),
-            no portamento, no click.
-        """
-        self.drone_enabled = True
-        self._drone_latched = True
-        new_root_midi = max(24, int(root_note) - 12)
-        new_fifth_midi = max(24, int(root_note) - 12 + 7)
-        new_root_freq = 440.0 * (2.0 ** ((new_root_midi - 69) / 12.0))
-        new_fifth_freq = 440.0 * (2.0 ** ((new_fifth_midi - 69) / 12.0))
-
-        same_freq = (abs(self._drone_root_freq - new_root_freq) < 0.5)
-        audibly_playing = self._drone_gain > 0.05
-
-        if audibly_playing and not same_freq:
-            # Queue the swap; gain ramps to 0 then render loop snaps and ramps back up.
-            self._drone_pending_root_freq = new_root_freq
-            self._drone_pending_fifth_freq = new_fifth_freq
-            self._drone_gain_target = 0.0
-        else:
-            # Fresh start or re-tap while near-silent → set immediately, fade in.
-            self._drone_root_freq = new_root_freq
-            self._drone_fifth_freq = new_fifth_freq
-            self._drone_root_freq_cur = new_root_freq
-            self._drone_fifth_freq_cur = new_fifth_freq
-            self._drone_pending_root_freq = None
-            self._drone_pending_fifth_freq = None
-            self._drone_gain_target = 0.5
-
-    def drone_off(self):
-        """Fade out the drone and clear latch so next enable re-picks the root.
-        Zero the smoothed freqs so the next enable snaps to the new root (no glide)."""
-        self._drone_gain_target = 0.0
-        self._drone_latched = False
-        self._drone_root_freq_cur = 0.0
-        self._drone_fifth_freq_cur = 0.0
+    # set_drone_key + drone_off removed 2026-04-26 — chord-drone (root+fifth)
+    # synthesis was superseded by recorded pad samples. Pad-player keys without
+    # a loaded sample are now silent. Internal `self.drone_enabled` stays False
+    # forever; the render-path drone branch is unreachable.
 
     # ═══ Pad sample library ═══
     #
@@ -2350,7 +2495,23 @@ class SynthEngine:
         """Render the pad bus. `external_reverb_send` and `external_delay_send`
         are optional stereo (2, n) float64 buffers fed by jack_engine — they
         let piano/organ contribute to the reverb / ping-pong taps without
-        changing the dry mix."""
+        changing the dry mix.
+
+        Held under `_render_lock` for the full block so control-thread
+        mutators (note_on/off, panic, multi-step setting transactions)
+        can't race with iteration over `self.voices` / `_sympathetic_state`
+        or with multi-step state transitions that render reads."""
+        with self._render_lock:
+            return self._render_locked(n_samples, separate_fx,
+                                       external_reverb_send, external_delay_send)
+
+    def _render_locked(self, n_samples: int, separate_fx: bool,
+                       external_reverb_send, external_delay_send):
+        # Drain pending panic (queued from any thread). Single thread of
+        # mutation = no race with render iterating voices/sympathetic_state.
+        if self._panic_pending:
+            self._panic_pending = False
+            self._apply_panic()
         self._external_delay_send = external_delay_send
         if n_samples == 0:
             return np.zeros((2, 0), dtype=np.float64)
@@ -2375,7 +2536,6 @@ class SynthEngine:
         render_osc1 = osc1_b > 0.0
         render_osc2 = osc2_b > 0.0
         render_shimmer = self.shimmer_enabled and self.shimmer_mix > 0.001
-        has_drone = self.drone_enabled and self._drone_gain > 0.001
         skip_voices = not render_osc1 and not render_osc2 and not render_shimmer
 
         both_filtered = self.osc1_filter_enabled and self.osc2_filter_enabled
@@ -2472,24 +2632,19 @@ class SynthEngine:
             self._faust_osc_bank.set_shimmer_params(
                 enabled=render_shimmer, high=self.shimmer_high,
             )
-            # Drone params — written every block regardless of drone_enabled.
-            # gain_lvl=0 when disabled → Faust outputs silence for drone channel.
-            drone_lvl_combined = (
-                self._drone_gain * self.drone_level * self._drone_fade_scale
-                if self.drone_enabled or self._drone_gain > 0.001 else 0.0
-            )
-            self._faust_osc_bank.set_drone_params(
-                root_freq=self._drone_root_freq_cur,
-                fifth_freq=self._drone_fifth_freq_cur,
-                gain_lvl=drone_lvl_combined,
-            )
+            # Drone synthesis is decommissioned — `set_drone_params` no longer
+            # called. Faust's drone_gain_lvl slider stays at its init value (0)
+            # so the drone channel always emits silence. The slider + DSP code
+            # in osc_bank.dsp will be ripped in a future Faust rebuild.
             # Poly-LFO push: only the AMP target gets per-voice mod here.
             # Pan/Filter targets continue to apply globally via Python below.
             if hasattr(self._faust_osc_bank, "set_lfo_params"):
-                lfo1_active = (self.lfo_poly
+                lfo1_active = (self.lfo_active
+                               and self.lfo_poly
                                and (self.lfo_depth * self.motion_mix) > 0.001
                                and self.lfo_target == "amp")
-                lfo2_active = (self.lfo2_poly
+                lfo2_active = (self.lfo2_active
+                               and self.lfo2_poly
                                and (self.lfo2_depth * self.motion_mix) > 0.001
                                and self.lfo2_target == "amp")
                 # Effective rate (matches _advance_lfo logic) — Faust LFO
@@ -2537,6 +2692,11 @@ class SynthEngine:
                 continue
 
             base_freq = 440.0 * (2.0 ** ((voice.note - 69) / 12.0))
+            # Pitch bend (pad-only). Read once per voice — _pitch_bend_semitones
+            # is GIL-atomic float; if MIDI thread updates mid-block the next
+            # voice/block sees the new value.
+            if self._pitch_bend_semitones != 0.0:
+                base_freq *= 2.0 ** (self._pitch_bend_semitones / 12.0)
             # Per-voice analog drift: slow random walk → slight detune per
             # voice. Uncorrelated across voices so a chord has the classic
             # analog "breathing" quality. Zero-cost when drift_cents <= 0.01.
@@ -2563,11 +2723,15 @@ class SynthEngine:
             if use_faust:
                 # Write this voice's slot. Faust owns osc1/osc2 generation.
                 # Per-OSC gates let OSC1 and OSC2 have independent envelope shapes.
+                # LAYER weights silence/scale this voice's per-OSC contribution
+                # without changing the global osc1_blend / osc2_blend.
                 env1_scalar = float(env1) if np.isscalar(env1) else float(env1[-1])
                 env2_scalar = float(env2) if np.isscalar(env2) else float(env2[-1])
-                g1 = env1_scalar * voice.velocity
-                g2 = env2_scalar * voice.velocity
+                g1 = env1_scalar * voice.velocity * voice.osc1_weight
+                g2 = env2_scalar * voice.velocity * voice.osc2_weight
                 self._faust_osc_bank.set_voice(voice.faust_slot, base_freq, g1, g2)
+                if hasattr(self._faust_osc_bank, "set_shimmer_weight"):
+                    self._faust_osc_bank.set_shimmer_weight(voice.faust_slot, voice.shimmer_weight)
                 osc1_l = osc1_r = osc2_l = osc2_r = None  # filled via Faust post-loop
             else:
                 osc1_l = self._voice_osc1_l[voice_idx, :n_samples]
@@ -2614,8 +2778,10 @@ class SynthEngine:
 
             # Unison gain-normalization common factor (envelope applied per-OSC below)
             scale_common = (1.0 / max(n_uni, 1)) * (1.0 + 0.15 * (n_uni - 1)) * voice.velocity
-            scale1 = scale_common * env1
-            scale2 = scale_common * env2
+            # LAYER weights fold into the per-OSC scale on the Python fallback
+            # path (Faust path multiplies them into g1/g2 above).
+            scale1 = scale_common * env1 * voice.osc1_weight
+            scale2 = scale_common * env2 * voice.osc2_weight
 
             if render_shimmer and not use_faust:
                 # Shimmer tracks the voice lifetime (louder of the two envelopes)
@@ -2626,7 +2792,7 @@ class SynthEngine:
                     e1 = env1 if not np.isscalar(env1) else np.full(n_samples, env1)
                     e2 = env2 if not np.isscalar(env2) else np.full(n_samples, env2)
                     env_voice = np.maximum(e1, e2)
-                shimmer_sines += voice_shimmer * scale_common * env_voice * 0.30
+                shimmer_sines += voice_shimmer * scale_common * env_voice * 0.30 * voice.shimmer_weight
 
             if not use_faust:
                 # Python path: apply per-OSC env*vel scale and route osc1/osc2 by flag
@@ -2656,7 +2822,7 @@ class SynthEngine:
         if use_faust:
             # Clear gates for unused slots (voices not in this block's active set)
             active_slots = {v.faust_slot for v in self.voices if v.is_active() and v.faust_slot >= 0}
-            for slot in range(16):
+            for slot in range(self._faust_nvoices):
                 if slot not in active_slots:
                     self._faust_osc_bank.clear_voice(slot)
 
@@ -2756,8 +2922,12 @@ class SynthEngine:
         # depth AND motion fader are pushed near full; normal use lands well
         # below it. Removes the need to baby the motion fader for live work.
         _LFO_DEPTH_CAP = 0.7
-        lfo1_d = min(self.lfo_depth * self.motion_mix, _LFO_DEPTH_CAP)
-        lfo2_d = min(self.lfo2_depth * self.motion_mix, _LFO_DEPTH_CAP)
+        # Master enable per LFO — gates the depth without touching the
+        # depth slider value, so disabling and re-enabling restores the
+        # exact prior modulation amount. depth=0 → nothing to mod; same
+        # net effect as depth slider at 0.
+        lfo1_d = min(self.lfo_depth  * self.motion_mix, _LFO_DEPTH_CAP) if self.lfo_active  else 0.0
+        lfo2_d = min(self.lfo2_depth * self.motion_mix, _LFO_DEPTH_CAP) if self.lfo2_active else 0.0
 
         filter_mod = 0.0
         # Filter is shared between OSCs, so route by "any OSC receives this
@@ -2766,10 +2936,14 @@ class SynthEngine:
         # (deferred — see project_next_work memo).
         any_recv_lfo1 = self.osc1_recv_lfo1 or self.osc2_recv_lfo1
         any_recv_lfo2 = self.osc1_recv_lfo2 or self.osc2_recv_lfo2
+        # Filter coefficients update once per block, so use the block's
+        # ramp midpoint instead of its end value. Imperceptibly shifts steady-state
+        # mod by half a block (~2.5ms) but halves the per-block jump on key-sync,
+        # which is the dominant click source for filter target.
         if any_recv_lfo1 and self.lfo_target == "filter" and lfo1_d > 0.001:
-            filter_mod += lfo1_a * lfo1_d
+            filter_mod += (lfo1_a + self._lfo_mod_a_last) * 0.5 * lfo1_d
         if any_recv_lfo2 and self.lfo2_target == "filter" and lfo2_d > 0.001:
-            filter_mod += lfo2_a * lfo2_d
+            filter_mod += (lfo2_a + self._lfo2_mod_a_last) * 0.5 * lfo2_d
 
         effective_cutoff = self._filter_cutoff_cur
         if abs(filter_mod) > 0.001:
@@ -2867,57 +3041,13 @@ class SynthEngine:
             self.osc2_indep_filter_r.set_params(self._osc2_indep_cutoff_cur, 0.707)
 
         # Chord drone — simple root + fifth mono bed, no FX. Added straight
-        # into stereo_out at the end of render. The recorder pipeline will
-        # replace this with sampled playback in a future session.
-        if not hasattr(self, "_drone_low") or self._drone_low.shape[0] < n_samples:
-            self._drone_low = np.zeros(max(n_samples, self._buf_size), dtype=np.float64)
+        # into stereo_out at the end of render. Now that the chord-drone
+        # (root+fifth synthesis) is decommissioned, drone_low is always zero
+        # — kept as a buffer because pad-sample mixing reads the same name
+        # downstream (`stereo_out += drone_low + pad`). Renaming is for a
+        # future cleanup pass.
         drone_low = self._drone_low[:n_samples]
         drone_low[:] = 0.0
-
-        def _render_drone_voices():
-            """Emit root+fifth into drone_low. Faust path: add cached output[5]
-            from the osc_bank's one process() call this block. Drone params
-            were written upstream with the rest of the osc params."""
-            lvl = self.drone_level * self._drone_fade_scale
-            if self._faust_osc_bank is not None:
-                if self._faust_drone_out is not None and self._faust_drone_out.shape[0] == n_samples:
-                    drone_low[:] += self._faust_drone_out
-                return
-            inc1 = TWO_PI * self._drone_root_freq_cur / self.sample_rate
-            ph1 = self._drone_root_phase + inc1 * indices
-            dt1 = self._drone_root_freq_cur / self.sample_rate
-            drone_low[:] += generate_waveform(self.osc1_waveform, ph1, dt=dt1) * self._drone_gain * 0.30 * lvl
-            self._drone_root_phase = ph1[-1] % TWO_PI
-            inc2 = TWO_PI * self._drone_fifth_freq_cur / self.sample_rate
-            ph2 = self._drone_fifth_phase + inc2 * indices
-            dt2 = self._drone_fifth_freq_cur / self.sample_rate
-            drone_low[:] += generate_waveform(self.osc1_waveform, ph2, dt=dt2) * self._drone_gain * 0.22 * lvl
-            self._drone_fifth_phase = ph2[-1] % TWO_PI
-
-        if self.drone_enabled and self._drone_root_freq > 0:
-            drone_alpha = 1.0 - np.exp(-n_samples / (0.5 * self.sample_rate))
-            self._drone_gain += drone_alpha * (self._drone_gain_target - self._drone_gain)
-            # Key-change swap: once fade-out reaches near-silence, snap pending
-            # freqs in and start ramping gain back up.
-            if self._drone_pending_root_freq is not None and self._drone_gain < 0.01:
-                self._drone_root_freq = self._drone_pending_root_freq
-                self._drone_fifth_freq = self._drone_pending_fifth_freq
-                self._drone_root_freq_cur = self._drone_root_freq
-                self._drone_fifth_freq_cur = self._drone_fifth_freq
-                self._drone_pending_root_freq = None
-                self._drone_pending_fifth_freq = None
-                self._drone_gain_target = 0.5
-            if self._drone_root_freq_cur < 20.0:
-                self._drone_root_freq_cur = self._drone_root_freq
-                self._drone_fifth_freq_cur = self._drone_fifth_freq
-            if self._drone_gain > 0.001:
-                _render_drone_voices()
-        elif not self.drone_enabled and self._drone_gain > 0.001:
-            # Fading out — keep rendering with decaying gain (no click)
-            drone_alpha = 1.0 - np.exp(-n_samples / (0.5 * self.sample_rate))
-            self._drone_gain += drone_alpha * (0.0 - self._drone_gain)
-            if self._drone_gain > 0.001 and self._drone_root_freq_cur > 20.0:
-                _render_drone_voices()
 
         # Apply stereo filters and combine
         # Filter gain compensation: reduces volume as filter opens to prevent brightness = loudness
@@ -2990,18 +3120,34 @@ class SynthEngine:
             # regardless of depth or LFO stacking.
             return 1.0 - d + d * (1.0 + r) * 0.5
 
+        def _fill_ramp(buf, start, end):
+            """Fill `buf` with linspace(start, end, len(buf)) — but reusing
+            a cached [0..1] axis. Allocates ONCE the first time a given
+            n_samples is seen; subsequent calls are 2 in-place numpy ops."""
+            n = buf.shape[0]
+            if self._linspace_t_n != n:
+                self._linspace_t = np.linspace(0.0, 1.0, n, dtype=np.float64)
+                self._linspace_t_n = n
+            np.multiply(self._linspace_t, end - start, out=buf)
+            buf += start
+            return buf
+
         def _smooth_one_pole(x, prev_state, smooth_amt):
             """One-pole LP on per-sample LFO ramp. smooth_amt in [0,1] maps
             to time constant 0.5ms..100ms. Returns (filtered, new_state).
-            scipy lfilter is fully vectorised so cost is negligible."""
+
+            Coefficient arrays are reused from `self._smooth_b/_a/_zi` so this
+            never allocates inside the audio thread. (Was 3 small numpy allocs
+            per call × 4 calls per block × 187 blocks/sec = ~2200 allocs/sec
+            of churn for idle GC to clean up.)"""
             if smooth_amt <= 0.001:
                 return x, x[-1]
             tau_s = 0.0005 + 0.0995 * smooth_amt
             a = math.exp(-1.0 / max(tau_s * self.sample_rate, 1.0))
-            b_coef = np.array([1.0 - a])
-            a_coef = np.array([1.0, -a])
-            zi = np.array([a * prev_state])
-            y, _zf = lfilter(b_coef, a_coef, x, zi=zi)
+            self._smooth_b[0] = 1.0 - a
+            self._smooth_a[1] = -a
+            self._smooth_zi[0] = a * prev_state
+            y, _zf = lfilter(self._smooth_b, self._smooth_a, x, zi=self._smooth_zi)
             return y, float(y[-1])
         def _osc_amp_pan(recv1, recv2):
             amul_l = None; amul_r = None
@@ -3011,8 +3157,8 @@ class SynthEngine:
             lfo1_amp_via_faust = use_faust and self.lfo_poly and self.lfo_target == "amp"
             lfo2_amp_via_faust = use_faust and self.lfo2_poly and self.lfo2_target == "amp"
             if recv1 and lfo1_d > 0.001:
-                r1a = np.linspace(self._lfo_mod_a_last, lfo1_a, n_samples, dtype=np.float64)
-                r1b = np.linspace(self._lfo_mod_b_last, lfo1_b, n_samples, dtype=np.float64)
+                r1a = _fill_ramp(self._lfo_ramp_a1[:n_samples], self._lfo_mod_a_last, lfo1_a)
+                r1b = _fill_ramp(self._lfo_ramp_b1[:n_samples], self._lfo_mod_b_last, lfo1_b)
                 r1a, self._lfo_smooth_a_state = _smooth_one_pole(r1a, self._lfo_smooth_a_state, self.lfo_smooth)
                 r1b, self._lfo_smooth_b_state = _smooth_one_pole(r1b, self._lfo_smooth_b_state, self.lfo_smooth)
                 if self.lfo_target == "amp" and not lfo1_amp_via_faust:
@@ -3022,8 +3168,8 @@ class SynthEngine:
                     pmod_l = r1a * lfo1_d * 0.5
                     pmod_r = -r1a * lfo1_d * 0.5
             if recv2 and lfo2_d > 0.001:
-                r2a = np.linspace(self._lfo2_mod_a_last, lfo2_a, n_samples, dtype=np.float64)
-                r2b = np.linspace(self._lfo2_mod_b_last, lfo2_b, n_samples, dtype=np.float64)
+                r2a = _fill_ramp(self._lfo_ramp_a2[:n_samples], self._lfo2_mod_a_last, lfo2_a)
+                r2b = _fill_ramp(self._lfo_ramp_b2[:n_samples], self._lfo2_mod_b_last, lfo2_b)
                 r2a, self._lfo2_smooth_a_state = _smooth_one_pole(r2a, self._lfo2_smooth_a_state, self.lfo2_smooth)
                 r2b, self._lfo2_smooth_b_state = _smooth_one_pole(r2b, self._lfo2_smooth_b_state, self.lfo2_smooth)
                 if self.lfo2_target == "amp" and not lfo2_amp_via_faust:
@@ -3090,15 +3236,15 @@ class SynthEngine:
         bus_amul_l = None
         bus_amul_r = None
         if self.lfo_target == "bus" and lfo1_d > 0.001:
-            r1a = np.linspace(self._lfo_mod_a_last, lfo1_a, n_samples, dtype=np.float64)
-            r1b = np.linspace(self._lfo_mod_b_last, lfo1_b, n_samples, dtype=np.float64)
+            r1a = _fill_ramp(self._lfo_ramp_a1[:n_samples], self._lfo_mod_a_last, lfo1_a)
+            r1b = _fill_ramp(self._lfo_ramp_b1[:n_samples], self._lfo_mod_b_last, lfo1_b)
             r1a, self._lfo_smooth_a_state = _smooth_one_pole(r1a, self._lfo_smooth_a_state, self.lfo_smooth)
             r1b, self._lfo_smooth_b_state = _smooth_one_pole(r1b, self._lfo_smooth_b_state, self.lfo_smooth)
             bus_amul_l = _amp_gate(r1a, lfo1_d)
             bus_amul_r = _amp_gate(r1b, lfo1_d)
         if self.lfo2_target == "bus" and lfo2_d > 0.001:
-            r2a = np.linspace(self._lfo2_mod_a_last, lfo2_a, n_samples, dtype=np.float64)
-            r2b = np.linspace(self._lfo2_mod_b_last, lfo2_b, n_samples, dtype=np.float64)
+            r2a = _fill_ramp(self._lfo_ramp_a2[:n_samples], self._lfo2_mod_a_last, lfo2_a)
+            r2b = _fill_ramp(self._lfo_ramp_b2[:n_samples], self._lfo2_mod_b_last, lfo2_b)
             r2a, self._lfo2_smooth_a_state = _smooth_one_pole(r2a, self._lfo2_smooth_a_state, self.lfo2_smooth)
             r2b, self._lfo2_smooth_b_state = _smooth_one_pole(r2b, self._lfo2_smooth_b_state, self.lfo2_smooth)
             g2l = _amp_gate(r2a, lfo2_d)
@@ -3114,10 +3260,8 @@ class SynthEngine:
 
         # Snapshot dry pad (post-LFO, pre-FX) so callers asking for FX-bypass
         # routing can subtract and extract a clean dry bus for the bus comp.
+        # Buffers pre-allocated in _ensure_buffers.
         if separate_fx:
-            if not hasattr(self, "_dry_snap_l") or self._dry_snap_l.shape[0] < n_samples:
-                self._dry_snap_l = np.empty(max(n_samples, self._buf_size), dtype=np.float64)
-                self._dry_snap_r = np.empty(max(n_samples, self._buf_size), dtype=np.float64)
             _pre_fx_dry_l = self._dry_snap_l[:n_samples]
             _pre_fx_dry_r = self._dry_snap_r[:n_samples]
             np.copyto(_pre_fx_dry_l, output_l)
@@ -3151,9 +3295,7 @@ class SynthEngine:
                     bypass_mag += m2
                 bypass_ratio = bypass_mag / tot
             if bypass_ratio > 1e-6:
-                if not hasattr(self, "_bypass_snap_l") or self._bypass_snap_l.shape[0] < n_samples:
-                    self._bypass_snap_l = np.empty(max(n_samples, self._buf_size), dtype=np.float64)
-                    self._bypass_snap_r = np.empty(max(n_samples, self._buf_size), dtype=np.float64)
+                # Pre-allocated in _ensure_buffers.
                 bypass_l = self._bypass_snap_l[:n_samples]
                 bypass_r = self._bypass_snap_r[:n_samples]
                 np.multiply(output_l, bypass_ratio, out=bypass_l)
@@ -3385,10 +3527,7 @@ class SynthEngine:
 
         # Pad sample playback → dedicated stereo scratch so we can also add it
         # to dry_bus in fx-bypass mode. Each SamplePlayer applies its own
-        # attack/release envelope + loop crossfade.
-        if not hasattr(self, "_pad_sample_l") or self._pad_sample_l.shape[0] < n_samples:
-            self._pad_sample_l = np.zeros(max(n_samples, self._buf_size), dtype=np.float64)
-            self._pad_sample_r = np.zeros(max(n_samples, self._buf_size), dtype=np.float64)
+        # attack/release envelope + loop crossfade. Buffers pre-allocated.
         pad_l = self._pad_sample_l[:n_samples]
         pad_r = self._pad_sample_r[:n_samples]
         pad_l[:] = 0.0
@@ -3419,13 +3558,23 @@ class SynthEngine:
             # fx bus = final − dry = delay taps × dry_gain + reverb wet × wet_gain_val.
             # eff_dry_gain accounts for per-OSC fx_bypass: the bypass fraction
             # stays at unity regardless of dry/wet, the rest tracks dry_gain.
+            # Pre-allocated dry_bus + fx_bus scratches replace the per-block
+            # `np.empty((2, n_samples))` allocs (~4 KB × 187/sec each).
             eff_dry_gain = bypass_ratio + (1.0 - bypass_ratio) * dry_gain
-            dry_bus = np.empty((2, n_samples), dtype=np.float64)
-            dry_bus[0] = _pre_fx_dry_l * eff_dry_gain + drone_low + pad_l * pad_vol
-            dry_bus[1] = _pre_fx_dry_r * eff_dry_gain + drone_low + pad_r * pad_vol
-            fx_bus = np.empty((2, n_samples), dtype=np.float64)
-            fx_bus[0] = stereo_out[0] - dry_bus[0]
-            fx_bus[1] = stereo_out[1] - dry_bus[1]
+            dry_bus = self._dry_bus_scratch[:, :n_samples]
+            # Compose into dry_bus channel-by-channel via in-place ops. The
+            # `pad_l * pad_vol` temp is small (one block of float64) and
+            # CPython reuses the same allocation slot for short-lived numpy
+            # temps — not zero-cost but ~10× cheaper than the full bus alloc.
+            np.multiply(_pre_fx_dry_l, eff_dry_gain, out=dry_bus[0])
+            dry_bus[0] += drone_low
+            dry_bus[0] += pad_l * pad_vol
+            np.multiply(_pre_fx_dry_r, eff_dry_gain, out=dry_bus[1])
+            dry_bus[1] += drone_low
+            dry_bus[1] += pad_r * pad_vol
+            fx_bus = self._fx_bus_scratch[:, :n_samples]
+            np.subtract(stereo_out[0], dry_bus[0], out=fx_bus[0])
+            np.subtract(stereo_out[1], dry_bus[1], out=fx_bus[1])
             # Pad bus headroom trim — applied to both dry and fx splits so
             # the FX-bypass routing stays in sync with the unified path.
             dry_bus *= 0.85
@@ -3492,8 +3641,6 @@ class SynthEngine:
                 self._haas_buf_r[:] = 0.0
             self.haas_delay_ms = ms
             self._haas_delay_samples = int(ms * 0.001 * self.sample_rate)
-        if "volume" in params:
-            self.volume = float(params["volume"])
 
         # Per-OSC ADSR. Back-compat: a legacy "adsr" dict splats to both OSCs.
         # Per-OSC "adsr_osc1" / "adsr_osc2" keys win if present.
@@ -3608,6 +3755,15 @@ class SynthEngine:
             self.shimmer_high = bool(params["shimmer_high"])
         if "shimmer_send" in params:
             self.shimmer_send = max(0.0, min(2.0, float(params["shimmer_send"])))
+        # ── LAYER (split) per-source key ranges. All values clamped to MIDI
+        # 0..127; xfade clamped to 0..24 keys (a 2-octave xfade is the max
+        # anyone's likely to want). `split_enabled` itself lives on master.
+        for src in ("osc1", "osc2", "shimmer"):
+            for fld, lo, hi in ((f"{src}_split_low", 0, 127),
+                                (f"{src}_split_high", 0, 127),
+                                (f"{src}_split_xfade", 0, 24)):
+                if fld in params:
+                    setattr(self, fld, max(lo, min(hi, int(params[fld]))))
         if "lfo_rate_hz" in params:
             self.lfo_rate_hz = max(0.05, min(20.0, float(params["lfo_rate_hz"])))
         if "lfo_rate_mode" in params:
@@ -3620,13 +3776,8 @@ class SynthEngine:
             self.lfo_key_sync = bool(params["lfo_key_sync"])
         if "lfo_depth" in params:
             self.lfo_depth = max(0.0, min(1.0, float(params["lfo_depth"])))
-        # Legacy migration: the "Enabled" checkbox has been retired; depth is
-        # now the sole gate. Old state files still carry lfo_enabled; when
-        # False we zero depth here (AFTER lfo_depth is processed, so this
-        # overrides) to preserve the user's off state. Live UI no longer
-        # sends this key.
-        if "lfo_enabled" in params and not bool(params["lfo_enabled"]):
-            self.lfo_depth = 0.0
+        if "lfo_active" in params:
+            self.lfo_active = bool(params["lfo_active"])
         if "lfo_shape" in params:
             s = str(params["lfo_shape"])
             if s in ("sine", "triangle", "square", "saw", "ramp", "peak", "sh"):
@@ -3644,17 +3795,20 @@ class SynthEngine:
         if "lfo_target" in params:
             t = str(params["lfo_target"])
             if t in ("filter", "amp", "pan", "bus") and t != self.lfo_target:
-                self.lfo_target = t
-                # Reset filter cache so modulation takes over cleanly
-                self._filter_cutoff_last_set = -1.0
-                # Zero per-block ramp + smoothing state. Without this the new
-                # target's first block ramps from the old target's final mod
-                # value (and inherits the old target's smoother state),
-                # producing a one-block glitch or click when switching.
-                self._lfo_mod_a_last = 0.0
-                self._lfo_mod_b_last = 0.0
-                self._lfo_smooth_a_state = 0.0
-                self._lfo_smooth_b_state = 0.0
+                # Multi-step transaction — render must not see the new target
+                # against old smoother state mid-block.
+                with self._render_lock:
+                    self.lfo_target = t
+                    # Reset filter cache so modulation takes over cleanly
+                    self._filter_cutoff_last_set = -1.0
+                    # Zero per-block ramp + smoothing state. Without this the new
+                    # target's first block ramps from the old target's final mod
+                    # value (and inherits the old target's smoother state),
+                    # producing a one-block glitch or click when switching.
+                    self._lfo_mod_a_last = 0.0
+                    self._lfo_mod_b_last = 0.0
+                    self._lfo_smooth_a_state = 0.0
+                    self._lfo_smooth_b_state = 0.0
         if "lfo_spread" in params:
             self.lfo_spread = max(0.0, min(1.0, float(params["lfo_spread"])))
 
@@ -3671,9 +3825,8 @@ class SynthEngine:
             self.lfo2_key_sync = bool(params["lfo2_key_sync"])
         if "lfo2_depth" in params:
             self.lfo2_depth = max(0.0, min(1.0, float(params["lfo2_depth"])))
-        # Legacy migration — see lfo_enabled block above.
-        if "lfo2_enabled" in params and not bool(params["lfo2_enabled"]):
-            self.lfo2_depth = 0.0
+        if "lfo2_active" in params:
+            self.lfo2_active = bool(params["lfo2_active"])
         if "lfo2_shape" in params:
             s = str(params["lfo2_shape"])
             if s in ("sine", "triangle", "square", "saw", "ramp", "peak", "sh"):
@@ -3691,12 +3844,14 @@ class SynthEngine:
         if "lfo2_target" in params:
             t = str(params["lfo2_target"])
             if t in ("filter", "amp", "pan", "bus") and t != self.lfo2_target:
-                self.lfo2_target = t
-                self._filter_cutoff_last_set = -1.0
-                self._lfo2_mod_a_last = 0.0
-                self._lfo2_mod_b_last = 0.0
-                self._lfo2_smooth_a_state = 0.0
-                self._lfo2_smooth_b_state = 0.0
+                # See lfo_target above — multi-step transaction.
+                with self._render_lock:
+                    self.lfo2_target = t
+                    self._filter_cutoff_last_set = -1.0
+                    self._lfo2_mod_a_last = 0.0
+                    self._lfo2_mod_b_last = 0.0
+                    self._lfo2_smooth_a_state = 0.0
+                    self._lfo2_smooth_b_state = 0.0
         if "lfo2_spread" in params:
             self.lfo2_spread = max(0.0, min(1.0, float(params["lfo2_spread"])))
         if "delay_enabled" in params:

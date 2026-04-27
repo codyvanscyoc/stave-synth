@@ -13,7 +13,7 @@
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="logo.png">
     <!-- Keep style.css and script.js cache-bust versions in sync -->
-    <link rel="stylesheet" href="style.css?v=167">
+    <link rel="stylesheet" href="style.css?v=177">
 </head>
 <body>
     <div id="app">
@@ -28,8 +28,11 @@
             <button id="osc1-btn" class="ctrl-btn toggle-btn active">OSC1</button>
             <button id="osc2-btn" class="ctrl-btn toggle-btn active">OSC2</button>
             <button id="piano-btn" class="ctrl-btn toggle-btn active">PIANO</button>
-            <button id="shimmer-btn" class="ctrl-btn ctrl-btn-sm">SHIM</button>
-            <button id="freeze-btn" class="ctrl-btn ctrl-btn-sm hidden">FRZ</button>
+            <div id="shim-frz-stack">
+                <button id="shimmer-btn" class="ctrl-btn ctrl-btn-sm">SHIM</button>
+                <button id="freeze-btn" class="ctrl-btn ctrl-btn-sm hidden">FRZ</button>
+            </div>
+            <button id="layer-btn" class="ctrl-btn ctrl-btn-sm">LAYER</button>
             <button id="panic-btn" class="ctrl-btn panic-btn">STOP</button>
             <button id="menu-btn" class="ctrl-btn">MENU</button>
             <div id="record-box">
@@ -134,6 +137,22 @@
             </div>
         </div>
 
+        <!-- LAYER (split) panel — folds down over the preset row when LAYER btn pressed -->
+        <div id="layer-panel" class="layer-panel hidden">
+            <div class="layer-panel-header">
+                <button id="layer-enable-btn" class="ctrl-btn ctrl-btn-sm layer-enable-btn">LAYER ON</button>
+                <span class="layer-help">Tap LEARN then play a key to set that source's nearest edge. Drag bar edges to set range. Drag center to move whole range. xfade slider widens the soft tail.</span>
+                <button id="layer-reset-btn" class="ctrl-btn ctrl-btn-sm">RESET</button>
+            </div>
+            <div class="layer-keyboard-row">
+                <div id="layer-ruler" class="layer-ruler"></div>
+                <div id="layer-live" class="layer-live"></div>
+            </div>
+            <div id="layer-bars">
+                <!-- 4 source bars injected by script.js -->
+            </div>
+        </div>
+
         <!-- Preset Area -->
         <div id="preset-area">
             <div class="preset-row">
@@ -145,7 +164,7 @@
                 <button class="preset-btn empty" data-pos="4" data-slot="4" style="--preset-color: #4D9EFF"><span class="preset-label"></span></button>
                 <button id="preset-edit-btn" class="ctrl-btn">EDIT</button>
             </div>
-            <div id="macro-row">
+            <div id="macro-row" class="hidden">
                 <button id="macro-layer-btn" class="ctrl-btn">A</button>
                 <div class="macro-slot" data-macro="0" style="--macro-color: #00D4AA">
                     <div class="macro-fill"></div>
@@ -291,8 +310,7 @@
                     <button class="settings-tab active" data-tab="osc">OSC</button>
                     <button class="settings-tab" data-tab="reverb">REVERB</button>
                     <button class="settings-tab" data-tab="motion">MOTION</button>
-                    <button class="settings-tab" data-tab="piano">PIANO</button>
-                    <button class="settings-tab" data-tab="organ">ORGAN</button>
+                    <button class="settings-tab" data-tab="instrument">PIANO/ORGAN</button>
                     <button class="settings-tab" data-tab="record">RECORD</button>
                     <button class="settings-tab" data-tab="global">GLOBAL</button>
                     <button class="settings-tab" data-tab="bank">BANK</button>
@@ -569,8 +587,13 @@
                         </div>
                     </div>
 
-                    <!-- Piano Tab -->
-                    <div class="settings-panel" data-panel="piano">
+                    <!-- Instrument Tab — combined PIANO + ORGAN with subtabs -->
+                    <div class="settings-panel" data-panel="instrument">
+                        <div class="instrument-subtab-strip">
+                            <button class="instrument-subtab-btn active" data-subtab="piano">PIANO</button>
+                            <button class="instrument-subtab-btn" data-subtab="organ">ORGAN</button>
+                        </div>
+                        <div class="instrument-subpanel active" data-subpanel="piano">
                         <div class="setting-section">PIANO</div>
                         <div class="setting-row sound-voicing-row">
                             <span class="setting-label sv-label">Soundfont</span>
@@ -714,7 +737,7 @@
                                         <input type="checkbox" class="setting-checkbox" data-section="piano" data-param="comp_enabled">
                                         <span>COMPRESSOR</span>
                                     </label>
-                                    <button class="ctrl-btn ctrl-btn-sm preset-reset-btn" id="piano-comp-perfect" title="Apply the smooth optical-style preset (threshold/ratio/attack/release/knee all at musical defaults)">PERFECT</button>
+                                    <button class="ctrl-btn piano-perfect-btn" id="piano-comp-perfect" title="Apply the smooth optical-style preset (threshold/ratio/attack/release/knee all at musical defaults)">PERFECT</button>
                                 </div>
                                 <div class="piano-comp-grid">
                                     <div class="knob">
@@ -789,7 +812,98 @@
                             <input type="range" class="setting-slider" data-section="piano" data-param="vel_bright_amount" min="0" max="100" value="50">
                             <span class="setting-value">0.50</span>
                         </div>
-                    </div>
+                        </div><!-- /piano subpanel -->
+
+                        <div class="instrument-subpanel" data-subpanel="organ">
+                        <div class="setting-section">ORGAN</div>
+                        <div class="setting-section">FILTER</div>
+                        <div class="setting-row setting-row-checkbox">
+                            <label class="setting-checkbox-label">
+                                <input type="checkbox" class="setting-checkbox" data-section="organ" data-param="shared_filter_enabled">
+                                <span>Route through main filter</span>
+                            </label>
+                        </div>
+                        <div class="two-col">
+                            <div class="setting-row" id="organ-lowcut-row">
+                                <span class="setting-label">Low Cut</span>
+                                <input type="range" class="setting-slider" data-section="organ" data-param="filter_lowcut_hz" min="0" max="1000" value="500" data-hz-min="20" data-hz-max="500">
+                                <span class="setting-value">40Hz</span>
+                            </div>
+                            <div class="setting-row" id="organ-highcut-row">
+                                <span class="setting-label">High Cut</span>
+                                <input type="range" class="setting-slider" data-section="organ" data-param="filter_highcut_hz" min="0" max="1000" value="800" data-hz-min="200" data-hz-max="12000">
+                                <span class="setting-value">8kHz</span>
+                            </div>
+                        </div>
+
+                        <div class="setting-section">TONE &amp; LESLIE</div>
+                        <div class="organ-tone-row">
+                            <div class="setting-row">
+                                <span class="setting-label">Preset</span>
+                                <select class="setting-select compact-select" data-section="organ" data-param="preset">
+                                    <option value="mellow">Mellow</option>
+                                    <option value="full">Full</option>
+                                    <option value="gospel">Gospel</option>
+                                    <option value="jazz">Jazz</option>
+                                </select>
+                            </div>
+                            <div class="setting-row">
+                                <span class="setting-label">Speed</span>
+                                <select class="setting-select compact-select" data-section="organ" data-param="leslie_speed">
+                                    <option value="slow">Slow</option>
+                                    <option value="fast">Fast</option>
+                                </select>
+                            </div>
+                            <div class="knob knob-small">
+                                <div class="knob-label">DRIVE</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="organ" data-param="drive" min="0" max="100" value="15">
+                                <span class="setting-value">15%</span>
+                            </div>
+                            <div class="knob knob-small">
+                                <div class="knob-label">DEPTH</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="organ" data-param="leslie_depth" min="0" max="100" value="30">
+                                <span class="setting-value">30%</span>
+                            </div>
+                        </div>
+
+                        <div class="setting-section">KEY CLICK</div>
+                        <div class="setting-row setting-row-checkbox">
+                            <label class="setting-checkbox-label">
+                                <input type="checkbox" class="setting-checkbox" data-section="organ" data-param="click_enabled" checked>
+                                <span>Key Click</span>
+                            </label>
+                        </div>
+                        <div class="setting-row">
+                            <span class="setting-label">Click Level</span>
+                            <input type="range" class="setting-slider" data-section="organ" data-param="click_level" min="0" max="100" value="30">
+                            <span class="setting-value">30%</span>
+                        </div>
+
+                        <div class="setting-section">ENVELOPE</div>
+                        <div class="knob-row knob-row-tight">
+                            <div class="knob knob-small">
+                                <div class="knob-label">ATTACK</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="organ" data-param="attack_ms" min="0" max="1000" value="0">
+                                <span class="setting-value">0ms</span>
+                            </div>
+                            <div class="knob knob-small">
+                                <div class="knob-label">RELEASE</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="organ" data-param="release_ms" min="5" max="1000" value="10">
+                                <span class="setting-value">10ms</span>
+                            </div>
+                            <div class="knob knob-small">
+                                <div class="knob-label">WIDTH</div>
+                                <div class="knob-dial"><div class="knob-indicator"></div></div>
+                                <input type="range" class="setting-slider knob-slider" data-section="organ" data-param="width" min="0" max="100" value="70">
+                                <span class="setting-value">70%</span>
+                            </div>
+                        </div>
+                        </div><!-- /organ subpanel -->
+                    </div><!-- /instrument panel -->
 
                     <!-- Reverb Tab -->
                     <div class="settings-panel" data-panel="reverb">
@@ -920,7 +1034,24 @@
 
                         <div class="lfo-dual">
                             <div class="lfo-col">
-                                <div class="lfo-col-title">LFO 1</div>
+                                <div class="lfo-col-title-row">
+                                    <span class="lfo-col-title">LFO 1</span>
+                                    <button class="lfo-active-btn" data-section="synth_pad" data-param="lfo_active">ON</button>
+                                </div>
+                                <div class="setting-row">
+                                    <span class="setting-label">Shape</span>
+                                    <select class="setting-select compact-select" data-section="synth_pad" data-param="lfo_shape">
+                                        <option value="sine" selected>Sine</option>
+                                        <option value="triangle">Triangle</option>
+                                        <option value="square">Square</option>
+                                        <option value="saw">Saw ↗</option>
+                                        <option value="ramp">Ramp ↘</option>
+                                        <option value="peak">Peak</option>
+                                        <option value="sh">S &amp; H</option>
+                                    </select>
+                                </div>
+                                <button class="lfo-advanced-toggle" data-lfo="1">advanced ▼</button>
+                                <div class="lfo-advanced" data-lfo="1">
                                 <div class="setting-row setting-row-checkbox">
                                     <label class="setting-checkbox-label">
                                         <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="lfo_key_sync">
@@ -936,18 +1067,6 @@
                                     </label>
                                 </div>
                                 <div class="setting-row">
-                                    <span class="setting-label">Shape</span>
-                                    <select class="setting-select compact-select" data-section="synth_pad" data-param="lfo_shape">
-                                        <option value="sine" selected>Sine</option>
-                                        <option value="triangle">Triangle</option>
-                                        <option value="square">Square</option>
-                                        <option value="saw">Saw ↗</option>
-                                        <option value="ramp">Ramp ↘</option>
-                                        <option value="peak">Peak</option>
-                                        <option value="sh">S &amp; H</option>
-                                    </select>
-                                </div>
-                                <div class="setting-row">
                                     <span class="setting-label">Offset</span>
                                     <input type="range" class="setting-slider" data-section="synth_pad" data-param="lfo_offset_ms" min="-200" max="200" value="0">
                                     <span class="setting-value">0ms</span>
@@ -958,6 +1077,7 @@
                                         <span>Haas Comp — track WIDE delay</span>
                                     </label>
                                 </div>
+                                </div><!-- /lfo-advanced 1 -->
                                 <div class="setting-row">
                                     <span class="setting-label">Target</span>
                                     <select class="setting-select compact-select" data-section="synth_pad" data-param="lfo_target">
@@ -1018,7 +1138,24 @@
                             </div>
 
                             <div class="lfo-col">
-                                <div class="lfo-col-title">LFO 2</div>
+                                <div class="lfo-col-title-row">
+                                    <span class="lfo-col-title">LFO 2</span>
+                                    <button class="lfo-active-btn" data-section="synth_pad" data-param="lfo2_active">ON</button>
+                                </div>
+                                <div class="setting-row">
+                                    <span class="setting-label">Shape</span>
+                                    <select class="setting-select compact-select" data-section="synth_pad" data-param="lfo2_shape">
+                                        <option value="sine" selected>Sine</option>
+                                        <option value="triangle">Triangle</option>
+                                        <option value="square">Square</option>
+                                        <option value="saw">Saw ↗</option>
+                                        <option value="ramp">Ramp ↘</option>
+                                        <option value="peak">Peak</option>
+                                        <option value="sh">S &amp; H</option>
+                                    </select>
+                                </div>
+                                <button class="lfo-advanced-toggle" data-lfo="2">advanced ▼</button>
+                                <div class="lfo-advanced" data-lfo="2">
                                 <div class="setting-row setting-row-checkbox">
                                     <label class="setting-checkbox-label">
                                         <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="lfo2_key_sync">
@@ -1034,18 +1171,6 @@
                                     </label>
                                 </div>
                                 <div class="setting-row">
-                                    <span class="setting-label">Shape</span>
-                                    <select class="setting-select compact-select" data-section="synth_pad" data-param="lfo2_shape">
-                                        <option value="sine" selected>Sine</option>
-                                        <option value="triangle">Triangle</option>
-                                        <option value="square">Square</option>
-                                        <option value="saw">Saw ↗</option>
-                                        <option value="ramp">Ramp ↘</option>
-                                        <option value="peak">Peak</option>
-                                        <option value="sh">S &amp; H</option>
-                                    </select>
-                                </div>
-                                <div class="setting-row">
                                     <span class="setting-label">Offset</span>
                                     <input type="range" class="setting-slider" data-section="synth_pad" data-param="lfo2_offset_ms" min="-200" max="200" value="0">
                                     <span class="setting-value">0ms</span>
@@ -1056,6 +1181,7 @@
                                         <span>Haas Comp — track WIDE delay</span>
                                     </label>
                                 </div>
+                                </div><!-- /lfo-advanced 2 -->
                                 <div class="setting-row">
                                     <span class="setting-label">Target</span>
                                     <select class="setting-select compact-select" data-section="synth_pad" data-param="lfo2_target">
@@ -1264,96 +1390,7 @@
                         </div><!-- /motion-subpanel delay -->
                     </div>
 
-                    <!-- Organ Tab -->
-                    <div class="settings-panel" data-panel="organ">
-                        <div class="setting-section">ORGAN</div>
-                        <div class="setting-section">FILTER</div>
-                        <div class="setting-row setting-row-checkbox">
-                            <label class="setting-checkbox-label">
-                                <input type="checkbox" class="setting-checkbox" data-section="organ" data-param="shared_filter_enabled">
-                                <span>Route through main filter</span>
-                            </label>
-                        </div>
-                        <div class="two-col">
-                            <div class="setting-row" id="organ-lowcut-row">
-                                <span class="setting-label">Low Cut</span>
-                                <input type="range" class="setting-slider" data-section="organ" data-param="filter_lowcut_hz" min="0" max="1000" value="500" data-hz-min="20" data-hz-max="500">
-                                <span class="setting-value">40Hz</span>
-                            </div>
-                            <div class="setting-row" id="organ-highcut-row">
-                                <span class="setting-label">High Cut</span>
-                                <input type="range" class="setting-slider" data-section="organ" data-param="filter_highcut_hz" min="0" max="1000" value="800" data-hz-min="200" data-hz-max="12000">
-                                <span class="setting-value">8kHz</span>
-                            </div>
-                        </div>
-
-                        <div class="setting-section">TONE &amp; LESLIE</div>
-                        <div class="organ-tone-row">
-                            <div class="setting-row">
-                                <span class="setting-label">Preset</span>
-                                <select class="setting-select compact-select" data-section="organ" data-param="preset">
-                                    <option value="mellow">Mellow</option>
-                                    <option value="full">Full</option>
-                                    <option value="gospel">Gospel</option>
-                                    <option value="jazz">Jazz</option>
-                                </select>
-                            </div>
-                            <div class="setting-row">
-                                <span class="setting-label">Speed</span>
-                                <select class="setting-select compact-select" data-section="organ" data-param="leslie_speed">
-                                    <option value="slow">Slow</option>
-                                    <option value="fast">Fast</option>
-                                </select>
-                            </div>
-                            <div class="knob knob-small">
-                                <div class="knob-label">DRIVE</div>
-                                <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                <input type="range" class="setting-slider knob-slider" data-section="organ" data-param="drive" min="0" max="100" value="15">
-                                <span class="setting-value">15%</span>
-                            </div>
-                            <div class="knob knob-small">
-                                <div class="knob-label">DEPTH</div>
-                                <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                <input type="range" class="setting-slider knob-slider" data-section="organ" data-param="leslie_depth" min="0" max="100" value="30">
-                                <span class="setting-value">30%</span>
-                            </div>
-                        </div>
-
-                        <div class="setting-section">KEY CLICK</div>
-                        <div class="setting-row setting-row-checkbox">
-                            <label class="setting-checkbox-label">
-                                <input type="checkbox" class="setting-checkbox" data-section="organ" data-param="click_enabled" checked>
-                                <span>Key Click</span>
-                            </label>
-                        </div>
-                        <div class="setting-row">
-                            <span class="setting-label">Click Level</span>
-                            <input type="range" class="setting-slider" data-section="organ" data-param="click_level" min="0" max="100" value="30">
-                            <span class="setting-value">30%</span>
-                        </div>
-
-                        <div class="setting-section">ENVELOPE</div>
-                        <div class="knob-row knob-row-tight">
-                            <div class="knob knob-small">
-                                <div class="knob-label">ATTACK</div>
-                                <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                <input type="range" class="setting-slider knob-slider" data-section="organ" data-param="attack_ms" min="0" max="1000" value="0">
-                                <span class="setting-value">0ms</span>
-                            </div>
-                            <div class="knob knob-small">
-                                <div class="knob-label">RELEASE</div>
-                                <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                <input type="range" class="setting-slider knob-slider" data-section="organ" data-param="release_ms" min="5" max="1000" value="10">
-                                <span class="setting-value">10ms</span>
-                            </div>
-                            <div class="knob knob-small">
-                                <div class="knob-label">WIDTH</div>
-                                <div class="knob-dial"><div class="knob-indicator"></div></div>
-                                <input type="range" class="setting-slider knob-slider" data-section="organ" data-param="width" min="0" max="100" value="70">
-                                <span class="setting-value">70%</span>
-                            </div>
-                        </div>
-                    </div>
+                    <!-- (Organ panel relocated into INSTRUMENT tab as a subpanel) -->
 
                     <!-- Record Tab -->
                     <div class="settings-panel" data-panel="record">
@@ -1364,7 +1401,7 @@
                         </div>
 
                         <div class="setting-section">PAD SLOTS</div>
-                        <div class="help-text">One WAV per key. Loaded at startup from <code>~/.local/share/stave-synth/pad_samples/</code>. Any key without a sample falls back to the live synth drone.</div>
+                        <div class="help-text">One WAV per key. Loaded at startup from <code>~/.local/share/stave-synth/pad_samples/</code>. Any key without a sample is silent.</div>
                         <div id="pad-slots-list" class="pad-slots-list">
                             <div class="takes-empty">Loading…</div>
                         </div>
@@ -1636,6 +1673,28 @@
                             </label>
                         </div>
                         <p class="sys-readout-help">Shrinks the audio buffer so notes respond ~27 ms faster. Effects can cause brief dropouts — shimmer, sympathetic, unison, and bus comp stacked are the usual suspects. Toggling briefly mutes (~20 ms).</p>
+
+                        <div class="setting-section">MIDI</div>
+                        <div class="setting-row setting-row-checkbox">
+                            <label class="setting-checkbox-label">
+                                <input type="checkbox" class="setting-checkbox" data-section="master" data-param="pitch_bend_enabled" checked>
+                                <span>Pitch Bend</span>
+                            </label>
+                            <label class="setting-checkbox-label">
+                                <input type="checkbox" class="setting-checkbox" data-section="master" data-param="midi_clock_enabled">
+                                <span>Clock Follow</span>
+                            </label>
+                        </div>
+                        <p class="sys-readout-help">Pitch Bend: disable if your controller has a touch-strip pitch joystick that doesn't auto-center (e.g. MPK mini) — disabling force-centers any stuck bend on pad and piano. Clock Follow: synth BPM tracks incoming MIDI clock (Ableton, drum machine, etc) so delays + LFOs lock to the band.</p>
+
+                        <div class="setting-section">FACE</div>
+                        <div class="setting-row setting-row-checkbox">
+                            <label class="setting-checkbox-label">
+                                <input type="checkbox" class="setting-checkbox" data-section="master" data-param="show_macros">
+                                <span>Show Macros</span>
+                            </label>
+                        </div>
+                        <p class="sys-readout-help">Show the macro row on the main face. Off by default — macros are pro programmability that rarely get touched mid-service.</p>
                     </div>
                 </div>
             </div>
@@ -1643,6 +1702,6 @@
 
     </div>
 
-    <script src="script.js?v=148"></script>
+    <script src="script.js?v=164"></script>
 </body>
 </html>

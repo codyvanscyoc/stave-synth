@@ -47,20 +47,6 @@ SOUNDFONT_PRESETS = {
     "Suitcase":   {"file": "FluidR3_GM", "program": 4, "tremolo_hz": 5.5, "tremolo_depth": 0.50, "velocity_curve": 1.0},
 }
 
-# General MIDI program numbers — independent of the voicing (EQ) system.
-# Switching Sound changes the GM program on the loaded soundfont; on
-# Salamander only program 0 is populated, so everything collapses to the
-# acoustic grand. On FluidR3_GM all of these respond with distinct patches.
-SOUNDS = {
-    "acoustic_grand_piano":  0,
-    "bright_acoustic_piano": 1,
-    "electric_grand_piano":  2,
-    "honky_tonk_piano":      3,
-    "electric_piano_1":      4,   # Rhodes
-    "electric_piano_2":      5,   # DX7 / Suitcase-style
-    "harpsichord":           6,
-    "clavinet":              7,
-}
 
 # Voicing presets: pure TONE shaping (4-band EQ + low/high cuts). Independent
 # of the Sound dropdown — voicings never change GM program. That separation
@@ -178,7 +164,6 @@ class FluidSynthPlayer:
         self.enabled = True
         self.volume = 0.5
         self._volume_cur = 0.5  # smoothed volume for zipper-free changes
-        self.current_sound = "acoustic_grand_piano"
         self.current_soundfont = "Arachno"
         self.reverb_dry_wet = 0.4
         self._lock = threading.Lock()
@@ -299,6 +284,21 @@ class FluidSynthPlayer:
         self.fs.setting("synth.gain", 1.0)
         self.fs.setting("synth.reverb.active", 0)
         self.fs.setting("synth.chorus.active", 0)
+        # Pin pitch bend range to ±2 semitones via RPN so it matches the pad.
+        # Default range varies by soundfont; without this the piano can bend
+        # a different amount than the pad → user hears "out of tune" between
+        # them. Sequence: select RPN 0 (Pitch Bend Sensitivity) via CC101/CC100,
+        # then write data via CC6/CC38, then "null" the RPN selector with
+        # CC101=127 / CC100=127 so a stray data-entry CC later doesn't drift it.
+        try:
+            self.fs.cc(0, 101, 0)    # RPN MSB
+            self.fs.cc(0, 100, 0)    # RPN LSB → Pitch Bend Sensitivity
+            self.fs.cc(0, 6, 2)      # Data MSB → 2 semitones
+            self.fs.cc(0, 38, 0)     # Data LSB → 0 cents
+            self.fs.cc(0, 101, 127)  # RPN null
+            self.fs.cc(0, 100, 127)  # RPN null
+        except Exception as e:
+            logger.debug("FluidSynth pitch-bend range RPN failed: %s", e)
 
         # Load piano-room reverb .so. Lazy import so a broken build still
         # starts (piano just won't have room reverb).
@@ -309,39 +309,63 @@ class FluidSynthPlayer:
             logger.warning("Piano-room reverb unavailable: %s", e)
             self._piano_room = None
 
-        # ─── Pre-load every preset's underlying .sf2 ─────────────────
-        # Dedupe by resolved file path so Rhodes + Suitcase (both FluidR3_GM)
-        # share a single sfload. Map by preset["file"] (the canonical key
-        # used at switch time).
+        # ─── Pre-load the STARTUP preset only; defer the rest ─────────
+        # Salamander is 1.2GB and dominates cold-boot time (~3-6s of disk
+        # read). Loading only the startup preset up-front and lazy-loading
+        # the others on a background thread cuts boot to first-note from
+        # ~25s → ~17-20s for typical worship use. Mid-set preset switches
+        # may briefly stall (≤500ms) the first time a not-yet-loaded preset
+        # is selected — acceptable given how rare song-mid font swaps are.
         self._sfid_by_file = {}         # preset["file"] → sfid
         _sfid_by_path = {}              # resolved abs path → sfid (dedup)
-        for preset_name, preset in SOUNDFONT_PRESETS.items():
-            file_key = preset["file"]
+        # Resolve the startup file_key first so we know which one to preload
+        # synchronously. (Rest of the resolve logic happens below for it too.)
+        startup_preset = SOUNDFONT_PRESETS.get(soundfont_name)
+        startup_file = startup_preset["file"] if startup_preset else soundfont_name
+
+        def _load_one(file_key):
+            """Load one soundfont (deduped). Safe to call from background
+            thread — FluidSynth's sfload is internally serialized."""
             if file_key in self._sfid_by_file:
-                continue
+                return
             sf_path = self._find_soundfont(file_key)
             if sf_path is None:
-                logger.warning("Soundfont not found for preset '%s' (file=%s) — "
-                               "preset will be unavailable", preset_name, file_key)
-                continue
+                logger.warning("Soundfont not found for file='%s' — "
+                               "preset(s) using it will be unavailable", file_key)
+                return
             path_str = str(sf_path)
             if path_str in _sfid_by_path:
                 self._sfid_by_file[file_key] = _sfid_by_path[path_str]
-                logger.info("Preset '%s' (file=%s) reuses sfid for %s",
-                             preset_name, file_key, path_str)
-            else:
-                try:
-                    sfid = self.fs.sfload(path_str)
-                except Exception as e:
-                    logger.error("sfload crashed for %s: %s", path_str, e)
-                    continue
-                if sfid < 0:
-                    logger.warning("sfload returned %d for %s", sfid, path_str)
-                    continue
-                self._sfid_by_file[file_key] = sfid
-                _sfid_by_path[path_str] = sfid
-                logger.info("Preloaded soundfont file='%s' path='%s' sfid=%d",
-                             file_key, path_str, sfid)
+                return
+            try:
+                sfid = self.fs.sfload(path_str)
+            except Exception as e:
+                logger.error("sfload crashed for %s: %s", path_str, e)
+                return
+            if sfid < 0:
+                logger.warning("sfload returned %d for %s", sfid, path_str)
+                return
+            self._sfid_by_file[file_key] = sfid
+            _sfid_by_path[path_str] = sfid
+            logger.info("Preloaded soundfont file='%s' path='%s' sfid=%d",
+                         file_key, path_str, sfid)
+
+        # Sync: just the startup font. Anything that happens to share its
+        # file (e.g. Rhodes+Suitcase both FluidR3_GM) gets a free ride.
+        _load_one(startup_file)
+
+        # Background: everything else. Daemon thread so it doesn't block
+        # shutdown. Errors logged but never crash the audio engine.
+        def _bg_preload_rest():
+            try:
+                for preset_name, preset in SOUNDFONT_PRESETS.items():
+                    _load_one(preset["file"])
+                logger.info("Background soundfont preload complete")
+            except Exception as e:
+                logger.warning("Background soundfont preload error: %s", e)
+        import threading as _threading
+        _threading.Thread(target=_bg_preload_rest, daemon=True,
+                          name="sf-preload").start()
 
         # Resolve the startup name: if it's a preset key, grab the preset's
         # file (and tremolo config). Otherwise treat as a direct file stem
@@ -356,7 +380,7 @@ class FluidSynthPlayer:
             self.velocity_curve = float(preset.get("velocity_curve", 1.0))
         else:
             file_stem = soundfont_name
-            startup_program = SOUNDS.get(self.current_sound, 0)
+            startup_program = 0
 
         self.current_soundfont = preset_name or soundfont_name
 
@@ -435,17 +459,6 @@ class FluidSynthPlayer:
 
         return None
 
-    def set_sound(self, sound_name: str):
-        """Set the piano sound (General MIDI program)."""
-        if self.fs is None or self.sfid is None:
-            return
-
-        program = SOUNDS.get(sound_name, 0)
-        with self._lock:
-            self.fs.program_select(0, self.sfid, 0, program)
-            self.current_sound = sound_name
-            logger.info("Piano sound set to: %s (program %d)", sound_name, program)
-
     def note_on(self, note: int, velocity: float):
         """Play a note."""
         if not self.enabled or self.fs is None:
@@ -483,6 +496,12 @@ class FluidSynthPlayer:
         with self._lock:
             for note in range(128):
                 self.fs.noteoff(0, note)
+            # Reset pitch bend to center. pyFluidSynth's pitch_bend takes a
+            # SIGNED offset from center, so 0 = center (NOT 8192).
+            try:
+                self.fs.pitch_bend(0, 0)
+            except Exception:
+                pass
         # Reset comp state so the first hard chord after silence doesn't
         # ramp from a stale gain (LA-2A linear-interp between blocks would
         # otherwise pop). Cheap; only fires on panic / instrument-cycle.
@@ -502,6 +521,19 @@ class FluidSynthPlayer:
             self.note_off(note)
         elif event_type == "all_notes_off":
             self.all_notes_off()
+        elif event_type == "pitch_bend":
+            # `note` carries the 14-bit pitch bend value (0..16383, center=8192).
+            # pyFluidSynth's pitch_bend expects a SIGNED OFFSET from center
+            # (range -8192..+8192) and adds 8192 internally before passing to
+            # libfluidsynth. So we must subtract 8192 here. Earlier code passed
+            # the raw 14-bit number → at "center" the API saw +8192 = max bend
+            # up (+2 semis with our default range), which is the "piano plays D
+            # when I hit C" bug.
+            if self.fs is not None:
+                try:
+                    self.fs.pitch_bend(0, int(note) - 8192)
+                except Exception as e:
+                    logger.debug("FluidSynth pitch_bend failed: %s", e)
 
     def set_volume(self, volume: float):
         """Set piano volume (0.0-1.0). Applied in render_block()."""

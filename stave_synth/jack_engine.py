@@ -19,9 +19,8 @@ from .synth_engine import (SynthEngine, BiquadLowpass, BiquadHighpass,
                            BusCompressor,
                            fader_to_amplitude, blend_to_amplitude)
 from .config import SAMPLE_RATE, BTL_MODE
-import os as _os
-USE_FAUST_MASTER_FX = _os.environ.get("STAVE_FAUST_MASTER_FX", "0") not in ("0", "", "false", "False")
-USE_FAUST_BUS_COMP  = _os.environ.get("STAVE_FAUST_BUS_COMP",  "0") not in ("0", "", "false", "False")
+USE_FAUST_MASTER_FX = os.environ.get("STAVE_FAUST_MASTER_FX", "0") not in ("0", "", "false", "False")
+USE_FAUST_BUS_COMP  = os.environ.get("STAVE_FAUST_BUS_COMP",  "0") not in ("0", "", "false", "False")
 from .recorder import Recorder
 
 logger = logging.getLogger(__name__)
@@ -131,13 +130,20 @@ class JackEngine:
     """Manages JACK audio via C bridge with MIDI input."""
 
     def __init__(self, synth: SynthEngine, midi_callback=None, piano_callback=None,
-                 piano_player=None, cc_callback=None):
+                 piano_player=None, cc_callback=None, program_change_callback=None):
         self.synth = synth
         self.midi_callback = midi_callback
         self.piano_callback = piano_callback
         self.cc_callback = cc_callback  # Called with (cc_number, value_0_to_127)
+        # Called with one int (program 0..127) on MIDI 0xC0. Wired in main.py
+        # to load that index from the active setlist (footswitch advance).
+        self.program_change_callback = program_change_callback
         self.piano_player = piano_player  # FluidSynthPlayer for rendered mixing
         self.running = False
+        # Last render-loop iteration timestamp (perf_counter). Updated every
+        # iteration once the render thread starts; read by the systemd
+        # watchdog heartbeat in main.py to detect a wedged audio loop.
+        self.last_iter_ts = 0.0
 
         # Render-ahead ring fill threshold. Matches NORMAL mode (8 = refill
         # when fewer than 8 of 16 slots are queued). set_low_latency_mode()
@@ -180,6 +186,33 @@ class JackEngine:
         self._physically_held = set()    # raw MIDI notes with finger on key
         self._sustained_notes = set()    # raw MIDI notes held by sustain pedal
         self._note_map = {}              # raw_note → (pad_note, piano_note)
+
+        # Sostenuto pedal (CC66): captures notes held when pedal is pressed,
+        # sustains only those — later notes pass through normally.
+        self._sostenuto_on = False
+        self._sostenuto_held = set()
+
+        # Kill-switch for MIDI pitch bend (0xE0). MPK-mini-class touch joysticks
+        # leave the pitch detuned with no easy way to clear; user toggles this
+        # off in Global tab to ignore pitch bend entirely.
+        self.pitch_bend_enabled = True
+
+        # MIDI clock follow (0xF8). Off by default — many keyboards spam clock
+        # even when you don't want tempo locking. When on: measure inter-tick
+        # interval (24 ticks/quarter), low-pass it, push BPM to jack engine
+        # so delays/LFOs sync to the band.
+        self.midi_clock_enabled = False
+        self._midi_clock_last_ts = 0.0
+        self._midi_clock_avg_dt = 0.0   # smoothed seconds-per-tick
+        self._midi_clock_count = 0      # ticks seen since last BPM update
+
+        # LAYER (split) state — instrument range applies to whichever of
+        # piano/organ is active via instrument_mode. OSC1/OSC2/shimmer ranges
+        # live on the synth engine itself.
+        self.split_enabled = False
+        self.instrument_split_low = 0
+        self.instrument_split_high = 127
+        self.instrument_split_xfade = 0
 
         # Organ/piano shared filter (tracks synth's main filter when enabled)
         self.organ_filter_enabled = False
@@ -541,6 +574,7 @@ class JackEngine:
         b.bridge_set_ring_slots.argtypes = [ctypes.c_int]
         b.bridge_set_ring_slots.restype = ctypes.c_int
         b.bridge_get_ring_slots.restype = ctypes.c_int
+        b.bridge_clear_ring.restype = ctypes.c_int
         b.bridge_is_shutdown.restype = ctypes.c_int
 
     def start(self):
@@ -611,8 +645,22 @@ class JackEngine:
             logger.info("render thread: SCHED_FIFO priority 80")
         except Exception as e:
             logger.warning("couldn't set realtime priority: %s", e)
+        # Pin to core 3 — paired with `isolcpus=3 irqaffinity=0-2` on the
+        # kernel cmdline so this thread runs on a core the kernel won't
+        # schedule normal tasks or IRQs onto. Soft-fails on non-Linux or
+        # boxes that haven't been through install.sh.
+        if hasattr(os, "sched_setaffinity"):
+            try:
+                os.sched_setaffinity(0, {3})
+                logger.info("render thread: pinned to CPU 3")
+            except Exception as e:
+                logger.info("CPU pin skipped (%s) — fine if isolcpus not set", e)
 
         _last_iter_ts = time.perf_counter()
+        # Mirror to instance attr so the systemd-watchdog heartbeat thread in
+        # main.py can detect a wedged render loop (no update for >Xs ⇒ no ping
+        # to systemd ⇒ systemd restarts us).
+        self.last_iter_ts = _last_iter_ts
         while self.running:
             try:
                 # Per-iteration gap detector: if the time since last loop start
@@ -620,6 +668,7 @@ class JackEngine:
                 _now = time.perf_counter()
                 _iter_gap = _now - _last_iter_ts
                 _last_iter_ts = _now
+                self.last_iter_ts = _now
                 if _iter_gap > 0.015:  # > 15 ms between iterations = stall
                     logger.warning("iter gap %.1fms (expected ~%.1fms) at %.3f",
                                    _iter_gap * 1000, block_time * 500, time.time())
@@ -1102,10 +1151,43 @@ class JackEngine:
 
                 self._midi_events_seen += 1
 
-                if n >= 3:
+                # System real-time messages are 1 byte (0xF8 = clock tick,
+                # 0xFA = start, 0xFB = continue, 0xFC = stop). Handled
+                # before the n>=2 channel-voice branch below.
+                if n == 1 and midi_buf[0] == 0xF8 and self.midi_clock_enabled:
+                    now = time.perf_counter()
+                    last = self._midi_clock_last_ts
+                    self._midi_clock_last_ts = now
+                    if last > 0.0:
+                        dt = now - last
+                        # Reject huge gaps (clock paused / first tick after
+                        # idle) so we don't average them in. Worth the cost
+                        # of one extra branch per tick.
+                        if 0.005 < dt < 0.5:  # 30..1500 BPM range
+                            if self._midi_clock_avg_dt <= 0.0:
+                                self._midi_clock_avg_dt = dt
+                            else:
+                                # One-pole at ~0.1 lets a 5-bpm shift settle
+                                # in ~10 ticks (half a beat at 120bpm).
+                                self._midi_clock_avg_dt += 0.1 * (dt - self._midi_clock_avg_dt)
+                            self._midi_clock_count += 1
+                            # Push BPM every ~24 ticks (1 beat). Avoids
+                            # thrash on render thread; 24 PPQN is the spec.
+                            if self._midi_clock_count >= 24:
+                                self._midi_clock_count = 0
+                                bpm = 60.0 / (self._midi_clock_avg_dt * 24.0)
+                                bpm = max(40.0, min(240.0, bpm))
+                                self.set_bpm(bpm)
+                    continue
+
+                if n >= 2:
+                    # Channel-voice messages cover n==2 (program change,
+                    # channel aftertouch) and n==3 (note, CC, pitch bend,
+                    # poly aftertouch). midi_buf[2] is only valid for n==3
+                    # — guarded inside each branch as appropriate.
                     status = midi_buf[0] & 0xF0
                     raw_note = midi_buf[1]
-                    velocity = midi_buf[2]
+                    velocity = midi_buf[2] if n >= 3 else 0
 
                     if status == 0x90 and velocity > 0:
                         if velocity < self.min_velocity:
@@ -1114,6 +1196,18 @@ class JackEngine:
 
                         transposed = max(0, min(127, raw_note + self.transpose))
                         piano_note = max(0, min(127, transposed + self.piano_octave * 12))
+
+                        # LAYER (split) — gate per-source by raw key position.
+                        # raw_note is the key the user pressed (pre-transpose);
+                        # split is a controller-position concept, not a pitch one.
+                        if self.split_enabled:
+                            osc1_w, osc2_w, shim_w = self.synth.compute_split_weights(raw_note)
+                            instrument_w = SynthEngine.split_weight(
+                                raw_note, self.instrument_split_low,
+                                self.instrument_split_high, self.instrument_split_xfade,
+                            )
+                        else:
+                            osc1_w = osc2_w = shim_w = instrument_w = 1.0
 
                         # If re-triggering with different transpose, release old note first
                         if raw_note in self._note_map:
@@ -1126,7 +1220,10 @@ class JackEngine:
                         self._physically_held.add(raw_note)
                         self._note_map[raw_note] = (transposed, piano_note)
 
-                        self.synth.note_on(transposed, vel_float)
+                        # Skip pad note_on entirely if all pad sources are silenced
+                        # in this zone — saves a voice slot for actually-audible notes.
+                        if osc1_w > 0.0 or osc2_w > 0.0 or shim_w > 0.0:
+                            self.synth.note_on(transposed, vel_float, osc1_w, osc2_w, shim_w)
                         self._midi_notes_triggered += 1
                         self._pad_notes_active.add(transposed)
 
@@ -1137,8 +1234,11 @@ class JackEngine:
                             self._bpm_beat_phase = 0.0
                             self._bpm_pulse_remaining = int(0.05 * SAMPLE_RATE)
 
-                        if self.piano_callback:
-                            self.piano_callback("note_on", piano_note, vel_float)
+                        # Piano/organ velocity scaled by the instrument zone
+                        # weight. weight=0 → skip the callback entirely so the
+                        # voice doesn't even start.
+                        if self.piano_callback and instrument_w > 0.0:
+                            self.piano_callback("note_on", piano_note, vel_float * instrument_w)
                             self._piano_notes_active.add(piano_note)
                         if self.midi_callback:
                             self.midi_callback("note_on", transposed, vel_float)
@@ -1153,6 +1253,11 @@ class JackEngine:
 
                         if self._sustain_on:
                             self._sustained_notes.add(raw_note)
+                        elif self._sostenuto_on and raw_note in self._sostenuto_held:
+                            # Held by sostenuto — leave the voice alone, but
+                            # remove from physically_held so a later sustain
+                            # press doesn't re-capture it.
+                            pass
                         else:
                             self._note_map.pop(raw_note)
                             self.synth.note_off(pad_note)
@@ -1180,14 +1285,43 @@ class JackEngine:
                                         self._piano_notes_active.discard(piano_n)
                             self._sustained_notes.clear()
 
-                    elif status == 0xB0 and raw_note == 123:
+                    elif status == 0xB0 and raw_note == 66:
+                        # Sostenuto pedal (CC66): captures notes that are
+                        # CURRENTLY held when pressed, sustains only those —
+                        # later notes pass through as normal. Pianists use
+                        # this for a held bass under moving voicings.
+                        if velocity >= 64:
+                            self._sostenuto_on = True
+                            self._sostenuto_held = set(self._physically_held)
+                        else:
+                            self._sostenuto_on = False
+                            for raw in list(self._sostenuto_held):
+                                if raw not in self._physically_held and raw in self._note_map:
+                                    pad_n, piano_n = self._note_map.pop(raw)
+                                    self.synth.note_off(pad_n)
+                                    self._pad_notes_active.discard(pad_n)
+                                    if self.piano_callback:
+                                        self.piano_callback("note_off", piano_n, 0)
+                                        self._piano_notes_active.discard(piano_n)
+                            self._sostenuto_held.clear()
+
+                    elif status == 0xB0 and raw_note in (120, 123):
+                        # CC120 = All Sound Off (immediate silence + flush tails)
+                        # CC123 = All Notes Off (release ADSRs, tails decay)
+                        # Treat both as full panic — flushes reverb/freeze/drone too.
                         self._sustain_on = False
                         self._sustained_notes.clear()
+                        self._sostenuto_on = False
+                        self._sostenuto_held.clear()
                         self._physically_held.clear()
                         self._note_map.clear()
                         self._pad_notes_active.clear()
                         self._piano_notes_active.clear()
                         self.synth.all_notes_off()
+                        if raw_note == 120:
+                            # CC120 wants tails flushed; defer to the panic-pending
+                            # mechanism so render-thread does the work cleanly.
+                            self.synth.panic()
                         if self.piano_callback:
                             self.piano_callback("all_notes_off", 0, 0)
                         if self.midi_callback:
@@ -1198,6 +1332,38 @@ class JackEngine:
                         cc_val = velocity
                         if self.cc_callback:
                             self.cc_callback(cc_num, cc_val)
+
+                    elif status == 0xE0:
+                        # Pitch bend: 14-bit value, MSB byte 2, LSB byte 1.
+                        # Center = 8192. Bipolar normalized [-1, +1] → semitones.
+                        if self.pitch_bend_enabled:
+                            lsb = raw_note  # midi_buf[1]
+                            msb = velocity  # midi_buf[2]
+                            bend14 = ((msb & 0x7F) << 7) | (lsb & 0x7F)
+                            normalized = (bend14 - 8192) / 8192.0
+                            self.synth.set_pitch_bend(normalized)
+                            if self.piano_callback:
+                                self.piano_callback("pitch_bend", bend14, 0)
+
+                    elif status == 0xD0:
+                        # Channel aftertouch: 1 data byte (pressure 0..127).
+                        # Forwarded as a CC-shaped event so callbacks can route
+                        # it (e.g. to filter cutoff) via the same pathway as CC.
+                        if self.cc_callback:
+                            self.cc_callback(-1, raw_note)  # cc_num=-1 means aftertouch
+
+                    elif status == 0xA0:
+                        # Poly aftertouch (per-note pressure): byte1=note, byte2=pressure.
+                        # Currently pass-through only; future work could route to
+                        # per-voice filter or amp.
+                        if self.midi_callback:
+                            self.midi_callback("poly_aftertouch", raw_note, velocity / 127.0)
+
+                    elif status == 0xC0:
+                        # Program change: 1 data byte (program 0..127).
+                        # Wire to setlist position via main.py callback.
+                        if self.program_change_callback:
+                            self.program_change_callback(raw_note)
 
             time.sleep(0.0005)  # 0.5ms polling
 
@@ -1232,7 +1398,9 @@ class JackEngine:
 
     def panic(self):
         """Clear sustain pedal, note-maps, active-note sets, and master-chain
-        transient state so no ghost state bleeds into the next note."""
+        transient state so no ghost state bleeds into the next note. Also
+        flush the C bridge ring so the ~80ms of pre-rendered audio doesn't
+        keep playing the pre-panic howl after the user mashed STOP."""
         self._sustain_on = False
         self._physically_held.clear()
         self._sustained_notes.clear()
@@ -1242,6 +1410,13 @@ class JackEngine:
         # Release the brickwall limiter so the next hit doesn't inherit
         # a pumped-down gain from whatever peak we were catching at panic time.
         self._limiter.reset()
+        # Flush the C bridge ring (~20ms mute). Without this, pre-rendered
+        # audio in the ring still plays for ~80ms (16-slot) / ~16ms (low-lat)
+        # after panic, so a feedback howl rings on for a beat after STOP.
+        try:
+            self._bridge.bridge_clear_ring()
+        except Exception as e:
+            logger.warning("bridge_clear_ring failed: %s", e)
 
     def get_and_reset_peak(self) -> float:
         """Return post-limiter peak level. Reflects actual output after tanh + master volume."""

@@ -44,7 +44,7 @@ Reboot and the synth starts automatically. Plug in a USB MIDI keyboard and play.
 - Sets up real-time audio permissions + audio group
 - Locks CPU governor to performance (prevents audio stutter)
 - Disables screen blanking + USB autosuspend (prevents dropouts)
-- Copies the bundled TimGM6mb soundfont for piano (offline-proof)
+- Installs FluidR3_GM (apt) for piano + offers `--salamander` flag to download the 1.2GB Salamander Grand v3
 - Builds the C audio bridge + Faust DSP modules
 - Creates a systemd user service that auto-starts on boot *(skipped with `--no-autostart`)*
 - Prints a summary of detected audio/MIDI devices at the end
@@ -109,7 +109,7 @@ Reboot and the synth starts automatically. Plug in a USB MIDI keyboard and play.
 - Open the audio dropdown and pick your actual output (USB DAC, HDMI, etc.).
 
 **Piano is silent but pad works.**
-- The soundfont didn't install. Check `ls ~/.local/share/stave-synth/soundfonts/` — you should see `TimGM6mb.sf2`. Re-run `./install.sh` or drop any `.sf2` into that folder and restart.
+- The soundfont didn't install. Check `ls ~/.local/share/stave-synth/soundfonts/` — you should see at least `FluidR3_GM.sf2` (and `Salamander.sf2` if you ran `./install.sh --salamander`). Re-run `./install.sh` or drop any `.sf2` into that folder and restart.
 
 **MIDI keyboard doesn't do anything.**
 - Tap the `MIDI` indicator in the top bar — it should flash green on each note. If not, check `aconnect -i` on the Pi; the keyboard should show up as a client. The synth auto-connects.
@@ -208,8 +208,9 @@ stave_synth/
 ui/
   index.html / style.css / script.js — Touch UI
 
-soundfonts/
-  TimGM6mb.sf2         — Bundled GM soundfont (public domain, ~6MB)
+soundfonts/                          (in ~/.local/share/stave-synth/soundfonts/)
+  FluidR3_GM.sf2       — Default GM soundfont (MIT licensed, ~150MB, via apt)
+  Salamander.sf2       — Salamander Grand v3 (CC-BY 3.0, 1.2GB, via --salamander)
 ```
 
 ## DSP backend (Faust vs Python)

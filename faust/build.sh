@@ -37,7 +37,6 @@ build_module() {
     ls -la "$out"
 }
 
-build_module gain         StaveGain         stave_gain
 build_module reverb       StaveReverb       stave_reverb
 build_module ping_pong    StavePingPong     stave_ping_pong
 build_module osc_bank     StaveOscBank      stave_osc_bank

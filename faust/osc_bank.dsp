@@ -6,7 +6,7 @@ import("stdfaust.lib");
 // ═══════════════════════════════════════════════════════════════════════
 // Config constants
 // ═══════════════════════════════════════════════════════════════════════
-NVOICES = 16;
+NVOICES = 24;
 // LIMITATION: UNI is a compile-time constant — the unison count is baked
 // into the Faust topology (par(u, UNI, ...) iterates statically). The UI
 // lets the user pick 1, 3, or 5 unison voices; only 3 runs on this Faust
@@ -61,8 +61,11 @@ osc2_pan   = hslider("osc2_pan",      0, -1, 1, 0.001);
 // Shimmer — octave-up sine per voice, summed mono, sent to reverb by Python.
 // `shimmer_mult`: 2.0 = +12 st, 4.0 = +24 st (Python picks one based on shimmer_high).
 // `shimmer_enable`: 0/1 flag — Faust always computes shimmer; this masks output.
+// si.smoo ramps the 0→1 step over ~10ms so engaging shimmer mid-sustain
+// doesn't feed a DC step to the reverb (which manifests as a high-frequency
+// crackle through the cathedral tail when the FDN's filters react).
 shimmer_mult   = hslider("shimmer_mult", 2.0, 1.0, 4.0, 0.001);
-shimmer_enable = hslider("shimmer_enable", 0.0, 0.0, 1.0, 1.0);
+shimmer_enable = hslider("shimmer_enable", 0.0, 0.0, 1.0, 1.0) : si.smoo;
 
 // ═══════════════════════════════════════════════════════════════════════
 // Polyphonic LFOs — per-voice phase, shared rate/depth/shape/target.
@@ -282,9 +285,15 @@ with {
     phasor01        = (+(freq_per_sample) : ma.frac) ~ _;
 };
 
+// Per-voice shimmer gate — driven by LAYER (split). When the played note
+// falls outside the shimmer source's key range, Python sets this to 0 so
+// the shimmer is silenced for THIS voice without affecting other voices.
+// Default 1.0 = pre-LAYER behavior (shimmer follows voice gate).
+shimmer_gate(i) = hslider("shimmer_gate_v%i", 1, 0, 1, 0.001);
+
 shimmer_voice(i) =
     par(u, UNI, shimmer_copy(i, u)) :> _
-    : *(voice_gate(i) * UNI_SCALE * SHIMMER_SEND * shimmer_enable);
+    : *(voice_gate(i) * shimmer_gate(i) * UNI_SCALE * SHIMMER_SEND * shimmer_enable);
 
 shimmer_bank = par(i, NVOICES, shimmer_voice(i)) :> _;
 

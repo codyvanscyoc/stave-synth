@@ -167,16 +167,13 @@
             markPresetSaved(msg.slot);
         } else if (msg.type === "preset_loaded") {
             markPresetLoaded(msg.slot);
-            // Reset ephemeral UI: FX fader alt-state back to reverb (state 0),
-            // and clear BPM tap history so the old taps don't skew the next tap-average.
-            fader3AltState = 0;
-            altModes[3] = false;
-            var altBtn3 = document.querySelector('.alt-btn[data-id="3"]');
-            if (altBtn3) {
-                altBtn3.classList.remove("active");
-                faderColumns[3].classList.remove("alt-mode");
-                faderColumns[3].classList.remove("motion-mode");
-            }
+            // Reset BOTH alt-cycling faders + clear BPM tap history. Previously
+            // only fader 3 (FX) reset on preset load; fader 1 (Vol/Tone/Comp|Leslie)
+            // reset only on instrument cycle. Asymmetric → loading a piano-tuned
+            // preset while fader 1 was in COMP mode left you staring at the
+            // comp-wet bar even if the new preset wanted Vol.
+            resetFader1Alt();
+            resetFader3Alt();
             tapTimes = [];
         } else if (msg.type === "preset_deleted") {
             markPresetDeleted(msg.slot);
@@ -186,16 +183,27 @@
         } else if (msg.type === "instrument_mode") {
             instrumentMode = msg.mode;
             updateInstrumentButton();
-            fader1AltState = 0;
-            altModes[1] = false;
-            var altBtn1 = document.querySelector('.alt-btn[data-id="1"]');
-            if (altBtn1) {
-                altBtn1.classList.remove("active");
-                faderColumns[1].classList.remove("alt-mode");
-            }
+            // Reset BOTH alt cycles on instrument switch — fader 3 binds to
+            // shared FX so its state is meaningful across instruments, but
+            // mid-service piano→organ swap with fader 3 in MOTION mode used
+            // to leave you tweaking the wrong thing on next touch.
+            resetFader1Alt();
+            resetFader3Alt();
             updateFader(1);
         } else if (msg.type === "midi_activity") {
             flashMidiIndicator();
+            // LAYER widget tracks last-played note for its live indicator + LEARN.
+            if (typeof msg.note === "number" && typeof window.__layerOnMidiNote === "function") {
+                window.__layerOnMidiNote(msg.note);
+            }
+        } else if (msg.type === "midi_status") {
+            // Steady-state MIDI connectivity pip — solid green when a keyboard
+            // is wired in, dim grey when not. Catches the #1 predicted support
+            // call ("I plug my keyboard in and nothing happens") without the
+            // user having to play a note to know if it's working.
+            if (midiIndicator) {
+                midiIndicator.classList.toggle("connected", !!msg.connected);
+            }
         } else if (msg.type === "peak_level") {
             updateLevelDots(msg.peak);
             // Per-fader level meters: tanh-compress so brief high peaks don't
@@ -231,14 +239,9 @@
                 }, 400);
             }
         } else if (msg.type === "system_stats") {
-            // CPU ring on STOP button — only update when cpu_percent is in the message
-            if (panicBtn && typeof msg.cpu_percent === "number") {
-                panicBtn.classList.remove("cpu-warn", "cpu-hot", "cpu-crit");
-                var cpu = msg.cpu_percent;
-                if (cpu > 90) panicBtn.classList.add("cpu-crit");
-                else if (cpu > 75) panicBtn.classList.add("cpu-hot");
-                else if (cpu > 50) panicBtn.classList.add("cpu-warn");
-            }
+            // CPU readout lives only in the Global tab (numeric); no top-bar
+            // visual indicator. The earlier CPU ring on STOP looked like
+            // "engaged"; the dedicated pip was unwanted clutter.
             // Numeric readout on Global tab
             var sysCpu = document.getElementById("sys-cpu");
             var sysRam = document.getElementById("sys-ram");
@@ -250,6 +253,23 @@
             }
             if (sysRam && typeof msg.ram_mb === "number") {
                 sysRam.textContent = msg.ram_mb.toFixed(0);
+            }
+            // Xrun badge — only show when count exceeds the dismiss threshold.
+            // Server counter is monotonic; client tracks "acknowledged so far"
+            // so dismissing hides until the next dropout bumps the total.
+            if (typeof msg.xruns === "number") {
+                var xrunBadge = document.getElementById("xrun-badge");
+                if (xrunBadge) {
+                    var dismissed = window.__xrunDismissed || 0;
+                    var unseen = msg.xruns - dismissed;
+                    if (unseen > 0) {
+                        xrunBadge.textContent = unseen > 99 ? "99+" : String(unseen);
+                        xrunBadge.classList.remove("hidden");
+                    } else {
+                        xrunBadge.classList.add("hidden");
+                    }
+                    window.__xrunTotal = msg.xruns;
+                }
             }
         } else if (msg.type === "bus_comp_gr") {
             // Beat-rate GR push (20 Hz) for the LED flash
@@ -460,6 +480,18 @@
             linkOscLevels = s.synth_pad.osc_levels_linked ?? false;
             // Sync LFO link state
             lfoLink = s.synth_pad.lfo_link ?? false;
+            // Sync LFO master ON/OFF buttons
+            (function () {
+                var pairs = [["lfo_active", "lfo_active"], ["lfo2_active", "lfo2_active"]];
+                pairs.forEach(function (pair) {
+                    var on = s.synth_pad[pair[0]] !== false;  // default ON
+                    var btn = document.querySelector('.lfo-active-btn[data-param="' + pair[1] + '"]');
+                    if (btn) {
+                        btn.classList.toggle("active", on);
+                        btn.textContent = on ? "ON" : "OFF";
+                    }
+                });
+            })();
             // Re-snap twins so a freshly-loaded preset where LINK was on but
             // values diverged on disk doesn't leave the UI/engine drifting
             // until the user touches a knob.
@@ -559,6 +591,15 @@
         updateSettingsSliders();
         if (typeof applyMacroVisuals === "function") applyMacroVisuals();
         if (typeof refreshSetlistDropdown === "function") refreshSetlistDropdown();
+        // LAYER hydrate (initialized later in IIFE; guarded for first call ordering).
+        if (typeof window.__layerApplyState === "function") window.__layerApplyState(s);
+        // Show/hide the macro row per Global → Show Macros. Defaults off so
+        // the worship-face has fewer controls competing for attention.
+        var macroRow = document.getElementById("macro-row");
+        if (macroRow) {
+            var showMacros = !!(s.master && s.master.show_macros);
+            macroRow.classList.toggle("hidden", !showMacros);
+        }
     }
 
     // ═══ Fader Logic ═══
@@ -574,6 +615,33 @@
             return fader3MotionValue;
         }
         return altModes[id] ? altFaderValues[id] : faderValues[id];
+    }
+
+    function resetFader1Alt() {
+        // Fader 1 alt cycle is Vol → Tone → Comp (piano) / Leslie (organ).
+        // Snap back to Vol so the user lands on the most-likely-needed control.
+        fader1AltState = 0;
+        altModes[1] = false;
+        var altBtn1 = document.querySelector('.alt-btn[data-id="1"]');
+        if (altBtn1) {
+            altBtn1.classList.remove("active");
+            altBtn1.dataset.cycle = "0";
+            faderColumns[1].classList.remove("alt-mode");
+        }
+    }
+
+    function resetFader3Alt() {
+        // Fader 3 (FX) alt cycle is Reverb → Shimmer → Motion-bus.
+        // Snap back to Reverb (default state).
+        fader3AltState = 0;
+        altModes[3] = false;
+        var altBtn3 = document.querySelector('.alt-btn[data-id="3"]');
+        if (altBtn3) {
+            altBtn3.classList.remove("active");
+            altBtn3.dataset.cycle = "0";
+            faderColumns[3].classList.remove("alt-mode");
+            faderColumns[3].classList.remove("motion-mode");
+        }
     }
 
     function updateFader(id) {
@@ -813,6 +881,7 @@
                 fader1AltState = (fader1AltState + 1) % 3;
                 altModes[id] = fader1AltState > 0;
                 btn.classList.toggle("active", altModes[id]);
+                btn.dataset.cycle = String(fader1AltState);
                 faderColumns[id].classList.toggle("alt-mode", altModes[id]);
                 updateFader(id);
             } else if (id === 3) {
@@ -820,6 +889,7 @@
                 fader3AltState = (fader3AltState + 1) % 3;
                 altModes[id] = fader3AltState > 0;
                 btn.classList.toggle("active", altModes[id]);
+                btn.dataset.cycle = String(fader3AltState);
                 faderColumns[id].classList.toggle("alt-mode", altModes[id]);
                 faderColumns[id].classList.toggle("motion-mode", fader3AltState === 2);
                 updateFader(id);
@@ -1569,42 +1639,15 @@
             }
             presetLongTimer[slot] = undefined;
 
-            if (e.target.classList && e.target.classList.contains("preset-delete-x")) {
-                send({ type: "preset_delete", slot: slot });
-                cancelDeleteConfirm();
-                return;
-            }
-
-            if (presetDeleteSlot >= 0 && presetDeleteSlot !== slot) {
-                cancelDeleteConfirm();
-            }
-
+            // Delete on filled presets has been moved to EDIT mode → action
+            // popup. The old double-tap → X flow could be triggered by an
+            // accidental rapid double-tap during a service. EDIT mode is
+            // explicit and unmistakable. Single-tap loads, long-press
+            // overwrites, EDIT → DELETE is the only delete path.
             if (btn.classList.contains("empty")) {
                 send({ type: "preset_save", slot: slot });
                 return;
             }
-
-            var now = Date.now();
-            var last = presetLastTap[slot] || 0;
-            presetLastTap[slot] = now;
-
-            if (now - last < 400) {
-                presetLastTap[slot] = 0;
-                cancelDeleteConfirm();
-                presetDeleteSlot = slot;
-                btn.classList.add("delete-confirm");
-                var x = document.createElement("span");
-                x.className = "preset-delete-x";
-                x.textContent = "X";
-                btn.appendChild(x);
-                return;
-            }
-
-            if (presetDeleteSlot === slot) {
-                cancelDeleteConfirm();
-                return;
-            }
-
             send({ type: "preset_load", slot: slot });
         });
 
@@ -1723,6 +1766,16 @@
         transposeDisplay.textContent = "T" + prefix + transposeValue;
         transposeUp.classList.toggle("shifted", transposeValue > 0);
         transposeDown.classList.toggle("shifted", transposeValue < 0);
+    }
+
+    // ═══ Xrun badge dismiss ═══
+    var xrunBadgeEl = document.getElementById("xrun-badge");
+    if (xrunBadgeEl) {
+        xrunBadgeEl.addEventListener("click", function (e) {
+            e.stopPropagation();
+            window.__xrunDismissed = window.__xrunTotal || 0;
+            xrunBadgeEl.classList.add("hidden");
+        });
     }
 
     // ═══ Panic / Stop ═══
@@ -2306,6 +2359,17 @@
             settingsPanels.forEach(function (p) { p.classList.remove("active"); });
             tab.classList.add("active");
             document.querySelector('.settings-panel[data-panel="' + target + '"]').classList.add("active");
+            // INSTRUMENT tab: auto-sync subpanel to current instrument_mode
+            // so opening shows the engine the user is actually playing.
+            if (target === "instrument") {
+                var sub = (instrumentMode === "organ") ? "organ" : "piano";
+                document.querySelectorAll(".instrument-subtab-btn").forEach(function (b) {
+                    b.classList.toggle("active", b.dataset.subtab === sub);
+                });
+                document.querySelectorAll(".instrument-subpanel").forEach(function (p) {
+                    p.classList.toggle("active", p.dataset.subpanel === sub);
+                });
+            }
         });
     });
 
@@ -2317,6 +2381,48 @@
             document.querySelectorAll(".motion-subpanel").forEach(function (p) { p.classList.remove("active"); });
             btn.classList.add("active");
             var panel = document.querySelector('.motion-subpanel[data-subpanel="' + target + '"]');
+            if (panel) panel.classList.add("active");
+        });
+    });
+
+    // LFO ON/OFF master gate — doesn't touch depth slider; multiplies its
+    // contribution by 0 when off, so re-enabling restores the prior amount.
+    document.querySelectorAll(".lfo-active-btn").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+            var nowOn = !btn.classList.contains("active");
+            btn.classList.toggle("active", nowOn);
+            btn.textContent = nowOn ? "ON" : "OFF";
+            send({ type: "setting", section: btn.dataset.section,
+                   param: btn.dataset.param, value: nowOn });
+            if (state && state.synth_pad) state.synth_pad[btn.dataset.param] = nowOn;
+        });
+    });
+
+    // LFO advanced disclosure — toggle visibility of Key Sync / Invert /
+    // Poly / Offset / Haas Comp. Both LFO panels work the same way; the
+    // toggle button and its sibling block share the same data-lfo index.
+    document.querySelectorAll(".lfo-advanced-toggle").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+            var idx = btn.dataset.lfo;
+            var panel = document.querySelector('.lfo-advanced[data-lfo="' + idx + '"]');
+            if (!panel) return;
+            var nowOpen = !panel.classList.contains("expanded");
+            panel.classList.toggle("expanded", nowOpen);
+            btn.classList.toggle("expanded", nowOpen);
+            btn.textContent = nowOpen ? "advanced ▲" : "advanced ▼";
+        });
+    });
+
+    // Sub-tabs inside INSTRUMENT panel (PIANO / ORGAN). View-only — does
+    // NOT change instrument_mode (the front-panel PIANO/ORGAN cycle owns
+    // that). Power user can configure organ params while playing piano.
+    document.querySelectorAll(".instrument-subtab-btn").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+            var target = btn.dataset.subtab;
+            document.querySelectorAll(".instrument-subtab-btn").forEach(function (b) { b.classList.remove("active"); });
+            document.querySelectorAll(".instrument-subpanel").forEach(function (p) { p.classList.remove("active"); });
+            btn.classList.add("active");
+            var panel = document.querySelector('.instrument-subpanel[data-subpanel="' + target + '"]');
             if (panel) panel.classList.add("active");
         });
     });
@@ -2534,10 +2640,17 @@
             });
 
             // MIRROR (OSC): when OSC level-mirror is on, mirror per-OSC sliders
-            // to their twin. Covers reverb sends + per-OSC ADSR knobs.
+            // to their twin. Covers reverb sends, per-OSC ADSR knobs, pan, and
+            // independent filter cutoff. Without pan + cutoff in the mirror
+            // set, panning OSC1 with LINK on left OSC2 unchanged — silent
+            // divergence the user wouldn't see until a song called for it.
             var mirrorTwin = null;
             if (param === "osc1_reverb_send") mirrorTwin = "osc2_reverb_send";
             else if (param === "osc2_reverb_send") mirrorTwin = "osc1_reverb_send";
+            else if (param === "osc1_pan") mirrorTwin = "osc2_pan";
+            else if (param === "osc2_pan") mirrorTwin = "osc1_pan";
+            else if (param === "osc1_indep_cutoff") mirrorTwin = "osc2_indep_cutoff";
+            else if (param === "osc2_indep_cutoff") mirrorTwin = "osc1_indep_cutoff";
             else if (param.indexOf("adsr_osc1.") === 0) mirrorTwin = "adsr_osc2." + param.slice(10);
             else if (param.indexOf("adsr_osc2.") === 0) mirrorTwin = "adsr_osc1." + param.slice(10);
             if (linkOscLevels && mirrorTwin) {
@@ -2726,6 +2839,8 @@
         var selectPairs = [
             ["lfo_rate_mode", "lfo2_rate_mode"],
             ["lfo_rate_multiplier", "lfo2_rate_multiplier"],
+            ["lfo_shape", "lfo2_shape"],
+            ["lfo_target", "lfo2_target"],
         ];
         selectPairs.forEach(function (pair) {
             var src = document.querySelector('.setting-select[data-param="' + pair[0] + '"]');
@@ -2735,18 +2850,43 @@
                 dst.dispatchEvent(new Event("change", { bubbles: true }));
             }
         });
+        var checkboxPairs = [
+            ["lfo_key_sync", "lfo2_key_sync"],
+            ["lfo_invert", "lfo2_invert"],
+            ["lfo_poly", "lfo2_poly"],
+            ["lfo_haas_compensate", "lfo2_haas_compensate"],
+        ];
+        checkboxPairs.forEach(function (pair) {
+            var src = document.querySelector('.setting-checkbox[data-param="' + pair[0] + '"]');
+            var dst = document.querySelector('.setting-checkbox[data-param="' + pair[1] + '"]');
+            if (src && dst && dst.checked !== src.checked) {
+                dst.checked = src.checked;
+                dst.dispatchEvent(new Event("change", { bubbles: true }));
+            }
+        });
+        // ON/OFF buttons (lfo_active / lfo2_active) — mirror via click sim.
+        (function () {
+            var src = document.querySelector('.lfo-active-btn[data-param="lfo_active"]');
+            var dst = document.querySelector('.lfo-active-btn[data-param="lfo2_active"]');
+            if (src && dst) {
+                var srcOn = src.classList.contains("active");
+                if (dst.classList.contains("active") !== srcOn) dst.click();
+            }
+        })();
     }
 
     // Snap OSC2 per-OSC params to match OSC1 when MIRROR is enabled. Covers
-    // the same param set MIRROR watches on drag (reverb sends, fx bypass,
-    // ADSR knobs) plus the front-panel OSC1/OSC2 level faders. Other per-OSC
-    // params (waveform, pan, filter, trim) are left alone so deliberate
+    // every param the live MIRROR mirror watches: reverb sends, fx bypass,
+    // ADSR knobs, pan, indep cutoff, filter-enabled, plus the front-panel
+    // OSC1/OSC2 level faders. Waveform + trim are left alone so deliberate
     // cross-OSC differences survive toggling MIRROR.
     function snapMirrorOsc2ToOsc1() {
         // Menu sliders — dispatching 'input' re-runs the setting-slider handler,
         // which sends to backend and (because linkOscLevels is on) mirrors to twin.
         var sliderPairs = [
             ["osc1_reverb_send", "osc2_reverb_send"],
+            ["osc1_pan", "osc2_pan"],
+            ["osc1_indep_cutoff", "osc2_indep_cutoff"],
             ["adsr_osc1.attack_ms", "adsr_osc2.attack_ms"],
             ["adsr_osc1.decay_ms", "adsr_osc2.decay_ms"],
             ["adsr_osc1.sustain_percent", "adsr_osc2.sustain_percent"],
@@ -2766,6 +2906,7 @@
             ["osc1_fx_bypass", "osc2_fx_bypass"],
             ["osc1_recv_lfo1", "osc2_recv_lfo1"],
             ["osc1_recv_lfo2", "osc2_recv_lfo2"],
+            ["osc1_filter_enabled", "osc2_filter_enabled"],
         ];
         cbPairs.forEach(function (pair) {
             var src = document.querySelector('.setting-checkbox[data-param="' + pair[0] + '"]');
@@ -2794,21 +2935,25 @@
     // LFOs are off per-OSC paths) to keep the UI honest. State is preserved
     // when you switch back.
     function updateLfoRecvVisibility() {
+        // Per-OSC LFO recv only does something when the LFO targets a per-OSC
+        // path (Amp / Pan). Filter is shared between OSCs; Bus is post-mix —
+        // routing checkbox would be a lie. Keep the boxes ALWAYS visible so
+        // layout doesn't shift, just dim them when inactive — the user can
+        // still check/uncheck (state persists across target changes), and the
+        // grey-out tells them "this isn't doing anything right now."
         var lfo1Sel = document.querySelector('[data-param="lfo_target"]');
         var lfo2Sel = document.querySelector('[data-param="lfo2_target"]');
-        var lfo1Uses = !!(lfo1Sel && (lfo1Sel.value === "amp" || lfo1Sel.value === "pan"));
-        var lfo2Uses = !!(lfo2Sel && (lfo2Sel.value === "amp" || lfo2Sel.value === "pan"));
+        var lfo1Active = !!(lfo1Sel && (lfo1Sel.value === "amp" || lfo1Sel.value === "pan"));
+        var lfo2Active = !!(lfo2Sel && (lfo2Sel.value === "amp" || lfo2Sel.value === "pan"));
         document.querySelectorAll('input[data-param$="_recv_lfo1"]').forEach(function (cb) {
             var row = cb.closest(".setting-row");
-            if (row) row.style.display = lfo1Uses ? "" : "none";
+            if (row) row.classList.toggle("lfo-recv-inactive", !lfo1Active);
         });
         document.querySelectorAll('input[data-param$="_recv_lfo2"]').forEach(function (cb) {
             var row = cb.closest(".setting-row");
-            if (row) row.style.display = lfo2Uses ? "" : "none";
+            if (row) row.classList.toggle("lfo-recv-inactive", !lfo2Active);
         });
-        document.querySelectorAll(".lfo-recv-section").forEach(function (h) {
-            h.style.display = (lfo1Uses || lfo2Uses) ? "" : "none";
-        });
+        // Section header stays visible — no longer toggled.
     }
 
     // Settings checkboxes
@@ -2849,6 +2994,8 @@
                 else if (p === "osc2_recv_lfo1") oscMirror = "osc1_recv_lfo1";
                 else if (p === "osc1_recv_lfo2") oscMirror = "osc2_recv_lfo2";
                 else if (p === "osc2_recv_lfo2") oscMirror = "osc1_recv_lfo2";
+                else if (p === "osc1_filter_enabled") oscMirror = "osc2_filter_enabled";
+                else if (p === "osc2_filter_enabled") oscMirror = "osc1_filter_enabled";
                 if (oscMirror) {
                     var twinCb = document.querySelector('.setting-checkbox[data-param="' + oscMirror + '"]');
                     if (twinCb && twinCb.checked !== checkbox.checked) {
@@ -2858,13 +3005,30 @@
                 }
             }
 
-            // LINK (LFO): toggle snapshot only. Checkboxes and per-LFO
-            // identity (shape/target) are intentionally NOT mirrored — LINK
-            // pairs timing only, so LFO1 and LFO2 can run at the same rate
-            // but target different paths.
+            // LINK (LFO): toggle snapshot, then mirror every per-LFO checkbox
+            // edit while LINK is on. snapLfo2ToLfo1 covers initial sync and
+            // post-preset reload; per-edit mirror keeps them locked while
+            // either side is being adjusted.
             if (p === "lfo_link") {
                 lfoLink = checkbox.checked;
                 if (lfoLink) snapLfo2ToLfo1();
+            } else if (lfoLink) {
+                var lfoCbTwin = null;
+                if (p === "lfo_key_sync") lfoCbTwin = "lfo2_key_sync";
+                else if (p === "lfo2_key_sync") lfoCbTwin = "lfo_key_sync";
+                else if (p === "lfo_invert") lfoCbTwin = "lfo2_invert";
+                else if (p === "lfo2_invert") lfoCbTwin = "lfo_invert";
+                else if (p === "lfo_poly") lfoCbTwin = "lfo2_poly";
+                else if (p === "lfo2_poly") lfoCbTwin = "lfo_poly";
+                else if (p === "lfo_haas_compensate") lfoCbTwin = "lfo2_haas_compensate";
+                else if (p === "lfo2_haas_compensate") lfoCbTwin = "lfo_haas_compensate";
+                if (lfoCbTwin) {
+                    var lfoTwinCb = document.querySelector('.setting-checkbox[data-param="' + lfoCbTwin + '"]');
+                    if (lfoTwinCb && lfoTwinCb.checked !== checkbox.checked) {
+                        lfoTwinCb.checked = checkbox.checked;
+                        send({ type: "setting", section: "synth_pad", param: lfoCbTwin, value: checkbox.checked });
+                    }
+                }
             }
 
             updateIndepFilterVisibility();
@@ -2894,14 +3058,17 @@
             });
             if (p && p.indexOf("bus_comp_") === 0) markBusCompCustom();
 
-            // LINK (LFO): mirror only timing selects (rate_mode, rate_multiplier).
-            // Shape + target are left per-LFO so the two can target
-            // different paths while staying tempo-locked.
+            // LINK (LFO): mirror every per-LFO select while LINK is on
+            // (rate_mode, rate_multiplier, shape, target).
             var lfoSelTwin = null;
             if (p === "lfo_rate_mode") lfoSelTwin = "lfo2_rate_mode";
             else if (p === "lfo_rate_multiplier") lfoSelTwin = "lfo2_rate_multiplier";
+            else if (p === "lfo_shape") lfoSelTwin = "lfo2_shape";
+            else if (p === "lfo_target") lfoSelTwin = "lfo2_target";
             else if (p === "lfo2_rate_mode") lfoSelTwin = "lfo_rate_mode";
             else if (p === "lfo2_rate_multiplier") lfoSelTwin = "lfo_rate_multiplier";
+            else if (p === "lfo2_shape") lfoSelTwin = "lfo_shape";
+            else if (p === "lfo2_target") lfoSelTwin = "lfo_target";
             if (lfoLink && lfoSelTwin) {
                 var lfoTwinSel = document.querySelector('.setting-select[data-param="' + lfoSelTwin + '"]');
                 if (lfoTwinSel && lfoTwinSel.value !== select.value) {
@@ -3826,4 +3993,386 @@
         });
         outputMenu.classList.remove("hidden");
     }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // LAYER (split) panel — per-source key range UI with crossfade tails.
+    // ═════════════════════════════════════════════════════════════════════
+    (function initLayerPanel() {
+        const LAYER_SOURCES = [
+            // octaveKind: "osc1" / "osc2" / "piano" → uses the existing octave WS handler.
+            // "shimmer" → toggle between +12 (shimmer_high=false) and +24 (shimmer_high=true).
+            { id: "osc1",       label: "OSC 1",  color: "#00D4AA", section: "synth_pad", paramPrefix: "osc1_split",       toggleBtn: "osc1-btn",    octaveKind: "osc1"    },
+            { id: "osc2",       label: "OSC 2",  color: "#FFB020", section: "synth_pad", paramPrefix: "osc2_split",       toggleBtn: "osc2-btn",    octaveKind: "osc2"    },
+            { id: "instrument", label: "PIANO",  color: "#B06EFF", section: "master",    paramPrefix: "instrument_split", toggleBtn: "piano-btn",   octaveKind: "piano"   },
+            { id: "shimmer",    label: "SHIM",   color: "#4D9EFF", section: "synth_pad", paramPrefix: "shimmer_split",    toggleBtn: "shimmer-btn", octaveKind: "shimmer" },
+        ];
+        const KB_MIN = 21;   // A0
+        const KB_MAX = 108;  // C8 — full 88-key piano range
+        const KB_RANGE = KB_MAX - KB_MIN;
+
+        const panel = document.getElementById("layer-panel");
+        const layerBtn = document.getElementById("layer-btn");
+        const enableBtn = document.getElementById("layer-enable-btn");
+        const ruler = document.getElementById("layer-ruler");
+        const liveDot = document.getElementById("layer-live");
+        const barsContainer = document.getElementById("layer-bars");
+        const resetBtn = document.getElementById("layer-reset-btn");
+        if (!panel || !layerBtn) return;
+
+        // Convert MIDI note ↔ percent-X position across the keyboard ruler.
+        function noteToPct(n) {
+            return ((Math.max(KB_MIN, Math.min(KB_MAX, n)) - KB_MIN) / KB_RANGE) * 100;
+        }
+        function pctToNote(pct) {
+            return Math.round(KB_MIN + (Math.max(0, Math.min(100, pct)) / 100) * KB_RANGE);
+        }
+
+        // Render the ruler labels (one per C of each octave).
+        for (var oct = 0; oct <= 8; oct++) {
+            var n = 12 * oct + 12;  // C0=12, C1=24, ... C7=96
+            if (n < KB_MIN || n > KB_MAX) continue;
+            var span = document.createElement("span");
+            span.textContent = "C" + oct;
+            span.style.left = noteToPct(n) + "%";
+            ruler.appendChild(span);
+        }
+
+        // State for each source's bar — synced to engine via `setting` messages.
+        const barState = {};
+        LAYER_SOURCES.forEach(function (src) {
+            barState[src.id] = { low: KB_MIN, high: KB_MAX, xfade: 0, learn: null };
+        });
+        var activeLearn = null;  // {srcId, edge: 'low'|'high'} when LEARN armed
+
+        // Build one row per source. Each row: label | track-with-bar-and-tails | xfade input | learn btn.
+        LAYER_SOURCES.forEach(function (src) {
+            var row = document.createElement("div");
+            row.className = "layer-bar-row";
+            row.dataset.src = src.id;
+            row.style.setProperty("--bar-color", src.color);
+
+            var label = document.createElement("div");
+            label.className = "layer-bar-label";
+            label.textContent = src.label;
+
+            // ── Octave cluster ──────────────────────────────────────────
+            // Per-source octave shift, independent of LAYER's key range. The
+            // bar sets which keys trigger the source; OCT changes the pitch
+            // those triggered notes produce. Shimmer's "octave" is the only
+            // outlier — it toggles between +12 and +24 semitones via shimmer_high.
+            var octWrap = document.createElement("div");
+            octWrap.className = "layer-bar-oct";
+            if (src.octaveKind === "shimmer") {
+                var octBtnHi = document.createElement("button");
+                octBtnHi.className = "layer-oct-btn layer-oct-shim";
+                octBtnHi.title = "Shimmer pitch — tap to toggle +12 / +24 semitones";
+                octBtnHi.textContent = "+12";  // hydrated from state below
+                octBtnHi.addEventListener("click", function () {
+                    var nextHigh = octBtnHi.textContent === "+12";
+                    if (state && state.synth_pad) state.synth_pad.shimmer_high = nextHigh;
+                    octBtnHi.textContent = nextHigh ? "+24" : "+12";
+                    send({ type: "setting", section: "synth_pad", param: "shimmer_high", value: nextHigh });
+                });
+                octWrap.appendChild(octBtnHi);
+                var st_s = barState[src.id];
+                st_s.dom_octBtn = octBtnHi;
+            } else {
+                var octMinus = document.createElement("button");
+                octMinus.className = "layer-oct-btn";
+                octMinus.textContent = "−";
+                var octReadout = document.createElement("span");
+                octReadout.className = "layer-oct-readout";
+                octReadout.textContent = "+0";
+                var octPlus = document.createElement("button");
+                octPlus.className = "layer-oct-btn";
+                octPlus.textContent = "+";
+                octWrap.appendChild(octMinus);
+                octWrap.appendChild(octReadout);
+                octWrap.appendChild(octPlus);
+                var bumpOct = function (delta) {
+                    var cur = parseInt(octReadout.textContent.replace("+", ""), 10) || 0;
+                    var next = Math.max(-3, Math.min(3, cur + delta));
+                    if (next === cur) return;
+                    octReadout.textContent = (next > 0 ? "+" : "") + next;
+                    // Reuses the existing front-panel octave message → state +
+                    // engine + cross-tab broadcast all happen via main.py.
+                    send({ type: "octave", instrument: src.octaveKind, octave: next });
+                };
+                octMinus.addEventListener("click", function () { bumpOct(-1); });
+                octPlus.addEventListener("click",  function () { bumpOct(+1); });
+                var st_o = barState[src.id];
+                st_o.dom_octReadout = octReadout;
+            }
+
+            var track = document.createElement("div");
+            track.className = "layer-bar-track";
+
+            var tailLow = document.createElement("div");
+            tailLow.className = "layer-bar-tail tail-low";
+            var tailHigh = document.createElement("div");
+            tailHigh.className = "layer-bar-tail tail-high";
+            var body = document.createElement("div");
+            body.className = "layer-bar-body";
+            var hLow = document.createElement("div");
+            hLow.className = "layer-bar-handle low";
+            var hHigh = document.createElement("div");
+            hHigh.className = "layer-bar-handle high";
+
+            track.appendChild(tailLow);
+            track.appendChild(tailHigh);
+            track.appendChild(body);
+            track.appendChild(hLow);
+            track.appendChild(hHigh);
+
+            var xWrap = document.createElement("div");
+            xWrap.className = "layer-bar-xfade-wrap";
+            var xLabel = document.createElement("span");
+            xLabel.className = "layer-xfade-icon";
+            xLabel.title = "Crossfade tail length (keys)";
+            // Bowtie/double-triangle is the canonical crossfade icon in DAWs.
+            // Built from two CSS triangles meeting tip-to-tip — sharper than
+            // any unicode character at this size.
+            xLabel.innerHTML = '<span class="xfade-tri left"></span><span class="xfade-tri right"></span>';
+            var xInput = document.createElement("input");
+            xInput.type = "range";
+            xInput.min = "0";
+            xInput.max = "24";
+            xInput.value = "0";
+            xWrap.appendChild(xLabel);
+            xWrap.appendChild(xInput);
+
+            var learn = document.createElement("button");
+            learn.className = "layer-bar-learn";
+            learn.textContent = "LEARN";
+
+            row.appendChild(label);
+            row.appendChild(octWrap);
+            row.appendChild(track);
+            row.appendChild(xWrap);
+            row.appendChild(learn);
+            barsContainer.appendChild(row);
+
+            // Cache DOM refs on the state object for fast updates.
+            var st = barState[src.id];
+            st.dom = { row: row, track: track, body: body, hLow: hLow, hHigh: hHigh,
+                       tailLow: tailLow, tailHigh: tailHigh, xInput: xInput, learn: learn };
+
+            // ── Drag handlers ────────────────────────────────────────────
+            function trackPctFromEvent(e) {
+                var rect = track.getBoundingClientRect();
+                var x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+                return Math.max(0, Math.min(100, (x / rect.width) * 100));
+            }
+            function startDrag(kind, e) {
+                e.preventDefault();
+                var startPct = trackPctFromEvent(e);
+                var startLow = st.low, startHigh = st.high;
+                function onMove(ev) {
+                    var pct = trackPctFromEvent(ev);
+                    var newNote = pctToNote(pct);
+                    if (kind === "low") {
+                        st.low = Math.min(newNote, st.high);
+                    } else if (kind === "high") {
+                        st.high = Math.max(newNote, st.low);
+                    } else if (kind === "body") {
+                        var span = startHigh - startLow;
+                        var anchorNote = pctToNote(startPct);
+                        var deltaNotes = newNote - anchorNote;
+                        var newLow = Math.max(KB_MIN, Math.min(KB_MAX - span, startLow + deltaNotes));
+                        st.low = newLow;
+                        st.high = newLow + span;
+                    }
+                    paintBar(src.id);
+                }
+                function onUp() {
+                    document.removeEventListener("mousemove", onMove);
+                    document.removeEventListener("touchmove", onMove);
+                    document.removeEventListener("mouseup", onUp);
+                    document.removeEventListener("touchend", onUp);
+                    sendBarState(src.id);
+                }
+                document.addEventListener("mousemove", onMove);
+                document.addEventListener("touchmove", onMove, { passive: false });
+                document.addEventListener("mouseup", onUp);
+                document.addEventListener("touchend", onUp);
+            }
+            hLow.addEventListener("mousedown",  function (e) { startDrag("low", e); });
+            hLow.addEventListener("touchstart", function (e) { startDrag("low", e); }, { passive: false });
+            hHigh.addEventListener("mousedown", function (e) { startDrag("high", e); });
+            hHigh.addEventListener("touchstart",function (e) { startDrag("high", e); }, { passive: false });
+            body.addEventListener("mousedown",  function (e) { startDrag("body", e); });
+            body.addEventListener("touchstart", function (e) { startDrag("body", e); }, { passive: false });
+
+            // xfade slider
+            xInput.addEventListener("input", function () {
+                st.xfade = parseInt(xInput.value, 10);
+                paintBar(src.id);
+                send({ type: "setting", section: src.section,
+                       param: src.paramPrefix + "_xfade", value: st.xfade });
+            });
+
+            // Learn button — arms low-edge learn first, second tap arms high-edge,
+            // third tap cancels.
+            learn.addEventListener("click", function () {
+                if (activeLearn && activeLearn.srcId === src.id && activeLearn.edge === "low") {
+                    activeLearn = { srcId: src.id, edge: "high" };
+                    learn.textContent = "LEARN HIGH";
+                } else if (activeLearn && activeLearn.srcId === src.id && activeLearn.edge === "high") {
+                    activeLearn = null;
+                    learn.textContent = "LEARN";
+                    learn.classList.remove("active");
+                } else {
+                    // Disarm any other source's learn
+                    LAYER_SOURCES.forEach(function (s2) {
+                        var l2 = barState[s2.id].dom.learn;
+                        l2.textContent = "LEARN";
+                        l2.classList.remove("active");
+                    });
+                    activeLearn = { srcId: src.id, edge: "low" };
+                    learn.textContent = "LEARN LOW";
+                    learn.classList.add("active");
+                }
+            });
+        });
+
+        function paintBar(srcId) {
+            var st = barState[srcId];
+            var lowPct = noteToPct(st.low);
+            var highPct = noteToPct(st.high);
+            st.dom.body.style.left = lowPct + "%";
+            st.dom.body.style.width = (highPct - lowPct) + "%";
+            st.dom.hLow.style.left = lowPct + "%";
+            st.dom.hHigh.style.left = highPct + "%";
+            // Tails: fade region from (low - xfade) to low, and (high) to (high + xfade).
+            var tailLowStart  = noteToPct(Math.max(KB_MIN, st.low - st.xfade));
+            var tailHighEnd   = noteToPct(Math.min(KB_MAX, st.high + st.xfade));
+            st.dom.tailLow.style.left  = tailLowStart + "%";
+            st.dom.tailLow.style.width = (lowPct - tailLowStart) + "%";
+            st.dom.tailHigh.style.left = highPct + "%";
+            st.dom.tailHigh.style.width = (tailHighEnd - highPct) + "%";
+            updateSlashIcon(srcId);
+        }
+        function sendBarState(srcId) {
+            var st = barState[srcId];
+            var src = LAYER_SOURCES.find(function (s) { return s.id === srcId; });
+            send({ type: "setting", section: src.section, param: src.paramPrefix + "_low",  value: st.low });
+            send({ type: "setting", section: src.section, param: src.paramPrefix + "_high", value: st.high });
+        }
+
+        // Slash icon on the top-bar source toggle when range is restricted.
+        function updateSlashIcon(srcId) {
+            var src = LAYER_SOURCES.find(function (s) { return s.id === srcId; });
+            if (!src.toggleBtn) return;
+            var btn = document.getElementById(src.toggleBtn);
+            if (!btn) return;
+            var st = barState[srcId];
+            var restricted = (state && state.master && state.master.split_enabled) &&
+                             (st.low > KB_MIN || st.high < KB_MAX);
+            btn.classList.toggle("split-active", !!restricted);
+        }
+        function refreshAllSlashIcons() {
+            LAYER_SOURCES.forEach(function (s) { updateSlashIcon(s.id); });
+        }
+
+        // Open/close panel via the LAYER top-bar button.
+        layerBtn.addEventListener("click", function () {
+            panel.classList.toggle("hidden");
+            layerBtn.classList.toggle("active", !panel.classList.contains("hidden"));
+        });
+
+        // Master enable button — toggles split_enabled via the same setting
+        // flow the front-panel toggles use. .active class gives the bright
+        // ctrl-btn-sm look (green-on-dark inverted to dark-on-green).
+        enableBtn.addEventListener("click", function () {
+            var nextOn = !enableBtn.classList.contains("active");
+            enableBtn.classList.toggle("active", nextOn);
+            if (state && state.master) state.master.split_enabled = nextOn;
+            send({ type: "setting", section: "master", param: "split_enabled", value: nextOn });
+            refreshAllSlashIcons();
+        });
+
+        // RESET — wipe all sources back to full range, no xfade. Sends individual
+        // settings so engine + state stay consistent.
+        resetBtn.addEventListener("click", function () {
+            LAYER_SOURCES.forEach(function (src) {
+                var st = barState[src.id];
+                st.low = KB_MIN; st.high = KB_MAX; st.xfade = 0;
+                st.dom.xInput.value = 0;
+                paintBar(src.id);
+                sendBarState(src.id);
+                send({ type: "setting", section: src.section, param: src.paramPrefix + "_xfade", value: 0 });
+            });
+        });
+
+        // Receive midi_activity → light up the ruler dot at that note's position.
+        // Hijack the existing handler chain by listening for a custom event.
+        var liveTimer = null;
+        window.__layerOnMidiNote = function (note) {
+            liveDot.style.left = noteToPct(note) + "%";
+            liveDot.classList.add("lit");
+            clearTimeout(liveTimer);
+            liveTimer = setTimeout(function () { liveDot.classList.remove("lit"); }, 250);
+            // If LEARN armed, this note sets the active edge.
+            if (activeLearn) {
+                var st = barState[activeLearn.srcId];
+                var src = LAYER_SOURCES.find(function (s) { return s.id === activeLearn.srcId; });
+                if (activeLearn.edge === "low") {
+                    st.low = Math.min(note, st.high);
+                } else {
+                    st.high = Math.max(note, st.low);
+                }
+                paintBar(activeLearn.srcId);
+                sendBarState(activeLearn.srcId);
+                // Advance to the other edge automatically (low → high).
+                if (activeLearn.edge === "low") {
+                    activeLearn.edge = "high";
+                    st.dom.learn.textContent = "LEARN HIGH";
+                } else {
+                    activeLearn = null;
+                    st.dom.learn.textContent = "LEARN";
+                    st.dom.learn.classList.remove("active");
+                }
+            }
+        };
+
+        // Hydrate from current state.
+        window.__layerApplyState = function (s) {
+            if (!s) return;
+            var sp = s.synth_pad || {};
+            var m = s.master || {};
+            barState.osc1.low      = sp.osc1_split_low     ?? KB_MIN;
+            barState.osc1.high     = sp.osc1_split_high    ?? KB_MAX;
+            barState.osc1.xfade    = sp.osc1_split_xfade   ?? 0;
+            barState.osc2.low      = sp.osc2_split_low     ?? KB_MIN;
+            barState.osc2.high     = sp.osc2_split_high    ?? KB_MAX;
+            barState.osc2.xfade    = sp.osc2_split_xfade   ?? 0;
+            barState.shimmer.low   = sp.shimmer_split_low  ?? KB_MIN;
+            barState.shimmer.high  = sp.shimmer_split_high ?? KB_MAX;
+            barState.shimmer.xfade = sp.shimmer_split_xfade?? 0;
+            barState.instrument.low   = m.instrument_split_low   ?? KB_MIN;
+            barState.instrument.high  = m.instrument_split_high  ?? KB_MAX;
+            barState.instrument.xfade = m.instrument_split_xfade ?? 0;
+            LAYER_SOURCES.forEach(function (src) {
+                var st = barState[src.id];
+                st.dom.xInput.value = st.xfade;
+                paintBar(src.id);
+                // Octave readout hydrate
+                if (st.dom_octReadout) {
+                    var octVal = 0;
+                    if (src.octaveKind === "osc1")    octVal = sp.osc1_octave   ?? 0;
+                    else if (src.octaveKind === "osc2") octVal = sp.osc2_octave ?? 0;
+                    else if (src.octaveKind === "piano") octVal = m.piano_octave ?? 0;
+                    st.dom_octReadout.textContent = (octVal > 0 ? "+" : "") + octVal;
+                } else if (st.dom_octBtn) {
+                    var hi = !!sp.shimmer_high;
+                    st.dom_octBtn.textContent = hi ? "+24" : "+12";
+                }
+            });
+            enableBtn.classList.toggle("active", !!m.split_enabled);
+            refreshAllSlashIcons();
+        };
+
+        // Initial paint with defaults until applyState fires.
+        LAYER_SOURCES.forEach(function (src) { paintBar(src.id); });
+    })();
 })();

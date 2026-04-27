@@ -230,10 +230,27 @@ body.retro-amber {
     color: var(--bg) !important;
 }
 
-/* CPU load ring on STOP button — subtle amber/orange/red as load climbs */
-.panic-btn.cpu-warn { box-shadow: 0 0 6px rgba(224, 192, 96, 0.5); }
-.panic-btn.cpu-hot  { box-shadow: 0 0 10px rgba(232, 144, 64, 0.65); }
-.panic-btn.cpu-crit { box-shadow: 0 0 14px rgba(216, 80, 48, 0.80); }
+
+/* Xrun badge — appears next to STOP only when audio dropouts have occurred.
+   Click to dismiss (until the next dropout pushes the count higher). */
+.xrun-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 22px;
+    height: 22px;
+    padding: 0 5px;
+    margin-left: 4px;
+    border-radius: 11px;
+    background: rgba(216, 80, 48, 0.85);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    user-select: none;
+    align-self: center;
+}
+.xrun-badge.hidden { display: none; }
 
 #shimmer-btn {
     border-color: var(--border-orange);
@@ -268,6 +285,15 @@ body.retro-amber {
     border-color: var(--border-green);
     color: var(--bg);
     background: var(--text-green);
+}
+
+/* Steady-state "connected" — green outline + slightly brighter text so
+   you can tell at a glance whether a keyboard is wired in. The .flash
+   on top during note activity still works (higher specificity / cascade
+   order). When NOT connected, falls through to the dim base style. */
+#midi-indicator.connected {
+    border-color: var(--border-green);
+    color: var(--text-green);
 }
 
 #tempo-box {
@@ -502,17 +528,6 @@ body.retro-amber {
     text-align: center;
 }
 
-#drone-freeze-stack {
-    display: flex;
-    flex-direction: column;
-    gap: 0.3vh;
-    align-items: stretch;
-}
-#drone-freeze-stack > button {
-    padding: 0.25vh 0.8vw;
-    min-height: 0;
-    line-height: 1.1;
-}
 
 #clip-indicator {
     font-size: clamp(8px, 1.5vw, 11px);
@@ -727,6 +742,27 @@ body.retro-amber {
     min-height: 4.2vh;
     min-width: 3.4em;
     flex-shrink: 0;
+    position: relative;
+}
+
+/* Cycle indicator: small "1" or "2" badge in the upper-right corner of the
+   ALT button when the fader is in a non-default cycle state. Gives instant
+   "which step are we on / how many are there" feedback at low light without
+   adding any layout. Only Faders 1 and 3 cycle; the toggle alt-buttons keep
+   data-cycle empty and never paint the badge. */
+.alt-btn[data-cycle="1"]::after,
+.alt-btn[data-cycle="2"]::after {
+    content: attr(data-cycle);
+    position: absolute;
+    top: -0.5vh;
+    right: -0.4vw;
+    font-size: clamp(8px, 1.3vw, 10px);
+    line-height: 1;
+    padding: 0.15vh 0.35vw;
+    border-radius: 0.6vh;
+    background: var(--text-green);
+    color: #000;
+    font-weight: bold;
 }
 
 .octave-controls {
@@ -1625,12 +1661,12 @@ body.macro-learning #settings-box {
 }
 
 .setting-section {
-    font-size: clamp(10px, 1.5vw, 13px);
+    font-size: clamp(10px, 1.4vw, 12px);
     color: var(--text-green);
-    letter-spacing: 0.25em;
+    letter-spacing: 0.18em;
     font-weight: 600;
-    padding: 0.8vh 0 0.4vh 0;
-    margin-top: 0.3vh;
+    padding: 0.5vh 0 0.25vh 0;
+    margin-top: 0.2vh;
     border-top: 1px solid rgba(0, 191, 99, 0.25);
 }
 
@@ -2111,14 +2147,14 @@ body.macro-learning #settings-box {
 .setting-row {
     display: flex;
     align-items: center;
-    gap: 1.2vw;
-    padding: 0.6vh 0;
+    gap: 0.8vw;
+    padding: 0.4vh 0;
     border-bottom: 1px solid rgba(0, 191, 99, 0.1);
 }
 
 .setting-label {
-    flex: 0 0 22%;
-    font-size: clamp(9px, 1.5vw, 11px);
+    flex: 0 0 18%;
+    font-size: clamp(9px, 1.4vw, 11px);
     color: var(--text-green-dim);
 }
 
@@ -2171,13 +2207,13 @@ body.macro-learning #settings-box {
 
 .setting-select {
     flex: 1;
-    max-width: 14em;
+    max-width: 11em;
     background: var(--bg);
     border: 1px solid var(--border-green);
     color: var(--text-green);
     font-family: var(--font);
-    font-size: clamp(9px, 1.4vw, 11px);
-    padding: 0.4vh 0.5vw;
+    font-size: clamp(9px, 1.3vw, 11px);
+    padding: 0.3vh 0.4vw;
     outline: none;
     cursor: pointer;
 }
@@ -2894,4 +2930,404 @@ body.macro-learning #settings-box {
 .fader-column[data-id="4"] .fader-label {
     transition: background 120ms linear, border-color 120ms linear,
                 color 120ms linear, box-shadow 120ms linear;
+}
+
+/* ═══ LAYER (split) panel ═══════════════════════════════════════════════
+   Folds down over the preset row when the LAYER top-bar button is pressed.
+   Contains a per-source range-bar UI: each source is one row with a label,
+   a track stretching across the MIDI range (0..127 → screen-width), and a
+   draggable bar inside that track. The bar's left edge sets `low`, right
+   edge sets `high`, body drags translate the whole range. A pair of soft
+   "tail" zones outside the bar visualize the xfade range.
+
+   Live note feedback: a moving dot on the ruler tracks the most recent
+   key the user pressed (driven by the `midi_activity` WS broadcast). */
+.layer-panel {
+    position: absolute;
+    bottom: 22vh;       /* sits just above the preset+macro area */
+    left: 0;
+    right: 0;
+    background: rgba(0, 18, 6, 0.96);
+    border-top: 1px solid var(--border-green);
+    border-bottom: 1px solid var(--border-green);
+    box-shadow: 0 -8px 18px rgba(0, 0, 0, 0.6);
+    padding: 1.2vh 1.5vw;
+    z-index: 90;
+    display: flex;
+    flex-direction: column;
+    gap: 0.8vh;
+}
+.layer-panel.hidden { display: none; }
+
+.layer-panel-header {
+    display: flex;
+    align-items: center;
+    gap: 1.2vw;
+    color: var(--text-green-dim);
+    font-size: clamp(11px, 1.4vw, 13px);
+}
+/* Master LAYER toggle — sized a touch bigger than the other ctrl-btn-sm
+   buttons since it's the primary on/off for the whole panel. Glows brighter
+   when active (existing ctrl-btn-sm.active rule paints it green-on-dark). */
+.layer-enable-btn {
+    font-size: clamp(11px, 1.7vw, 14px);
+    padding: 0.6vh 1.4vw;
+    min-width: 6em;
+    font-weight: bold;
+    letter-spacing: 0.05em;
+}
+.layer-enable-btn.active {
+    box-shadow: 0 0 12px var(--text-green), inset 0 0 4px rgba(0, 0, 0, 0.4);
+}
+.layer-help {
+    flex: 1;
+    color: var(--text-green-dim);
+    opacity: 0.75;
+    font-size: clamp(10px, 1.2vw, 11px);
+}
+
+.layer-keyboard-row {
+    position: relative;
+    height: 2.4vh;
+    margin-bottom: 0.4vh;
+}
+.layer-ruler {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    color: var(--text-green-dim);
+    font-size: clamp(8px, 1vw, 10px);
+    border-bottom: 1px solid var(--border-green);
+    align-items: flex-end;
+    pointer-events: none;
+    /* Each note's percent-position injected by JS via a child span per octave label. */
+}
+.layer-ruler span {
+    position: absolute;
+    bottom: 0;
+    transform: translateX(-50%);
+    padding: 0 2px;
+    background: rgba(0, 18, 6, 0.92);
+    line-height: 1;
+}
+.layer-live {
+    /* Glowing dot positioned by JS at last-played note's percent-X */
+    position: absolute;
+    top: 0;
+    width: 0.7vw;
+    height: 0.7vw;
+    margin-left: -0.35vw;
+    border-radius: 50%;
+    background: var(--text-green);
+    box-shadow: 0 0 0.6vw var(--text-green);
+    opacity: 0;
+    transition: opacity 200ms linear, left 60ms linear;
+}
+.layer-live.lit { opacity: 1; }
+
+#layer-bars {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5vh;
+}
+
+.layer-bar-row {
+    display: grid;
+    /* LABEL  OCT  TRACK  XFADE  LEARN */
+    grid-template-columns: 4.2em 6em 1fr 5em 4em;
+    align-items: center;
+    gap: 0.6vw;
+    height: 3.2vh;
+}
+
+/* Per-source octave shift cluster: [−] [+0] [+] for OSC1/OSC2/PIANO,
+   single +12/+24 toggle for SHIMMER. Tight, matches tone of LEARN btn. */
+.layer-bar-oct {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.2vw;
+    height: 100%;
+}
+.layer-oct-btn {
+    background: transparent;
+    border: 1px solid var(--border-green);
+    color: var(--text-green-dim);
+    font-family: var(--font);
+    font-size: clamp(11px, 1.4vw, 13px);
+    font-weight: bold;
+    padding: 0;
+    width: 1.6em;
+    height: 100%;
+    cursor: pointer;
+    border-radius: 3px;
+    line-height: 1;
+}
+.layer-oct-btn:active { background: var(--text-green); color: #000; }
+.layer-oct-shim {
+    width: auto;
+    padding: 0 0.5vw;
+    color: var(--text-green);
+}
+.layer-oct-readout {
+    display: inline-block;
+    min-width: 1.6em;
+    text-align: center;
+    color: var(--text-green);
+    font-size: clamp(10px, 1.2vw, 12px);
+    font-variant-numeric: tabular-nums;
+}
+.layer-bar-label {
+    color: var(--text-green);
+    font-weight: bold;
+    font-size: clamp(11px, 1.4vw, 13px);
+    text-align: right;
+}
+.layer-bar-track {
+    position: relative;
+    height: 100%;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border-green);
+    border-radius: 4px;
+    overflow: visible;
+    cursor: pointer;
+}
+.layer-bar-body {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: var(--bar-color, var(--text-green));
+    opacity: 0.7;
+    border-radius: 3px;
+    cursor: grab;
+}
+.layer-bar-body:active { cursor: grabbing; }
+.layer-bar-handle {
+    position: absolute;
+    top: -3px;
+    bottom: -3px;
+    width: 1.0vw;
+    min-width: 12px;
+    background: var(--bar-color, var(--text-green));
+    border-radius: 2px;
+    cursor: ew-resize;
+    z-index: 2;
+}
+.layer-bar-handle.low  { transform: translateX(-50%); }
+.layer-bar-handle.high { transform: translateX(-50%); }
+.layer-bar-tail {
+    position: absolute;
+    top: 25%;
+    bottom: 25%;
+    background: var(--bar-color, var(--text-green));
+    opacity: 0.25;
+    border-radius: 2px;
+    pointer-events: none;
+}
+.layer-bar-xfade-wrap {
+    display: flex;
+    align-items: center;
+    gap: 0.3vw;
+    color: var(--text-green-dim);
+    font-size: clamp(9px, 1.1vw, 11px);
+}
+.layer-bar-xfade-wrap input {
+    width: 100%;
+}
+.layer-bar-learn {
+    background: transparent;
+    border: 1px solid var(--border-green);
+    color: var(--text-green-dim);
+    font-family: var(--font);
+    font-size: clamp(10px, 1.2vw, 12px);
+    padding: 0.4vh 0;
+    cursor: pointer;
+    border-radius: 3px;
+}
+.layer-bar-learn.active {
+    background: var(--text-green);
+    color: #000;
+    font-weight: bold;
+}
+
+/* SLASH overlay on top-bar source toggles when their range is restricted.
+   OSC1/OSC2/PIANO buttons are normally green, so the slash flips to ORANGE
+   for contrast against their green-on background. SHIM is normally dim and
+   sits on a different visual context — keep its slash green. */
+.ctrl-btn.split-active::after {
+    content: "/";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 1.6em;
+    font-weight: bold;
+    color: var(--text-green);
+    pointer-events: none;
+    text-shadow: 0 0 6px var(--text-green);
+}
+#osc1-btn.split-active::after,
+#osc2-btn.split-active::after,
+#piano-btn.split-active::after {
+    color: var(--text-orange);
+    text-shadow: 0 0 6px var(--text-orange);
+}
+.ctrl-btn { position: relative; }
+
+/* Crossfade bowtie icon — two triangles meeting at a point. The canonical
+   "xfade" symbol from DJ mixers / DAW automation lanes. Replaces the "xfd"
+   text label in the LAYER panel. */
+.layer-xfade-icon {
+    display: inline-flex;
+    align-items: center;
+    gap: 0;
+    height: 1.4vh;
+    line-height: 1;
+}
+.xfade-tri {
+    width: 0;
+    height: 0;
+    display: inline-block;
+}
+.xfade-tri.left {
+    /* Right-pointing triangle (filled). */
+    border-top:    0.6vh solid transparent;
+    border-bottom: 0.6vh solid transparent;
+    border-left:   0.7vh solid var(--text-green);
+}
+.xfade-tri.right {
+    /* Left-pointing triangle (filled). Touches the left triangle's tip. */
+    border-top:    0.6vh solid transparent;
+    border-bottom: 0.6vh solid transparent;
+    border-right:  0.7vh solid var(--text-green);
+}
+
+/* SHIM + FRZ vertical stack — when FRZ is hidden (shimmer off), SHIM
+   takes the slot like a normal ctrl-btn-sm. When shimmer turns on and
+   FRZ appears, both share the column with reduced vertical height so
+   the top-bar layout doesn't grow. */
+#shim-frz-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3vh;
+    align-items: stretch;
+    justify-content: center;
+}
+#shim-frz-stack > button {
+    min-height: 0;
+    padding: 0.25vh 0.8vw;
+    line-height: 1.1;
+}
+
+/* INSTRUMENT panel subtabs (PIANO / ORGAN). Mirrors the MOTION subtab
+   pattern but scoped to its own classes so motion + instrument don't
+   share state when JS toggles either. */
+.instrument-subtab-strip {
+    display: flex;
+    gap: 0.4vw;
+    margin-bottom: 1vh;
+    border-bottom: 1px solid var(--border-green);
+    padding-bottom: 0.6vh;
+}
+.instrument-subtab-btn {
+    background: transparent;
+    border: 1px solid var(--border-green);
+    color: var(--text-green-dim);
+    font-family: var(--font);
+    font-size: clamp(11px, 1.6vw, 13px);
+    font-weight: bold;
+    padding: 0.6vh 1.4vw;
+    cursor: pointer;
+    border-radius: 3px;
+}
+.instrument-subtab-btn:hover { border-color: var(--text-green); }
+.instrument-subtab-btn.active {
+    background: var(--text-green);
+    color: var(--bg);
+}
+.instrument-subpanel { display: none; }
+.instrument-subpanel.active { display: block; }
+
+/* PERFECT compressor preset button — promoted from a small ctrl-btn-sm
+   to a more prominent button. This is the "musical default" comp preset
+   that 90% of worship piano work calls for; making it eye-grabbing means
+   one tap and you're at the LA-2A-style smooth glue. */
+.piano-perfect-btn {
+    background: var(--text-green);
+    color: var(--bg) !important;
+    border: 1px solid var(--text-green) !important;
+    font-weight: bold;
+    font-size: clamp(11px, 1.6vw, 14px);
+    padding: 0.7vh 1.6vw;
+    letter-spacing: 0.05em;
+    box-shadow: 0 0 8px rgba(0, 212, 170, 0.5);
+    cursor: pointer;
+}
+.piano-perfect-btn:active {
+    box-shadow: 0 0 14px rgba(0, 212, 170, 0.85);
+    transform: scale(0.97);
+}
+
+/* LFO advanced disclosure — hides Key Sync / Invert / Poly / Offset / Haas
+   Comp behind a "advanced ▼" toggle. Most worship use cases never touch
+   these (sine + filter target + rate covers 90% of presets). Visible bits
+   stay tight; click to reveal. */
+.lfo-advanced-toggle {
+    background: transparent;
+    border: 1px solid var(--border-green);
+    color: var(--text-green-dim);
+    font-family: var(--font);
+    font-size: clamp(9px, 1.2vw, 11px);
+    padding: 0.3vh 0.8vw;
+    cursor: pointer;
+    border-radius: 3px;
+    margin: 0.4vh 0;
+    align-self: flex-start;
+}
+.lfo-advanced-toggle.expanded { color: var(--text-green); border-color: var(--text-green); }
+.lfo-advanced { display: none; }
+.lfo-advanced.expanded { display: block; }
+
+/* LFO column header row — title + ON/OFF toggle. The ON button is the
+   master gate for that LFO; doesn't touch depth so re-enabling restores
+   the prior modulation amount. .active = green-on-dark, dim grey when off. */
+.lfo-col-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.5vh;
+}
+.lfo-active-btn {
+    background: transparent;
+    border: 1px solid var(--text-muted);
+    color: var(--text-muted);
+    font-family: var(--font);
+    font-size: clamp(10px, 1.3vw, 12px);
+    font-weight: bold;
+    padding: 0.4vh 1.2vw;
+    cursor: pointer;
+    border-radius: 3px;
+    letter-spacing: 0.08em;
+}
+.lfo-active-btn.active {
+    background: var(--text-green);
+    color: var(--bg);
+    border-color: var(--text-green);
+    box-shadow: 0 0 6px rgba(0, 212, 170, 0.45);
+}
+
+/* LFO recv checkbox row when its LFO targets a non-per-OSC path (Filter
+   or Bus). Keep visible so layout doesn't shift between target changes;
+   dim to signal that the routing has no effect right now. The checkbox
+   remains clickable so users can pre-set their preferred routing for
+   later when they switch back to Amp / Pan. */
+.setting-row.lfo-recv-inactive {
+    opacity: 0.4;
+    transition: opacity 200ms linear;
+}
+.setting-row.lfo-recv-inactive .setting-checkbox-label::after {
+    content: " — inactive (target not Amp/Pan)";
+    color: var(--text-muted);
+    font-size: 0.85em;
+    font-style: italic;
 }

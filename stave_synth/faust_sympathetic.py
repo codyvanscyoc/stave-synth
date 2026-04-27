@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 _HERE = Path(__file__).parent.parent / "faust"
 _LIB = _HERE / "libstave_sympathetic.so"
 
-N_SLOTS = 16  # must match N_SLOTS in sympathetic.dsp
+N_SLOTS = 24  # must match N_SLOTS in sympathetic.dsp
 
 
 _ffi = FFI()

@@ -11,7 +11,7 @@ import("stdfaust.lib");
 // Python and pre-multiplied into `symp_gate` so Faust stays simple.
 // ═══════════════════════════════════════════════════════════════════════
 
-N_SLOTS = 16;
+N_SLOTS = 24;
 TWO_PI  = 2.0 * ma.PI;
 SR      = ma.SR;
 STEREO_DETUNE = 1.003;      // R phasor runs 0.3% faster for stereo width

@@ -5,7 +5,10 @@ Wants=pipewire.service wireplumber.service
 
 [Service]
 Type=simple
-ExecStartPre=/bin/sleep 3
+# Wait for PipeWire to be reachable, with 3s hard cap. Replaces the old
+# blind `sleep 3` — typically returns in <300ms once wireplumber notifies
+# READY, saving ~2.5s of boot time on every start.
+ExecStartPre=/bin/sh -c 'for i in 1 2 3 4 5 6 7 8 9 10; do pw-cli i 0 >/dev/null 2>&1 && exit 0; sleep 0.3; done; exit 0'
 # Some USB DACs only expose Master (no PCM control) — probe with sget first
 # and skip silently if neither is present so the unit still starts.
 ExecStartPre=-/bin/bash -c 'for c in /proc/asound/card*/id; do n=$$(dirname $$c | grep -o "[0-9]*"); if grep -qi usb "$$c" 2>/dev/null; then if amixer -c $$n sget PCM >/dev/null 2>&1; then amixer -c $$n set PCM 100%% >/dev/null 2>&1; elif amixer -c $$n sget Master >/dev/null 2>&1; then amixer -c $$n set Master 100%% >/dev/null 2>&1; fi; fi; done; true'
@@ -23,6 +26,12 @@ RestartSec=5
 # the time it takes the user to notice and intervene manually.
 StartLimitBurst=50
 StartLimitIntervalSec=600
+# Watchdog: render thread updates jack.last_iter_ts every audio block;
+# main.py heartbeat thread pings systemd at half this interval, but only
+# if the render loop is still ticking. If audio wedges, no ping is sent
+# and systemd kills + restarts us per Restart=on-failure.
+WatchdogSec=30
+NotifyAccess=main
 
 [Install]
 WantedBy=default.target

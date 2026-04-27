@@ -70,13 +70,9 @@ async def flood(ws, stop_at: float, stats: dict, rate_per_sec: int = 800):
     next_tick = time.time()
     while time.time() < stop_at:
         r = random.random()
-        if r < 0.70:
+        if r < 0.85:
             fid = random.choice(FADER_IDS)
             msg = {"type": "fader", "id": fid, "value": random.random(), "alt": alt[fid]}
-        elif r < 0.85:
-            fid = random.choice(FADER_IDS)
-            alt[fid] = random.randint(0, 2)
-            msg = {"type": "alt_toggle", "id": fid, "alt": alt[fid]}
         elif r < 0.95:
             msg = {"type": random.choice(TOGGLES), "enabled": random.choice([True, False])}
         else:

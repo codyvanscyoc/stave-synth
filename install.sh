@@ -151,6 +151,104 @@ for dev in /sys/bus/usb/devices/*/power/control; do
 done 2>/dev/null
 echo -1 | sudo tee /sys/module/usbcore/parameters/autosuspend > /dev/null 2>&1 || true
 
+# Isolate CPU 3 for the audio render thread + steer IRQs onto cores 0-2.
+# Pi 5 has 4 cores; reserving one removes the largest source of unexpected
+# scheduling jitter (kernel timer interrupts, USB/network IRQs preempting
+# render). The render thread itself is pinned to core 3 from Python via
+# os.sched_setaffinity in jack_engine.py.
+if [ -f "$CMDLINE" ] && ! grep -q "isolcpus=" "$CMDLINE"; then
+    [ -f "${CMDLINE}.bak" ] || sudo cp "$CMDLINE" "${CMDLINE}.bak"
+    sudo sed -i 's/$/ isolcpus=3 nohz_full=3 rcu_nocbs=3 irqaffinity=0-2/' "$CMDLINE"
+    echo -e "${GREEN}  CPU 3 isolation + IRQ affinity (active after next reboot)${NC}"
+else
+    echo -e "${GREEN}  CPU isolation already configured${NC}"
+fi
+
+# WiFi power save off — the radio drops out under power-save and the wakeup
+# can produce USB jitter. NetworkManager honors this drop-in at boot.
+WIFI_PS_CONF="/etc/NetworkManager/conf.d/wifi-powersave-off.conf"
+if [ ! -f "$WIFI_PS_CONF" ]; then
+    sudo tee "$WIFI_PS_CONF" > /dev/null << 'EOF'
+[connection]
+wifi.powersave = 2
+EOF
+    echo -e "${GREEN}  WiFi power-save disabled${NC}"
+else
+    echo -e "${GREEN}  WiFi power-save conf already present${NC}"
+fi
+
+# Bound journald disk + tmpfs usage so a chatty boot or driver storm can't
+# stall I/O. Defaults are uncapped and have bitten live audio rigs before.
+JOURNALD_CONF="/etc/systemd/journald.conf.d/stave-synth.conf"
+if [ ! -f "$JOURNALD_CONF" ]; then
+    sudo mkdir -p /etc/systemd/journald.conf.d
+    sudo tee "$JOURNALD_CONF" > /dev/null << 'EOF'
+[Journal]
+RuntimeMaxUse=50M
+SystemMaxUse=200M
+EOF
+    sudo systemctl restart systemd-journald > /dev/null 2>&1 || true
+    echo -e "${GREEN}  journald capped (50M runtime / 200M system)${NC}"
+else
+    echo -e "${GREEN}  journald cap already configured${NC}"
+fi
+
+# Live-audio sysctls. Defaults are tuned for desktop/server workloads, not
+# realtime audio: `vm.swappiness=60` is too eager (zram or not), and the
+# default dirty_ratios let writeback batch into bursty I/O. Lower swappiness
+# avoids kernel page churn under memory pressure; smaller dirty bounds make
+# writeback fire sooner, smaller, and more predictably.
+SYSCTL_CONF="/etc/sysctl.d/99-stave-audio.conf"
+if [ ! -f "$SYSCTL_CONF" ]; then
+    sudo tee "$SYSCTL_CONF" > /dev/null << 'EOF'
+vm.swappiness = 10
+vm.dirty_background_ratio = 5
+vm.dirty_ratio = 10
+EOF
+    sudo sysctl --system > /dev/null 2>&1 || true
+    echo -e "${GREEN}  Audio sysctls applied${NC}"
+else
+    echo -e "${GREEN}  Audio sysctls already configured${NC}"
+fi
+
+# Disable cron — kiosk box has no scheduled-job needs, and cron's daily/
+# weekly batches are bursty I/O that occasionally collide with playing.
+if systemctl list-unit-files cron.service >/dev/null 2>&1 && \
+   [ "$(systemctl is-enabled cron 2>/dev/null)" = "enabled" ]; then
+    sudo systemctl disable cron > /dev/null 2>&1
+    sudo systemctl stop cron > /dev/null 2>&1
+    echo -e "${GREEN}  cron disabled${NC}"
+else
+    echo -e "${GREEN}  cron already disabled or absent${NC}"
+fi
+
+# Belt-and-suspenders IRQ steering — the cmdline irqaffinity= only affects
+# IRQs registered after boot. This oneshot rewrites smp_affinity for every
+# already-registered IRQ to "cores 0-2" (mask 0x7) at boot. Per-CPU IRQs
+# (timers, IPIs) refuse the write — that's expected, hence the || true.
+IRQ_SVC="/etc/systemd/system/audio-irq-affinity.service"
+if [ ! -f "$IRQ_SVC" ]; then
+    sudo tee "$IRQ_SVC" > /dev/null << 'EOF'
+[Unit]
+Description=Steer IRQs to cores 0-2 (keep core 3 clean for audio)
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'for f in /proc/irq/*/smp_affinity; do echo 7 > "$f" 2>/dev/null || true; done; echo 7 > /proc/irq/default_smp_affinity 2>/dev/null || true'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    sudo systemctl daemon-reload
+    sudo systemctl enable audio-irq-affinity.service > /dev/null 2>&1
+    sudo systemctl start audio-irq-affinity.service > /dev/null 2>&1
+    echo -e "${GREEN}  IRQ affinity service installed (cores 0-2)${NC}"
+else
+    echo -e "${GREEN}  IRQ affinity service already installed${NC}"
+fi
+
 # ── Step 4: Build C audio bridge + Faust DSP modules ──
 echo -e "${ORANGE}[4/6]${NC} Building JACK audio bridge..."
 cd "$SCRIPT_DIR/stave_synth"

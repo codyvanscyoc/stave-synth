@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 _HERE = Path(__file__).parent.parent / "faust"
 _LIB = _HERE / "libstave_osc_bank.so"
 
-NVOICES = 16  # must match NVOICES in osc_bank.dsp
+NVOICES = 24  # must match NVOICES in osc_bank.dsp
 
 # Waveform index: matches DEFAULT_STATE / generate_waveform names
 _WF_INDEX = {"sine": 0, "square": 1, "saw": 2, "triangle": 3, "saturated": 4}
@@ -103,6 +103,8 @@ class FaustOscBank:
         self._osc2_phase_zones = [self._zones[f"osc2_phase_v{i}"] for i in range(NVOICES)]
         self._lfo1_phase_zones = [self._zones[f"lfo1_phase_v{i}"] for i in range(NVOICES)]
         self._lfo2_phase_zones = [self._zones[f"lfo2_phase_v{i}"] for i in range(NVOICES)]
+        # LAYER per-voice shimmer gate — 1.0 = full, 0.0 = silenced.
+        self._shimmer_gate_zones = [self._zones[f"shimmer_gate_v{i}"] for i in range(NVOICES)]
 
         # Scratch — Faust emits 6 channels: osc1_L/R, osc2_L/R, shimmer_mono, drone_mono
         self._buf_n = 0
@@ -129,6 +131,16 @@ class FaustOscBank:
             self._gate_zones[i][0] = 0.0
             self._gate_osc1_zones[i][0] = 0.0
             self._gate_osc2_zones[i][0] = 0.0
+            # Reset shimmer gate to default 1.0 (pre-LAYER behavior — shimmer
+            # follows voice gate). Leaves the slot ready for the next note_on
+            # that may or may not set it explicitly.
+            self._shimmer_gate_zones[i][0] = 1.0
+
+    def set_shimmer_weight(self, slot: int, weight: float):
+        """Per-voice shimmer gate driven by LAYER (split). Called from
+        synth_engine render path; weight reflects the note's position in
+        the shimmer source's key range. Hot path — single zone write."""
+        self._shimmer_gate_zones[slot][0] = float(max(0.0, min(1.0, weight)))
 
     @staticmethod
     def supports_unison(n: int) -> bool:
@@ -215,11 +227,10 @@ class FaustOscBank:
         self._zones["shimmer_enable"][0] = 1.0 if enabled else 0.0
         self._zones["shimmer_mult"][0] = 4.0 if high else 2.0
 
-    def set_drone_params(self, root_freq: float, fifth_freq: float, gain_lvl: float):
-        """`gain_lvl` = drone_gain × drone_level × fade_scale (combined Python-side)."""
-        self._zones["drone_root_freq"][0] = float(max(0.0, root_freq))
-        self._zones["drone_fifth_freq"][0] = float(max(0.0, fifth_freq))
-        self._zones["drone_gain_lvl"][0] = float(max(0.0, min(2.0, gain_lvl)))
+    # set_drone_params removed 2026-04-26 — chord drone synthesis is gone.
+    # Faust's drone_root_freq / drone_fifth_freq / drone_gain_lvl sliders
+    # stay in osc_bank.dsp (not yet rebuilt) but are never written; their
+    # zones default to 0 so the drone output channel is always silent.
 
     # ─── Process ───
     def process(self, n_samples: int) -> np.ndarray:

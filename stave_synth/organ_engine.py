@@ -84,7 +84,12 @@ class OrganVoice:
 
 
 class OrganEngine:
-    """Synthesized B3 Hammond organ with realistic Leslie speaker effect."""
+    """⚠ FALLBACK PATH — DON'T DELETE. Faust port at `faust/organ.dsp` + `faust_organ.py`
+    is the default on Pi (selected by `STAVE_FAUST_ORGAN=1`). This 537-line numpy
+    organ engine is load-bearing for the Mac port (.so isn't built) and the
+    `STAVE_FAUST_ORGAN=0` env opt-out. See `project_mac_port_corrections.md`.
+
+    Synthesized B3 Hammond organ with realistic Leslie speaker effect."""
 
     def __init__(self, sample_rate: int = SAMPLE_RATE):
         self.sample_rate = sample_rate

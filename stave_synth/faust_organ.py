@@ -478,25 +478,6 @@ class FaustOrganEngine:
         if "width" in params:
             self.set_width(float(params["width"]))
 
-    def get_params(self) -> dict:
-        return {
-            "enabled": self.enabled,
-            "preset": self.preset,
-            "drawbars": list(self.drawbars),
-            "leslie_speed": self.leslie_speed,
-            "leslie_depth": self.leslie_depth,
-            "click_enabled": self.click_enabled,
-            "click_level": self.click_level,
-            "attack_ms": self.attack_ms,
-            "release_ms": self.release_ms,
-            "drive": self.drive,
-            "filter_highcut_hz": self.highcut_hz,
-            "filter_lowcut_hz": self.lowcut_hz,
-            "volume": self.volume,
-            "tone_tilt": self.tone_tilt,
-            "width": self.width,
-        }
-
 
 def _install_ui_callbacks(dsp, zones: dict):
     keepalive = []

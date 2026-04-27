@@ -36,11 +36,11 @@ gcc -shared -fPIC -O2 -o jack_bridge.so jack_bridge.c -ljack -lpthread
 pw-jack ./venv/bin/python -m stave_synth.main --no-gui
 ```
 
-## Current state (2026-04-15)
+## Current state
 
-Working: synth pad (OSC1 + OSC2 with 5 waveforms), MIDI input, FluidSynth piano, B3 organ engine (tonewheel + split Leslie), lowpass filter (12/24dB) with smooth log-space sweep + highpass low cut (filter fader ALT), per-oscillator independent filters, per-oscillator octave shift, master volume (single gain stage in C bridge, dB curve), voice stealing (16 voices), unison with detune (3 voices, 0.07st default), piano EQ (24dB/oct biquad hi/lo cut), piano compressor, FDN reverb (8 lines, Hadamard, stereo, modulated, hi/lo cut on feedback), shimmer (synthesized octave-up sines into reverb), sympathetic resonance (piano notes reinforce pad via reverb, stereo detuned, fade envelopes), chord drone (root+fifth one octave below with portamento), freeze with 2s capture window, sustain pedal (CC64) with transpose-safe note tracking, true stereo pipeline, presets (5 slots), MIDI auto-connect, MIDI CC learn, audio output selector, master 3-band parametric EQ + optional low cut (6/12/24dB), WebSocket UI with settings modal.
+For the live changelog and per-session details, see `~/.claude/projects/-home-codyvanscyoc/memory/` — `MEMORY.md` is the index. `project_code_review_8.md` (2026-04-26) is the latest comprehensive snapshot.
 
-Tested live in worship service 2026-04-15. CPU optimized: snap-to-zero muted oscs, ADSR sustain fast path, in-place numpy ops. 50% utilization on full worship load (8 voices + piano + shimmer + unison 3).
+High-level architecture: 16-voice Faust polysynth + piano (FluidSynth + 4 soundfont presets + 7 voicings) + B3 organ (Faust) + 7 reverb engines + 2 LFOs (poly + tempo-sync + shape lib) + ping-pong delay + sympathetic resonance + bus comp (SSL G) + per-OSC ADSR/filter/pan + macros + setlist + recorder + WebSocket UI. Tested live in worship every week. ~50% CPU at full load on Pi 5.
 
 ## Design principles
 

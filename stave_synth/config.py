@@ -177,6 +177,20 @@ DEFAULT_STATE = {
         "drone_enabled": False,
         "drone_key": None,       # MIDI note currently held by the pad player, or null
         "drone_level": 1.0,      # pad-player volume multiplier (0..1)
+        # ── LAYER (split) — per-source MIDI key range with optional xfade tails.
+        # When the master split_enabled=False, all ranges are ignored (full-keyboard
+        # behavior). When on, each source plays only within [low, high]; xfade
+        # number of keys before/after the body, the source crossfades in/out
+        # via smoothstep so the boundary feels continuous.
+        "osc1_split_low": 0, "osc1_split_high": 127, "osc1_split_xfade": 0,
+        "osc2_split_low": 0, "osc2_split_high": 127, "osc2_split_xfade": 0,
+        "shimmer_split_low": 0, "shimmer_split_high": 127, "shimmer_split_xfade": 0,
+        # LFO master enable (separate from depth — depth survives the
+        # disable so re-enabling restores the prior modulation amount).
+        # Distinct from the retired `lfo_enabled` field; load_state purges
+        # that legacy key, so this new field is unaffected.
+        "lfo_active": True,
+        "lfo2_active": True,
         # "volume": removed 2026-04-21 — no reader anywhere. Legacy state
         # from before the OSC-blend-based volume model took over. _deep_merge
         # on load harmlessly preserves saved copies but this default is gone.
@@ -243,6 +257,34 @@ DEFAULT_STATE = {
         "transpose_semitones": 0,
         "piano_octave": 0,
         "instrument_mode": "piano",
+        # MPK-mini-class controllers have a touch-strip "joystick" that doesn't
+        # auto-center cleanly — the synth ends up with a stuck bend on pad or
+        # piano with no easy way to clear it. This kill-switch lets the user
+        # ignore 0xE0 entirely until they have a controller with a real wheel.
+        "pitch_bend_enabled": True,
+        # MIDI clock follow (0xF8). When on, the synth's BPM tracks incoming
+        # MIDI clock from a connected clock source (e.g. Ableton, drum
+        # machine, sequencer). Off by default — many keyboards send clock
+        # spuriously and you don't want delays/LFOs jumping around when
+        # the keyboard's internal arp is enabled.
+        "midi_clock_enabled": False,
+        # Worship-face simplification: macros are pro programmability that
+        # rarely get touched mid-service. Hidden by default so the main face
+        # is cleaner. Power users tick once in Global → Show Macros and it
+        # persists.
+        "show_macros": False,
+        # LAYER (keyboard split). When enabled, each source plays only within
+        # its configured key range with optional crossfade tails. The instrument
+        # range below applies to whichever of piano/organ is active via
+        # instrument_mode; per-OSC + shimmer ranges live in synth_pad.
+        "split_enabled": False,
+        "instrument_split_low": 0,
+        "instrument_split_high": 127,
+        "instrument_split_xfade": 0,
+        # Snapshot of pre-LAYER octave state. Captured when LAYER is enabled
+        # (if not already set), restored when disabled. None = no snapshot.
+        # Means: octave tweaks made while LAYER is on auto-revert when off.
+        "split_octave_snapshot": None,
         "eq_bands": [
             {"freq_hz": 200, "gain_db": 0.0, "q": 1.5},
             {"freq_hz": 1000, "gain_db": 0.0, "q": 1.5},
@@ -294,13 +336,6 @@ DEFAULT_STATE = {
     "ui": {
         "preset_saved": [False] * 10,
         "preset_labels": [""] * 10,
-        "preset_colors": [
-            "#00D4AA",
-            "#FFB020",
-            "#B06EFF",
-            "#FF4D6A",
-            "#4D9EFF",
-        ],
     },
 }
 
@@ -341,6 +376,13 @@ def load_state():
                 if "adsr_osc2" not in sp:
                     sp["adsr_osc2"] = dict(sp["adsr"])
                 sp.pop("adsr", None)
+            # Purge retired LFO Enabled keys (session 04-23a). Old saves keep
+            # them at False, which in earlier code zeroed lfo_depth on every
+            # load — silently neutering the LFO unless the user touched the
+            # depth slider. Drop them so they stop riding along on autosave.
+            if isinstance(sp, dict):
+                sp.pop("lfo_enabled", None)
+                sp.pop("lfo2_enabled", None)
             state = _deep_merge(defaults, saved)
         except (json.JSONDecodeError, OSError) as e:
             # Previously silent-swallowed — which meant a corrupted state

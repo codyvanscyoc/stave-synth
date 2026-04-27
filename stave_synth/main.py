@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -128,8 +129,6 @@ class StaveSynth:
 
         if msg_type == "fader":
             return self._handle_fader(msg)
-        elif msg_type == "alt_toggle":
-            return self._handle_alt_toggle(msg)
         elif msg_type == "preset_load":
             return self._handle_preset_load(msg)
         elif msg_type == "preset_save":
@@ -156,8 +155,6 @@ class StaveSynth:
             return self._handle_freeze_toggle(msg)
         elif msg_type == "octave":
             return self._handle_octave(msg)
-        elif msg_type == "drone_toggle":
-            return self._handle_drone_toggle(msg)
         elif msg_type == "fade_toggle":
             return self._handle_fade_toggle(msg)
         elif msg_type == "bus_comp_preset":
@@ -168,8 +165,6 @@ class StaveSynth:
             return self._handle_macro_assign(msg)
         elif msg_type == "drone_key":
             return self._handle_drone_key(msg)
-        elif msg_type == "drone_off":
-            return self._handle_drone_off(msg)
         elif msg_type == "drone_fade":
             return self._handle_drone_fade(msg)
         elif msg_type == "record_toggle":
@@ -199,6 +194,14 @@ class StaveSynth:
                 sf_list = FluidSynthPlayer.list_available_soundfonts()
             except Exception:
                 sf_list = []
+            # Push current MIDI connection state so the top-bar pip lights
+            # up correctly without waiting for the 2-second watch tick.
+            try:
+                connected = bool(self._connect_midi_ports())
+                if self.ws_server:
+                    self.ws_server.broadcast_sync({"type": "midi_status", "connected": connected})
+            except Exception:
+                pass
             return {"type": "state", "state": self.state, "soundfonts_available": sf_list}
         elif msg_type == "debug":
             # Piano diagnostics
@@ -234,7 +237,6 @@ class StaveSynth:
                 "synth_voices": len(self.synth.voices),
                 "synth_osc1": self.synth.osc1_blend,
                 "synth_osc2": self.synth.osc2_blend,
-                "synth_vol": self.synth.volume,
                 "peak_output": getattr(self.jack, '_peak_output', 0),
                 "piano_render_peak": getattr(self.jack, '_piano_peak', 0),
                 "piano_renders": getattr(self.jack, '_piano_renders', 0),
@@ -245,8 +247,6 @@ class StaveSynth:
                 "bridge_ring_fill": self.jack._bridge.bridge_get_ring_fill() if self.jack else 0,
                 "piano": piano_info,
             }
-        elif msg_type == "test_piano":
-            return self._handle_test_piano()
         elif msg_type == "instrument_cycle":
             return self._handle_instrument_cycle()
         elif msg_type == "setting":
@@ -383,11 +383,6 @@ class StaveSynth:
                     self.jack.pre_gain = max(0.5, min(3.0, trim))
 
         return {"type": "fader_ack", "id": fader_id, "value": value, "alt": alt}
-
-    def _handle_alt_toggle(self, msg: dict) -> dict:
-        fader_id = msg.get("id", 0)
-        alt = msg.get("alt", False)
-        return {"type": "alt_ack", "id": fader_id, "alt": alt}
 
     def _handle_setlist_save(self, msg: dict) -> dict:
         """Snapshot the current 10-preset bank into a setlist slot.
@@ -556,6 +551,25 @@ class StaveSynth:
                 self.synth.sympathetic_set_suppress(False)
                 return
             time.sleep(step_sec)
+
+        # Snap-apply non-interpolated master fields (bus_comp full param set,
+        # master EQ bands, master_lowcut, BPM, low_latency_mode, saturation_enabled,
+        # piano_reverb_send, piano_delay_send, etc). Only `volume` + `pre_limiter_trim`
+        # ramped above; everything else relied on the next user touch to push.
+        # Use the same "re-apply each param via _handle_setting" idiom as
+        # `_handle_recall_params_from_recording` so logic stays in one place.
+        for section_name, src in (("master", new_m), ("synth_pad", new_sp),
+                                  ("piano", new_pi), ("organ", new_or)):
+            if not isinstance(src, dict):
+                continue
+            for param, value in src.items():
+                if isinstance(value, (dict, list)) and param not in ("eq_bands", "adsr_osc1", "adsr_osc2"):
+                    continue
+                try:
+                    self._handle_setting({"section": section_name, "param": param, "value": value})
+                except Exception as e:
+                    logger.debug("preset crossfade snap-apply skip %s.%s: %s", section_name, param, e)
+
         self.synth.sympathetic_set_suppress(False)
 
     def _handle_preset_save(self, msg: dict) -> dict:
@@ -640,29 +654,6 @@ class StaveSynth:
             self.jack.transpose = new_val
         return {"type": "transpose_ack", "semitones": new_val}
 
-    def _handle_test_piano(self) -> dict:
-        """Diagnostic: trigger a piano note and measure render output."""
-        import numpy as np
-        if not self.piano:
-            return {"type": "test_piano", "error": "no piano object"}
-        if not self.piano.fs:
-            return {"type": "test_piano", "error": "FluidSynth is None"}
-
-        # Trigger a test note
-        self.piano.note_on(60, 0.8)
-        # Render a few blocks to let FluidSynth produce audio
-        peaks = []
-        for i in range(5):
-            block = self.piano.render_block(256)
-            peaks.append(float(np.abs(block).max()))
-        self.piano.note_off(60)
-        return {
-            "type": "test_piano",
-            "peaks": peaks,
-            "max_peak": max(peaks),
-            "has_audio": max(peaks) > 0.001,
-        }
-
     def _handle_shimmer_toggle(self, msg: dict) -> dict:
         enabled = msg.get("enabled")
         if enabled is None:
@@ -687,16 +678,6 @@ class StaveSynth:
         self.synth.reverb.set_freeze(enabled)
         self.state["synth_pad"]["freeze_enabled"] = enabled
         return {"type": "freeze_ack", "enabled": enabled}
-
-    def _handle_drone_toggle(self, msg: dict) -> dict:
-        enabled = msg.get("enabled")
-        if enabled is None:
-            enabled = not self.synth.drone_enabled
-        self.synth.drone_enabled = enabled
-        if not enabled:
-            self.synth.drone_off()
-        self.state["synth_pad"]["drone_enabled"] = enabled
-        return {"type": "drone_ack", "enabled": enabled}
 
     _BUS_COMP_PRESETS = {
         "glue": {
@@ -864,9 +845,9 @@ class StaveSynth:
         """Force drone to a specific root note from the pad-player UI.
         Tapping the same key while active toggles drone off.
 
-        Dispatch: sampler first — if a per-note pad WAV exists, play it and
-        silence the live drone. Else fall back to the live root+fifth synth
-        and silence any active sampler voice."""
+        Sampler-only — if a per-note pad WAV exists, play it; otherwise the
+        key is silent. The legacy live-drone (root+fifth) fallback was
+        removed since the user is using only sampled pads."""
         note = int(msg.get("note", 60))
         rise_seconds_msg = float(msg.get("rise_seconds", 0.0) or 0.0)
         current_key = self.state["synth_pad"].get("drone_key")
@@ -877,13 +858,9 @@ class StaveSynth:
             self.state["synth_pad"]["drone_enabled"] = False
             self.state["synth_pad"]["drone_key"] = None
             if self.synth:
-                self.synth.drone_off()
                 self.synth.release_pad_samples()
             return {"type": "drone_key_ack", "note": None, "enabled": False,
                     "source": "off"}
-        self.state["synth_pad"]["drone_enabled"] = True
-        self.state["synth_pad"]["drone_key"] = note
-        source = "live"
         rise_seconds = float(msg.get("rise_seconds", 0.0) or 0.0)
         rise_cutoff = self.state.get("synth_pad", {}).get("pad_rise_cutoff_hz", 3000.0)
         if self.synth:
@@ -891,23 +868,16 @@ class StaveSynth:
                 note, rise_seconds=rise_seconds, rise_cutoff_open=rise_cutoff,
             )
             if used_sample:
-                # Sample took over — silence the live drone so we don't double up
-                self.synth.drone_off()
-                source = "sample"
-            else:
-                # No slot WAV for this key — fall through to live synth
-                self.synth.release_pad_samples()
-                self.synth.set_drone_key(note)
-        return {"type": "drone_key_ack", "note": note, "enabled": True,
-                "source": source}
-
-    def _handle_drone_off(self, msg: dict) -> dict:
+                self.state["synth_pad"]["drone_enabled"] = True
+                self.state["synth_pad"]["drone_key"] = note
+                return {"type": "drone_key_ack", "note": note, "enabled": True,
+                        "source": "sample"}
+            # No slot WAV for this key — silent. State stays "off".
+            self.synth.release_pad_samples()
         self.state["synth_pad"]["drone_enabled"] = False
         self.state["synth_pad"]["drone_key"] = None
-        if self.synth:
-            self.synth.drone_off()
-            self.synth.release_pad_samples()
-        return {"type": "drone_key_ack", "note": None, "enabled": False}
+        return {"type": "drone_key_ack", "note": note, "enabled": False,
+                "source": "no-sample"}
 
     def _handle_drone_fade(self, msg: dict) -> dict:
         """Toggle-swell the drone between full and silent. Mirrors master
@@ -1252,6 +1222,13 @@ class StaveSynth:
                 return {"type": "audio_output_set", "name": target,
                         "success": False, "error": error_msg}
             logger.info("Audio output routed to: %s", target)
+            # Persist preference so we can auto-reconnect after reboot or
+            # when the device gets unplugged + plugged back in mid-set.
+            self.state.setdefault("master", {})["audio_output_pref"] = target
+            try:
+                save_state(self.state)
+            except Exception:
+                pass
             return {"type": "audio_output_set", "name": target, "success": True}
         except Exception as e:
             logger.error("Failed to set audio output: %s", e)
@@ -1411,6 +1388,27 @@ class StaveSynth:
                 self.state["master"][param] = value
                 if self.jack:
                     self.jack.pre_gain = max(0.5, min(3.0, float(value)))
+            elif param == "pitch_bend_enabled":
+                v = bool(value)
+                self.state["master"][param] = v
+                if self.jack:
+                    self.jack.pitch_bend_enabled = v
+                    # Force-center pad + piano on disable so any current bend
+                    # snaps cleanly. (Enable doesn't need a snap — next 0xE0
+                    # tick will set the live value.)
+                    if not v:
+                        self.synth.set_pitch_bend(0.0)
+                        if self.piano:
+                            self.piano.midi_callback("pitch_bend", 8192, 0)
+            elif param == "midi_clock_enabled":
+                v = bool(value)
+                self.state["master"][param] = v
+                if self.jack:
+                    self.jack.midi_clock_enabled = v
+                    # Reset averaging state on toggle so a stale dt from a
+                    # prior session doesn't bias the next BPM derivation.
+                    self.jack._midi_clock_avg_dt = 0.0
+                    self.jack._midi_clock_count = 0
             elif param == "piano_reverb_send":
                 v = max(0.0, min(1.0, float(value)))
                 self.state["master"][param] = v
@@ -1425,6 +1423,63 @@ class StaveSynth:
                 self.state["master"][param] = bool(value)
                 if self.jack:
                     self.jack.saturation_enabled = bool(value)
+            elif param == "split_enabled":
+                v = bool(value)
+                was = bool(self.state["master"].get(param, False))
+                # Octave SWAP between two saved sets — one for LAYER-off mode
+                # ("normal play"), one for LAYER-on mode ("layered play"). On
+                # every toggle, the current octaves get stashed (they belong
+                # to the mode we're leaving), and the stash gets loaded (it
+                # belongs to the mode we're entering). User's octave tweaks in
+                # one mode are remembered when they flip back; LAYER off
+                # always restores normal play, LAYER on always restores their
+                # layered tuning. Stash persists in state so this survives
+                # presets + reloads.
+                if v != was:
+                    sp = self.state["synth_pad"]
+                    m  = self.state["master"]
+                    current = {
+                        "osc1_octave":  sp.get("osc1_octave",  0),
+                        "osc2_octave":  sp.get("osc2_octave",  0),
+                        "piano_octave": m.get("piano_octave", 0),
+                        "shimmer_high": sp.get("shimmer_high", False),
+                    }
+                    stash = m.get("split_octave_snapshot")
+                    # First toggle ever: seed stash with current so the swap
+                    # is a no-op for this first transition. From then on the
+                    # two modes accumulate independent octave histories.
+                    if not isinstance(stash, dict):
+                        stash = dict(current)
+                    # Apply stash → current state
+                    sp["osc1_octave"]  = int(stash.get("osc1_octave",  0))
+                    sp["osc2_octave"]  = int(stash.get("osc2_octave",  0))
+                    m["piano_octave"]  = int(stash.get("piano_octave", 0))
+                    sp["shimmer_high"] = bool(stash.get("shimmer_high", False))
+                    # Save what was current as the new stash (it belongs to
+                    # the mode we're leaving).
+                    m["split_octave_snapshot"] = current
+                    if self.jack:
+                        self.synth.update_params({
+                            "osc1_octave":  sp["osc1_octave"],
+                            "osc2_octave":  sp["osc2_octave"],
+                            "shimmer_high": sp["shimmer_high"],
+                        })
+                        self.jack.piano_octave = m["piano_octave"]
+                self.state["master"][param] = v
+                if self.jack:
+                    self.jack.split_enabled = v
+                    self.synth.split_enabled = v
+                # Broadcast on transition so UI octave readouts + front-panel
+                # displays refresh without waiting for the user to touch.
+                if self.ws_server and v != was:
+                    self.ws_server.broadcast_sync({"type": "state", "state": self.state})
+            elif param in ("instrument_split_low", "instrument_split_high",
+                           "instrument_split_xfade"):
+                lo, hi = (0, 24) if param.endswith("xfade") else (0, 127)
+                v = max(lo, min(hi, int(value)))
+                self.state["master"][param] = v
+                if self.jack:
+                    setattr(self.jack, param, v)
             elif param == "low_latency_mode":
                 enabled = bool(value)
                 self.state["master"][param] = enabled
@@ -1487,6 +1542,13 @@ class StaveSynth:
                     bands[idx] = value
                     if self.jack:
                         self.jack.set_master_eq(bands)
+            elif param == "show_macros":
+                # UI-only flag — toggles the macro row's visibility on the main
+                # face. No engine effect; just persist + broadcast so the UI
+                # picks it up without a reload.
+                self.state["master"][param] = bool(value)
+                if self.ws_server:
+                    self.ws_server.broadcast_sync({"type": "state", "state": self.state})
 
         return {"type": "setting_ack", "section": section, "param": param, "value": value}
 
@@ -1496,6 +1558,18 @@ class StaveSynth:
         """Load CC mappings from state."""
         saved = self.state.get("midi_cc_map", {})
         self._cc_map = {str(k): v for k, v in saved.items()}
+        # Factory defaults for the two universally-used MIDI CCs. Out of the
+        # box every keyboard with a mod wheel + every expression-pedal owner
+        # gets a musical assignment — no learn step required. If the user
+        # remaps either CC, their map wins; clearing brings the default back
+        # on next boot (easy enough to re-clear if not wanted).
+        DEFAULT_CC_MAP = {
+            "1":  {"kind": "fader", "id": 2, "alt": 0},  # mod wheel    → FILTER cutoff fader
+            "11": {"kind": "fader", "id": 4, "alt": 0},  # expression   → MASTER volume fader
+        }
+        for cc, target in DEFAULT_CC_MAP.items():
+            if cc not in self._cc_map:
+                self._cc_map[cc] = target
 
     def _save_cc_map(self):
         """Persist CC mappings to state."""
@@ -1542,6 +1616,14 @@ class StaveSynth:
                 self._save_cc_map()
                 logger.info("Cleared CC %s mapping", cc_key)
             return {"type": "cc_map", "map": dict(self._cc_map)}
+
+    def _program_change_callback(self, program: int):
+        """MIDI 0xC0 program change → load preset slot. Used for hands-free
+        footswitch advance via a class-compliant footswitch with PC output,
+        or by an external sequencer cueing scenes. Programs 0..9 map directly
+        to preset slots 0..9; programs >9 are ignored."""
+        if 0 <= program < self.presets.num_slots:
+            self._handle_preset_load({"slot": program})
 
     def _cc_callback(self, cc_num: int, cc_val: int):
         """Called from JACK engine MIDI thread on CC messages."""
@@ -1607,12 +1689,14 @@ class StaveSynth:
             self.midi.on_note_on(note, velocity)
             # Throttle the visual activity ping to ~10 Hz so dense passages
             # (32nd notes on a chord) don't flood the WebSocket queue.
+            # `note` is the transposed pad note; LAYER widget wants the
+            # most recent key for its live indicator.
             if self.ws_server:
                 now = time.monotonic()
                 last = getattr(self, "_midi_activity_last_ts", 0.0)
                 if now - last >= 0.1:
                     self._midi_activity_last_ts = now
-                    self.ws_server.broadcast_sync({"type": "midi_activity", "event": "on"})
+                    self.ws_server.broadcast_sync({"type": "midi_activity", "event": "on", "note": int(note)})
         elif event_type == "note_off":
             self.midi.on_note_off(note)
         elif event_type == "all_notes_off":
@@ -1684,11 +1768,23 @@ class StaveSynth:
                 try:
                     cpu = self._proc.cpu_percent(interval=None)
                     mem = self._proc.memory_info()
-                    self.ws_server.broadcast_sync({
+                    payload = {
                         "type": "system_stats",
                         "cpu_percent": round(cpu, 1),
                         "ram_mb": round(mem.rss / 1048576, 1),
-                    })
+                    }
+                    # Xrun count comes from the JACK C bridge on Linux; on Mac
+                    # (MacPortAudioIO) the call won't exist. Isolate so a
+                    # missing accessor doesn't drop the whole stats payload.
+                    if self.jack:
+                        try:
+                            payload["xruns"] = (
+                                self.jack._bridge.bridge_get_xrun_count()
+                                + self.jack._bridge.bridge_get_underrun_count()
+                            )
+                        except Exception:
+                            pass
+                    self.ws_server.broadcast_sync(payload)
                 except Exception:
                     pass
 
@@ -1749,6 +1845,7 @@ class StaveSynth:
                 piano_callback=piano_cb,
                 piano_player=self.piano,
                 cc_callback=self._cc_callback,
+                program_change_callback=self._program_change_callback,
             )
             self.jack.master_volume = self.state.get("master", {}).get("volume", 0.85)
             self.jack.transpose = self.state.get("master", {}).get("transpose_semitones", 0)
@@ -1757,6 +1854,16 @@ class StaveSynth:
             self.jack.piano_reverb_send = float(self.state.get("master", {}).get("piano_reverb_send", 0.0))
             self.jack.piano_delay_send = float(self.state.get("master", {}).get("piano_delay_send", 0.0))
             self.jack.saturation_enabled = bool(self.state.get("master", {}).get("saturation_enabled", False))
+            self.jack.pitch_bend_enabled = bool(self.state.get("master", {}).get("pitch_bend_enabled", True))
+            self.jack.midi_clock_enabled = bool(self.state.get("master", {}).get("midi_clock_enabled", False))
+            # LAYER (split) startup state — instrument range on JackEngine
+            # mirrors what's saved; per-OSC + shimmer ranges live on synth.
+            _m = self.state.get("master", {})
+            self.jack.split_enabled = bool(_m.get("split_enabled", False))
+            self.synth.split_enabled = self.jack.split_enabled
+            self.jack.instrument_split_low = int(_m.get("instrument_split_low", 0))
+            self.jack.instrument_split_high = int(_m.get("instrument_split_high", 127))
+            self.jack.instrument_split_xfade = int(_m.get("instrument_split_xfade", 0))
             self.jack.set_bpm(float(self.state.get("master", {}).get("bpm", 120)))
             # Push all bus_comp_* keys at startup so the compressor matches saved state
             m = self.state.get("master", {})
@@ -1808,8 +1915,63 @@ class StaveSynth:
 
         # FluidSynth audio now rendered through Python pipeline — no JACK connection needed
 
+        # systemd watchdog: keep us auto-recoverable from hangs (not just crashes).
+        self._setup_systemd_watchdog()
+
         logger.info("Stave Synth is running!")
         logger.info("  UI: http://localhost:%d", HTTP_PORT)
+
+    def _setup_systemd_watchdog(self):
+        """Wire up a systemd Type=notify watchdog heartbeat.
+
+        Active only when launched under a systemd unit configured with
+        `WatchdogSec=`. systemd exports `NOTIFY_SOCKET` + `WATCHDOG_USEC` in
+        that case; otherwise this is a silent no-op (manual launch, dev runs).
+
+        The heartbeat is gated on `jack.last_iter_ts` — if the render loop
+        wedges, the timestamp stops advancing and we stop pinging, so systemd
+        kills + restarts us per `Restart=on-failure`.
+        """
+        notify_socket = os.environ.get("NOTIFY_SOCKET")
+        watchdog_usec = os.environ.get("WATCHDOG_USEC")
+        if not notify_socket or not watchdog_usec:
+            return
+        try:
+            timeout_s = int(watchdog_usec) / 1_000_000.0
+        except ValueError:
+            return
+        # Ping at half the watchdog timeout per systemd's recommendation.
+        interval_s = max(2.0, timeout_s / 2.0)
+        # Stale threshold: if the render loop hasn't ticked in this many
+        # seconds, stop pinging so systemd notices.
+        stale_s = max(5.0, timeout_s * 0.8)
+
+        def _send(msg: str) -> None:
+            try:
+                addr = notify_socket
+                if addr.startswith("@"):
+                    addr = "\0" + addr[1:]
+                with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
+                    s.sendto(msg.encode(), addr)
+            except Exception as e:
+                logger.debug("systemd notify failed: %s", e)
+
+        _send("READY=1")
+
+        def _heartbeat():
+            while self._running:
+                time.sleep(interval_s)
+                if not self.jack:
+                    continue
+                last = getattr(self.jack, "last_iter_ts", 0.0)
+                if last <= 0.0:
+                    continue  # render thread hasn't started yet
+                if time.perf_counter() - last < stale_s:
+                    _send("WATCHDOG=1")
+
+        threading.Thread(target=_heartbeat, daemon=True).start()
+        logger.info("systemd watchdog: heartbeat every %.1fs (timeout %.1fs)",
+                    interval_s, timeout_s)
 
     def _setup_midi_bridge(self):
         """Start a2jmidid and kick off the MIDI auto-connect watcher.
@@ -1834,7 +1996,21 @@ class StaveSynth:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-                time.sleep(1)
+                # Poll for a2jmidid registering its JACK ports instead of the
+                # blind 1-second sleep. Typically <200ms; cap at 1s so a
+                # broken a2j doesn't block startup.
+                deadline = time.monotonic() + 1.0
+                while time.monotonic() < deadline:
+                    try:
+                        result = subprocess.run(
+                            ["jack_lsp", "a2j:"],
+                            capture_output=True, timeout=0.5,
+                        )
+                        if result.returncode == 0 and result.stdout.strip():
+                            break
+                    except Exception:
+                        pass
+                    time.sleep(0.05)
             else:
                 logger.info("a2jmidid already running — reusing existing instance")
         except Exception as e:
@@ -1846,6 +2022,15 @@ class StaveSynth:
             target=self._midi_watch_loop, daemon=True
         )
         self._midi_watch_thread.start()
+
+        # Audio output watcher — restores last-active sink at startup, and
+        # re-routes if the user's preferred DAC gets unplugged + replugged
+        # mid-set. Without this, every venue requires a manual MENU → CONN
+        # → pick output cycle.
+        self._audio_watch_thread = threading.Thread(
+            target=self._audio_watch_loop, daemon=True
+        )
+        self._audio_watch_thread.start()
 
     def _get_midi_capture_ports(self) -> list[str]:
         """List MIDI capture ports (a2jmidid or PipeWire Midi-Bridge), real devices only.
@@ -1899,26 +2084,82 @@ class StaveSynth:
             return []
 
     def _connect_midi_ports(self):
-        """Find unconnected MIDI capture ports and wire them to StaveSynth."""
+        """Find unconnected MIDI capture ports and wire them to StaveSynth.
+        Returns True if at least one MIDI capture port is currently connected
+        to our input — used by the watch loop to drive the UI status pip."""
         ports = self._get_midi_capture_ports()
+        any_connected = False
         for port in ports:
             connections = self._get_port_connections(port)
-            if "StaveSynth:midi_in" not in connections:
-                try:
-                    subprocess.run(
-                        ["jack_connect", port, "StaveSynth:midi_in"],
-                        capture_output=True, timeout=5,
-                    )
-                    logger.info("Auto-connected MIDI: %s", port)
-                except Exception as e:
-                    logger.warning("Failed to connect MIDI port %s: %s", port, e)
+            if "StaveSynth:midi_in" in connections:
+                any_connected = True
+                continue
+            try:
+                subprocess.run(
+                    ["jack_connect", port, "StaveSynth:midi_in"],
+                    capture_output=True, timeout=5,
+                )
+                logger.info("Auto-connected MIDI: %s", port)
+                any_connected = True
+            except Exception as e:
+                logger.warning("Failed to connect MIDI port %s: %s", port, e)
+        return any_connected
+
+    def _audio_watch_loop(self):
+        """Watch the user's preferred audio sink and re-route StaveSynth
+        output to it when it appears (cold boot if the device wasn't ready
+        yet, or hot-plug after unplug). Polls every 2.5s; only acts when
+        the preferred sink exists AND StaveSynth's outs are NOT currently
+        wired to it. No-op when the user has no saved preference yet."""
+        first_run = True
+        while self._running:
+            # Slightly slower poll than MIDI — audio routing is non-realtime
+            # and pw-jack subprocess invocations are expensive (~10ms each).
+            time.sleep(0.5 if first_run else 2.5)
+            first_run = False
+            try:
+                pref = self.state.get("master", {}).get("audio_output_pref")
+                if not pref:
+                    continue
+                # Cheap probe: list ports for the preferred sink. If empty
+                # output → device is gone; nothing to do.
+                probe = _run_with_hard_timeout(
+                    ["pw-jack", "jack_lsp", pref + ":"],
+                    timeout_s=2.0, hard_timeout_s=3.0,
+                )
+                if probe is None or not probe.stdout.strip():
+                    continue
+                # Check current connections — if either of our outs is NOT
+                # connected to the preferred sink's playback ports, reroute.
+                conns = _run_with_hard_timeout(
+                    ["pw-jack", "jack_lsp", "-c", "StaveSynth:"],
+                    timeout_s=2.0, hard_timeout_s=3.0,
+                )
+                if conns is None:
+                    continue
+                wired_to_pref = (f"{pref}:playback_FL" in conns.stdout
+                                 and f"{pref}:playback_FR" in conns.stdout)
+                if not wired_to_pref:
+                    logger.info("audio watch: re-routing to preferred sink %s", pref)
+                    self._handle_set_audio_output({"name": pref})
+            except Exception as e:
+                logger.debug("audio watch loop iteration error: %s", e)
 
     def _midi_watch_loop(self):
-        """Poll for new MIDI devices every 2 seconds and auto-connect them."""
+        """Poll for new MIDI devices every 2 seconds and auto-connect them.
+        Also tracks current connection state and pushes status to the UI on
+        change — drives the top-bar MIDI indicator (solid green when a
+        keyboard is talking, dim when none)."""
+        last_connected = None  # force first broadcast
         while self._running:
             time.sleep(2)
             try:
-                self._connect_midi_ports()
+                connected = bool(self._connect_midi_ports())
+                if connected != last_connected and self.ws_server:
+                    self.ws_server.broadcast_sync({
+                        "type": "midi_status", "connected": connected,
+                    })
+                    last_connected = connected
             except Exception:
                 pass
 
