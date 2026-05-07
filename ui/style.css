@@ -2406,7 +2406,8 @@ body.macro-learning #settings-box {
 
 /* In learn mode, faders pulse orange border */
 .midi-learn-active .fader-track,
-.midi-learn-active .macro-slot {
+.midi-learn-active .macro-slot,
+.midi-learn-active .preset-btn {
     cursor: crosshair;
     border-color: var(--border-orange) !important;
     outline: 1px dashed var(--text-orange, #ff751f);
@@ -2414,8 +2415,25 @@ body.macro-learning #settings-box {
 }
 
 .midi-learn-active .fader-track:active,
-.midi-learn-active .macro-slot:active {
+.midi-learn-active .macro-slot:active,
+.midi-learn-active .preset-btn:active {
     background: rgba(255, 117, 31, 0.15);
+}
+
+/* CC indicator anchored inside preset buttons (top-right corner). */
+.preset-btn .cc-indicator {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    font-size: clamp(7px, 1.1vw, 9px);
+    color: var(--text-orange);
+    background: rgba(0, 0, 0, 0.55);
+    padding: 1px 3px;
+    border-radius: 2px;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    pointer-events: auto;
 }
 
 /* CC indicator on mapped faders */

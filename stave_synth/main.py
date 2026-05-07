@@ -115,6 +115,9 @@ class StaveSynth:
         self._midi_learn_target = None  # {"id": fader_id, "alt": alt_state}
         # CC mappings: { "cc_number": {"id": fader_id, "alt": alt_state} }
         self._cc_map = {}
+        # Last seen CC value per cc_key — preset targets fire on rising edge
+        # so a footswitch (press 127, release 0) loads once instead of twice.
+        self._cc_last_value = {}
         self._load_cc_map()
 
         # Apply loaded state to synth engine
@@ -556,14 +559,20 @@ class StaveSynth:
         # master EQ bands, master_lowcut, BPM, low_latency_mode, saturation_enabled,
         # piano_reverb_send, piano_delay_send, etc). Only `volume` + `pre_limiter_trim`
         # ramped above; everything else relied on the next user touch to push.
-        # Use the same "re-apply each param via _handle_setting" idiom as
-        # `_handle_recall_params_from_recording` so logic stays in one place.
+        # Skip params whose value did not change — re-applying unchanged
+        # filter/EQ/reverb_type params re-initializes biquad coefficients and
+        # broadcasts state, which causes a static-type click on every preset load.
+        old_sections = {"master": old_m, "synth_pad": old_sp,
+                        "piano": old_pi, "organ": old_or}
         for section_name, src in (("master", new_m), ("synth_pad", new_sp),
                                   ("piano", new_pi), ("organ", new_or)):
             if not isinstance(src, dict):
                 continue
+            old_src = old_sections.get(section_name) or {}
             for param, value in src.items():
                 if isinstance(value, (dict, list)) and param not in ("eq_bands", "adsr_osc1", "adsr_osc2"):
+                    continue
+                if old_src.get(param) == value:
                     continue
                 try:
                     self._handle_setting({"section": section_name, "param": param, "value": value})
@@ -1593,13 +1602,18 @@ class StaveSynth:
         return {"type": "midi_learn_active", "active": False}
 
     def _handle_midi_learn_select(self, msg: dict) -> dict:
-        """User tapped a fader OR macro slot in learn mode — waiting for CC."""
+        """User tapped a fader, macro slot, OR preset slot in learn mode — waiting for CC."""
         with self._midi_learn_lock:
             if "macro_idx" in msg:
                 idx = int(msg.get("macro_idx", 0))
                 self._midi_learn_target = {"kind": "macro", "macro_idx": idx}
                 logger.info("MIDI learn: waiting for CC → macro %d", idx)
                 return {"type": "midi_learn_waiting", "macro_idx": idx}
+            if "preset_slot" in msg:
+                slot = int(msg.get("preset_slot", 0))
+                self._midi_learn_target = {"kind": "preset", "preset_slot": slot}
+                logger.info("MIDI learn: waiting for CC → preset slot %d", slot)
+                return {"type": "midi_learn_waiting", "preset_slot": slot}
             fader_id = msg.get("id", 0)
             alt = msg.get("alt", 0)
             self._midi_learn_target = {"kind": "fader", "id": fader_id, "alt": alt}
@@ -1634,8 +1648,11 @@ class StaveSynth:
                 target = self._midi_learn_target.copy()
                 self._cc_map[cc_key] = target
                 self._save_cc_map()
-                if target.get("kind") == "macro":
+                kind = target.get("kind")
+                if kind == "macro":
                     logger.info("Mapped CC %d → macro %s", cc_num, target.get("macro_idx"))
+                elif kind == "preset":
+                    logger.info("Mapped CC %d → preset slot %s", cc_num, target.get("preset_slot"))
                 else:
                     logger.info("Mapped CC %d → fader %s alt=%s",
                                 cc_num, target.get("id"), target.get("alt"))
@@ -1666,6 +1683,17 @@ class StaveSynth:
                         "idx": int(target["macro_idx"]),
                         "value": value,
                     })
+                return
+            if kind == "preset":
+                # Edge-trigger on rising edge so a momentary footswitch
+                # (press 127 / release 0) loads exactly once. An absolute
+                # pot held at 127 won't re-fire either since the callback
+                # only runs on CC messages received.
+                last = self._cc_last_value.get(cc_key, 0)
+                self._cc_last_value[cc_key] = cc_val
+                if last < 64 and cc_val >= 64:
+                    slot = int(target.get("preset_slot", 0))
+                    self._handle_preset_load({"slot": slot})
                 return
             fader_msg = {
                 "type": "fader",

@@ -1595,6 +1595,7 @@
         btn.addEventListener("pointerdown", function (e) {
             e.preventDefault();  // prevent touch selection/highlight
             if (presetEditMode) return;
+            if (midiLearnActive) return;  // tap selects for CC mapping in learn mode
             var slot = slotOf(btn);
             presetLongTimer[slot] = "armed";
             if (btn.classList.contains("filled")) {
@@ -1608,6 +1609,13 @@
 
         btn.addEventListener("pointerup", function (e) {
             var slot = slotOf(btn);
+            if (midiLearnActive) {
+                if (midiLearnWaiting) return;
+                send({ type: "midi_learn_select", preset_slot: slot });
+                midiLearnWaiting = true;
+                updateMidiLearnUI();
+                return;
+            }
             if (presetEditMode) {
                 // If a preset is "picked up" for rearrange, this tap is the
                 // swap target. Tapping the source again cancels the pickup.
@@ -3896,6 +3904,11 @@
             if (target.kind === "macro") {
                 var slot = document.querySelector('.macro-slot[data-macro="' + target.macro_idx + '"]');
                 if (slot) slot.appendChild(buildDot(cc));
+                continue;
+            }
+            if (target.kind === "preset") {
+                var pBtn = document.querySelector('.preset-btn[data-slot="' + target.preset_slot + '"]');
+                if (pBtn) pBtn.appendChild(buildDot(cc));
                 continue;
             }
             var col = faderColumns[target.id];
