@@ -457,9 +457,14 @@ class StaveSynth:
 
             # Snap discrete params (instrument mode, waveforms, on/off toggles snap
             # at the start of the crossfade; numeric params ramp over ~400ms).
+            # _apply_instrument_mode calls all_notes_off on the outgoing engine —
+            # only invoke when the mode actually changed, otherwise it chops
+            # held notes on every preset load.
             master = self.state.get("master", {})
+            old_mode = self.instrument_mode
             self.instrument_mode = master.get("instrument_mode", "piano")
-            self._apply_instrument_mode()
+            if self.instrument_mode != old_mode:
+                self._apply_instrument_mode()
             new_transpose = int(master.get("transpose_semitones", 0))
             self.midi.set_transpose(new_transpose)
             if self.jack:

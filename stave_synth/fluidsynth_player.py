@@ -846,11 +846,12 @@ class FluidSynthPlayer:
                 self._sfid_by_file[target_file] = loaded_id
                 new_sfid = loaded_id
 
-        # Instant switch: flush voices + internal reverb tail so the previous
-        # patch's decay doesn't bleed in, then program_select to the target.
+        # Smooth handoff: `program_select` swaps the channel's program; existing
+        # voices ring out naturally through their ADSR while new noteOns use the
+        # target patch. `system_reset` is intentionally NOT called — it flushed
+        # voices + reverb tail in one block, popping the preset crossfade.
         try:
             with self._lock:
-                self.fs.system_reset()
                 self.fs.set_reverb_level(self.reverb_dry_wet)
                 self.fs.program_select(0, new_sfid, 0, target_program)
         except Exception as e:
@@ -864,12 +865,6 @@ class FluidSynthPlayer:
         logger.info("Soundfont switched: %s (file=%s prog=%d id=%d, trem=%.1fHz/%.2f vel^(1/%.2f))",
                     name, target_file, target_program, new_sfid,
                     self.tremolo_hz, self.tremolo_depth, self.velocity_curve)
-
-        self._active_notes = 0
-        self._silent_blocks = 0
-        self._comp_envelope = 0.0
-        if hasattr(self, "_prev_comp_gain"):
-            self._prev_comp_gain = 1.0
 
     @staticmethod
     def list_available_soundfonts():

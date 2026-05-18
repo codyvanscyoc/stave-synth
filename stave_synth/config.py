@@ -317,7 +317,9 @@ DEFAULT_STATE = {
         "piano_delay_send": 0.0,
         # Latency mode: False = Normal (ring 16/8, ~43ms render-ahead),
         # True = Low Latency (ring 6/3, ~16ms render-ahead). Toggle from Global tab.
-        "low_latency_mode": False,
+        # Default True since Faust ports + RT priority + GC discipline make the
+        # 6/3 ring reliable; the conservative 16/8 default predates that stack.
+        "low_latency_mode": True,
     },
     "midi_cc_map": {},
     "macros": [

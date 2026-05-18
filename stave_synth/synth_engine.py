@@ -1515,6 +1515,16 @@ class SynthEngine:
                 logger.info("sympathetic: Faust native path (STAVE_FAUST_SYMPATHETIC=1)")
             except Exception as e:
                 logger.warning("sympathetic: Faust init failed (%s); falling back", e)
+        # Pre-alloc scratch for the Python-fallback sympathetic render — avoids
+        # 5× np.empty(N) per block on the audio thread under sustained chord work.
+        # 64 covers the Faust-FIFO cap of 24 plus margin for the rare unbounded
+        # Python-only path (no FIFO eviction). 5×64×8B = 2.5 KB total.
+        _SYM_MAX = 64
+        self._sym_freqs = np.empty(_SYM_MAX, dtype=np.float64)
+        self._sym_tgts = np.empty(_SYM_MAX, dtype=np.float64)
+        self._sym_g0s = np.empty(_SYM_MAX, dtype=np.float64)
+        self._sym_ph_l_init = np.empty(_SYM_MAX, dtype=np.float64)
+        self._sym_ph_r_init = np.empty(_SYM_MAX, dtype=np.float64)
 
         # Chord drone: sustained root+fifth an octave below
         self.drone_enabled = False
@@ -3401,11 +3411,11 @@ class SynthEngine:
 
                 notes_list = list(self._sympathetic_state.keys())
                 N = len(notes_list)
-                freqs = np.empty(N, dtype=np.float64)
-                tgts = np.empty(N, dtype=np.float64)
-                g0s = np.empty(N, dtype=np.float64)
-                ph_l_init = np.empty(N, dtype=np.float64)
-                ph_r_init = np.empty(N, dtype=np.float64)
+                freqs = self._sym_freqs[:N]
+                tgts = self._sym_tgts[:N]
+                g0s = self._sym_g0s[:N]
+                ph_l_init = self._sym_ph_l_init[:N]
+                ph_r_init = self._sym_ph_r_init[:N]
                 for i, note in enumerate(notes_list):
                     st = self._sympathetic_state[note]
                     freqs[i] = 440.0 * 2.0 ** ((note - 69) / 12.0)
