@@ -1,5 +1,5 @@
 declare name "stave_osc_bank";
-declare description "16-voice polyphonic osc bank — osc1+osc2, 5 waveforms, unison=3, stereo pan";
+declare description "24-voice polyphonic osc bank — osc1+osc2, 5 waveforms, unison=3, stereo pan, shimmer";
 
 import("stdfaust.lib");
 
@@ -137,14 +137,6 @@ voice_amp_mod(i) =
                        lfo1_depth, lfo1_active) *
     voice_lfo_amp_gate(lfo_shape_eval(lfo2_shape, voice_lfo2_phase(i)),
                        lfo2_depth, lfo2_active);
-
-// Chord drone — two sines (root + fifth) one octave below the played note,
-// using osc1's waveform shape. Python writes the already-smoothed freqs
-// + the combined `gain × level × fade_scale` every block.
-// Gain coefficients (0.30 root, 0.22 fifth) match synth_engine.py:2257-2261.
-drone_root_freq  = hslider("drone_root_freq",  0, 0, 12000, 0.01);
-drone_fifth_freq = hslider("drone_fifth_freq", 0, 0, 12000, 0.01);
-drone_gain_lvl   = hslider("drone_gain_lvl",   0, 0, 2,     0.001) : si.smoo;
 
 // ═══════════════════════════════════════════════════════════════════════
 // Waveform generator — takes a wrapping phasor (0..1), returns wave.
@@ -298,23 +290,10 @@ shimmer_voice(i) =
 shimmer_bank = par(i, NVOICES, shimmer_voice(i)) :> _;
 
 // ═══════════════════════════════════════════════════════════════════════
-// Chord drone — two wrapping-phasor oscs using osc1's waveform shape.
-// Separate `drone_osc` calls instantiate independent phasor state.
-// ═══════════════════════════════════════════════════════════════════════
-drone_osc(freq) = wave_gen(osc1_wf, phasor01, freq / SR)
-with {
-    phasor01 = (+(freq / SR) : ma.frac) ~ _;
-};
-
-drone_mono =
-    (drone_osc(drone_root_freq)  * 0.30 +
-     drone_osc(drone_fifth_freq) * 0.22) * drone_gain_lvl;
-
-// ═══════════════════════════════════════════════════════════════════════
 // Bank output:
 //   [0] osc1_L  [1] osc1_R  [2] osc2_L  [3] osc2_R
-//   [4] shimmer_mono  [5] drone_mono
+//   [4] shimmer_mono
 // ═══════════════════════════════════════════════════════════════════════
 osc_bank = par(i, NVOICES, one_voice(i)) :> _, _, _, _;
 
-process = osc_bank, shimmer_bank, drone_mono;
+process = osc_bank, shimmer_bank;

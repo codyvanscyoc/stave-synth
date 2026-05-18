@@ -106,16 +106,15 @@ class FaustOscBank:
         # LAYER per-voice shimmer gate — 1.0 = full, 0.0 = silenced.
         self._shimmer_gate_zones = [self._zones[f"shimmer_gate_v{i}"] for i in range(NVOICES)]
 
-        # Scratch — Faust emits 6 channels: osc1_L/R, osc2_L/R, shimmer_mono, drone_mono
+        # Scratch — Faust emits 5 channels: osc1_L/R, osc2_L/R, shimmer_mono
         self._buf_n = 0
         self._out_osc1_l = np.empty(0, dtype=np.float32)
         self._out_osc1_r = np.empty(0, dtype=np.float32)
         self._out_osc2_l = np.empty(0, dtype=np.float32)
         self._out_osc2_r = np.empty(0, dtype=np.float32)
         self._out_shimmer = np.empty(0, dtype=np.float32)
-        self._out_drone = np.empty(0, dtype=np.float32)
         self._in_ptrs = _ffi.new("float*[0]")  # zero inputs
-        self._out_ptrs = _ffi.new("float*[6]")
+        self._out_ptrs = _ffi.new("float*[5]")
 
     def __del__(self):
         try:
@@ -227,18 +226,13 @@ class FaustOscBank:
         self._zones["shimmer_enable"][0] = 1.0 if enabled else 0.0
         self._zones["shimmer_mult"][0] = 4.0 if high else 2.0
 
-    # set_drone_params removed 2026-04-26 — chord drone synthesis is gone.
-    # Faust's drone_root_freq / drone_fifth_freq / drone_gain_lvl sliders
-    # stay in osc_bank.dsp (not yet rebuilt) but are never written; their
-    # zones default to 0 so the drone output channel is always silent.
-
     # ─── Process ───
     def process(self, n_samples: int) -> np.ndarray:
-        """Generate a 6-channel (6, n_samples) float64 block:
+        """Generate a 5-channel (5, n_samples) float64 block:
              [0] osc1_L  [1] osc1_R  [2] osc2_L  [3] osc2_R
-             [4] shimmer_mono  [5] drone_mono"""
+             [4] shimmer_mono"""
         if n_samples == 0:
-            return np.zeros((6, 0), dtype=np.float64)
+            return np.zeros((5, 0), dtype=np.float64)
 
         if n_samples != self._buf_n:
             self._out_osc1_l = np.empty(n_samples, dtype=np.float32)
@@ -246,24 +240,21 @@ class FaustOscBank:
             self._out_osc2_l = np.empty(n_samples, dtype=np.float32)
             self._out_osc2_r = np.empty(n_samples, dtype=np.float32)
             self._out_shimmer = np.empty(n_samples, dtype=np.float32)
-            self._out_drone = np.empty(n_samples, dtype=np.float32)
             self._out_ptrs[0] = _ffi.cast("float*", self._out_osc1_l.ctypes.data)
             self._out_ptrs[1] = _ffi.cast("float*", self._out_osc1_r.ctypes.data)
             self._out_ptrs[2] = _ffi.cast("float*", self._out_osc2_l.ctypes.data)
             self._out_ptrs[3] = _ffi.cast("float*", self._out_osc2_r.ctypes.data)
             self._out_ptrs[4] = _ffi.cast("float*", self._out_shimmer.ctypes.data)
-            self._out_ptrs[5] = _ffi.cast("float*", self._out_drone.ctypes.data)
             self._buf_n = n_samples
 
         _lib.computeStaveOscBank(self._dsp, n_samples, self._in_ptrs, self._out_ptrs)
 
-        out = np.empty((6, n_samples), dtype=np.float64)
+        out = np.empty((5, n_samples), dtype=np.float64)
         np.copyto(out[0], self._out_osc1_l, casting="unsafe")
         np.copyto(out[1], self._out_osc1_r, casting="unsafe")
         np.copyto(out[2], self._out_osc2_l, casting="unsafe")
         np.copyto(out[3], self._out_osc2_r, casting="unsafe")
         np.copyto(out[4], self._out_shimmer, casting="unsafe")
-        np.copyto(out[5], self._out_drone, casting="unsafe")
         return out
 
 

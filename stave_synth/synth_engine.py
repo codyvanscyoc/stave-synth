@@ -1526,14 +1526,13 @@ class SynthEngine:
         self._sym_ph_l_init = np.empty(_SYM_MAX, dtype=np.float64)
         self._sym_ph_r_init = np.empty(_SYM_MAX, dtype=np.float64)
 
-        # Chord drone: sustained root+fifth an octave below
-        self.drone_enabled = False
-        self.drone_level = 1.0           # user volume multiplier (pad-player fader)
-        self._drone_fade_scale = 1.0     # 0..1, ramped by FADE button (master-fade style)
-        # Key-change crossfade: when switching keys, fade OUT to near-silence,
-        # swap freqs, fade IN. Pending freqs queue the next-key target.
-        self._drone_pending_root_freq = None
-        self._drone_pending_fifth_freq = None
+        # Pad-player volume + master-fade. Field names start with "drone_"
+        # for legacy compatibility with state files and main.py's FADE-button
+        # handler — they actually drive the pad-sample bus now (chord-drone
+        # synthesis was decommissioned 2026-04-26).
+        self.drone_enabled = False       # pad-player on/off (read by main.py UI)
+        self.drone_level = 1.0           # pad-player volume multiplier
+        self._drone_fade_scale = 1.0     # 0..1, ramped by FADE button
         # Pad sample library: MIDI note (60..71) → SamplePlayer if a WAV exists
         # in ~/.local/share/stave-synth/pad_samples/. Populated by load_pad_samples().
         self._pad_samples: dict = {}
@@ -1544,19 +1543,6 @@ class SynthEngine:
         self.pad_mellow_cutoff_hz = 400.0
         self._pad_mellow_lp_l = BiquadLowpass(self.pad_mellow_cutoff_hz, 0.707, sample_rate)
         self._pad_mellow_lp_r = BiquadLowpass(self.pad_mellow_cutoff_hz, 0.707, sample_rate)
-        # Drone DSP (filter/reverb/air/double) is intentionally GONE — the pad
-        # player will be fed by pre-recorded sample playback in the next pass.
-        # Until then, the drone renders as a simple root+fifth bed straight
-        # into stereo_out (no FX). Keeps CPU minimal and settings UI clean.
-        self._drone_root_freq = 0.0
-        self._drone_fifth_freq = 0.0
-        self._drone_root_freq_cur = 0.0
-        self._drone_fifth_freq_cur = 0.0
-        self._drone_root_phase = 0.0
-        self._drone_fifth_phase = 0.0
-        self._drone_gain = 0.0
-        self._drone_gain_target = 0.0
-        self._drone_latched = False  # locks drone pitch after first note
 
         # ═══ Motion bus mix — scales all MOTION effects together ═══
         # Set by the FX fader's 3rd ALT state ("MOTION"). Multiplies into LFO
@@ -1695,7 +1681,6 @@ class SynthEngine:
         # owns only wave gen + unison + per-osc pan + blend for all 16 voices.
         self._faust_osc_bank = None
         self._faust_slot_free: list[int] = []
-        self._faust_drone_out = None  # cached drone output from osc_bank.process()
         self._faust_nvoices = 0  # populated below if Faust path activates
 
         # Pitch bend (MIDI 0xE0). _semitones is the live offset applied to
@@ -1770,7 +1755,6 @@ class SynthEngine:
         # `np.empty(...)` allocated every block. Pre-allocating both here
         # AND in _ensure_buffers (in case block size grows past 512) keeps
         # the render block free of malloc.
-        self._drone_low      = np.zeros(self._buf_size, dtype=np.float64)
         self._dry_snap_l     = np.zeros(self._buf_size, dtype=np.float64)
         self._dry_snap_r     = np.zeros(self._buf_size, dtype=np.float64)
         self._bypass_snap_l  = np.zeros(self._buf_size, dtype=np.float64)
@@ -1826,7 +1810,6 @@ class SynthEngine:
             # first use inside the audio thread. Pre-allocating here keeps the
             # render block free of malloc(), which idle GC otherwise has to
             # sweep up. See review #8 / Tier-1 perf cleanup.
-            self._drone_low      = np.zeros(n_samples, dtype=np.float64)
             self._dry_snap_l     = np.zeros(n_samples, dtype=np.float64)
             self._dry_snap_r     = np.zeros(n_samples, dtype=np.float64)
             self._bypass_snap_l  = np.zeros(n_samples, dtype=np.float64)
@@ -2064,13 +2047,6 @@ class SynthEngine:
             self._faust_slot_free = list(range(self._faust_nvoices))
             for v in self.voices:
                 v.faust_slot = -1
-        self._drone_root_freq = 0.0
-        self._drone_fifth_freq = 0.0
-        self._drone_root_freq_cur = 0.0
-        self._drone_fifth_freq_cur = 0.0
-        self._drone_gain = 0.0
-        self._drone_gain_target = 0.0
-        self._drone_latched = False
         self._sympathetic_state.clear()
         if self._faust_sympathetic is not None:
             self._faust_sympathetic.clear_all()
@@ -2118,11 +2094,6 @@ class SynthEngine:
         self._lfo_smooth_b_state = 0.0
         self._lfo2_smooth_a_state = 0.0
         self._lfo2_smooth_b_state = 0.0
-        # Drone phase accumulators (audible if user hits panic mid-drone-fade)
-        for attr in ("_drone_root_phase", "_drone_fifth_phase", "_drone_third_phase",
-                     "_drone_oct_phase", "_drone_broad_phase"):
-            if hasattr(self, attr):
-                setattr(self, attr, 0.0)
 
     # Subdivision → beat multiplier (fraction of a quarter note)
     _DELAY_DIVISIONS = {
@@ -2642,10 +2613,6 @@ class SynthEngine:
             self._faust_osc_bank.set_shimmer_params(
                 enabled=render_shimmer, high=self.shimmer_high,
             )
-            # Drone synthesis is decommissioned — `set_drone_params` no longer
-            # called. Faust's drone_gain_lvl slider stays at its init value (0)
-            # so the drone channel always emits silence. The slider + DSP code
-            # in osc_bank.dsp will be ripped in a future Faust rebuild.
             # Poly-LFO push: only the AMP target gets per-voice mod here.
             # Pan/Filter targets continue to apply globally via Python below.
             if hasattr(self._faust_osc_bank, "set_lfo_params"):
@@ -2836,7 +2803,7 @@ class SynthEngine:
                 if slot not in active_slots:
                     self._faust_osc_bank.clear_voice(slot)
 
-            osc_out = self._faust_osc_bank.process(n_samples)  # (6, n)
+            osc_out = self._faust_osc_bank.process(n_samples)  # (5, n)
             if self.osc1_filter_enabled:
                 filter_buf[0] += osc_out[0]
                 filter_buf[1] += osc_out[1]
@@ -2850,9 +2817,6 @@ class SynthEngine:
             osc2_accum_r += osc_out[3]
             if render_shimmer:
                 shimmer_sines += osc_out[4]
-            # Cache drone channel for _render_drone_voices — avoid calling
-            # Faust.process() twice (which would advance phasors 2× the rate).
-            self._faust_drone_out = osc_out[5].copy()
 
         # Apply Haas delay to OSC2 if pans are separated and osc2 is audible
         if haas_active and render_osc2:
@@ -3049,15 +3013,6 @@ class SynthEngine:
             self._osc2_indep_cutoff_cur = np.exp(lc)
             self.osc2_indep_filter_l.set_params(self._osc2_indep_cutoff_cur, 0.707)
             self.osc2_indep_filter_r.set_params(self._osc2_indep_cutoff_cur, 0.707)
-
-        # Chord drone — simple root + fifth mono bed, no FX. Added straight
-        # into stereo_out at the end of render. Now that the chord-drone
-        # (root+fifth synthesis) is decommissioned, drone_low is always zero
-        # — kept as a buffer because pad-sample mixing reads the same name
-        # downstream (`stereo_out += drone_low + pad`). Renaming is for a
-        # future cleanup pass.
-        drone_low = self._drone_low[:n_samples]
-        drone_low[:] = 0.0
 
         # Apply stereo filters and combine
         # Filter gain compensation: reduces volume as filter opens to prevent brightness = loudness
@@ -3557,14 +3512,14 @@ class SynthEngine:
             pad_l[:] = self._pad_mellow_lp_l.process(pad_l)
             pad_r[:] = self._pad_mellow_lp_r.process(pad_r)
 
-        # Drone bus — live synth root+fifth (when no sample) + any active pad
-        # samples. VOL fader (drone_level) scales both paths uniformly.
+        # Pad bus — pad-sample playback. VOL fader (drone_level, name kept
+        # for legacy state-file compat) × master-fade scale.
         pad_vol = self.drone_level * self._drone_fade_scale
-        stereo_out[0] += drone_low + pad_l * pad_vol
-        stereo_out[1] += drone_low + pad_r * pad_vol
+        stereo_out[0] += pad_l * pad_vol
+        stereo_out[1] += pad_r * pad_vol
 
         if separate_fx:
-            # dry bus = pre-FX pad × eff_dry_gain + drone + pad samples
+            # dry bus = pre-FX pad × eff_dry_gain + pad samples
             # fx bus = final − dry = delay taps × dry_gain + reverb wet × wet_gain_val.
             # eff_dry_gain accounts for per-OSC fx_bypass: the bypass fraction
             # stays at unity regardless of dry/wet, the rest tracks dry_gain.
@@ -3577,10 +3532,8 @@ class SynthEngine:
             # CPython reuses the same allocation slot for short-lived numpy
             # temps — not zero-cost but ~10× cheaper than the full bus alloc.
             np.multiply(_pre_fx_dry_l, eff_dry_gain, out=dry_bus[0])
-            dry_bus[0] += drone_low
             dry_bus[0] += pad_l * pad_vol
             np.multiply(_pre_fx_dry_r, eff_dry_gain, out=dry_bus[1])
-            dry_bus[1] += drone_low
             dry_bus[1] += pad_r * pad_vol
             fx_bus = self._fx_bus_scratch[:, :n_samples]
             np.subtract(stereo_out[0], dry_bus[0], out=fx_bus[0])
