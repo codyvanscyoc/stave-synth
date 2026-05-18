@@ -569,6 +569,37 @@ body.retro-amber {
     color: var(--text-green);
 }
 
+#status-indicator.reconnecting {
+    border-color: #d49a2a;
+    color: #d49a2a;
+    animation: status-pulse 1.4s ease-in-out infinite;
+}
+
+#audio-indicator {
+    font-size: clamp(8px, 1.5vw, 11px);
+    padding: 0.3vh 0.8vw;
+    border: 1px solid transparent;
+    color: var(--text-muted);
+    user-select: none;
+    margin-left: 0.5vw;
+}
+
+#audio-indicator.warn {
+    border-color: #d49a2a;
+    color: #d49a2a;
+}
+
+#audio-indicator.down {
+    border-color: #cc2222;
+    color: #cc2222;
+    animation: status-pulse 0.8s ease-in-out infinite;
+}
+
+@keyframes status-pulse {
+    0%, 100% { opacity: 1.0; }
+    50% { opacity: 0.45; }
+}
+
 #output-menu {
     position: absolute;
     right: 0;

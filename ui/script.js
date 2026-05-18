@@ -4,10 +4,20 @@
     "use strict";
 
     const WS_URL = "ws://" + window.location.hostname + ":8765";
-    const RECONNECT_DELAY = 2000;
+    // Exponential reconnect with ±20% jitter — fragile networks (tablet wifi)
+    // get progressively backed off instead of hammering every 2s forever.
+    const RECONNECT_DELAYS_MS = [1000, 2000, 4000, 8000, 15000];
+    const MAX_PENDING_QUEUE = 100;
 
     // ═══ State ═══
     let ws = null;
+    let wsReconnectAttempt = 0;
+    let wsReconnectTimer = null;
+    let wsCountdownTimer = null;
+    // Queued sends while disconnected. fader/setting collapse by key so we
+    // keep only the most-recent value per (id+alt) / (section+param).
+    let wsPendingQueue = [];
+    let wsPendingByKey = new Map();
     let state = null;
     let altModes = [false, false, false, false, false];
     let fader1AltState = 0;  // 0=Volume, 1=Tone, 2=Compressor (cycles on alt click)
@@ -68,6 +78,11 @@
     const settingsPanels = document.querySelectorAll(".settings-panel");
     const statusIndicator = document.getElementById("status-indicator");
     const midiIndicator = document.getElementById("midi-indicator");
+    const audioIndicator = document.getElementById("audio-indicator");
+    // bus_comp_gr broadcasts at 20Hz from the engine — absence = wedge.
+    // 0 sentinel means we haven't received the first heartbeat yet (don't
+    // paint DOWN until we have something to compare to).
+    let lastAudioHeartbeatMs = 0;
     const osc1Btn = document.getElementById("osc1-btn");
     const osc2Btn = document.getElementById("osc2-btn");
     const pianoBtn = document.getElementById("piano-btn");
@@ -91,12 +106,19 @@
         ws = new WebSocket(WS_URL);
 
         ws.onopen = function () {
+            wsReconnectAttempt = 0;
+            if (wsCountdownTimer) { clearInterval(wsCountdownTimer); wsCountdownTimer = null; }
+            // Reset audio-engine heartbeat so a stale pre-disconnect timestamp
+            // doesn't briefly paint DOWN before the first new bus_comp_gr arrives.
+            lastAudioHeartbeatMs = 0;
+            audioIndicator.className = "";
             statusIndicator.textContent = "CONN";
             statusIndicator.className = "connected";
             ws.send(JSON.stringify({ type: "get_state" }));
             // Re-hydrate MIDI CC map — otherwise a mid-set reconnect leaves
             // ccMap frozen at whatever it was when the socket dropped.
             ws.send(JSON.stringify({ type: "get_cc_map" }));
+            flushPendingQueue();
         };
 
         ws.onmessage = function (event) {
@@ -117,9 +139,7 @@
         };
 
         ws.onclose = function () {
-            statusIndicator.textContent = "DISC";
-            statusIndicator.className = "disconnected";
-            setTimeout(connectWS, RECONNECT_DELAY);
+            scheduleReconnect();
         };
 
         ws.onerror = function () {
@@ -127,10 +147,92 @@
         };
     }
 
+    function scheduleReconnect() {
+        if (wsReconnectTimer) return;  // already scheduled
+        const base = RECONNECT_DELAYS_MS[
+            Math.min(wsReconnectAttempt, RECONNECT_DELAYS_MS.length - 1)
+        ];
+        const jitter = base * 0.2 * (Math.random() * 2 - 1);
+        const delay = Math.max(500, Math.round(base + jitter));
+        wsReconnectAttempt++;
+        let remaining = Math.ceil(delay / 1000);
+        statusIndicator.textContent = "RECONN " + remaining + "s";
+        statusIndicator.className = "reconnecting";
+        if (wsCountdownTimer) clearInterval(wsCountdownTimer);
+        wsCountdownTimer = setInterval(function () {
+            remaining--;
+            if (remaining > 0) {
+                statusIndicator.textContent = "RECONN " + remaining + "s";
+            }
+        }, 1000);
+        wsReconnectTimer = setTimeout(function () {
+            if (wsCountdownTimer) { clearInterval(wsCountdownTimer); wsCountdownTimer = null; }
+            wsReconnectTimer = null;
+            connectWS();
+        }, delay);
+    }
+
+    function reconnectNow() {
+        if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
+        if (wsCountdownTimer) clearInterval(wsCountdownTimer);
+        wsReconnectTimer = null;
+        wsCountdownTimer = null;
+        connectWS();
+    }
+
+    function pendingCollapseKey(msg) {
+        if (msg && msg.type === "fader") return "f:" + msg.id + ":" + (msg.alt ? 1 : 0);
+        if (msg && msg.type === "setting") return "s:" + msg.section + ":" + msg.param;
+        return null;
+    }
+
+    function enqueuePending(msg) {
+        const key = pendingCollapseKey(msg);
+        if (key && wsPendingByKey.has(key)) {
+            // Overwrite the most-recent value in place — keeps order stable.
+            wsPendingQueue[wsPendingByKey.get(key)] = { msg: msg, key: key };
+            return;
+        }
+        if (wsPendingQueue.length >= MAX_PENDING_QUEUE) {
+            const dropped = wsPendingQueue.shift();
+            if (dropped && dropped.key) wsPendingByKey.delete(dropped.key);
+            // Re-index remaining keyed entries — indices shifted by 1.
+            if (wsPendingByKey.size) {
+                wsPendingByKey.forEach(function (_idx, k) {
+                    wsPendingByKey.set(k, wsPendingByKey.get(k) - 1);
+                });
+            }
+        }
+        if (key) wsPendingByKey.set(key, wsPendingQueue.length);
+        wsPendingQueue.push({ msg: msg, key: key });
+    }
+
+    function flushPendingQueue() {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        const items = wsPendingQueue;
+        wsPendingQueue = [];
+        wsPendingByKey.clear();
+        for (let i = 0; i < items.length; i++) {
+            try {
+                ws.send(JSON.stringify(items[i].msg));
+            } catch (e) {
+                // Socket died mid-flush — re-queue the rest and let scheduleReconnect handle it.
+                for (let j = i; j < items.length; j++) enqueuePending(items[j].msg);
+                return;
+            }
+        }
+    }
+
     function send(msg) {
         if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify(msg));
+            try {
+                ws.send(JSON.stringify(msg));
+            } catch (e) {
+                enqueuePending(msg);
+            }
+            return;
         }
+        enqueuePending(msg);
     }
 
     function handleServerMessage(msg) {
@@ -272,7 +374,10 @@
                 }
             }
         } else if (msg.type === "bus_comp_gr") {
-            // Beat-rate GR push (20 Hz) for the LED flash
+            // Beat-rate GR push (20 Hz) for the LED flash. Also the
+            // canonical audio-engine heartbeat — absence = render wedged.
+            lastAudioHeartbeatMs = Date.now();
+            if (audioIndicator.className) audioIndicator.className = "";
             if (typeof msg.gr_db === "number") updateBusCompGr(msg.gr_db);
         } else if (msg.type === "bus_comp_preset_ack") {
             // Refresh all bus_comp sliders/knobs from state after preset load
@@ -3953,6 +4058,20 @@
     // Request CC map on load
     setTimeout(function () { send({ type: "get_cc_map" }); }, 1000);
 
+    // Audio-engine liveness watchdog — checks for missing bus_comp_gr heartbeats.
+    // Engine pushes at 20Hz so a 1.5s gap is suspicious (amber), 3s is wedged (red).
+    setInterval(function () {
+        if (!lastAudioHeartbeatMs) return;  // haven't seen a heartbeat yet
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+            audioIndicator.className = "";  // can't infer audio while WS is down
+            return;
+        }
+        const age = Date.now() - lastAudioHeartbeatMs;
+        if (age > 3000) audioIndicator.className = "down";
+        else if (age > 1500) audioIndicator.className = "warn";
+        else audioIndicator.className = "";
+    }, 500);
+
     // ═══ Audio Output Selector ═══
     var outputMenu = document.getElementById("output-menu");
 
@@ -3975,6 +4094,11 @@
 
     statusIndicator.addEventListener("click", function (e) {
         e.stopPropagation();
+        // Reconnecting → tap to force immediate reconnect.
+        if (statusIndicator.className === "reconnecting") {
+            reconnectNow();
+            return;
+        }
         if (statusIndicator.className !== "connected") return;
         if (!outputMenu.classList.contains("hidden")) {
             outputMenu.classList.add("hidden");
