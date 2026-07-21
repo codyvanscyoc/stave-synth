@@ -2,6 +2,14 @@
 Description=Stave Synth — Live MIDI Synthesizer
 After=pipewire.service pipewire-pulse.service wireplumber.service
 Wants=pipewire.service wireplumber.service
+# Tolerate extended restart attempts: a transient startup failure (missing
+# Faust .so after a rebuild, PipeWire not ready yet, etc.) shouldn't mark
+# the unit as failed and give up mid-set. 50 attempts over 10 minutes ≈
+# the time it takes the user to notice and intervene manually.
+# MUST live in [Unit] — systemd ignores these keys in [Service] (which is
+# where they sat, unnoticed, until Code Review #9).
+StartLimitBurst=50
+StartLimitIntervalSec=600
 
 [Service]
 # Type=notify: main.py sends READY=1 once the engine is up (see
@@ -29,12 +37,6 @@ Environment=XDG_RUNTIME_DIR=/run/user/%U
 Environment=MALLOC_ARENA_MAX=2
 Restart=on-failure
 RestartSec=5
-# Tolerate extended restart attempts: a transient startup failure (missing
-# Faust .so after a rebuild, PipeWire not ready yet, etc.) shouldn't mark
-# the unit as failed and give up mid-set. 50 attempts over 10 minutes ≈
-# the time it takes the user to notice and intervene manually.
-StartLimitBurst=50
-StartLimitIntervalSec=600
 # Watchdog: render thread updates jack.last_iter_ts every audio block;
 # main.py heartbeat thread pings systemd at half this interval, but only
 # if the render loop is still ticking. If audio wedges, no ping is sent
