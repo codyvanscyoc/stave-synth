@@ -70,7 +70,6 @@
     const shimOctBtn = document.getElementById("shim-oct-btn");
     const fadeBtn = document.getElementById("fade-btn");
     const freezeBtn = document.getElementById("freeze-btn");
-    const droneBtn = document.getElementById("drone-btn");  // may be null — moved to pad player
     const menuBtn = document.getElementById("menu-btn");
     const settingsModal = document.getElementById("settings-modal");
     const settingsClose = document.getElementById("settings-close");
@@ -93,7 +92,6 @@
     const clipIndicator = document.getElementById("clip-indicator");
     const levelDots = document.querySelectorAll(".level-dot");
     const bpmVal = document.getElementById("bpm-val");
-    const tapBtn = null;  // removed — BPM number itself is now the tap target
     const panicBtn = document.getElementById("panic-btn");
     let bpm = 120;
     let tapTimes = [];
@@ -114,11 +112,16 @@
             audioIndicator.className = "";
             statusIndicator.textContent = "CONN";
             statusIndicator.className = "connected";
+            // Flush queued offline values BEFORE requesting state — the
+            // server processes messages in order, so get_state-first would
+            // snapshot pre-flush state and applyState would overwrite every
+            // control with pre-disconnect values while the engine holds the
+            // newer flushed ones (UI↔engine drift until the next touch).
+            flushPendingQueue();
             ws.send(JSON.stringify({ type: "get_state" }));
             // Re-hydrate MIDI CC map — otherwise a mid-set reconnect leaves
             // ccMap frozen at whatever it was when the socket dropped.
             ws.send(JSON.stringify({ type: "get_cc_map" }));
-            flushPendingQueue();
         };
 
         ws.onmessage = function (event) {
@@ -183,10 +186,21 @@
     function pendingCollapseKey(msg) {
         if (msg && msg.type === "fader") return "f:" + msg.id + ":" + (msg.alt ? 1 : 0);
         if (msg && msg.type === "setting") return "s:" + msg.section + ":" + msg.param;
+        if (msg && msg.type === "macro_value") return "m:" + msg.idx;
         return null;
     }
 
+    // Only messages carrying ABSOLUTE values are safe to replay after an
+    // arbitrary offline gap (latest value wins, replay is idempotent).
+    // One-shots and stateful actions must NOT be queued: a panic tapped
+    // during a Wi-Fi blip would otherwise replay 20s later and silence the
+    // synth mid-song; same for late preset loads, pad triggers, record
+    // toggles, and relative octave/transpose bumps. Those are dropped —
+    // the player sees nothing happened and simply taps again.
+    const QUEUEABLE_TYPES = { fader: 1, setting: 1, macro_value: 1 };
+
     function enqueuePending(msg) {
+        if (!msg || !QUEUEABLE_TYPES[msg.type]) return;
         const key = pendingCollapseKey(msg);
         if (key && wsPendingByKey.has(key)) {
             // Overwrite the most-recent value in place — keeps order stable.
@@ -235,10 +249,28 @@
         enqueuePending(msg);
     }
 
+    // rAF-coalesced control resync — used by the setting_ack broadcast
+    // handler so a burst of remote changes triggers one sliders pass.
+    var settingsResyncRaf = null;
+    function scheduleSettingsResync() {
+        if (settingsResyncRaf) return;
+        settingsResyncRaf = requestAnimationFrame(function () {
+            settingsResyncRaf = null;
+            if (typeof updateSettingsSliders === "function") updateSettingsSliders();
+        });
+    }
+
     function handleServerMessage(msg) {
         if (msg.type === "state" && msg.state) {
             if (Array.isArray(msg.soundfonts_available)) {
                 populateSoundfontDropdown(msg.soundfonts_available);
+            }
+            // Ephemeral master-fade position rides alongside state — sync
+            // the FADE button so a page reload while faded out doesn't show
+            // a silent synth with a normal-looking button.
+            if (typeof msg.faded_out === "boolean") {
+                fadedOut = msg.faded_out;
+                updateFadeDisplay();
             }
             applyState(msg.state);
         } else if (msg.type === "transpose_ack") {
@@ -254,9 +286,6 @@
             freezeEnabled = msg.enabled;
             updateFreezeDisplay();
             updateShimmerDisplay();
-        } else if (msg.type === "drone_ack") {
-            droneEnabled = msg.enabled;
-            updateDroneDisplay();
         } else if (msg.type === "fade_ack") {
             fadedOut = !!msg.faded_out;
             updateFadeDisplay();
@@ -314,12 +343,11 @@
             var padN = Math.tanh((msg.pad || 0) * 1.0);
             var pianoN = Math.tanh((msg.piano || 0) * 1.0);
             var masterN = Math.tanh((msg.peak || 0) * 0.7);
-            var tracks = document.querySelectorAll(".fader-column .fader-track");
-            if (tracks[0]) tracks[0].style.setProperty("--level", padN.toFixed(3));
-            if (tracks[1]) tracks[1].style.setProperty("--level", pianoN.toFixed(3));
-            if (tracks[2]) tracks[2].style.setProperty("--level", masterN.toFixed(3));
-            if (tracks[3]) tracks[3].style.setProperty("--level", masterN.toFixed(3));
-            if (tracks[4]) tracks[4].style.setProperty("--level", masterN.toFixed(3));
+            if (faderTracks[0]) faderTracks[0].style.setProperty("--level", padN.toFixed(3));
+            if (faderTracks[1]) faderTracks[1].style.setProperty("--level", pianoN.toFixed(3));
+            if (faderTracks[2]) faderTracks[2].style.setProperty("--level", masterN.toFixed(3));
+            if (faderTracks[3]) faderTracks[3].style.setProperty("--level", masterN.toFixed(3));
+            if (faderTracks[4]) faderTracks[4].style.setProperty("--level", masterN.toFixed(3));
             clipIndicator.classList.remove("limiting", "limiting-hard", "limiting-crush");
             if (msg.peak > 2.5) {
                 clipIndicator.classList.add("limiting-crush");
@@ -451,13 +479,6 @@
             // CC mapped to macro arrived — drive macro just like a slot drag.
             sendMacroValue(msg.idx, msg.value);
             applyMacroVisuals();
-        } else if (msg.type === "macros_clear_all_ack") {
-            if (state && state.macros) {
-                (msg.macros || []).forEach(function (assigns, i) {
-                    if (state.macros[i]) state.macros[i].assignments = assigns || [];
-                });
-            }
-            applyMacroVisuals();
         } else if (msg.type === "macro_value_ack") {
             if (state && state.macros && state.macros[msg.idx]) {
                 state.macros[msg.idx].value = msg.value;
@@ -496,6 +517,41 @@
         } else if (msg.type === "cc_map") {
             ccMap = msg.map || {};
             updateCCIndicators();
+        } else if (msg.type === "setting_ack") {
+            // Broadcast from another client (or the echo of our own send).
+            // Only act when the value differs from our local mirror — our
+            // own sends already updated the UI, so this is a cheap no-op
+            // for the sender and a real sync for second screens.
+            if (msg.section && msg.param !== undefined &&
+                state && state[msg.section] &&
+                state[msg.section][msg.param] !== msg.value) {
+                state[msg.section][msg.param] = msg.value;
+                if (msg.param === "shimmer_high") {
+                    // Two controls share this param (front-panel +12 button
+                    // and the LAYER +12/+24 button) — keep both honest.
+                    shimmerHigh = !!msg.value;
+                    updateShimmerDisplay();
+                }
+                scheduleSettingsResync();
+            }
+        } else if (msg.type === "octave_ack") {
+            // Sync octave vars + front-panel display + LAYER readouts —
+            // covers both cross-client sync and the same-page LAYER-row /
+            // front-panel pair, which previously only converged on the
+            // next full state broadcast.
+            var oinst = msg.instrument, oval = msg.octave | 0;
+            if (oinst === "piano") pianoOctave = oval;
+            else if (oinst === "osc1") osc1Octave = oval;
+            else if (oinst === "osc2") osc2Octave = oval;
+            var octDisp = document.querySelector('.oct-display[data-inst="' + oinst + '"]');
+            if (octDisp) octDisp.textContent = oval;
+            if (state) {
+                var _sp = state.synth_pad || {}, _m = state.master || {};
+                if (oinst === "osc1") _sp.osc1_octave = oval;
+                else if (oinst === "osc2") _sp.osc2_octave = oval;
+                else if (oinst === "piano") _m.piano_octave = oval;
+                if (typeof window.__layerApplyState === "function") window.__layerApplyState(state);
+            }
         } else if (msg.type === "fader_ack" && msg.from_cc) {
             // CC-driven fader update — sync local state and visual
             var id = msg.id;
@@ -505,6 +561,14 @@
                 if (alt === 0) faderValues[1] = val;
                 else if (alt === 1) altFaderValues[1] = val;
                 else fader1CompValue = val;
+            } else if (id === 3) {
+                // Fader 3 is also 3-state: main / SHIMMER (alt=1) / MOTION
+                // (alt=2). Without this branch a CC mapped in MOTION mode
+                // landed in altFaderValues[3] (SHIMMER) — wrong bar, and a
+                // later SHIMMER drag would send the CC's motion value.
+                if (alt === 0) faderValues[3] = val;
+                else if (alt === 1) altFaderValues[3] = val;
+                else fader3MotionValue = val;
             } else if (alt) {
                 altFaderValues[id] = val;
             } else {
@@ -609,7 +673,6 @@
             osc2Octave = s.synth_pad.osc2_octave ?? 0;
             if (typeof updatePadOctaveDisplay === "function") updatePadOctaveDisplay();
             updateFreezeDisplay();
-            updateDroneDisplay();
 
             // Sync mute state with actual blend values
             osc1Enabled = faderValues[0] > 0;
@@ -1076,7 +1139,6 @@
     // In EDIT mode: tapping a preset opens an action popup (RENAME / DELETE / CANCEL).
     var presetLastTap = {};
     var presetLongTimer = {};
-    var presetDeleteSlot = -1; // which slot is showing delete X
     var presetEditMode = false;
     var presetLabels = ["", "", "", "", ""];
     var actionPopupSlot = -1;
@@ -1678,18 +1740,6 @@
         applyLayer();  // re-render to refresh label spans
     }
 
-    function cancelDeleteConfirm() {
-        if (presetDeleteSlot >= 0) {
-            var old = btnForSlot(presetDeleteSlot);
-            if (old) {
-                var x = old.querySelector(".preset-delete-x");
-                if (x) x.remove();
-                old.classList.remove("delete-confirm");
-            }
-        }
-        presetDeleteSlot = -1;
-    }
-
     // Read the CURRENT slot number from the button's data-slot attribute
     // (not a cached closure value) so layer switching works correctly.
     function slotOf(btn) { return parseInt(btn.dataset.slot); }
@@ -1706,7 +1756,6 @@
             if (btn.classList.contains("filled")) {
                 presetLongTimer[slot] = setTimeout(function () {
                     presetLongTimer[slot] = null;
-                    cancelDeleteConfirm();
                     send({ type: "preset_save", slot: slot });
                 }, 600);
             }
@@ -1773,14 +1822,7 @@
         });
     });
 
-    // Cancel delete confirm when tapping elsewhere
     document.addEventListener("click", function (e) {
-        if (presetDeleteSlot >= 0) {
-            var btn = btnForSlot(presetDeleteSlot);
-            if (btn && !btn.contains(e.target)) {
-                cancelDeleteConfirm();
-            }
-        }
         // Close action popup if clicking outside it (and not a preset button)
         if (actionPopupSlot >= 0 && !actionPopup.contains(e.target)) {
             var isPreset = false;
@@ -1822,7 +1864,7 @@
         allPresetSaved[slot] = false;
         var btn = btnForSlot(slot);
         if (!btn) return;
-        btn.classList.remove("filled", "loaded", "delete-confirm");
+        btn.classList.remove("filled", "loaded");
         btn.classList.add("empty");
         if (loadedPreset === slot) loadedPreset = -1;
     }
@@ -1940,7 +1982,7 @@
     }
 
     function updateShimmerDisplay() {
-        shimmerBtn.textContent = shimmerEnabled ? "SHIM" : "SHIM";
+        shimmerBtn.textContent = "SHIM";  // label is constant; only .active styling changes
         shimmerBtn.classList.toggle("active", shimmerEnabled);
         // Show/hide freeze + +12 buttons based on shimmer state
         freezeBtn.classList.toggle("hidden", !shimmerEnabled);
@@ -2093,18 +2135,6 @@
         }
         bpmVal.addEventListener("pointerup", bpmEndDrag);
         bpmVal.addEventListener("pointercancel", bpmEndDrag);
-    }
-
-    if (droneBtn) {
-        droneBtn.addEventListener("click", function () {
-            droneEnabled = !droneEnabled;
-            updateDroneDisplay();
-            send({ type: "drone_toggle", enabled: droneEnabled });
-        });
-    }
-
-    function updateDroneDisplay() {
-        if (droneBtn) droneBtn.classList.toggle("active", droneEnabled);
     }
 
     // ═══ Pad Player (12-key drone launcher) ═══
@@ -2355,13 +2385,39 @@
             del.className = "delete";
             del.textContent = "✕";
             del.title = "Delete this take";
-            del.addEventListener("click", function () {
-                if (!confirm("Delete " + t.filename + "?")) return;
+            // Two-tap arm-confirm instead of window.confirm() — pywebview's
+            // WebKit backend doesn't reliably implement script dialogs
+            // (confirm() can return false immediately → button does nothing
+            // on the built-in screen). Same pattern as preset delete.
+            armConfirmButton(del, "SURE?", function () {
                 send({ type: "delete_recording", filename: t.filename });
             });
             row.appendChild(del);
 
             takesListEl.appendChild(row);
+        });
+    }
+
+    // Arm-then-confirm for destructive buttons: first tap arms (label swaps
+    // to armText + .arm-confirm class, auto-disarms after 3s), second tap
+    // within the window fires the action.
+    function armConfirmButton(btn, armText, action) {
+        var origText = btn.textContent;
+        var disarmTimer = null;
+        function disarm() {
+            if (disarmTimer) { clearTimeout(disarmTimer); disarmTimer = null; }
+            btn.classList.remove("arm-confirm");
+            btn.textContent = origText;
+        }
+        btn.addEventListener("click", function () {
+            if (btn.classList.contains("arm-confirm")) {
+                disarm();
+                action();
+                return;
+            }
+            btn.classList.add("arm-confirm");
+            btn.textContent = armText;
+            disarmTimer = setTimeout(disarm, 3000);
         });
     }
 
@@ -2384,8 +2440,9 @@
             clr.className = "clear";
             clr.textContent = "✕";
             clr.title = "Remove this slot (reverts to live synth for this key)";
-            clr.addEventListener("click", function () {
-                if (!confirm("Clear pad slot " + s.label + "?")) return;
+            // Two-tap arm-confirm — see delete-take note (confirm() is
+            // unreliable under pywebview).
+            armConfirmButton(clr, "SURE?", function () {
                 send({ type: "clear_pad_slot", note: s.note });
             });
             slot.appendChild(clr);
@@ -2508,6 +2565,8 @@
             send({ type: "setting", section: btn.dataset.section,
                    param: btn.dataset.param, value: nowOn });
             if (state && state.synth_pad) state.synth_pad[btn.dataset.param] = nowOn;
+            // Scope gate reads this button's active class — redraw.
+            if (typeof updateLfoScope === "function") updateLfoScope();
         });
     });
 
@@ -2597,7 +2656,7 @@
                 else if (sendValue > 0.05) displayValue = "R" + Math.round(sendValue * 100);
                 else displayValue = "C";
             } else if (param === "reverb_dry_wet" || param === "shimmer_mix" ||
-                param === "reverb_space" || param === "unison_spread" ||
+                param === "reverb_space" ||
                 param === "osc1_max" || param === "osc2_max" ||
                 param === "leslie_depth" || param === "click_level" ||
                 param === "drive" ||
@@ -3549,7 +3608,7 @@
             if (param === "osc1_pan" || param === "osc2_pan") {
                 slider.value = value * 100;
             } else if (param === "reverb_dry_wet" || param === "shimmer_mix" ||
-                param === "reverb_space" || param === "unison_spread" ||
+                param === "reverb_space" ||
                 param === "osc1_max" || param === "osc2_max" ||
                 param === "leslie_depth" || param === "click_level" ||
                 param === "drive" ||
@@ -3623,7 +3682,7 @@
                     else if (value > 0.05) valueEl.textContent = "R" + Math.round(value * 100);
                     else valueEl.textContent = "C";
                 } else if (param === "reverb_dry_wet" || param === "shimmer_mix" ||
-                    param === "reverb_space" || param === "unison_spread" ||
+                    param === "reverb_space" ||
                     param === "osc1_max" || param === "osc2_max" ||
                     param === "leslie_depth" || param === "click_level" ||
                 param === "drive" || param === "width" || param === "tone_tilt" ||
@@ -3724,7 +3783,7 @@
             const section = select.dataset.section;
             const param = select.dataset.param;
             let sectionData = state[section];
-            if (sectionData && sectionData[param]) {
+            if (sectionData && sectionData[param] !== undefined) {
                 select.value = sectionData[param];
             }
         });
@@ -3847,11 +3906,14 @@
         function tracePoints(prefix) {
             var shapeEl = document.querySelector('[data-param="' + prefix + '_shape"]');
             var invertEl = document.querySelector('[data-param="' + prefix + '_invert"]');
-            var enabledEl = document.querySelector('[data-param="' + prefix + '_enabled"]');
+            // Gate comes from the ON/OFF button (lfo_active) — the old
+            // lfo_enabled checkboxes were retired 04-23; querying them left
+            // `enabled` always false and the scope ignored the depth knob.
+            var activeBtn = document.querySelector('.lfo-active-btn[data-param="' + prefix + '_active"]');
             var depthEl = document.querySelector('[data-param="' + prefix + '_depth"]');
             var shape = shapeEl ? shapeEl.value : "sine";
             var invert = invertEl ? invertEl.checked : false;
-            var enabled = enabledEl ? enabledEl.checked : false;
+            var enabled = activeBtn ? activeBtn.classList.contains("active") : false;
             var depth = depthEl ? parseFloat(depthEl.value) / 100 : 0;
             var offFrac = lfoOffsetFraction(prefix);
             // Scale amplitude by depth so disabled / zero-depth shows a flat

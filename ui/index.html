@@ -13,7 +13,7 @@
     <link rel="manifest" href="manifest.json">
     <link rel="apple-touch-icon" href="logo.png">
     <!-- Keep style.css and script.js cache-bust versions in sync -->
-    <link rel="stylesheet" href="style.css?v=179">
+    <link rel="stylesheet" href="style.css?v=180">
 </head>
 <body>
     <div id="app">
@@ -34,6 +34,7 @@
             </div>
             <button id="layer-btn" class="ctrl-btn ctrl-btn-sm">LAYER</button>
             <button id="panic-btn" class="ctrl-btn panic-btn">STOP</button>
+            <span id="xrun-badge" class="xrun-badge hidden" title="Audio dropouts — tap to dismiss"></span>
             <button id="menu-btn" class="ctrl-btn">MENU</button>
             <div id="record-box">
                 <button id="record-btn" class="ctrl-btn ctrl-btn-sm" title="Record master output">
@@ -214,6 +215,10 @@
                     <div class="pad-vol-buttons">
                         <button class="pad-mode-btn" data-mode="vol">VOL</button>
                         <button class="pad-mode-btn pad-rise-btn" data-mode="rise">RISE</button>
+                        <!-- Pad fade-out (server drone_fade) — restored; was
+                             accidentally dropped in the pad-sampler redesign
+                             while its JS/CSS/server handler all survived. -->
+                        <button id="pad-fade-btn" class="ctrl-btn ctrl-btn-sm">FADE</button>
                     </div>
                     <div class="pad-vol-view pad-vol-only">
                         <button class="pad-mode-back" data-back="vol" title="Back">×</button>
@@ -401,7 +406,7 @@
                                 <div class="setting-row setting-row-checkbox">
                                     <label class="setting-checkbox-label">
                                         <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc1_filter_enabled" checked>
-                                        <span>Use shared filter (LINK tab)</span>
+                                        <span>Use shared filter (bottom strip)</span>
                                     </label>
                                 </div>
                                 <div class="setting-row indep-filter-row" id="osc1-indep-filter" style="display:none">
@@ -498,7 +503,7 @@
                                 <div class="setting-row setting-row-checkbox">
                                     <label class="setting-checkbox-label">
                                         <input type="checkbox" class="setting-checkbox" data-section="synth_pad" data-param="osc2_filter_enabled" checked>
-                                        <span>Use shared filter (LINK tab)</span>
+                                        <span>Use shared filter (bottom strip)</span>
                                     </label>
                                 </div>
                                 <div class="setting-row indep-filter-row" id="osc2-indep-filter" style="display:none">
@@ -1627,9 +1632,9 @@
                         <div class="help-text">
                             <b>OSC 1</b> — Pad volume. ALT: OSC 2 volume.<br>
                             <b>PIANO/ORGAN</b> — Volume. ALT cycles: Tone (high cut) → Compressor/Leslie.<br>
-                            <b>FILTER</b> — Lowpass cutoff (standalone, no ALT).<br>
-                            <b>FX</b> — Reverb dry/wet. ALT: Shimmer volume.<br>
-                            <b>MASTER</b> — Master output volume.
+                            <b>FILTER</b> — Lowpass cutoff. ALT: Low cut.<br>
+                            <b>FX</b> — Reverb dry/wet. ALT cycles: Shimmer volume → Motion bus.<br>
+                            <b>MASTER</b> — Master output volume. ALT: Drive.
                         </div>
 
                         <div class="setting-section">PRESETS</div>
@@ -1637,14 +1642,15 @@
                             <b>Tap empty slot</b> — Save current settings.<br>
                             <b>Tap filled slot</b> — Load that preset.<br>
                             <b>Long-press filled slot</b> — Overwrite with current settings.<br>
-                            <b>Double-tap filled slot</b> — Shows X. Tap X to delete, tap elsewhere to cancel.
+                            <b>EDIT</b> — Then tap a slot for rename / rearrange / delete.
                         </div>
 
                         <div class="setting-section">MIDI LEARN</div>
                         <div class="help-text">
                             <b>Tap MIDI indicator</b> — Enter learn mode (shows "MAP").<br>
-                            <b>Tap a fader</b> — Select it for mapping.<br>
-                            <b>Turn a knob/slider</b> — Maps that CC to the selected fader.<br>
+                            <b>Tap a fader, macro slot, or preset slot</b> — Select it for mapping.<br>
+                            <b>Turn a knob / press a switch</b> — Maps that CC to the selection.
+                            Preset slots fire on press (footswitch scene advance).<br>
                             <b>Tap MIDI again</b> — Exit learn mode.
                         </div>
 
@@ -1703,6 +1709,6 @@
 
     </div>
 
-    <script src="script.js?v=166"></script>
+    <script src="script.js?v=180"></script>
 </body>
 </html>

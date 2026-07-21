@@ -182,8 +182,21 @@ body.retro-amber {
 .ctrl-btn-sm {
     font-size: clamp(8px, 1.6vw, 11px);
     padding: 0.4vh 1vw;
-    min-width: 2em;
-    min-height: 2em;
+    /* Mid-song controls (FADE/SHIM/FRZ/…) — keep the visual footprint
+       compact but give fingers a real target. 2em at 11px was ~22px;
+       36px min + an invisible expanded hit area gets close to the 44pt
+       guideline without redesigning the top bar. */
+    min-width: 36px;
+    min-height: 36px;
+    position: relative;
+}
+
+/* Invisible extended hit area — taps just outside the visible button
+   still land on it. */
+.ctrl-btn-sm::after {
+    content: "";
+    position: absolute;
+    inset: -5px;
 }
 
 .ctrl-btn-sm.active {
@@ -194,17 +207,6 @@ body.retro-amber {
 #freeze-btn.active {
     background: #4D9EFF;
     border-color: #4D9EFF;
-    color: var(--bg);
-}
-
-#drone-btn {
-    border-color: #B06EFF;
-    color: #6B3FA0;
-}
-
-#drone-btn.active {
-    background: #B06EFF;
-    border-color: #B06EFF;
     color: var(--bg);
 }
 
@@ -320,11 +322,6 @@ body.retro-amber {
     color: var(--text-green-dim);
     letter-spacing: 0.1em;
 }
-#tap-btn.pulse {
-    background: var(--text-green);
-    color: var(--bg);
-}
-
 /* ═══ Record button + timer (top bar) ═══ */
 #record-box {
     display: flex;
@@ -491,6 +488,14 @@ body.retro-amber {
 }
 .pad-slot:not(.loaded) button.clear { visibility: hidden; }
 .pad-slot button.clear:hover { border-color: #FF4D6A; color: #FF4D6A; }
+
+/* Armed destructive button (two-tap confirm — see armConfirmButton) */
+.arm-confirm {
+    background: #FF4D6A !important;
+    border-color: #FF4D6A !important;
+    color: var(--bg) !important;
+    font-size: 0.75em;
+}
 
 .sys-readout {
     display: flex;
@@ -941,29 +946,6 @@ body.retro-amber {
 .preset-btn.loaded {
     opacity: 1.0;
     box-shadow: 0 0 8px var(--preset-color);
-}
-
-/* Delete confirm X */
-.preset-btn.delete-confirm {
-    opacity: 1.0;
-    border-style: dashed;
-    border-color: #cc2222;
-    background: transparent;
-}
-
-.preset-delete-x {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-family: var(--font);
-    font-size: clamp(14px, 3vw, 22px);
-    color: #cc2222;
-    cursor: pointer;
 }
 
 /* Save flash animation */
