@@ -14,7 +14,7 @@ damp         = hslider("damp",           0.50,   0.0,     0.99,   0.001) : si.sm
 low_cut_hz   = hslider("low_cut_hz",    80.0,   20.0,  2000.0,    1.0)  : si.smoo;
 high_cut_hz  = hslider("high_cut_hz", 7000.0,  500.0, 20000.0,    1.0)  : si.smoo;
 freeze_in    = hslider("freeze_input",   1.0,   0.0,     1.0,   0.001) : si.smoo;
-er_scale     = hslider("er_scale",       0.4,   0.0,     1.0,   0.001);
+er_scale     = hslider("er_scale",       0.4,   0.0,     1.0,   0.001);  // unsmoothed (set at preset time, not swept)
 
 // ═══════════════════════════════════════════════════════════════════════
 // Type-variant params — zero for WASH/HALL/ROOM/DRONE (params-only presets);
@@ -23,7 +23,7 @@ er_scale     = hslider("er_scale",       0.4,   0.0,     1.0,   0.001);
 // as a mathematical identity (no sonic change).
 //
 //   shimmer_fb — pitch-shifted tail re-injected into FDN input via a self-
-//   feeding outer loop. Each loop cycle adds +12 st → ethereal bloom.
+//   feeding outer loop. Each loop cycle adds +7 st (perfect fifth) → ethereal bloom.
 //
 //   noise_mod — slow filtered noise added to the per-line damp coefficient,
 //   producing a breathing/modulated tail density.
@@ -145,9 +145,10 @@ with {
 };
 
 // ═══════════════════════════════════════════════════════════════════════
-// BLOOM shimmer — a pitch-up +12 ST copy of the wet tail fed back into the
-// FDN input. Creates the classic self-feeding octave bloom: each pass through
-// the FDN transposes again, tail rises forever (until damp catches it).
+// BLOOM shimmer — a pitch-up +7 ST (perfect fifth, intentional — see below)
+// copy of the wet tail fed back into the FDN input. Creates the classic
+// self-feeding bloom: each pass through the FDN transposes again, tail rises
+// forever (until damp catches it).
 //
 // ef.transpose(w, x, s) is a crossfaded-delay pitch shifter. At s=0 it's a
 // mathematical passthrough (both delay taps have d=0), so multiplying s by

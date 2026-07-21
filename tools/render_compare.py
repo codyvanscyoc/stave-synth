@@ -18,7 +18,7 @@ sys.path.insert(0, str(REPO))
 from stave_synth.synth_engine import (  # noqa: E402
     SynthEngine, ADSREnvelope, ADSRConfig, generate_waveform
 )
-from stave_synth.faust_osc_bank import FaustOscBank, NVOICES  # noqa: E402
+from stave_synth.faust_osc_bank import FaustOscBank  # noqa: E402
 
 SR = 48000
 N_BLK = 256

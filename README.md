@@ -35,19 +35,31 @@ Reboot and the synth starts automatically. Plug in a USB MIDI keyboard and play.
 ### Hardware you need
 
 - **Raspberry Pi 5** (Bookworm or Trixie, 64-bit). 4 GB works; 8 GB is comfier.
+- **Or a Raspberry Pi 4** — even 2 GB. The installer detects small-RAM boxes
+  and applies the **small-Pi profile** automatically: FluidR3 piano only (no
+  1.2 GB Salamander), headless (control from a browser/tablet — use Pi OS
+  Lite), safe ring-buffer defaults, 512-sample quantum, and a service memory
+  guard. Torture-test on the actual Pi 4 before its first gig — the CPU has
+  roughly half the Pi 5's headroom.
 - **USB MIDI keyboard** (Akai MPKmini, Launchkey, any class-compliant USB MIDI controller).
-- **Audio out** — any USB audio interface, or the Pi's HDMI / Bluetooth. Built-in analog is not recommended.
+- **Audio out** — any USB audio interface, or the Pi's HDMI / Bluetooth. Built-in analog is not recommended (and is disabled on Pi 4 installs so the USB interface always wins — `--keep-onboard-audio` to opt out).
 
 ### What install.sh does
 
-- Installs JACK2, PipeWire, FluidSynth, Python deps, WebKit (auto-detects Bookworm vs Trixie), Faust compiler
+- Installs JACK2, PipeWire, FluidSynth, Python deps, WebKit (auto-detects Bookworm vs Trixie; skipped on headless small-Pi installs), Faust compiler
 - Sets up real-time audio permissions + audio group
 - Locks CPU governor to performance (prevents audio stutter)
 - Disables screen blanking + USB autosuspend (prevents dropouts)
-- Installs FluidR3_GM (apt) for piano + offers `--salamander` flag to download the 1.2GB Salamander Grand v3
-- Builds the C audio bridge + Faust DSP modules
+- Enables the hardware watchdog (auto-reboot if the whole box ever wedges)
+- Pins the PipeWire graph to 48 kHz so the DSP is never silently detuned
+- **Installs Salamander Grand v3 by default** (~296 MB download → 1.2 GB on disk; `--no-salamander` to skip) plus FluidR3_GM via apt (always — it backs the Rhodes/Suitcase presets and the small-Pi piano)
+- Builds the C audio bridge + all 10 Faust DSP modules from source
 - Creates a systemd user service that auto-starts on boot *(skipped with `--no-autostart`)*
-- Prints a summary of detected audio/MIDI devices at the end
+- Prints a summary of detected profile, thermals, and audio/MIDI devices at the end
+
+All flags: `--no-autostart`, `--no-salamander` / `--salamander`,
+`--no-gui-deps` / `--gui-deps`, `--no-isolcpus` / `--isolcpus`,
+`--keep-onboard-audio`. Run `./install.sh --help` for details.
 
 ## First 60 seconds
 
@@ -87,7 +99,7 @@ Reboot and the synth starts automatically. Plug in a USB MIDI keyboard and play.
 | **PIANO** | Cycle: piano → organ → off |
 | **SHIM** | Shimmer on/off |
 | **FRZ** | Freeze reverb tail (appears when shimmer is on) |
-| **DRONE** | Sustained root + fifth one octave below |
+| **Pad keys** | 12-key pad player — tap a key to launch that key's sampled pad bed (VOL / RISE / FADE controls beside it) |
 | **SAT** | Saturation / asymmetric drive |
 | **STOP** | Panic — kills all notes, flushes reverb, resets fade |
 | **T: −/+** | Transpose all MIDI input in semitones |
@@ -109,7 +121,7 @@ Reboot and the synth starts automatically. Plug in a USB MIDI keyboard and play.
 - Open the audio dropdown and pick your actual output (USB DAC, HDMI, etc.).
 
 **Piano is silent but pad works.**
-- The soundfont didn't install. Check `ls ~/.local/share/stave-synth/soundfonts/` — you should see at least `FluidR3_GM.sf2` (and `Salamander.sf2` if you ran `./install.sh --salamander`). Re-run `./install.sh` or drop any `.sf2` into that folder and restart.
+- The soundfont didn't install. Check `ls ~/.local/share/stave-synth/soundfonts/` — you should see `FluidR3_GM.sf2` and, on a default install, `Salamander.sf2` (absent if you used `--no-salamander` or a <3 GB Pi). Re-run `./install.sh` or drop any `.sf2` into that folder and restart.
 
 **MIDI keyboard doesn't do anything.**
 - Tap the `MIDI` indicator in the top bar — it should flash green on each note. If not, check `aconnect -i` on the Pi; the keyboard should show up as a client. The synth auto-connects.
@@ -164,22 +176,26 @@ pw-jack ./venv/bin/python -m stave_synth.main --no-gui
 - **Shimmer** — Octave-up sines into reverb, 1.2 kHz highpass, `+12` toggle adds another octave (+24 total)
 - **CLOUD** — Pre-reverb multi-tap stereo bouncing delay on shimmer for atmospheric motion
 - **Sympathetic Resonance (RESO)** — Piano notes subtly excite the pad through the reverb, cubic-curve level control
-- **Chord Drone** — Sustained root + fifth one octave below with portamento
+- **Pad Player** — 12 per-key sampled pad beds (record your own via the RECORD tab), with RISE mode (volume + filter swell) and FADE
 - **Freeze** — Infinite reverb tail sustain
 - **Dual LFO with LINK** — Two independent control-rate LFOs (sine / triangle / square / saw / ramp / peak / S&H) with Invert flip per LFO. Targets: filter / amp / pan. Tempo-synced to BPM or free-Hz. Speed multiplier (½x / 1x / 2x). Key Sync resets phase on note-on. Bipolar ms offset with Haas Comp. Visual alignment scope shows both shapes overlaid
 - **AMP target** uses a gate formula that delivers full 0..1 mute at depth=1 (sidechain-pump flavor) with unity-average makeup
 - **Tempo-synced Ping-Pong Delay** — 1/2 through 1/16, triplet + dotted, or FREE-ms; stereo offset, feedback, wet control
-- **Piano Layer** — FluidSynth GM soundfont, 24 dB/oct hi/lo cut EQ, authentic LA-2A–style compressor (soft knee, DRIVE input, parallel wet/dry, PERFECT preset), plus FluidSynth's internal room reverb and an optional send to the global reverb bus
+- **Piano Layer** — FluidSynth with 4 soundfont presets (Salamander / Fluid / Rhodes / Suitcase, hot-swappable) + 7 voicings (draggable 4-band EQ curves), 24 dB/oct hi/lo cut, authentic LA-2A–style compressor (soft knee, DRIVE input, parallel wet/dry, PERFECT preset), Faust Dattorro piano-room reverb, and an optional send to the global reverb bus
 - **B3 Organ Engine** — Tonewheel drawbars + split Leslie (chorale/fast), Faust-native
 - **SSL G-style Bus Compressor** — feedback-flavor, self / piano / LFO / BPM sidechain, GLUE / PUNCH / PUMP presets, ∞-ratio brickwall mode, GR LED with peak hold
 - **Master EQ** — 3-band parametric + configurable low cut (6 / 12 / 24 dB)
 - **Saturation (SAT)** — Asymmetric soft drive pre-limiter
 - **Sustain Pedal** — CC64, transpose-safe note tracking
+- **LAYER (keyboard split)** — Per-source key ranges with crossfade zones: OSC1 / OSC2 / shimmer / piano-organ each own a region of the keyboard, with per-row octave shift
 - **Preset Crossfade** — 800 ms musical morphing between 10 color-coded slots (2 layers of 5)
-- **MIDI Learn** — Map any CC to any fader
-- **Macros (4 slots)** — Learn any parameter, ride via macro fader
+- **Setlists** — 10 named setlist slots, each snapshotting all 10 presets; MIDI program change steps through
+- **Recorder** — One-tap master-bus recording with per-take parameter snapshots you can recall later
+- **MIDI Learn** — Map any CC to any fader, macro slot, or preset slot (footswitch scene advance)
+- **Macros (8 slots, 4+4 A/B)** — Learn any parameters (bipolar supported), ride via macro fader, EDIT/CLEAR management
 - **Master FADE** — 5-second musical fade out/in for song endings
-- **True Stereo** — Full stereo pipeline, pre-limiter trim, tanh soft limiter
+- **Low Latency toggle** — Global-tab switch between the safe 16-slot ring and a tight 6-slot ring (~27 ms saved) — live, no restart
+- **True Stereo** — Full stereo pipeline, pre-limiter trim, lookahead brickwall limiter
 - **Audio Output Selector** — Switch USB / Bluetooth / HDMI from the UI
 - **Faust-native DSP** on hot paths (reverb, osc bank, sympathetic, ping-pong, master FX, bus comp, organ, plate, drone) for stable CPU under full load on the Pi 5
 
@@ -209,8 +225,8 @@ ui/
   index.html / style.css / script.js — Touch UI
 
 soundfonts/                          (in ~/.local/share/stave-synth/soundfonts/)
-  FluidR3_GM.sf2       — Default GM soundfont (MIT licensed, ~150MB, via apt)
-  Salamander.sf2       — Salamander Grand v3 (CC-BY 3.0, 1.2GB, via --salamander)
+  FluidR3_GM.sf2       — GM soundfont (MIT licensed, ~150MB, via apt; backs Fluid/Rhodes/Suitcase)
+  Salamander.sf2       — Salamander Grand v3 (CC-BY 3.0, 1.2GB; default install, skip with --no-salamander)
 ```
 
 ## DSP backend (Faust vs Python)

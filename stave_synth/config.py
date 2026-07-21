@@ -16,6 +16,35 @@ STATE_FILE = CONFIG_DIR / "current_state.json"
 # Audio
 SAMPLE_RATE = 48000
 
+
+def _total_ram_mb() -> int:
+    """Read MemTotal from /proc/meminfo (kB → MB). 0 if unreadable."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    return int(line.split()[1]) // 1024
+    except Exception:
+        pass
+    return 0
+
+
+TOTAL_RAM_MB = _total_ram_mb()
+
+# Small-Pi profile (e.g. Pi 4 / 2 GB): the full profile preloads Salamander
+# (1.2 GB resident) and runs a tight ring — neither fits a 2 GB box. When
+# LOW_RAM_MODE is on: Salamander is dropped from the soundfont presets,
+# FluidSynth uses dynamic-sample-loading, low_latency_mode defaults OFF,
+# and the auto-GUI (WebKit, ~400 MB) is refused. Override for testing with
+# STAVE_LOW_RAM=1/0.
+_low_ram_env = os.environ.get("STAVE_LOW_RAM", "")
+if _low_ram_env in ("1", "true", "True"):
+    LOW_RAM_MODE = True
+elif _low_ram_env in ("0", "false", "False"):
+    LOW_RAM_MODE = False
+else:
+    LOW_RAM_MODE = 0 < TOTAL_RAM_MB < 3072
+
 # Network
 WEBSOCKET_HOST = "0.0.0.0"
 WEBSOCKET_PORT = 8765
@@ -36,11 +65,11 @@ USE_FAUST_REVERB = os.environ.get("STAVE_FAUST_REVERB", "0") not in ("0", "", "f
 # Same story for the stereo ping-pong delay.
 USE_FAUST_PING_PONG = os.environ.get("STAVE_FAUST_PING_PONG", "0") not in ("0", "", "false", "False")
 
-# 16-voice Faust oscillator bank (wave gen + unison + pan + blend).
+# 24-voice Faust oscillator bank (wave gen + unison + pan + blend).
 # Current iteration: unison hardcoded to 3, ADSR stays Python-side.
 USE_FAUST_OSC_BANK = os.environ.get("STAVE_FAUST_OSC_BANK", "0") not in ("0", "", "false", "False")
 
-# Sympathetic resonance rendered in Faust (stereo bank of 16 slots).
+# Sympathetic resonance rendered in Faust (stereo bank of 24 slots).
 USE_FAUST_SYMPATHETIC = os.environ.get("STAVE_FAUST_SYMPATHETIC", "0") not in ("0", "", "false", "False")
 
 # B3 organ engine rendered in Faust (tonewheel bank + Leslie).
@@ -199,7 +228,9 @@ DEFAULT_STATE = {
     },
     "piano": {
         "enabled": True,
-        "soundfont": "Salamander",
+        # Small-Pi profile: Salamander (1.2 GB resident) can't live on a
+        # 2 GB box — default to the Fluid grand there.
+        "soundfont": "Fluid" if LOW_RAM_MODE else "Salamander",
         # "sound": removed 2026-04-21 — superseded by soundfont + voicing.
         # SOUNDFONT_PRESETS own the GM program number directly; the old
         # sound dropdown no longer exists in the UI and no code path reads
@@ -293,7 +324,7 @@ DEFAULT_STATE = {
         "eq_lowcut_enabled": False,
         "eq_lowcut_hz": 80,
         "eq_lowcut_slope": 12,
-        "pre_limiter_trim": 2.0,
+        "pre_limiter_trim": 1.5,
         "saturation_enabled": False,
         "bpm": 120,
         # ── Bus compressor (SSL G-style) ──
@@ -319,7 +350,9 @@ DEFAULT_STATE = {
         # True = Low Latency (ring 6/3, ~16ms render-ahead). Toggle from Global tab.
         # Default True since Faust ports + RT priority + GC discipline make the
         # 6/3 ring reliable; the conservative 16/8 default predates that stack.
-        "low_latency_mode": True,
+        # On the small-Pi profile (Pi 4 class CPU) the 6/3 ring was tuned
+        # against Pi 5 headroom — default to the safe ring there.
+        "low_latency_mode": not LOW_RAM_MODE,
     },
     "midi_cc_map": {},
     "macros": [
@@ -439,7 +472,12 @@ def load_state():
         if sf in _SOUNDFONT_RENAME:
             piano_state["soundfont"] = _SOUNDFONT_RENAME[sf]
         elif sf not in _VALID_SOUNDFONTS:
-            piano_state["soundfont"] = "Salamander"
+            piano_state["soundfont"] = "Fluid" if LOW_RAM_MODE else "Salamander"
+        # Small-Pi profile: Salamander is not loaded at all on <3 GB boxes —
+        # remap a migrated/copied state so the piano isn't silent.
+        if LOW_RAM_MODE and piano_state.get("soundfont") == "Salamander":
+            logger.info("LOW_RAM_MODE: remapping saved soundfont Salamander → Fluid")
+            piano_state["soundfont"] = "Fluid"
 
     # Migration: extend macros array to 8 if saved state had fewer (handles
     # upgrading from the original 4-macro layout to the 4+4 A/B-layer design).

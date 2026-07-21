@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from .config import (
-    DEFAULT_STATE, AUTOSAVE_INTERVAL, HTTP_PORT,
+    DEFAULT_STATE, AUTOSAVE_INTERVAL, HTTP_PORT, LOW_RAM_MODE,
     ensure_dirs, load_state, save_state, _deep_merge,
 )
 from .synth_engine import SynthEngine
@@ -205,7 +205,13 @@ class StaveSynth:
                     self.ws_server.broadcast_sync({"type": "midi_status", "connected": connected})
             except Exception:
                 pass
-            return {"type": "state", "state": self.state, "soundfonts_available": sf_list}
+            # Include the ephemeral fade position — otherwise reloading the
+            # page while faded out shows a silent synth with the FADE button
+            # in its normal state and no clue why.
+            faded_out = bool(self.jack and self.jack._fade_target < 0.5)
+            return {"type": "state", "state": self.state,
+                    "faded_out": faded_out,
+                    "soundfonts_available": sf_list}
         elif msg_type == "debug":
             # Piano diagnostics
             piano_info = {}
@@ -551,12 +557,13 @@ class StaveSynth:
                     ov = old_m.get("volume", 0.85)
                     nv = new_m.get("volume", 0.85)
                     self.jack.master_volume = ov + (nv - ov) * t
-                    otrim = float(old_m.get("pre_limiter_trim", 2.0))
-                    ntrim = float(new_m.get("pre_limiter_trim", 2.0))
+                    otrim = float(old_m.get("pre_limiter_trim", 1.5))
+                    ntrim = float(new_m.get("pre_limiter_trim", 1.5))
                     self.jack.pre_gain = max(0.5, min(3.0, otrim + (ntrim - otrim) * t))
             except Exception as e:
                 logger.error("Preset crossfade error: %s", e)
-                self.synth.sympathetic_set_suppress(False)
+                if not cancel.is_set():  # don't stomp a superseding crossfade
+                    self.synth.sympathetic_set_suppress(False)
                 return
             time.sleep(step_sec)
 
@@ -575,6 +582,11 @@ class StaveSynth:
                 continue
             old_src = old_sections.get(section_name) or {}
             for param, value in src.items():
+                # Honor cancellation inside snap-apply too — a rapid preset
+                # double-tap (footswitch) starts a NEW crossfade; without this
+                # check the OLD thread keeps pushing stale params over it.
+                if cancel.is_set():
+                    return
                 if isinstance(value, (dict, list)) and param not in ("eq_bands", "adsr_osc1", "adsr_osc2"):
                     continue
                 if old_src.get(param) == value:
@@ -584,7 +596,10 @@ class StaveSynth:
                 except Exception as e:
                     logger.debug("preset crossfade snap-apply skip %s.%s: %s", section_name, param, e)
 
-        self.synth.sympathetic_set_suppress(False)
+        # Only un-suppress sympathetic if WE are still the current crossfade —
+        # a superseding crossfade re-suppressed it and owns the un-suppress.
+        if not cancel.is_set():
+            self.synth.sympathetic_set_suppress(False)
 
     def _handle_preset_save(self, msg: dict) -> dict:
         slot = msg.get("slot", 0)
@@ -1826,7 +1841,15 @@ class StaveSynth:
                 tick_counter = 0
                 if self._running:
                     try:
-                        save_state(self.state)
+                        # Skip the disk write (and its fsync) when nothing
+                        # changed since the last save — the state embeds 10
+                        # setlists × 10 presets, so unconditional 30s writes
+                        # were real SD-card write amplification for a synth
+                        # that mostly sits at one setting all service.
+                        snapshot = json.dumps(self.state, sort_keys=True)
+                        if snapshot != getattr(self, "_last_saved_snapshot", None):
+                            save_state(self.state)
+                            self._last_saved_snapshot = snapshot
                     except Exception as e:
                         logger.warning("Auto-save failed: %s", e)
 
@@ -1883,7 +1906,7 @@ class StaveSynth:
             self.jack.master_volume = self.state.get("master", {}).get("volume", 0.85)
             self.jack.transpose = self.state.get("master", {}).get("transpose_semitones", 0)
             self.jack.piano_octave = self.state.get("master", {}).get("piano_octave", 0)
-            self.jack.pre_gain = float(self.state.get("master", {}).get("pre_limiter_trim", 2.0))
+            self.jack.pre_gain = float(self.state.get("master", {}).get("pre_limiter_trim", 1.5))
             self.jack.piano_reverb_send = float(self.state.get("master", {}).get("piano_reverb_send", 0.0))
             self.jack.piano_delay_send = float(self.state.get("master", {}).get("piano_delay_send", 0.0))
             self.jack.saturation_enabled = bool(self.state.get("master", {}).get("saturation_enabled", False))
@@ -1918,7 +1941,8 @@ class StaveSynth:
                 )
             # Apply saved low-latency preference before start — the ring
             # modulo picks up g_active_slots on first callback.
-            self.jack.set_low_latency_mode(bool(master.get("low_latency_mode", False)))
+            self.jack.set_low_latency_mode(bool(master.get(
+                "low_latency_mode", not LOW_RAM_MODE)))  # matches config default
             self.jack.start()
         except Exception as e:
             logger.error("Failed to start JACK engine: %s", e)
@@ -1951,6 +1975,16 @@ class StaveSynth:
         # systemd watchdog: keep us auto-recoverable from hangs (not just crashes).
         self._setup_systemd_watchdog()
 
+        # Cap recordings-dir growth (appliance SD card) — prune oldest takes
+        # at startup, never mid-set.
+        try:
+            from .recorder import prune_recordings
+            pruned = prune_recordings()
+            if pruned:
+                logger.info("Pruned %d old recording(s) to stay under the size cap", pruned)
+        except Exception as e:
+            logger.debug("Recordings prune skipped: %s", e)
+
         logger.info("Stave Synth is running!")
         logger.info("  UI: http://localhost:%d", HTTP_PORT)
 
@@ -1967,17 +2001,8 @@ class StaveSynth:
         """
         notify_socket = os.environ.get("NOTIFY_SOCKET")
         watchdog_usec = os.environ.get("WATCHDOG_USEC")
-        if not notify_socket or not watchdog_usec:
+        if not notify_socket:
             return
-        try:
-            timeout_s = int(watchdog_usec) / 1_000_000.0
-        except ValueError:
-            return
-        # Ping at half the watchdog timeout per systemd's recommendation.
-        interval_s = max(2.0, timeout_s / 2.0)
-        # Stale threshold: if the render loop hasn't ticked in this many
-        # seconds, stop pinging so systemd notices.
-        stale_s = max(5.0, timeout_s * 0.8)
 
         def _send(msg: str) -> None:
             try:
@@ -1989,9 +2014,26 @@ class StaveSynth:
             except Exception as e:
                 logger.debug("systemd notify failed: %s", e)
 
+        # READY must go out unconditionally under Type=notify — the unit
+        # isn't "started" until systemd hears it (even if WatchdogSec were
+        # ever removed, startup must not hang).
         _send("READY=1")
 
+        try:
+            timeout_s = int(watchdog_usec) / 1_000_000.0 if watchdog_usec else 0.0
+        except ValueError:
+            timeout_s = 0.0
+        if timeout_s <= 0.0:
+            return  # READY sent; no watchdog configured
+
+        # Ping at half the watchdog timeout per systemd's recommendation.
+        interval_s = max(2.0, timeout_s / 2.0)
+        # Stale threshold: if the render loop hasn't ticked in this many
+        # seconds, stop pinging so systemd notices.
+        stale_s = max(5.0, timeout_s * 0.8)
+
         def _heartbeat():
+            prev_cb = -1
             while self._running:
                 time.sleep(interval_s)
                 if not self.jack:
@@ -1999,8 +2041,25 @@ class StaveSynth:
                 last = getattr(self.jack, "last_iter_ts", 0.0)
                 if last <= 0.0:
                     continue  # render thread hasn't started yet
-                if time.perf_counter() - last < stale_s:
-                    _send("WATCHDOG=1")
+                if time.perf_counter() - last >= stale_s:
+                    continue  # render loop stalled — withhold ping
+                # A ticking render loop isn't proof of audio: if PipeWire
+                # wedges WITHOUT firing the JACK shutdown callback, the
+                # render loop fills the ring then idles with fresh
+                # timestamps while nothing is consumed. Require the JACK
+                # process callback to have advanced since the last ping too.
+                try:
+                    cb = int(self.jack._bridge.bridge_get_callback_count())
+                except Exception:
+                    cb = -1  # bridge unavailable — fall back to old behavior
+                if cb != -1:
+                    if cb == prev_cb:
+                        logger.warning(
+                            "JACK process callback stalled (count=%d) — "
+                            "withholding watchdog ping", cb)
+                        continue
+                    prev_cb = cb
+                _send("WATCHDOG=1")
 
         threading.Thread(target=_heartbeat, daemon=True).start()
         logger.info("systemd watchdog: heartbeat every %.1fs (timeout %.1fs)",
@@ -2236,6 +2295,12 @@ def main():
     # Check if we have a display for native window
     has_display = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
     use_gui = has_display and "--no-gui" not in sys.argv
+    if use_gui and LOW_RAM_MODE:
+        # Small-Pi profile: the WebKit webview costs ~400 MB — refuse the
+        # auto-GUI on <3 GB boxes; control from a browser/tablet instead.
+        logger.info("LOW_RAM_MODE: skipping native window — "
+                    "open http://<this-pi>:%d from a browser", HTTP_PORT)
+        use_gui = False
 
     if use_gui:
         try:

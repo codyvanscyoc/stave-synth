@@ -36,6 +36,45 @@ logger = logging.getLogger(__name__)
 RECORDINGS_DIR = Path.home() / ".local" / "share" / "stave-synth" / "recordings"
 MAX_QUEUE = 400  # ~2 s of 256-sample blocks at 48 kHz
 MAX_TAKE_SECONDS = 30 * 60  # hard cap to prevent runaway disk fills
+# Total-size cap for the recordings dir — an appliance SD card must not
+# fill up across months of takes. Oldest takes (and their .state.json
+# sidecars) are pruned at startup until under the cap.
+MAX_RECORDINGS_BYTES = 1024 * 1024 * 1024  # 1 GB
+
+
+def prune_recordings(max_bytes: int = MAX_RECORDINGS_BYTES) -> int:
+    """Delete oldest takes until the recordings dir is under max_bytes.
+    Returns the number of takes removed. Called once at app startup —
+    never during a set."""
+    try:
+        wavs = sorted(RECORDINGS_DIR.glob("*.wav"),
+                      key=lambda p: p.stat().st_mtime)
+    except OSError:
+        return 0
+    total = 0
+    sizes = {}
+    for p in wavs:
+        try:
+            sizes[p] = p.stat().st_size
+            total += sizes[p]
+        except OSError:
+            sizes[p] = 0
+    removed = 0
+    for p in wavs:  # oldest first
+        if total <= max_bytes:
+            break
+        try:
+            p.unlink()
+            sidecar = p.with_suffix(".state.json")
+            if sidecar.exists():
+                sidecar.unlink()
+            total -= sizes[p]
+            removed += 1
+            logger.info("Pruned old recording %s (dir over %d MB cap)",
+                        p.name, max_bytes // (1024 * 1024))
+        except OSError as e:
+            logger.warning("Prune failed for %s: %s", p.name, e)
+    return removed
 
 
 class Recorder:

@@ -10,9 +10,6 @@ Pass: synth PID survives, audio resumes after every reconnect, zero new exceptio
 """
 import asyncio
 import json
-import os
-import re
-import signal
 import subprocess
 import sys
 import time

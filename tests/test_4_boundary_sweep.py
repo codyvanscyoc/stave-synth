@@ -13,9 +13,6 @@ Pass:
 """
 import asyncio
 import json
-import os
-import random
-import re
 import subprocess
 import sys
 import time
@@ -132,7 +129,7 @@ async def sweep(ws, stop_at: float, stats: dict):
         # Toggle freeze / shimmer / drone mid-sweep.
         for tmsg in ({"type": "freeze_toggle"},
                      {"type": "shimmer_toggle"},
-                     {"type": "drone_toggle"},
+                     {"type": "fade_toggle"},
                      {"type": "panic"}):
             if time.time() >= stop_at:
                 return

@@ -5,20 +5,58 @@
 
 set -e
 
+# ── Hardware profile detection ──
+# Small-Pi profile (e.g. Pi 4 / 2GB): headless, Fluid-only piano, safe ring.
+# The Python side mirrors this via config.LOW_RAM_MODE (same <3GB test).
+TOTAL_RAM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
+PI_MODEL="$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo unknown)"
+LOW_RAM=0
+if [ "$TOTAL_RAM_MB" -gt 0 ] && [ "$TOTAL_RAM_MB" -lt 3072 ]; then
+    LOW_RAM=1
+fi
+IS_PI4=0
+case "$PI_MODEL" in *"Pi 4"*) IS_PI4=1 ;; esac
+
 AUTOSTART=1
 INSTALL_SALAMANDER=1
+INSTALL_GUI_DEPS=1
+DO_ISOLCPUS=1
+KEEP_ONBOARD_AUDIO=0
+if [ "$LOW_RAM" = "1" ]; then
+    # 2GB box: Salamander can't be resident, WebKit GUI can't fit, and
+    # sacrificing 1 of 4 slower cores to isolcpus is likely net-negative.
+    INSTALL_SALAMANDER=0
+    INSTALL_GUI_DEPS=0
+    DO_ISOLCPUS=0
+fi
 for arg in "$@"; do
     case "$arg" in
         --no-autostart)  AUTOSTART=0 ;;
         --no-salamander) INSTALL_SALAMANDER=0 ;;
+        --salamander)    INSTALL_SALAMANDER=1 ;;
+        --no-gui-deps)   INSTALL_GUI_DEPS=0 ;;
+        --gui-deps)      INSTALL_GUI_DEPS=1 ;;
+        --isolcpus)      DO_ISOLCPUS=1 ;;
+        --no-isolcpus)   DO_ISOLCPUS=0 ;;
+        --keep-onboard-audio) KEEP_ONBOARD_AUDIO=1 ;;
         -h|--help)
-            echo "Usage: ./install.sh [--no-autostart] [--no-salamander]"
+            echo "Usage: ./install.sh [--no-autostart] [--no-salamander|--salamander]"
+            echo "                    [--no-gui-deps|--gui-deps] [--no-isolcpus|--isolcpus]"
+            echo "                    [--keep-onboard-audio]"
             echo "  --no-autostart    Skip the systemd user service install."
             echo "                    Launch on demand with ./stave-synth.sh instead."
             echo "  --no-salamander   Skip the Salamander Grand Piano download (~296MB"
-            echo "                    download → 1.2GB on disk). Use if you're on a slow"
-            echo "                    link or can't afford the space; the installer will"
-            echo "                    fall back to FluidR3_GM via apt."
+            echo "                    download → 1.2GB on disk); FluidR3_GM used instead."
+            echo "  --salamander      Force Salamander even on a <3GB box (NOT loaded"
+            echo "                    at runtime there — the engine gates it on RAM)."
+            echo "  --no-gui-deps     Skip WebKit/pywebview packages (headless/browser UI)."
+            echo "  --no-isolcpus     Skip the CPU-3 isolation cmdline tweak."
+            echo "  --keep-onboard-audio  Don't disable Pi 4 onboard (HDMI/3.5mm) audio."
+            echo ""
+            echo "  Detected: ${PI_MODEL}, ${TOTAL_RAM_MB}MB RAM"
+            if [ "$LOW_RAM" = "1" ]; then
+                echo "  → small-Pi profile defaults: no Salamander, no GUI deps, no isolcpus"
+            fi
             exit 0
             ;;
     esac
@@ -31,6 +69,11 @@ NC='\033[0m'
 echo -e "${GREEN}══════════════════════════════════════${NC}"
 echo -e "${GREEN}  STAVE SYNTH — Installer${NC}"
 echo -e "${GREEN}══════════════════════════════════════${NC}"
+echo ""
+echo -e "  Hardware: ${PI_MODEL}, ${TOTAL_RAM_MB}MB RAM"
+if [ "$LOW_RAM" = "1" ]; then
+    echo -e "${ORANGE}  Profile: small-Pi (headless browser UI, Fluid piano, safe ring)${NC}"
+fi
 echo ""
 if [ "$AUTOSTART" = "0" ]; then
     echo -e "${ORANGE}  Mode: casual (no auto-start — run ./stave-synth.sh to play)${NC}"
@@ -64,17 +107,28 @@ sudo apt-get install -y \
     python3-dev \
     python3-pip \
     python3-venv \
+    python3-numpy \
+    python3-scipy \
     fluidsynth \
     libfluidsynth-dev \
     alsa-utils \
     a2jmidid \
-    libgirepository1.0-dev \
-    "$WEBKIT_PKG" \
-    python3-gi \
-    python3-gi-cairo \
     faust \
     gcc \
     libc6-dev
+
+# GUI (pywebview/WebKit) payload — hundreds of MB of GTK deps a headless
+# kiosk never uses. Skipped by default on the small-Pi profile; the browser
+# UI at :8080 needs none of it.
+if [ "$INSTALL_GUI_DEPS" = "1" ]; then
+    sudo apt-get install -y \
+        libgirepository1.0-dev \
+        "$WEBKIT_PKG" \
+        python3-gi \
+        python3-gi-cairo
+else
+    echo -e "${GREEN}  Skipping GUI/WebKit packages (headless profile — browser UI only)${NC}"
+fi
 
 # ── Step 2: Audio permissions ──
 echo -e "${ORANGE}[2/6]${NC} Configuring audio permissions..."
@@ -156,12 +210,84 @@ echo -1 | sudo tee /sys/module/usbcore/parameters/autosuspend > /dev/null 2>&1 |
 # scheduling jitter (kernel timer interrupts, USB/network IRQs preempting
 # render). The render thread itself is pinned to core 3 from Python via
 # os.sched_setaffinity in jack_engine.py.
-if [ -f "$CMDLINE" ] && ! grep -q "isolcpus=" "$CMDLINE"; then
-    [ -f "${CMDLINE}.bak" ] || sudo cp "$CMDLINE" "${CMDLINE}.bak"
-    sudo sed -i 's/$/ isolcpus=3 nohz_full=3 rcu_nocbs=3 irqaffinity=0-2/' "$CMDLINE"
-    echo -e "${GREEN}  CPU 3 isolation + IRQ affinity (active after next reboot)${NC}"
+# Skipped by default on the small-Pi profile: giving up 1 of 4 much slower
+# cores leaves only 3 for Python main + FluidSynth + PipeWire and is likely
+# net-negative on a Pi 4 — A/B on the target hardware with --isolcpus.
+if [ "$DO_ISOLCPUS" = "1" ]; then
+    if [ -f "$CMDLINE" ] && ! grep -q "isolcpus=" "$CMDLINE"; then
+        [ -f "${CMDLINE}.bak" ] || sudo cp "$CMDLINE" "${CMDLINE}.bak"
+        sudo sed -i 's/$/ isolcpus=3 nohz_full=3 rcu_nocbs=3 irqaffinity=0-2/' "$CMDLINE"
+        echo -e "${GREEN}  CPU 3 isolation + IRQ affinity (active after next reboot)${NC}"
+    else
+        echo -e "${GREEN}  CPU isolation already configured${NC}"
+    fi
 else
-    echo -e "${GREEN}  CPU isolation already configured${NC}"
+    echo -e "${GREEN}  CPU isolation skipped (small-Pi profile; force with --isolcpus)${NC}"
+fi
+
+# Hardware watchdog — auto-reboot if the whole system wedges. These were
+# hand-applied on the original Pi 5 (RT hardening 2026-04-26) and MUST
+# travel with the appliance (project portability rule).
+WATCHDOG_CONF="/etc/systemd/system.conf.d/watchdog.conf"
+if [ ! -f "$WATCHDOG_CONF" ]; then
+    sudo mkdir -p /etc/systemd/system.conf.d
+    sudo tee "$WATCHDOG_CONF" > /dev/null << 'EOF'
+[Manager]
+RuntimeWatchdogSec=15s
+RebootWatchdogSec=10min
+EOF
+    echo -e "${GREEN}  systemd hardware watchdog configured (15s runtime / 10min reboot)${NC}"
+else
+    echo -e "${GREEN}  systemd hardware watchdog already configured${NC}"
+fi
+BOOTCONF="/boot/firmware/config.txt"
+if [ -f "$BOOTCONF" ] && ! grep -q "^dtparam=watchdog=on" "$BOOTCONF"; then
+    sudo cp "$BOOTCONF" "${BOOTCONF}.bak"
+    echo "dtparam=watchdog=on" | sudo tee -a "$BOOTCONF" > /dev/null
+    echo -e "${GREEN}  Hardware watchdog dtparam enabled (active after reboot)${NC}"
+else
+    echo -e "${GREEN}  Hardware watchdog dtparam already enabled${NC}"
+fi
+
+# Pi 4 only: disable onboard audio (3.5mm + HDMI). The bridge auto-connects
+# to the FIRST physical playback port — on a Pi 4 the onboard devices often
+# enumerate ahead of the USB interface, so the synth would play into HDMI
+# at soundcheck. Pi 5 has no onboard analog, so this is Pi 4-specific.
+if [ "$IS_PI4" = "1" ] && [ "$KEEP_ONBOARD_AUDIO" = "0" ]; then
+    if [ -f "$BOOTCONF" ] && grep -q "^dtparam=audio=on" "$BOOTCONF"; then
+        sudo sed -i 's/^dtparam=audio=on/dtparam=audio=off/' "$BOOTCONF"
+        echo -e "${GREEN}  Pi 4 onboard audio disabled (USB interface only; --keep-onboard-audio to undo)${NC}"
+    elif [ -f "$BOOTCONF" ] && ! grep -q "^dtparam=audio=" "$BOOTCONF"; then
+        echo "dtparam=audio=off" | sudo tee -a "$BOOTCONF" > /dev/null
+        echo -e "${GREEN}  Pi 4 onboard audio disabled (USB interface only)${NC}"
+    else
+        echo -e "${GREEN}  Pi 4 onboard audio already configured${NC}"
+    fi
+fi
+
+# Pin the PipeWire graph rate to the engine's 48 kHz. Every DSP stage is
+# built at config.SAMPLE_RATE=48000; a box that comes up at 44.1k would be
+# detuned with zero errors (the engine also logs CRITICAL if this happens).
+# On the small-Pi profile also force a 512-sample quantum — more render
+# headroom per wakeup on the slower cores.
+PW_DROPIN_DIR="$HOME/.config/pipewire/pipewire.conf.d"
+PW_DROPIN="$PW_DROPIN_DIR/stave-synth.conf"
+if [ ! -f "$PW_DROPIN" ]; then
+    mkdir -p "$PW_DROPIN_DIR"
+    {
+        echo "# Stave Synth — pin graph rate to the engine's sample rate."
+        echo "context.properties = {"
+        echo "    default.clock.rate = 48000"
+        echo "    default.clock.allowed-rates = [ 48000 ]"
+        if [ "$LOW_RAM" = "1" ]; then
+            echo "    default.clock.quantum = 512"
+            echo "    default.clock.min-quantum = 256"
+        fi
+        echo "}"
+    } > "$PW_DROPIN"
+    echo -e "${GREEN}  PipeWire rate pinned to 48kHz$([ "$LOW_RAM" = "1" ] && echo ", quantum 512")${NC}"
+else
+    echo -e "${GREEN}  PipeWire drop-in already present${NC}"
 fi
 
 # WiFi power save off — the radio drops out under power-save and the wakeup
@@ -256,11 +382,15 @@ gcc -shared -fPIC -O2 -o jack_bridge.so jack_bridge.c -ljack -lpthread
 cd "$SCRIPT_DIR"
 echo -e "${GREEN}  Built jack_bridge.so${NC}"
 
-echo -e "${ORANGE}[4/6]${NC} Building Faust DSP modules..."
+echo -e "${ORANGE}[4/6]${NC} Building Faust DSP modules (from source — a few minutes on a Pi 4)..."
 cd "$SCRIPT_DIR/faust"
-./build.sh > /dev/null
+# --force: never trust committed .so timestamps after a clone — always
+# build for THIS machine. (Binaries are generic aarch64, but a fresh
+# from-source build on the target is the guarantee.)
+./build.sh --force > /dev/null
 cd "$SCRIPT_DIR"
-echo -e "${GREEN}  Built Faust modules (reverb, ping_pong, osc_bank, sympathetic, master_fx, bus_comp)${NC}"
+echo -e "${GREEN}  Built all 10 Faust modules (reverb, ping_pong, osc_bank, sympathetic,${NC}"
+echo -e "${GREEN}    master_fx, bus_comp, organ, plate, drone, piano_room)${NC}"
 
 # ── Step 5: Python dependencies ──
 echo -e "${ORANGE}[5/6]${NC} Installing Python dependencies..."
@@ -287,20 +417,8 @@ echo -e "${ORANGE}[6/6]${NC} Setting up soundfonts & service..."
 mkdir -p "$SOUNDFONT_DIR"
 mkdir -p "$CONFIG_DIR/presets"
 
-# Try to find an existing soundfont first
-FOUND_SF=""
-for sf in /usr/share/sounds/sf2/*.sf2 /usr/share/soundfonts/*.sf2; do
-    if [ -f "$sf" ]; then
-        FOUND_SF="$sf"
-        break
-    fi
-done
-
-if [ -n "$FOUND_SF" ]; then
-    echo -e "${GREEN}  Found system soundfont: $FOUND_SF${NC}"
-    # Symlink it
-    ln -sf "$FOUND_SF" "$SOUNDFONT_DIR/system.sf2" 2>/dev/null || true
-fi
+# (No system.sf2 symlink anymore — it was dead weight: nothing in the
+# preset table or fallback chain ever referenced it.)
 
 # Salamander Grand Piano — FreePats SF2 build, 16 velocity layers, Yamaha C5.
 # CC-BY 3.0 (Alexander Holm; SF2 assembly by Roberto @ FreePats). 296MB download
@@ -336,11 +454,10 @@ if [ "$INSTALL_SALAMANDER" = "1" ]; then
     fi
 fi
 
-# Fallback: FluidR3_GM (via apt `fluid-soundfont-gm`). Always present on a
-# Debian-based install after the apt step above, and gives us something piano-
-# capable even when Salamander isn't available (slow link, --no-salamander,
-# or download failure).
-if [ "$SAL_INSTALLED" != "1" ] && [ ! -f "$SOUNDFONT_DIR/FluidR3_GM.sf2" ]; then
+# FluidR3_GM (via apt `fluid-soundfont-gm`) — ALWAYS ensured, not just as a
+# Salamander fallback: the Rhodes/Suitcase presets read it, and it's the
+# only piano on the small-Pi profile.
+if [ ! -f "$SOUNDFONT_DIR/FluidR3_GM.sf2" ]; then
     if [ -f /usr/share/sounds/sf2/FluidR3_GM.sf2 ]; then
         ln -sf /usr/share/sounds/sf2/FluidR3_GM.sf2 "$SOUNDFONT_DIR/FluidR3_GM.sf2"
         echo -e "${GREEN}  Symlinked FluidR3_GM from apt package${NC}"
@@ -377,6 +494,21 @@ if [ "$AUTOSTART" = "1" ]; then
     cp "$SCRIPT_DIR/systemd/stave-synth.service.d/faust.conf" \
        "$HOME/.config/systemd/user/stave-synth.service.d/faust.conf"
 
+    # Small-Pi profile: cap the service's memory so a leak or an accidental
+    # big-soundfont load is throttled/killed by systemd (and restarted)
+    # instead of wedging the whole box via the kernel OOM killer mid-set.
+    MEM_DROPIN="$HOME/.config/systemd/user/stave-synth.service.d/memory.conf"
+    if [ "$LOW_RAM" = "1" ]; then
+        cat > "$MEM_DROPIN" << 'EOF'
+[Service]
+MemoryHigh=1200M
+MemoryMax=1500M
+EOF
+        echo -e "${GREEN}  Memory guard: MemoryHigh=1200M / MemoryMax=1500M${NC}"
+    else
+        rm -f "$MEM_DROPIN"
+    fi
+
     systemctl --user daemon-reload
     systemctl --user enable stave-synth.service
 
@@ -398,6 +530,23 @@ echo ""
 check() { if [ "$1" = "ok" ]; then echo -e "${GREEN}✓${NC} $2"; else echo -e "${ORANGE}✗${NC} $2"; fi; }
 
 echo "  Environment check:"
+
+# Profile
+if [ "$LOW_RAM" = "1" ]; then
+    check ok "Profile: small-Pi (${TOTAL_RAM_MB}MB) — Fluid piano, headless, dynamic sample loading"
+else
+    check ok "Profile: full (${TOTAL_RAM_MB}MB)"
+fi
+
+# Thermal — a throttled Pi drops audio; sealed enclosures need a heatsink/fan.
+if command -v vcgencmd >/dev/null 2>&1; then
+    THROTTLED=$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2)
+    if [ "$THROTTLED" = "0x0" ]; then
+        check ok "Thermals: no throttling detected"
+    else
+        check no "Thermals: get_throttled=$THROTTLED — check cooling before gigging this box"
+    fi
+fi
 
 # Soundfont
 SF_COUNT=$(ls -1 "$SOUNDFONT_DIR"/*.sf2 2>/dev/null | wc -l)

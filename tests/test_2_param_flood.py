@@ -21,7 +21,6 @@ import re
 import subprocess
 import sys
 import time
-from pathlib import Path
 
 import psutil
 import websockets
@@ -30,7 +29,7 @@ DURATION = 60  # seconds
 URL = "ws://localhost:8765"
 
 FADER_IDS = [0, 1, 2, 3, 4]
-TOGGLES = ["shimmer_toggle", "freeze_toggle", "drone_toggle"]
+TOGGLES = ["shimmer_toggle", "freeze_toggle", "fade_toggle"]
 
 
 def find_synth_pid() -> int:

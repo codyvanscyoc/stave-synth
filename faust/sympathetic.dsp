@@ -5,7 +5,7 @@ import("stdfaust.lib");
 
 // ═══════════════════════════════════════════════════════════════════════
 // Port of SynthEngine's sympathetic_state rendering (synth_engine.py:2373).
-// Python loops active notes; Faust runs a fixed bank of 16 slots. Python
+// Python loops active notes; Faust runs a fixed bank of 24 slots. Python
 // assigns slots at set_sympathetic_notes() time (same slot-pool pattern as
 // the osc bank). HF rolloff (min(1, 523/max(freq, 523))) is computed in
 // Python and pre-multiplied into `symp_gate` so Faust stays simple.

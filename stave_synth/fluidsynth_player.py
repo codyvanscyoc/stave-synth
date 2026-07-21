@@ -13,7 +13,7 @@ import numpy as np
 
 from pathlib import Path
 
-from .config import SOUNDFONT_DIR, SAMPLE_RATE
+from .config import SOUNDFONT_DIR, SAMPLE_RATE, LOW_RAM_MODE
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,15 @@ SOUNDFONT_PRESETS = {
     "Rhodes":     {"file": "FluidR3_GM", "program": 4, "tremolo_hz": 0.0, "tremolo_depth": 0.0, "velocity_curve": 1.0},
     "Suitcase":   {"file": "FluidR3_GM", "program": 4, "tremolo_hz": 5.5, "tremolo_depth": 0.50, "velocity_curve": 1.0},
 }
+
+# Small-Pi profile (see config.LOW_RAM_MODE): Salamander's 1.2 GB cannot be
+# resident on a 2 GB box, and dynamic-sample-loading doesn't help it (one
+# preset owns the whole bank). Drop it from the presets — this removes it
+# from the preload loop AND the UI dropdown in one place. config.load_state
+# remaps any saved "Salamander" selection to "Fluid" on these boxes.
+if LOW_RAM_MODE:
+    SOUNDFONT_PRESETS = {k: v for k, v in SOUNDFONT_PRESETS.items()
+                         if v["file"] != "Salamander"}
 
 
 # Voicing presets: pure TONE shaping (4-band EQ + low/high cuts). Independent
@@ -164,7 +173,8 @@ class FluidSynthPlayer:
         self.enabled = True
         self.volume = 0.5
         self._volume_cur = 0.5  # smoothed volume for zipper-free changes
-        self.current_soundfont = "Arachno"
+        # Placeholder only — always overwritten by start()'s startup resolve.
+        self.current_soundfont = ""
         self.reverb_dry_wet = 0.4
         self._lock = threading.Lock()
 
@@ -280,7 +290,17 @@ class FluidSynthPlayer:
         # colour now comes from our dedicated Faust Dattorro (self._piano_room)
         # which runs in our Python pipeline and mixes properly with the rest
         # of the chain. Chorus stays off.
-        self.fs.setting("synth.polyphony", 64)
+        if LOW_RAM_MODE:
+            # Small-Pi profile: load only the samples of the selected
+            # program instead of whole banks (FluidR3_GM 148 MB → ~10-30 MB
+            # resident). Must be set BEFORE the first sfload. First
+            # program-select per font pays a short disk read — acceptable.
+            try:
+                self.fs.setting("synth.dynamic-sample-loading", 1)
+                logger.info("LOW_RAM_MODE: FluidSynth dynamic-sample-loading on")
+            except Exception as e:
+                logger.warning("dynamic-sample-loading unavailable: %s", e)
+        self.fs.setting("synth.polyphony", 32 if LOW_RAM_MODE else 64)
         self.fs.setting("synth.gain", 1.0)
         self.fs.setting("synth.reverb.active", 0)
         self.fs.setting("synth.chorus.active", 0)
@@ -852,7 +872,9 @@ class FluidSynthPlayer:
         # voices + reverb tail in one block, popping the preset crossfade.
         try:
             with self._lock:
-                self.fs.set_reverb_level(self.reverb_dry_wet)
+                # (No set_reverb_level here — FluidSynth's reverb is
+                # permanently disabled at start(); piano room colour comes
+                # from the Faust Dattorro in our pipeline.)
                 self.fs.program_select(0, new_sfid, 0, target_program)
         except Exception as e:
             logger.warning("program_select %d failed on preset switch: %s",

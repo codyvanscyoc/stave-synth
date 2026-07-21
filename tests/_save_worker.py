@@ -1,8 +1,6 @@
 """Child process for test_1: imports the real save_state and writes under SIGKILL pressure."""
-import json
 import os
 import sys
-import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
