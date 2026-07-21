@@ -19,7 +19,13 @@ from .synth_engine import (SynthEngine, BiquadLowpass, BiquadHighpass,
                            BiquadPeakingEQ, BiquadLowShelf, OnePole6dBHighpass,
                            BusCompressor,
                            fader_to_amplitude, blend_to_amplitude)
-from .config import SAMPLE_RATE, BTL_MODE
+from .config import SAMPLE_RATE, BTL_MODE, LOW_RAM_MODE
+
+# MIDI poll interval: 0.5ms on the full profile. On the small-Pi profile the
+# wakeup itself is a measurable slice of a slower core (~11% of profile
+# samples at 0.5ms) — 2ms costs ≤1.5ms extra MIDI jitter against a ~43ms
+# audio pipeline and buys the render thread real headroom.
+_MIDI_POLL_S = 0.002 if LOW_RAM_MODE else 0.0005
 USE_FAUST_MASTER_FX = os.environ.get("STAVE_FAUST_MASTER_FX", "0") not in ("0", "", "false", "False")
 USE_FAUST_BUS_COMP  = os.environ.get("STAVE_FAUST_BUS_COMP",  "0") not in ("0", "", "false", "False")
 from .recorder import Recorder
@@ -57,6 +63,31 @@ class LookaheadLimiter:
         self._dr = np.zeros(la, dtype=np.float64)
         self._dp = np.zeros(la, dtype=np.float64)
         self._gain = 1.0
+        # Optional C fast path for the envelope recursion (bridge_limiter_env
+        # in jack_bridge.c — bit-identical math). Attached by JackEngine once
+        # the bridge .so is loaded; None → pure-Python loop (Mac fallback).
+        self._bridge_env = None
+        # Pre-allocated scratch, resized on block-size change (zero-alloc rule)
+        self._buf_n = 0
+        self._env = np.empty(0, dtype=np.float64)
+        self._full_l = np.empty(0, dtype=np.float64)
+        self._full_r = np.empty(0, dtype=np.float64)
+        self._full_p = np.empty(0, dtype=np.float64)
+
+    def attach_bridge(self, bridge) -> None:
+        """Enable the C envelope fast path (ctypes CDLL of jack_bridge.so)."""
+        try:
+            bridge.bridge_limiter_env.restype = ctypes.c_double
+            bridge.bridge_limiter_env.argtypes = [
+                ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_double),
+                ctypes.c_int, ctypes.c_double, ctypes.c_double,
+            ]
+            self._bridge_env = bridge.bridge_limiter_env
+        except AttributeError:
+            # Older .so without the helper — keep the Python loop.
+            logger.warning("jack_bridge.so lacks bridge_limiter_env — "
+                           "limiter using Python loop (rebuild the bridge)")
+            self._bridge_env = None
 
     def process_inplace(self, stereo):
         """Limit stereo[0]/stereo[1] in place. stereo shape = (2, n).
@@ -72,50 +103,73 @@ class LookaheadLimiter:
         ceiling = self.ceiling
         rel = self.release
 
-        # Stereo-linked peak detect: gain reduction is driven by max(|L|, |R|)
-        # so the stereo image doesn't collapse under limiting.
-        peak_in = np.maximum(np.abs(stereo[0]), np.abs(stereo[1]))
+        # Pre-allocated full-stream buffers (delay tail + incoming block).
+        if n != self._buf_n:
+            self._env = np.empty(n, dtype=np.float64)
+            self._full_l = np.empty(la + n, dtype=np.float64)
+            self._full_r = np.empty(la + n, dtype=np.float64)
+            self._full_p = np.empty(la + n, dtype=np.float64)
+            self._buf_n = n
+        full_l, full_r, full_p = self._full_l, self._full_r, self._full_p
+        env = self._env
 
-        # Full stream = stored delay-line tail + incoming samples.
+        # Stereo-linked peak detect: gain reduction is driven by max(|L|, |R|)
+        # so the stereo image doesn't collapse under limiting. Written
+        # straight into the tail-slot of full_p (no temporaries).
+        full_l[:la] = self._dl
+        full_r[:la] = self._dr
+        full_p[:la] = self._dp
+        full_l[la:] = stereo[0]
+        full_r[la:] = stereo[1]
+        np.abs(stereo[0], out=full_p[la:])
+        np.maximum(full_p[la:], np.abs(stereo[1]), out=full_p[la:])
+
+        # Rolling max over the lookahead window for each output sample.
         # For output index i (length n), the sample being emitted was input
         # `la` samples ago; it lives at full[i] and we look ahead `la` more
         # samples to anticipate peaks.
-        full_l = np.concatenate([self._dl, stereo[0]])
-        full_r = np.concatenate([self._dr, stereo[1]])
-        full_p = np.concatenate([self._dp, peak_in])
-
-        # Rolling max over the lookahead window for each output sample.
         windowed = sliding_window_view(full_p, la + 1)  # shape (n, la+1)
         ahead = windowed.max(axis=1)
 
-        # Target gain per sample: scale peaks above ceiling down to ceiling.
-        target = np.where(ahead > ceiling,
-                          ceiling / np.maximum(ahead, 1e-9),
-                          1.0)
+        # Target gain per sample: ceiling/peak where above ceiling, else 1.0.
+        # (min(ceiling/peak, 1.0) is identical to the where() form: the ratio
+        # is < 1 exactly when peak > ceiling.) Reuses `ahead` in place.
+        np.maximum(ahead, 1e-9, out=ahead)
+        np.divide(ceiling, ahead, out=ahead)
+        target = np.minimum(ahead, 1.0, out=ahead)
 
         # Envelope: instant attack (gain snaps to target), exponential release.
         # The `la`-sample lookahead means the gain reduction is already in
         # place by the time the actual peak is emitted — no distortion.
-        env = np.empty(n, dtype=np.float64)
-        gain = self._gain
-        one_m_rel = 1.0 - rel
-        for i in range(n):
-            t = target[i]
-            if t < gain:
-                gain = t
-            else:
-                gain = rel * gain + one_m_rel
-            env[i] = gain
-        self._gain = gain
+        # C fast path when the bridge is attached (bit-identical math); the
+        # Python loop remains as the Mac/no-bridge fallback.
+        if self._bridge_env is not None:
+            self._gain = self._bridge_env(
+                target.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                env.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                n, self._gain, rel)
+        else:
+            gain = self._gain
+            one_m_rel = 1.0 - rel
+            for i in range(n):
+                t = target[i]
+                if t < gain:
+                    gain = t
+                else:
+                    gain = rel * gain + one_m_rel
+                env[i] = gain
+            self._gain = gain
 
-        # Apply envelope to the DELAYED signal (first n entries of full buffer).
-        stereo[0] = full_l[:n] * env
-        stereo[1] = full_r[:n] * env
-
-        # Retain the last `la` samples for the next call.
+        # Retain the last `la` samples for the next call BEFORE the in-place
+        # apply below overwrites nothing — full_* are independent buffers.
         self._dp[:] = full_p[-la:]
         self._dl[:] = full_l[-la:]
         self._dr[:] = full_r[-la:]
+
+        # Apply envelope to the DELAYED signal (first n entries of full stream),
+        # writing into the caller's arrays in place.
+        np.multiply(full_l[:n], env, out=stereo[0])
+        np.multiply(full_r[:n], env, out=stereo[1])
 
     def reset(self):
         """Flush delay lines and release gain reduction. Used on panic so the
@@ -336,6 +390,9 @@ class JackEngine:
             )
         self._bridge = ctypes.CDLL(_BRIDGE_PATH)
         self._setup_bridge_types()
+        # C fast path for the limiter's envelope recursion (falls back to
+        # the Python loop if the .so predates bridge_limiter_env).
+        self._limiter.attach_bridge(self._bridge)
 
     @property
     def master_volume(self):
@@ -1411,7 +1468,7 @@ class JackEngine:
                         if self.program_change_callback:
                             self.program_change_callback(raw_note)
 
-            time.sleep(0.0005)  # 0.5ms polling
+            time.sleep(_MIDI_POLL_S)
 
     def set_master_hp(self, freq_hz: float, slope: int = 12, enabled: bool = True):
         """Update master low cut filter."""

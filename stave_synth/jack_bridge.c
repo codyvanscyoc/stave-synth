@@ -369,6 +369,25 @@ int bridge_read_midi(uint8_t *out) {
 }
 
 /* Queries */
+/* Lookahead-limiter gain envelope: instant attack, exponential release.
+ * Exact port of the per-sample Python loop formerly in jack_engine.py's
+ * LookaheadLimiter.process_inplace — that loop ran 48k iterations/sec of
+ * interpreted Python on the render thread (~1/3 of the render budget on a
+ * Pi 4). Bit-identical math, called via ctypes; returns the final gain so
+ * Python can carry state across blocks. Not called from the JACK RT
+ * callback — render-thread only, no locking needed. */
+double bridge_limiter_env(const double *target, double *env, int n,
+                          double gain, double rel) {
+    double one_m_rel = 1.0 - rel;
+    for (int i = 0; i < n; i++) {
+        double t = target[i];
+        if (t < gain) gain = t;
+        else gain = rel * gain + one_m_rel;
+        env[i] = gain;
+    }
+    return gain;
+}
+
 int   bridge_get_sample_rate(void)    { return client ? (int)jack_get_sample_rate(client) : 0; }
 int   bridge_get_buffer_size(void)    { return client ? (int)jack_get_buffer_size(client) : 0; }
 int   bridge_get_callback_count(void) { return (int)stat_callbacks; }

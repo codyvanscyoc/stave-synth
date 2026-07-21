@@ -10,7 +10,7 @@ import numpy as np
 from dataclasses import dataclass, field
 
 from .config import (
-    SAMPLE_RATE,
+    SAMPLE_RATE, LOW_RAM_MODE,
     USE_FAUST_REVERB, USE_FAUST_PING_PONG, USE_FAUST_OSC_BANK, USE_FAUST_SYMPATHETIC,
 )
 
@@ -40,6 +40,12 @@ BLEND_DB_RANGE = 24.0   # -24dB to 0dB for oscillator blend faders (gentler tape
 
 # Available oscillator waveforms
 WAVEFORMS = ["sine", "square", "saw", "triangle", "saturated"]
+
+# Voice pool size. Must not exceed the Faust osc bank's slot count: on
+# LOW_RAM_MODE the wrappers load the 12-slot lite .so builds (see the lite
+# pass in faust/build.sh and faust_osc_bank.NVOICES), so the pool shrinks
+# to match. Full profile (Pi 5) stays at 24 — behavior unchanged.
+MAX_VOICES = 12 if LOW_RAM_MODE else 24
 
 def fader_to_amplitude(fader: float) -> float:
     """Convert a 0-1 fader position to amplitude using dB curve (-60dB range).
@@ -1297,7 +1303,7 @@ class Voice:
 class SynthEngine:
     """Main synth pad engine managing voices, oscillators, and effects."""
 
-    def __init__(self, sample_rate: int = SAMPLE_RATE, max_voices: int = 24):
+    def __init__(self, sample_rate: int = SAMPLE_RATE, max_voices: int = MAX_VOICES):
         self.sample_rate = sample_rate
         self.max_voices = max_voices
 

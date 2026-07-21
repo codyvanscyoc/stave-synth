@@ -7,12 +7,30 @@ from pathlib import Path
 import numpy as np
 from cffi import FFI
 
+from .config import LOW_RAM_MODE
+
 logger = logging.getLogger(__name__)
 
 _HERE = Path(__file__).parent.parent / "faust"
-_LIB = _HERE / "libstave_sympathetic.so"
+_LIB_FULL = _HERE / "libstave_sympathetic.so"
+_LIB_LITE = _HERE / "libstave_sympathetic_lite.so"
 
-N_SLOTS = 24  # must match N_SLOTS in sympathetic.dsp
+# Low-RAM boxes (Pi 4 / 2GB) load the 12-slot lite build — same class name,
+# same symbols, half the slots — produced by the lite pass in faust/build.sh.
+# N_SLOTS must match the slot constant compiled into whichever .so we load;
+# importers (synth_engine) read it after this selection runs.
+if LOW_RAM_MODE and _LIB_LITE.exists():
+    _LIB = _LIB_LITE
+    N_SLOTS = 12  # must match N_SLOTS rewritten by build.sh's lite pass
+else:
+    if LOW_RAM_MODE:
+        logger.warning(
+            "LOW_RAM_MODE set but %s is missing; falling back to the full "
+            "24-slot bank. Run faust/build.sh to build the lite variant.",
+            _LIB_LITE,
+        )
+    _LIB = _LIB_FULL
+    N_SLOTS = 24  # must match N_SLOTS in sympathetic.dsp
 
 
 _ffi = FFI()

@@ -1,4 +1,4 @@
-"""Faust-native 24-voice oscillator bank.
+"""Faust-native oscillator bank (24 voices; 12-slot lite build on LOW_RAM_MODE).
 
 Public API mirrors what SynthEngine needs from its oscillator-rendering
 code: set per-voice freq + gate, set global osc params, call process() to
@@ -16,12 +16,31 @@ from pathlib import Path
 import numpy as np
 from cffi import FFI
 
+from .config import LOW_RAM_MODE
+
 logger = logging.getLogger(__name__)
 
 _HERE = Path(__file__).parent.parent / "faust"
-_LIB = _HERE / "libstave_osc_bank.so"
+_LIB_FULL = _HERE / "libstave_osc_bank.so"
+_LIB_LITE = _HERE / "libstave_osc_bank_lite.so"
 
-NVOICES = 24  # must match NVOICES in osc_bank.dsp
+# Low-RAM boxes (Pi 4 / 2GB) load the 12-slot lite build — same class name,
+# same symbols, half the voices — produced by the lite pass in faust/build.sh.
+# NVOICES must match the slot constant compiled into whichever .so we load;
+# importers (synth_engine) read it after this selection runs, so they see the
+# active bank's size.
+if LOW_RAM_MODE and _LIB_LITE.exists():
+    _LIB = _LIB_LITE
+    NVOICES = 12  # must match NVOICES rewritten by build.sh's lite pass
+else:
+    if LOW_RAM_MODE:
+        logger.warning(
+            "LOW_RAM_MODE set but %s is missing; falling back to the full "
+            "24-voice bank. Run faust/build.sh to build the lite variant.",
+            _LIB_LITE,
+        )
+    _LIB = _LIB_FULL
+    NVOICES = 24  # must match NVOICES in osc_bank.dsp
 
 # Waveform index: matches DEFAULT_STATE / generate_waveform names
 _WF_INDEX = {"sine": 0, "square": 1, "saw": 2, "triangle": 3, "saturated": 4}

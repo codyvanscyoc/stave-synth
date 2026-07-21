@@ -37,6 +37,47 @@ build_module() {
     ls -la "$out"
 }
 
+# Lite variant: rewrite the compile-time slot constant (24 → 12) in a temp
+# copy of the .dsp and build lib<libname>_lite.so with the SAME class name
+# (Python cdefs / symbol names stay identical; only the voice count shrinks).
+# Loaded by the wrappers when config.LOW_RAM_MODE is set (Pi 4 / 2GB).
+# The normal 24-slot builds above are untouched.
+build_lite_module() {
+    local name=$1       # dsp file stem (no extension)
+    local cname=$2      # C class name passed to faust -cn (same as full build)
+    local libname=$3    # full-build library stem; lite output is lib${libname}_lite.so
+    local pattern=$4    # exact constant line to rewrite, e.g. 'NVOICES = 24;'
+    local replace=$5    # replacement line, e.g. 'NVOICES = 12;'
+
+    local out="lib${libname}_lite.so"
+    if [ "$FORCE" -eq 0 ] && [ -f "$out" ] && [ "$out" -nt "${name}.dsp" ] && [ "$out" -nt "faust_cprelude.h" ]; then
+        echo "─── $name (lite) → $out  (up-to-date, skip)"
+        return
+    fi
+    echo "─── $name (lite) → $out ───"
+
+    # Safety: the pattern must match exactly one line, or the sed rewrite
+    # would silently build a wrong-sized (or unchanged) bank.
+    local matches
+    matches=$(grep -cF "$pattern" "${name}.dsp")
+    if [ "$matches" -ne 1 ]; then
+        echo "ERROR: expected exactly 1 line matching '$pattern' in ${name}.dsp, found $matches" >&2
+        exit 1
+    fi
+
+    local tmp="${name}_lite"
+    sed "s/^${pattern}$/${replace}/" "${name}.dsp" > "${tmp}.dsp"
+    if ! grep -qF "$replace" "${tmp}.dsp"; then
+        echo "ERROR: sed rewrite '$pattern' → '$replace' did not apply in ${tmp}.dsp" >&2
+        rm -f "${tmp}.dsp"
+        exit 1
+    fi
+    faust -lang c -cn "$cname" -o "${tmp}.c" "${tmp}.dsp"
+    gcc $CFLAGS -o "$out" "${tmp}.c"
+    rm -f "${tmp}.dsp" "${tmp}.c"
+    ls -la "$out"
+}
+
 build_module reverb       StaveReverb       stave_reverb
 build_module ping_pong    StavePingPong     stave_ping_pong
 build_module osc_bank     StaveOscBank      stave_osc_bank
@@ -47,6 +88,10 @@ build_module organ        StaveOrgan         stave_organ
 build_module plate        StavePlate         stave_plate
 build_module drone        StaveDrone         stave_drone
 build_module piano_room   StavePianoRoom     stave_piano_room
+
+# 12-slot lite variants for low-RAM boxes (config.LOW_RAM_MODE)
+build_lite_module osc_bank     StaveOscBank      stave_osc_bank     'NVOICES = 24;' 'NVOICES = 12;'
+build_lite_module sympathetic  StaveSympathetic  stave_sympathetic  'N_SLOTS = 24;' 'N_SLOTS = 12;'
 
 echo
 echo "Faust modules built. Restart the synth to pick up changes."
