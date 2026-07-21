@@ -1,4 +1,4 @@
-"""Dattorro drone reverb (libstave_drone.so).
+"""Drone reverb — 4-resonator tuned bank (libstave_drone.so, see faust/drone.dsp).
 
 Public API mirrors FaustReverb so ReverbDispatcher can swap between them
 without the synth engine caring which is active.
@@ -61,7 +61,7 @@ except OSError as e:
 
 
 class FaustDrone:
-    """Dattorro drone reverb — same I/O signature as FaustReverb."""
+    """Drone reverb (4-resonator tuned bank) — same I/O signature as FaustReverb."""
 
     def __init__(self, sample_rate: int = 48000):
         self.sample_rate = int(sample_rate)
@@ -114,12 +114,15 @@ class FaustDrone:
             self._in_ptrs[1] = _ffi.cast("float*", self._in_r.ctypes.data)
             self._out_ptrs[0] = _ffi.cast("float*", self._out_l.ctypes.data)
             self._out_ptrs[1] = _ffi.cast("float*", self._out_r.ctypes.data)
+            # Persistent float64 return buffer (zero-alloc render rule);
+            # caller consumes within the block.
+            self._out_f64 = np.empty((2, n), dtype=np.float64)
             self._buf_n = n
 
         np.copyto(self._in_l, in_l, casting="unsafe")
         np.copyto(self._in_r, in_r, casting="unsafe")
         _lib.computeStaveDrone(self._dsp, n, self._in_ptrs, self._out_ptrs)
-        out = np.empty((2, n), dtype=np.float64)
+        out = self._out_f64
         np.copyto(out[0], self._out_l, casting="unsafe")
         np.copyto(out[1], self._out_r, casting="unsafe")
         return out

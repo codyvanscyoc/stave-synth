@@ -54,8 +54,13 @@ with {
     half_knee  = knee_db * 0.5;
     ratio_gain = 1.0 - 1.0 / max(ratio, 1.0);
     gr_above   = over * ratio_gain;
+    // Textbook soft knee: GR = slope·(over + knee/2)² / (2·knee).
+    // The half factor makes the quadratic meet gr_above exactly at
+    // over = +knee/2 (both give slope·knee/2) — without it the knee
+    // branch overshoots 2× and the static curve steps DOWN as level
+    // rises past the knee top (non-monotonic, audible pumping seam).
     x_knee     = (over + half_knee) / max(knee_db, EPS);
-    gr_knee    = x_knee * x_knee * knee_db * ratio_gain;
+    gr_knee    = x_knee * x_knee * half_knee * ratio_gain;
     gr_target  = select2(over < (0.0 - half_knee),
                     select2(over > half_knee, gr_knee, gr_above),
                     0.0);

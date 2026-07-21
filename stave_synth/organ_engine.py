@@ -160,8 +160,9 @@ class OrganEngine:
         # Faust organ's `width` 0..1 semantic so the UI fader behaves
         # identically across backends. (Faust scales per-voice keyboard pan;
         # Python applies M/S scaling to the post-Leslie stereo bus — different
-        # mechanism, same audible direction.)
-        self.width = 1.0
+        # mechanism, same audible direction.) Default 0.7 matches
+        # FaustOrganEngine for fresh-state parity; saved state overrides.
+        self.width = 0.7
 
         # Voices
         self.voices: dict[int, OrganVoice] = {}
@@ -378,9 +379,12 @@ class OrganEngine:
         # ── Soft overdrive (tube amp warmth) ──
         # drive 0=clean (bypass), 1=heavy saturation
         if self.drive > 0.01:
-            # Map drive 0-1 to gain multiplier 1.0-1.5 (very gentle range)
+            # Map drive 0-1 to gain multiplier 1.0-1.5 (very gentle range).
+            # Makeup /drive_gain keeps small-signal gain at unity (project
+            # gotcha rule: /tanh(g) turns drive into a loudness knob). Kept
+            # in parity with faust/organ.dsp drive_stage.
             drive_gain = 1.0 + self.drive * 0.5
-            mono = np.tanh(mono * drive_gain) / np.tanh(drive_gain)
+            mono = np.tanh(mono * drive_gain) / drive_gain
 
         # ── Split Leslie speaker ──
         depth = self.leslie_depth

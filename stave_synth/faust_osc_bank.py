@@ -1,4 +1,4 @@
-"""Faust-native 16-voice oscillator bank.
+"""Faust-native 24-voice oscillator bank.
 
 Public API mirrors what SynthEngine needs from its oscillator-rendering
 code: set per-voice freq + gate, set global osc params, call process() to
@@ -78,7 +78,7 @@ except OSError as e:
 
 
 class FaustOscBank:
-    """16-voice Faust oscillator bank. Pre-computed stereo output per block."""
+    """24-voice Faust oscillator bank. Pre-computed stereo output per block."""
 
     def __init__(self, sample_rate: int = 48000):
         self.sample_rate = int(sample_rate)
@@ -139,6 +139,8 @@ class FaustOscBank:
         """Per-voice shimmer gate driven by LAYER (split). Called from
         synth_engine render path; weight reflects the note's position in
         the shimmer source's key range. Hot path — single zone write."""
+        if slot < 0:
+            return  # pool-exhausted voice (faust_slot=-1); see set_voice
         self._shimmer_gate_zones[slot][0] = float(max(0.0, min(1.0, weight)))
 
     @staticmethod
@@ -159,6 +161,11 @@ class FaustOscBank:
         TODO: Lift the limitation by writing per-voice ADSR coefficients
         from Python and removing the gate smoothing (requires Faust topology
         change — see comment near voice_gate in osc_bank.dsp)."""
+        if slot < 0:
+            # Pool-exhausted voice carries faust_slot=-1 ("shouldn't happen"
+            # path) — Python's negative indexing would silently hijack the
+            # LAST slot's freq/gate, retuning another live voice.
+            return
         self._freq_zones[slot][0] = float(freq_hz)
         g1 = float(max(0.0, min(1.0, g_osc1)))
         g2 = float(max(0.0, min(1.0, g_osc2)))
@@ -167,6 +174,8 @@ class FaustOscBank:
         self._gate_zones[slot][0] = g1 if g1 >= g2 else g2
 
     def clear_voice(self, slot: int):
+        if slot < 0:
+            return  # see set_voice
         self._gate_zones[slot][0] = 0.0
         self._gate_osc1_zones[slot][0] = 0.0
         self._gate_osc2_zones[slot][0] = 0.0
@@ -245,11 +254,14 @@ class FaustOscBank:
             self._out_ptrs[2] = _ffi.cast("float*", self._out_osc2_l.ctypes.data)
             self._out_ptrs[3] = _ffi.cast("float*", self._out_osc2_r.ctypes.data)
             self._out_ptrs[4] = _ffi.cast("float*", self._out_shimmer.ctypes.data)
+            # Persistent float64 return buffer (zero-alloc render rule);
+            # caller consumes within the block.
+            self._out_f64 = np.empty((5, n_samples), dtype=np.float64)
             self._buf_n = n_samples
 
         _lib.computeStaveOscBank(self._dsp, n_samples, self._in_ptrs, self._out_ptrs)
 
-        out = np.empty((5, n_samples), dtype=np.float64)
+        out = self._out_f64
         np.copyto(out[0], self._out_osc1_l, casting="unsafe")
         np.copyto(out[1], self._out_osc1_r, casting="unsafe")
         np.copyto(out[2], self._out_osc2_l, casting="unsafe")

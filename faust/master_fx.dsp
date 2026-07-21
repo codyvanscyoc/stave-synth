@@ -1,5 +1,5 @@
 declare name "stave_master_fx";
-declare description "Master FX tail: 3-band EQ → low cut → pre-gain → saturation → soft limiter";
+declare description "Master FX tail: 3-band EQ → low cut → pre-gain → saturation (DC-blocked)";
 
 import("stdfaust.lib");
 
@@ -9,7 +9,12 @@ import("stdfaust.lib");
 //   - Bus compressor (deferred — complex SSL G ballistics + sidechain modes)
 //   - FX-bypass routing (Python handles)
 //
-// Chain: stereo in → EQ(3 bands) → HP(6/12/24) → pre-gain → sat → tanh.
+// Chain: stereo in → EQ(3 bands) → HP(6/12/24) → pre-gain → sat → dcblock.
+// NO limiter here: the Python LookaheadLimiter (jack_engine.py) is the one
+// final brickwall for BOTH master paths, applied after the FX-bypass bus is
+// summed back in. (The old trailing ma.tanh soft-clipped the default path,
+// cost ~4 dB of transient clarity, and ran BEFORE the fx-bus sum — leaving
+// the summed signal unlimited.)
 // ═══════════════════════════════════════════════════════════════════════
 
 // ─── 3-band parametric EQ ───
@@ -30,9 +35,10 @@ hp_freq   = hslider("hp_freq",  80, 20, 2000, 0.1) : si.smoo;
 hp_slope  = hslider("hp_slope", 12, 6, 24, 6);
 
 // ─── Post-comp chain ───
-pre_gain   = hslider("pre_gain",   2.0, 0.1, 10.0, 0.01) : si.smoo;
+// Default 1.5 matches config.py pre_limiter_trim (Review #7 value); Python
+// pushes the live value every block anyway, this just avoids a hot first block.
+pre_gain   = hslider("pre_gain",   1.5, 0.1, 10.0, 0.01) : si.smoo;
 sat_enable = hslider("sat_enable",   0,   0,    1,    1);
-// Limiter (tanh) is always on — this is what keeps the bus from clipping.
 
 // ═══════════════════════════════════════════════════════════════════════
 // Single-channel chain — par(c, 2, ...) gives independent L/R state
@@ -59,12 +65,15 @@ hp_chain(x) =
             fi.highpass(1, hp_freq, x)),       // 6 dB → 1-pole
         x);                                    // HP disabled → pass-through
 
-// Saturation: Python line 623-628 — x*1.01 + |x|*0.09 (2nd-harmonic bias).
-sat_apply(x) = x * 1.01 + abs(x) * 0.09;
+// Saturation: mirrors Python path — x*1.01 + |x|*0.09 (2nd-harmonic bias),
+// then a DC blocker to strip the rectified offset the +|x|·0.09 term injects
+// (matches the Python path's 15 Hz HP, session 04-21d). Without it the
+// asymmetric bias eats 1-2 dB of one-sided headroom at the limiter.
+sat_apply(x) = x * 1.01 + abs(x) * 0.09 : fi.dcblocker;
 sat_chain(x) = select2(sat_enable < 0.5, sat_apply(x), x);
 
 // ─── Stereo pipeline ───
 // par(c, 2, mono_chain) keeps per-channel biquad state independent.
 process =
     par(c, 2, eq_chain : hp_chain)
-    : par(c, 2, _ * pre_gain : sat_chain : ma.tanh);
+    : par(c, 2, _ * pre_gain : sat_chain);

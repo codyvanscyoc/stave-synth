@@ -111,11 +111,14 @@ class FaustSympathetic:
             self._out_r = np.empty(n_samples, dtype=np.float32)
             self._out_ptrs[0] = _ffi.cast("float*", self._out_l.ctypes.data)
             self._out_ptrs[1] = _ffi.cast("float*", self._out_r.ctypes.data)
+            # Persistent float64 return buffer (zero-alloc render rule);
+            # caller consumes within the block.
+            self._out_f64 = np.empty((2, n_samples), dtype=np.float64)
             self._buf_n = n_samples
 
         _lib.computeStaveSympathetic(self._dsp, n_samples, self._in_ptrs, self._out_ptrs)
 
-        out = np.empty((2, n_samples), dtype=np.float64)
+        out = self._out_f64
         np.copyto(out[0], self._out_l, casting="unsafe")
         np.copyto(out[1], self._out_r, casting="unsafe")
         return out

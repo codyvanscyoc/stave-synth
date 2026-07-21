@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from pathlib import Path
@@ -37,6 +38,13 @@ class WebSocketServer:
         self._ws_server = None
         self._http_thread = None
         self._loop = None
+        # Handlers run in ONE worker thread, not inline on the event loop:
+        # some (set_audio_output, get_state's MIDI probe) run subprocess
+        # chains with 5s timeouts that would otherwise stall every client's
+        # messages and all broadcast traffic. max_workers=1 preserves the
+        # serialized-dispatch ordering handlers were written for.
+        self._handler_pool = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="ws-handler")
 
     async def _handle_client(self, websocket):
         """Handle a single WebSocket client connection."""
@@ -55,7 +63,19 @@ class WebSocketServer:
                 logger.debug("WS received: %s", msg)
 
                 if self.message_handler:
-                    response = self.message_handler(msg)
+                    # Guard the handler: one exception (malformed field, a
+                    # transient engine error) must not unwind the client
+                    # coroutine and drop the connection mid-set — that's a
+                    # UI blink and it masks the underlying bug.
+                    try:
+                        response = await asyncio.get_running_loop().run_in_executor(
+                            self._handler_pool, self.message_handler, msg)
+                    except Exception:
+                        logger.exception("Handler error for message type %r",
+                                         msg.get("type"))
+                        response = {"type": "error",
+                                    "for": msg.get("type"),
+                                    "message": "internal handler error"}
                     if response:
                         await websocket.send(json.dumps(response))
                         # Broadcast UI-visible state changes to other clients so
@@ -150,7 +170,14 @@ class WebSocketServer:
         self._ws_thread.start()
 
     def stop(self):
-        """Stop servers."""
-        if self._ws_server:
+        """Stop servers. Called from a foreign thread — the server object
+        must be closed on its own event loop."""
+        if self._ws_server and self._loop and self._loop.is_running():
+            try:
+                self._loop.call_soon_threadsafe(self._ws_server.close)
+            except RuntimeError:
+                pass  # loop shut down between check and call
+        elif self._ws_server:
             self._ws_server.close()
+        self._handler_pool.shutdown(wait=False)
         logger.info("WebSocket server stopped")

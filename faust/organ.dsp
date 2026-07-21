@@ -73,7 +73,11 @@ drive = hslider("drive", 0.05, 0, 1, 0.001) : si.smoo;
 drive_stage(x) = x * (1.0 - drive) + wet * drive
 with {
     drive_gain = 1.0 + drive * 0.5;
-    wet = ma.tanh(x * drive_gain) / ma.tanh(drive_gain);
+    // Makeup is /drive_gain (unity small-signal gain), NOT /tanh(drive_gain)
+    // — the latter peak-normalizes but boosts small-signal level by
+    // g/tanh(g) (up to +4.4 dB at drive=1), turning drive into a loudness
+    // knob. Project gotcha rule; matches ping_pong.dsp's drive makeup.
+    wet = ma.tanh(x * drive_gain) / drive_gain;
 };
 
 // ═══════════════════════════════════════════════════════════════════════

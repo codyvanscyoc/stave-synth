@@ -10,7 +10,6 @@ The engine uses float64 internally, so we convert at the edges.
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 
 import numpy as np
@@ -231,8 +230,27 @@ class FaustReverb:
         _set_zone(self._zones, "freeze_input", 1.0)
         _set_zone(self._zones, "er_scale", 0.4)
         _lib.instanceClearStaveReverb(self._dsp)
+        # Plate/drone are separate .so instances with their own state; if one
+        # of them is the active type, clearing only the FDN leaves it ringing
+        # (DRONE runs near self-oscillation by design). Also required for the
+        # render-path NaN trap, which recovers via panic() — a NaN stuck in
+        # plate/drone state would otherwise re-trip the trap every block.
+        if self._plate is not None:
+            self._plate.clear()
+        if self._drone is not None:
+            self._drone.clear()
 
     # ─────────────── parameter setters ───────────────
+    def _mirror_zone(self, label: str, value: float):
+        """Write a zone to the plate/drone backends too (no-op where the
+        zone doesn't exist — their set_zone ignores unknown labels). Shared
+        params must fan out or the live tone/decay sliders go dead whenever
+        PLATE/DRONE is the active type."""
+        if self._plate is not None:
+            self._plate.set_zone(label, value)
+        if self._drone is not None:
+            self._drone.set_zone(label, value)
+
     def set_decay(self, seconds: float):
         self.decay_seconds = seconds
         if seconds > 0:
@@ -251,18 +269,32 @@ class FaustReverb:
         self._feedback_target = fb
         if not self.frozen:
             _set_zone(self._zones, "feedback", fb)
-        # Drone backend uses its own fb mapping (resonator topology, not FDN
-        # delay-loop math). Sync whenever the user moves the Decay slider.
+        # Drone/plate use their own decay mappings (resonator loop gain /
+        # Dattorro decay, not FDN delay-loop math). Sync both whenever the
+        # user moves the Decay slider so it stays live on every type.
         if self._drone is not None:
             self._drone.set_zone("feedback", _drone_fb_from_seconds(seconds))
+        if self._plate is not None and seconds > 0:
+            self._plate.set_zone("feedback", _plate_decay_from_seconds(seconds))
 
     def set_low_cut(self, freq_hz: float):
         self.low_cut_hz = max(20.0, float(freq_hz))
         _set_zone(self._zones, "low_cut_hz", self.low_cut_hz)
+        self._mirror_zone("low_cut_hz", self.low_cut_hz)
 
     def set_high_cut(self, freq_hz: float):
         self.high_cut_hz = min(20000.0, float(freq_hz))
         _set_zone(self._zones, "high_cut_hz", self.high_cut_hz)
+        self._mirror_zone("high_cut_hz", self.high_cut_hz)
+
+    def set_damp(self, value: float):
+        """Damp slider — fans out to all backends (drone's damp zone is
+        currently inert in the topology, harmless)."""
+        damp = max(0.0, min(0.99, float(value)))
+        self._damp_target = damp
+        if not self.frozen:
+            _set_zone(self._zones, "damp", damp)
+            self._mirror_zone("damp", damp)
 
     def set_predelay(self, ms: float):
         self.predelay_ms = max(0.0, min(150.0, float(ms)))
@@ -372,6 +404,22 @@ class FaustReverb:
                 self._plate.set_zone("feedback",
                                      _plate_decay_from_seconds(preset["decay_seconds"]))
 
+        # Backend switch (fdn ↔ plate/drone): the backend being entered has
+        # been holding whatever tail it had when we last left it — inactive
+        # backends don't tick, so switching back would replay a possibly
+        # minutes-old tail at its captured amplitude. Clear the entered
+        # backend. FDN→FDN type changes (wash→hall etc.) keep their live
+        # tail as before.
+        old_preset = REVERB_PRESETS.get(self.type)
+        old_backend = old_preset["backend"] if old_preset else "fdn"
+        if backend != old_backend:
+            if backend == "plate" and self._plate is not None:
+                self._plate.clear()
+            elif backend == "drone" and self._drone is not None:
+                self._drone.clear()
+            elif backend not in ("plate", "drone"):
+                _lib.instanceClearStaveReverb(self._dsp)
+
         self.type = name
         logger.info("reverb type: %s (backend=%s)", name, backend)
 
@@ -380,6 +428,9 @@ class FaustReverb:
         # Shuffler runs in JackEngine on master bus; parity-only mirror.
 
     def set_freeze(self, enabled: bool):
+        # Fan the freeze zones out to plate/drone too — freezing while one of
+        # them is the active backend was previously a complete no-op (the most
+        # freeze-worthy type, DRONE, ignored the button entirely).
         if enabled and not self.frozen:
             self._normal_feedback = self._feedback_target
             self._normal_damp = self._damp_target
@@ -390,6 +441,8 @@ class FaustReverb:
             _set_zone(self._zones, "feedback", 0.999)
             _set_zone(self._zones, "damp", 0.05)
             _set_zone(self._zones, "er_scale", 0.0)
+            self._mirror_zone("feedback", 0.999)
+            self._mirror_zone("damp", 0.05)
             # freeze_input stays open during capture window
         elif not enabled and self.frozen:
             self._feedback_target = self._normal_feedback
@@ -399,6 +452,17 @@ class FaustReverb:
             _set_zone(self._zones, "damp", self._normal_damp)
             _set_zone(self._zones, "freeze_input", 1.0)
             _set_zone(self._zones, "er_scale", 0.4)
+            self._mirror_zone("damp", self._normal_damp)
+            self._mirror_zone("freeze_input", 1.0)
+            # Restore each backend's own decay mapping (FDN fb value would be
+            # wrong for the resonator/Dattorro topologies).
+            if self.decay_seconds > 0:
+                if self._drone is not None:
+                    self._drone.set_zone(
+                        "feedback", _drone_fb_from_seconds(self.decay_seconds))
+                if self._plate is not None:
+                    self._plate.set_zone(
+                        "feedback", _plate_decay_from_seconds(self.decay_seconds))
 
     # ─────────────── main process ───────────────
     def process(self, samples: np.ndarray) -> np.ndarray:
@@ -420,6 +484,7 @@ class FaustReverb:
             self._freeze_capture_remaining -= n
             if self._freeze_capture_remaining <= 0:
                 _set_zone(self._zones, "freeze_input", 0.0)
+                self._mirror_zone("freeze_input", 0.0)
 
         # Resize scratch if block size changed
         if n != self._buf_n:
@@ -431,10 +496,17 @@ class FaustReverb:
             self._in_ptrs[1] = _ffi.cast("float*", self._in_r_f32.ctypes.data)
             self._out_ptrs[0] = _ffi.cast("float*", self._out_l_f32.ctypes.data)
             self._out_ptrs[1] = _ffi.cast("float*", self._out_r_f32.ctypes.data)
+            # Persistent float64 return buffer — the render thread runs with
+            # GC disabled; a fresh (2, n) malloc every block was the largest
+            # remaining zero-alloc-rule violation. Callers consume the
+            # result within the block (never hold it across blocks).
+            self._out_f64 = np.empty((2, n), dtype=np.float64)
             self._buf_n = n
 
-        # Route to plate or drone if active; the FDN always runs but we don't
-        # use its output during those types (keeps switching back instant).
+        # Route to plate or drone if active. The FDN does NOT tick during
+        # those types (we return before computeStaveReverb) — its buffers
+        # hold the tail from the moment we left, which is why set_type
+        # clears the entered backend on backend switches.
         if self.type == "plate" and self._plate is not None:
             return self._plate.process(samples)
         if self.type == "drone" and self._drone is not None:
@@ -445,7 +517,7 @@ class FaustReverb:
 
         _lib.computeStaveReverb(self._dsp, n, self._in_ptrs, self._out_ptrs)
 
-        out = np.empty((2, n), dtype=np.float64)
+        out = self._out_f64
         np.copyto(out[0], self._out_l_f32, casting="unsafe")
         np.copyto(out[1], self._out_r_f32, casting="unsafe")
         return out

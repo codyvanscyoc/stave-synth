@@ -279,19 +279,6 @@ class BiquadLowpass:
     def process(self, samples: np.ndarray) -> np.ndarray:
         out, self.zi = lfilter(self.b, self.a, samples, zi=self.zi)
         return out
-        n = len(samples)
-        out = np.empty(n, dtype=np.float64)
-        z1, z2 = self.zi[0], self.zi[1]
-        b0, b1, b2 = self.b
-        a1, a2 = self.a[1], self.a[2]
-        for i in range(n):
-            x = samples[i]
-            y = b0 * x + z1
-            z1 = b1 * x - a1 * y + z2
-            z2 = b2 * x - a2 * y
-            out[i] = y
-        self.zi[0], self.zi[1] = z1, z2
-        return out
 
     def reset(self):
         self.zi[:] = 0.0
@@ -326,19 +313,6 @@ class BiquadHighpass:
 
     def process(self, samples: np.ndarray) -> np.ndarray:
         out, self.zi = lfilter(self.b, self.a, samples, zi=self.zi)
-        return out
-        n = len(samples)
-        out = np.empty(n, dtype=np.float64)
-        z1, z2 = self.zi[0], self.zi[1]
-        b0, b1, b2 = self.b
-        a1, a2 = self.a[1], self.a[2]
-        for i in range(n):
-            x = samples[i]
-            y = b0 * x + z1
-            z1 = b1 * x - a1 * y + z2
-            z2 = b2 * x - a2 * y
-            out[i] = y
-        self.zi[0], self.zi[1] = z1, z2
         return out
 
     def reset(self):
@@ -375,19 +349,6 @@ class BiquadPeakingEQ:
 
     def process(self, samples: np.ndarray) -> np.ndarray:
         out, self.zi = lfilter(self.b, self.a, samples, zi=self.zi)
-        return out
-        n = len(samples)
-        out = np.empty(n, dtype=np.float64)
-        z1, z2 = self.zi[0], self.zi[1]
-        b0, b1, b2 = self.b
-        a1, a2 = self.a[1], self.a[2]
-        for i in range(n):
-            x = samples[i]
-            y = b0 * x + z1
-            z1 = b1 * x - a1 * y + z2
-            z2 = b2 * x - a2 * y
-            out[i] = y
-        self.zi[0], self.zi[1] = z1, z2
         return out
 
     def reset(self):
@@ -426,19 +387,6 @@ class BiquadLowShelf:
 
     def process(self, samples: np.ndarray) -> np.ndarray:
         out, self.zi = lfilter(self.b, self.a, samples, zi=self.zi)
-        return out
-        n = len(samples)
-        out = np.empty(n, dtype=np.float64)
-        z1, z2 = self.zi[0], self.zi[1]
-        b0, b1, b2 = self.b
-        a1, a2 = self.a[1], self.a[2]
-        for i in range(n):
-            x = samples[i]
-            y = b0 * x + z1
-            z1 = b1 * x - a1 * y + z2
-            z2 = b2 * x - a2 * y
-            out[i] = y
-        self.zi[0], self.zi[1] = z1, z2
         return out
 
     def reset(self):
@@ -1196,6 +1144,9 @@ class BusCompressor:
         self.knee_db = 2.0
         self.sidechain_hpf_hz = 100.0
 
+        # Sidechain is MONO — process() only runs _hpf_l on the summed L+R
+        # detector signal. _hpf_r never processes audio but is kept because
+        # main.py's sidechain_hpf handler calls set_params on both filters.
         self._hpf_l = BiquadHighpass(self.sidechain_hpf_hz, 0.707, sample_rate)
         self._hpf_r = BiquadHighpass(self.sidechain_hpf_hz, 0.707, sample_rate)
 
@@ -1227,9 +1178,12 @@ class BusCompressor:
             return 0.0
         if over > knee * 0.5:
             return over * (1.0 - 1.0 / ratio)
-        # Soft knee quadratic
+        # Soft knee quadratic: slope·(over + knee/2)²/(2·knee) — the half
+        # factor makes this meet the over-knee line exactly at over=+knee/2
+        # (both give slope·knee/2). Matches the piano LA-2A comp and the
+        # Faust bus_comp.dsp.
         x = (over + knee * 0.5) / knee  # 0..1
-        return x * x * knee * (1.0 - 1.0 / ratio)
+        return x * x * knee * 0.5 * (1.0 - 1.0 / ratio)
 
     def process(self, out_l: np.ndarray, out_r: np.ndarray,
                 sc_l: np.ndarray = None, sc_r: np.ndarray = None,
@@ -1543,6 +1497,9 @@ class SynthEngine:
         self.pad_mellow_cutoff_hz = 400.0
         self._pad_mellow_lp_l = BiquadLowpass(self.pad_mellow_cutoff_hz, 0.707, sample_rate)
         self._pad_mellow_lp_r = BiquadLowpass(self.pad_mellow_cutoff_hz, 0.707, sample_rate)
+        # Coefficient cache — skip set_params in render when cutoff unchanged
+        # (same pattern as the main filter's slope cache).
+        self._pad_mellow_last_cutoff = self.pad_mellow_cutoff_hz
 
         # ═══ Motion bus mix — scales all MOTION effects together ═══
         # Set by the FX fader's 3rd ALT state ("MOTION"). Multiplies into LFO
@@ -1676,9 +1633,9 @@ class SynthEngine:
             for _ in range(max_voices)
         ]
 
-        # Faust 16-voice oscillator bank (opt-in via STAVE_FAUST_OSC_BANK=1).
+        # Faust 24-voice oscillator bank (opt-in via STAVE_FAUST_OSC_BANK=1).
         # Python still owns voice allocation + ADSR + shimmer + Haas; Faust
-        # owns only wave gen + unison + per-osc pan + blend for all 16 voices.
+        # owns only wave gen + unison + per-osc pan + blend for all 24 voices.
         self._faust_osc_bank = None
         self._faust_slot_free: list[int] = []
         self._faust_nvoices = 0  # populated below if Faust path activates
@@ -2075,6 +2032,11 @@ class SynthEngine:
         self._shimmer_delay_r[:] = 0.0
         self._delay_buf_l[:] = 0.0
         self._delay_buf_r[:] = 0.0
+        # Faust ping-pong keeps its own delay lines (incl. up to 15s of
+        # reverse buffer); with OBLIVION the loop is self-sustaining, so
+        # panic MUST flush it or the delay survives the emergency stop.
+        if self._faust_ping_pong is not None:
+            self._faust_ping_pong.clear()
         # Reverb-send filters (used by per-OSC sends split-path)
         self._rev_send_filter_l.reset()
         self._rev_send_filter_r.reset()
@@ -2202,10 +2164,19 @@ class SynthEngine:
         tap_l = read_block(buf_r, read_l_len)  # L tap reads R buffer (ping-pong)
         tap_r = read_block(buf_l, read_r_len)  # R tap reads L buffer
 
-        # Write current input + feedback from opposite tap into each buffer
-        fb = max(0.0, min(0.85, self.delay_feedback))
-        write_l = out_l + tap_l * fb
-        write_r = out_r + tap_r * fb
+        # Write current input + feedback from opposite tap into each buffer.
+        # OBLIVION = infinite repeat: fb 1.0 with tanh in the loop for
+        # stability, mirroring the Faust path — previously the Python
+        # fallback silently ignored delay_oblivion (a 0.85 echo on Mac
+        # reads as a bug). Other Faust-only delay features (filters, drive,
+        # width, mod, reverse) remain unsupported here; see MAC_PORT.md.
+        if self.delay_oblivion:
+            write_l = np.tanh(out_l + tap_l)
+            write_r = np.tanh(out_r + tap_r)
+        else:
+            fb = max(0.0, min(0.85, self.delay_feedback))
+            write_l = out_l + tap_l * fb
+            write_r = out_r + tap_r * fb
 
         end = pos + n
         if end <= blen:
@@ -2353,17 +2324,22 @@ class SynthEngine:
 
     def sympathetic_set_suppress(self, suppress: bool):
         """Block sympathetic rendering and re-arm. Used during preset crossfade so
-        held keys don't keep pumping tone into the reverb at changing levels."""
+        held keys don't keep pumping tone into the reverb at changing levels.
+
+        Called from the WS/crossfade thread while the render thread inserts
+        and deletes _sympathetic_state entries (slot-steal does `del`) —
+        snapshot with list() so a concurrent mutation can't raise
+        RuntimeError mid-iteration (which would abort the preset load)."""
         self._sympathetic_suppress = bool(suppress)
         if suppress:
-            for st in self._sympathetic_state.values():
+            for st in list(self._sympathetic_state.values()):
                 st["target"] = 0.0
 
     def set_sympathetic_notes(self, notes: set):
         """Update which piano notes resonate sympathetically (with fade envelopes).
 
-        Faust path uses a fixed 16-slot bank. When all slots are taken and a
-        new note arrives (17+-note sustain-pedal chord), steal the oldest
+        Faust path uses a fixed 24-slot bank. When all slots are taken and a
+        new note arrives (25+-note sustain-pedal chord), steal the oldest
         active slot instead of silently tracking the new note with slot=-1
         (which would be book-kept but produce no sound).
         """
@@ -2430,21 +2406,25 @@ class SynthEngine:
         pad_dir = Path(pad_dir)
         pad_dir.mkdir(parents=True, exist_ok=True)
         self._pad_samples_dir = pad_dir
+        # Decode/resample into FRESH players entirely off-lock (disk I/O +
+        # resample_poly can take hundreds of ms), then swap the dict under
+        # the render lock. Mutating _pad_samples / swapping buffers in place
+        # raced the render thread, which iterates _pad_samples.values() and
+        # reads player buffers every block a pad is sounding. Behavior is
+        # unchanged: load() always reset active=False on every slot anyway.
         loaded = 0
+        new_map = {}
         for note, fname in self._PAD_NOTE_FILENAMES.items():
             path = pad_dir / fname
             if not path.exists():
-                # Leave the slot empty — caller will fall back to live synth
-                self._pad_samples.pop(note, None)
-                continue
-            player = self._pad_samples.get(note)
-            if player is None:
-                player = SamplePlayer(self.sample_rate)
-                self._pad_samples[note] = player
+                continue  # slot empty — caller falls back to live synth
+            player = SamplePlayer(self.sample_rate)
             if player.load(path):
+                new_map[note] = player
                 loaded += 1
-            else:
-                self._pad_samples.pop(note, None)
+        with self._render_lock:
+            self._pad_samples.clear()
+            self._pad_samples.update(new_map)
         logger.info("Pad samples loaded: %d / 12 from %s", loaded, pad_dir)
         return loaded
 
@@ -3037,12 +3017,22 @@ class SynthEngine:
                 filtered_r = self.filter2_r.process(filtered_r)
             output_l += filtered_l
             output_r += filtered_r
+        # Independent (non-shared) filter paths get the same
+        # brightness-vs-loudness compensation, derived from each OSC's own
+        # cutoff. Without it, unchecking "shared filter" jumped that OSC up
+        # by the shared path's comp amount (~11 dB at the default cutoff).
         if not self.osc1_filter_enabled:
-            output_l += self.osc1_indep_filter_l.process(osc1_indep_buf[0])
-            output_r += self.osc1_indep_filter_r.process(osc1_indep_buf[1])
+            f1_pos = np.log(max(self._osc1_indep_cutoff_cur, f_min) / f_min) / np.log(f_max / f_min)
+            f1_pos = max(0.0, min(1.0, f1_pos))
+            comp1 = 10.0 ** (-15.0 * f1_pos ** 1.3 / 20.0)
+            output_l += self.osc1_indep_filter_l.process(osc1_indep_buf[0]) * comp1
+            output_r += self.osc1_indep_filter_r.process(osc1_indep_buf[1]) * comp1
         if not self.osc2_filter_enabled:
-            output_l += self.osc2_indep_filter_l.process(osc2_indep_buf[0])
-            output_r += self.osc2_indep_filter_r.process(osc2_indep_buf[1])
+            f2_pos = np.log(max(self._osc2_indep_cutoff_cur, f_min) / f_min) / np.log(f_max / f_min)
+            f2_pos = max(0.0, min(1.0, f2_pos))
+            comp2 = 10.0 ** (-15.0 * f2_pos ** 1.3 / 20.0)
+            output_l += self.osc2_indep_filter_l.process(osc2_indep_buf[0]) * comp2
+            output_r += self.osc2_indep_filter_r.process(osc2_indep_buf[1]) * comp2
 
         # Highpass (low cut) — smooth in log space like the lowpass
         if self.filter_highpass_hz > 25.0 or self._filter_highpass_cur > 25.0:
@@ -3063,9 +3053,9 @@ class SynthEngine:
         #
         # AMP uses a gate-style formula so depth=1 = full cut at trough:
         #   gate = 1 - d + d * (1 + lfo_norm) / 2   ∈ [0, 1] at d=1, centered at 1 at d=0
-        # Makeup gain 1/(1-d/2) restores unity average loudness — otherwise the
-        # asymmetric cut would drop perceived volume by up to 6dB at d=1. Peaks
-        # then exceed 1.0 but the master tanh limiter catches them cleanly.
+        # No makeup gain: the gate peaks at exactly 1.0 (tremolo-style dip-only),
+        # so it can never push the signal above unity regardless of depth or
+        # LFO stacking — inherently safe against limiter overshoot.
         # Two amp LFOs compose multiplicatively (both must be "open" for sound through).
         #
         # PAN stays with the symmetric ±(d/2) swing on L (+) / R (−), which stacks
@@ -3121,7 +3111,19 @@ class SynthEngine:
             # Pan target always stays Python-side regardless of poly setting.
             lfo1_amp_via_faust = use_faust and self.lfo_poly and self.lfo_target == "amp"
             lfo2_amp_via_faust = use_faust and self.lfo2_poly and self.lfo2_target == "amp"
-            if recv1 and lfo1_d > 0.001:
+            # Only compute ramps + advance the one-pole smoother state when this
+            # function will actually consume them (target amp-in-Python or pan).
+            # For "filter"/"bus" targets (or amp handled per-voice in Faust) the
+            # work was wasted AND the bus branch below would double-step the
+            # same smoother state.
+            # TODO: in the per-OSC split path _osc_amp_pan runs once per OSC, so
+            # an LFO received by both OSCs still steps the smoother twice per
+            # block (pre-existing; benign at typical smooth settings).
+            lfo1_used_here = (self.lfo_target == "pan"
+                              or (self.lfo_target == "amp" and not lfo1_amp_via_faust))
+            lfo2_used_here = (self.lfo2_target == "pan"
+                              or (self.lfo2_target == "amp" and not lfo2_amp_via_faust))
+            if recv1 and lfo1_d > 0.001 and lfo1_used_here:
                 r1a = _fill_ramp(self._lfo_ramp_a1[:n_samples], self._lfo_mod_a_last, lfo1_a)
                 r1b = _fill_ramp(self._lfo_ramp_b1[:n_samples], self._lfo_mod_b_last, lfo1_b)
                 r1a, self._lfo_smooth_a_state = _smooth_one_pole(r1a, self._lfo_smooth_a_state, self.lfo_smooth)
@@ -3132,7 +3134,7 @@ class SynthEngine:
                 elif self.lfo_target == "pan":
                     pmod_l = r1a * lfo1_d * 0.5
                     pmod_r = -r1a * lfo1_d * 0.5
-            if recv2 and lfo2_d > 0.001:
+            if recv2 and lfo2_d > 0.001 and lfo2_used_here:
                 r2a = _fill_ramp(self._lfo_ramp_a2[:n_samples], self._lfo2_mod_a_last, lfo2_a)
                 r2b = _fill_ramp(self._lfo_ramp_b2[:n_samples], self._lfo2_mod_b_last, lfo2_b)
                 r2a, self._lfo2_smooth_a_state = _smooth_one_pole(r2a, self._lfo2_smooth_a_state, self.lfo2_smooth)
@@ -3507,8 +3509,10 @@ class SynthEngine:
         any_rise = any(getattr(p, "_rise_filter_engaged", False)
                        for p in self._pad_samples.values() if p.active)
         if self.pad_mellow_enabled and not any_rise:
-            self._pad_mellow_lp_l.set_params(self.pad_mellow_cutoff_hz, 0.707)
-            self._pad_mellow_lp_r.set_params(self.pad_mellow_cutoff_hz, 0.707)
+            if self.pad_mellow_cutoff_hz != self._pad_mellow_last_cutoff:
+                self._pad_mellow_lp_l.set_params(self.pad_mellow_cutoff_hz, 0.707)
+                self._pad_mellow_lp_r.set_params(self.pad_mellow_cutoff_hz, 0.707)
+                self._pad_mellow_last_cutoff = self.pad_mellow_cutoff_hz
             pad_l[:] = self._pad_mellow_lp_l.process(pad_l)
             pad_r[:] = self._pad_mellow_lp_r.process(pad_r)
 
@@ -3571,18 +3575,25 @@ class SynthEngine:
         if "unison_voices" in params:
             new_count = max(1, min(5, int(params["unison_voices"])))
             if new_count != self.unison_voices:
-                self.unison_voices = new_count
-                # Resize phase arrays on all active voices. New slots get
-                # random starting phases (same decorrelation trick as note_on)
-                # so bumping unison mid-note doesn't cause phase-aligned beating.
-                for v in self.voices:
-                    while len(v.osc1_phases) < new_count:
-                        v.osc1_phases.append(float(np.random.uniform(0.0, TWO_PI)))
-                        v.osc2_phases.append(float(np.random.uniform(0.0, TWO_PI)))
-                        v.shimmer_phases.append(float(np.random.uniform(0.0, TWO_PI)))
-                    v.osc1_phases = v.osc1_phases[:new_count]
-                    v.osc2_phases = v.osc2_phases[:new_count]
-                    v.shimmer_phases = v.shimmer_phases[:new_count]
+                # Multi-step transaction: count + per-voice phase lists must
+                # change atomically w.r.t. the render thread, which snapshots
+                # unison_voices then slices osc*_phases against (n_uni,)-shaped
+                # detune arrays — interleaving broadcasts a short list into a
+                # ValueError → dropped block (audible gap). Same pattern as
+                # the lfo_target handler below.
+                with self._render_lock:
+                    # Resize phase arrays on all active voices. New slots get
+                    # random starting phases (same decorrelation trick as note_on)
+                    # so bumping unison mid-note doesn't cause phase-aligned beating.
+                    for v in self.voices:
+                        while len(v.osc1_phases) < new_count:
+                            v.osc1_phases.append(float(np.random.uniform(0.0, TWO_PI)))
+                            v.osc2_phases.append(float(np.random.uniform(0.0, TWO_PI)))
+                            v.shimmer_phases.append(float(np.random.uniform(0.0, TWO_PI)))
+                        v.osc1_phases = v.osc1_phases[:new_count]
+                        v.osc2_phases = v.osc2_phases[:new_count]
+                        v.shimmer_phases = v.shimmer_phases[:new_count]
+                    self.unison_voices = new_count
         if "unison_detune" in params:
             self.unison_detune = float(params["unison_detune"])
         if "unison_spread" in params:
@@ -3683,13 +3694,10 @@ class SynthEngine:
             self.reverb.set_decay(float(params["reverb_decay_seconds"]))
         # Direct zone writes for expert reverb sliders — only applies when the
         # Faust backend is active (Python fallback silently ignores them).
-        if "reverb_damp" in params and hasattr(self.reverb, "_zones"):
-            damp = max(0.0, min(0.99, float(params["reverb_damp"])))
-            self.reverb._damp_target = damp
-            if not getattr(self.reverb, "frozen", False):
-                z = self.reverb._zones.get("damp")
-                if z is not None:
-                    z[0] = damp
+        if "reverb_damp" in params and hasattr(self.reverb, "set_damp"):
+            # Fans out to plate/drone backends too (FaustReverb.set_damp);
+            # Python fallback has no set_damp → silently ignored, as before.
+            self.reverb.set_damp(float(params["reverb_damp"]))
         if "reverb_shimmer_fb" in params and hasattr(self.reverb, "_zones"):
             z = self.reverb._zones.get("shimmer_fb")
             if z is not None: z[0] = max(0.0, min(1.0, float(params["reverb_shimmer_fb"])))

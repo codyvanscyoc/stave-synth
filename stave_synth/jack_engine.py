@@ -13,6 +13,7 @@ import threading
 import time
 
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 
 from .synth_engine import (SynthEngine, BiquadLowpass, BiquadHighpass,
                            BiquadPeakingEQ, BiquadLowShelf, OnePole6dBHighpass,
@@ -84,7 +85,6 @@ class LookaheadLimiter:
         full_p = np.concatenate([self._dp, peak_in])
 
         # Rolling max over the lookahead window for each output sample.
-        from numpy.lib.stride_tricks import sliding_window_view
         windowed = sliding_window_view(full_p, la + 1)  # shape (n, la+1)
         ahead = windowed.max(axis=1)
 
@@ -237,6 +237,7 @@ class JackEngine:
         # Master low cut (highpass) — optional, pre-limiter
         self._master_hp_enabled = False
         self._master_hp_slope = 12
+        self._master_hp_freq = 80.0  # updated by set_master_hp; read by Faust path
         self._master_hp6_l = OnePole6dBHighpass(80.0, SAMPLE_RATE)
         self._master_hp6_r = OnePole6dBHighpass(80.0, SAMPLE_RATE)
         self._master_hp12_l = BiquadHighpass(80.0, 0.707, SAMPLE_RATE)
@@ -551,8 +552,6 @@ class JackEngine:
         b = self._bridge
         b.bridge_start.restype = ctypes.c_int
         b.bridge_stop.restype = None
-        b.bridge_write_audio.argtypes = [ctypes.POINTER(ctypes.c_float), ctypes.c_int]
-        b.bridge_write_audio.restype = ctypes.c_int
         b.bridge_write_stereo.argtypes = [
             ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float), ctypes.c_int
         ]
@@ -576,6 +575,7 @@ class JackEngine:
         b.bridge_get_ring_slots.restype = ctypes.c_int
         b.bridge_clear_ring.restype = ctypes.c_int
         b.bridge_is_shutdown.restype = ctypes.c_int
+        b.bridge_get_btl_mode.restype = ctypes.c_int
 
     def start(self):
         """Start the C bridge JACK client."""
@@ -589,8 +589,7 @@ class JackEngine:
 
         self._push_master_to_bridge()
         self._bridge.bridge_set_btl_mode(1 if BTL_MODE else 0)
-        # Verify BTL mode was set correctly
-        self._bridge.bridge_get_btl_mode.restype = ctypes.c_int
+        # Verify BTL mode was set correctly (restype declared in _setup_bridge_types)
         btl_actual = self._bridge.bridge_get_btl_mode()
         logger.info("BTL mode: config=%s, bridge=%d (0=stereo, 1=mono-invert)", BTL_MODE, btl_actual)
         self.running = True
@@ -618,6 +617,19 @@ class JackEngine:
         bs = self._bridge.bridge_get_buffer_size()
         sr = self._bridge.bridge_get_sample_rate()
         block_time = bs / sr
+        # Sample-rate mismatch guard: every engine (Faust zones, biquad
+        # coefficients, the C bridge's smoothing constant) is built at
+        # config.SAMPLE_RATE. If the JACK graph comes up at a different
+        # rate (e.g. a fresh box with PipeWire at 44.1k), EVERYTHING is
+        # detuned/mistimed with zero errors. Scream about it — install.sh
+        # pins clock.rate via a PipeWire drop-in, so this firing means the
+        # pin is missing on this machine.
+        if sr and sr != SAMPLE_RATE:
+            logger.critical(
+                "SAMPLE RATE MISMATCH: JACK graph is %d Hz but the engine "
+                "was built for %d Hz — audio will be detuned. Pin the rate "
+                "(PipeWire: clock.rate=%d) and restart.",
+                sr, SAMPLE_RATE, SAMPLE_RATE)
         consecutive_errors = 0
         MAX_CONSECUTIVE_ERRORS = 20
         # Starvation detector: if the C-bridge ring buffer runs dry, the bridge
@@ -844,10 +856,11 @@ class JackEngine:
                         stereo[1] = mid - side
 
                     # Faust master FX path: bundles EQ + HP + pre-gain + sat
-                    # + limiter in one compute call. Only used when bus comp
-                    # is disabled (bus comp stays Python-side; its SSL G-style
-                    # ballistics are too load-bearing to port without a
-                    # dedicated session). Shuffler stays Python.
+                    # in one compute call. Only used when bus comp is disabled
+                    # — the comp must sit INSIDE the master chain (post
+                    # pre-gain, pre FX-sum), which the single Faust compute
+                    # can't interleave. Shuffler stays Python. The brickwall
+                    # limiter runs Python-side for BOTH paths (see below).
                     use_faust_master = (
                         self._faust_master_fx is not None
                         and not self.bus_comp.enabled
@@ -860,7 +873,7 @@ class JackEngine:
                             self._faust_master_fx.set_eq_band(idx, freq, gain, q)
                         self._faust_master_fx.set_hp(
                             enabled=self._master_hp_enabled,
-                            freq_hz=80.0,  # matches Python — hardcoded cutoff
+                            freq_hz=self._master_hp_freq,
                             slope_db_per_oct=self._master_hp_slope,
                         )
                         self._faust_master_fx.set_tail(
@@ -868,8 +881,9 @@ class JackEngine:
                             sat_enabled=self.saturation_enabled,
                         )
                         self._faust_master_fx.process_inplace(stereo)
-                        # Faust applied EQ, HP, pre_gain, sat, and tanh.
-                        # Skip to post-processing (recorder + bridge_write).
+                        # Faust applied EQ, HP, pre_gain, and sat (DC-blocked).
+                        # The brickwall limiter runs below, after the FX-bus
+                        # sum, same as the Python path.
                     else:
                         # Master EQ (configurable 3-band parametric)
                         if self._master_eq_active:
@@ -972,7 +986,8 @@ class JackEngine:
                     if not use_faust_master:
                         # Optional asymmetric drive (SAT button) — injects 2nd
                         # harmonic for tape/transformer-style warmth. Skipped
-                        # when off so the chain stays purely clean.
+                        # when off so the chain stays purely clean. (On the
+                        # Faust path, sat + DC block happen inside master_fx.)
                         if self.saturation_enabled:
                             scratch = self._sat_scratch[:, :bs]
                             np.abs(stereo, out=scratch)
@@ -984,11 +999,13 @@ class JackEngine:
                             stereo[0] = self._sat_dc_l.process(stereo[0])
                             stereo[1] = self._sat_dc_r.process(stereo[1])
 
-                        # Brickwall lookahead limiter — keeps |output| ≤ 0.98
-                        # transparently. Replaces the old np.tanh soft-clip,
-                        # which secretly relied on the bridge hard-clip to do
-                        # the actual ceiling and cost ~4 dB of transient clarity.
-                        self._limiter.process_inplace(stereo)
+                    # Brickwall lookahead limiter — keeps |output| ≤ 0.98
+                    # transparently, on BOTH master paths. Runs after the
+                    # FX-bypass bus sum so the final ceiling covers the summed
+                    # signal. (Previously the Faust path ended in ma.tanh
+                    # inside the .so — Review #7's limiter never ran there,
+                    # and the fx bus was summed AFTER the tanh, unlimited.)
+                    self._limiter.process_inplace(stereo)
 
                     # Down-cast float64 master into pre-allocated float32 scratch
                     # buffers. astype() used to allocate a fresh array every
@@ -1138,6 +1155,35 @@ class JackEngine:
                                 _silent_cycles * int(CHECK_INTERVAL_S))
 
     def _midi_loop(self):
+        """Exception-guarded wrapper around the MIDI dispatch loop.
+
+        The dispatch callbacks do heavy work (preset loads hit disk,
+        FluidSynth program changes, full setting fan-outs) — one uncaught
+        exception used to kill the thread silently: keyboard dead mid-set
+        while render keeps ticking, so the watchdog stayed green and nothing
+        recovered. Mirror the render loop's policy: log + resume, and bail
+        to systemd if it's failing continuously."""
+        consecutive = 0
+        last_error_ts = 0.0
+        while self.running:
+            try:
+                self._midi_loop_body()
+                return  # clean exit — self.running went False
+            except Exception:
+                now = time.time()
+                if now - last_error_ts > 60.0:
+                    consecutive = 0  # errors aren't continuous; reset
+                consecutive += 1
+                last_error_ts = now
+                logger.exception("MIDI loop error (#%d) — resuming dispatch",
+                                 consecutive)
+                if consecutive >= 20:
+                    logger.critical(
+                        "MIDI loop failing continuously — exiting for systemd restart")
+                    os._exit(1)
+                time.sleep(0.1)
+
+    def _midi_loop_body(self):
         """Read MIDI events from the C bridge and dispatch.
         Note tracking uses raw MIDI note numbers so transpose/octave changes
         between note-on and note-off can't cause hung notes."""
@@ -1371,6 +1417,10 @@ class JackEngine:
         """Update master low cut filter."""
         self._master_hp_enabled = enabled
         self._master_hp_slope = slope
+        # Cached for the Faust master-fx path — it pushes this every block.
+        # (Was hardcoded 80.0 there, which silently killed the UI's 20-500 Hz
+        # low-cut frequency slider whenever the Faust path was active.)
+        self._master_hp_freq = freq_hz
         self._master_hp6_l.set_params(freq_hz)
         self._master_hp6_r.set_params(freq_hz)
         self._master_hp12_l.set_params(freq_hz, 0.707)
