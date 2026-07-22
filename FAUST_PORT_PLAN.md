@@ -298,3 +298,9 @@ FluidSynth stays (sample playback). Flag: `STAVE_FAUST_PIANO_CHAIN`.
   signal statistics. Pi 5: still flag-off. Next: Phase 3 (piano chain) or
   Phase 4 (osc_bank→pad_bus merge — the big CPU win); user ear check on
   Phase 2 shimmer pending.
+- **2026-07-22 (user ear-check, in office)** — "Sounds fantastic once I
+  adjusted settings." Phases 1+2 APPROVED by ear. Full blast: ~80% with
+  occasional CPU spikes (Phase 4's merge is the targeted fix), a few
+  clips at hot settings (parked for the post-port tuning session:
+  limiter/gain/comp re-dial). User verdict: "full Faust is absolutely
+  the best call for CPU space."
