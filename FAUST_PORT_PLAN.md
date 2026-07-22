@@ -627,3 +627,14 @@ the full-blast CPU-spike behavior there.
   checks, 8-slot decision, ring ratchet (the latency prize), post-port
   tuning pass (voicings/comp/limiter/gain). Pi 5: all port flags still
   OFF, awaiting soak + the adoption checklist.
+- **2026-07-22 (tuning session begins — user decisions)** — Latency:
+  LOCKED at current ring 16/8; user: "right now it's perfect on that
+  end" — ratchet only if he ever reports lag. 8-slot: DECLINED, 12
+  stays. Haas slow drift on dual saws: confirmed normal (detune beating
+  + deliberate analog_drift_cents=3 + Haas comb). Volume: raise MASTER
+  into the brickwall first; pre_limiter_trim second; DAC already 100%
+  via ExecStartPre. Bugs filed: (1) LINK OSC wrongly syncs pans —
+  should be levels-only, pans independent, only hard-pan WIDE places
+  L/R; (2) unison slider off 3 = full Python-skeleton fallback = Pi 4
+  glitch storm → pin to 3 on LOW_RAM with UI affordance. Fix agent
+  dispatched.
