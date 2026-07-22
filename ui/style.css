@@ -2181,6 +2181,12 @@ body.macro-learning #settings-box {
     cursor: pointer;
 }
 
+/* Backend-pinned controls (e.g. unison_voices on the small-Pi profile). */
+.setting-slider:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
 /* Bipolar sliders (pan, offset_ms): visible center-tick so 0 is a marked
  * detent. The tick is a 2px column at 50% of the track width. */
 .setting-slider[data-param$="_pan"],

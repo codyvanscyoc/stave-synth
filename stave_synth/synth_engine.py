@@ -3930,6 +3930,14 @@ class SynthEngine:
             self.osc2_octave = max(-3, min(3, int(params["osc2_octave"])))
         if "unison_voices" in params:
             new_count = max(1, min(5, int(params["unison_voices"])))
+            if LOW_RAM_MODE and new_count != 3:
+                # Small-Pi profile: the Faust fast path (osc bank + merged
+                # pad_bus chain) only engages at unison_voices == 3; any other
+                # value drops the whole render to the Python skeleton, which
+                # a Pi 4 cannot run in real time. Pin to 3.
+                logger.info("LOW_RAM_MODE: clamping unison_voices %d -> 3 "
+                            "(Faust fast path requires 3)", new_count)
+                new_count = 3
             if new_count != self.unison_voices:
                 # Multi-step transaction: count + per-voice phase lists must
                 # change atomically w.r.t. the render thread, which snapshots

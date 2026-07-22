@@ -211,7 +211,10 @@ class StaveSynth:
             faded_out = bool(self.jack and self.jack._fade_target < 0.5)
             return {"type": "state", "state": self.state,
                     "faded_out": faded_out,
-                    "soundfonts_available": sf_list}
+                    "soundfonts_available": sf_list,
+                    # Small-Pi profile pins unison_voices to 3 (the Faust
+                    # fast path); the UI greys out the slider when true.
+                    "unison_pinned": LOW_RAM_MODE}
         elif msg_type == "debug":
             # Piano diagnostics
             piano_info = {}

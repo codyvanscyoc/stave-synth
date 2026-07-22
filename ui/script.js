@@ -89,6 +89,7 @@
     let clipTimeout = null;
     let linkOscLevels = false;
     let lfoLink = false;
+    let unisonPinned = false; // LOW_RAM_MODE backend pins unison_voices to 3
     const clipIndicator = document.getElementById("clip-indicator");
     const levelDots = document.querySelectorAll(".level-dot");
     const bpmVal = document.getElementById("bpm-val");
@@ -271,6 +272,18 @@
             if (typeof msg.faded_out === "boolean") {
                 fadedOut = msg.faded_out;
                 updateFadeDisplay();
+            }
+            // Small-Pi profile: backend pins unison_voices to 3 (the Faust
+            // fast path — other counts fall back to the Python skeleton,
+            // which a Pi 4 can't render in real time). Grey out the slider.
+            if (typeof msg.unison_pinned === "boolean") {
+                unisonPinned = msg.unison_pinned;
+                var uvSlider = document.querySelector('.setting-slider[data-param="unison_voices"]');
+                if (uvSlider) {
+                    uvSlider.disabled = unisonPinned;
+                    uvSlider.title = unisonPinned
+                        ? "Pinned to 3 on this hardware (Faust fast path)" : "";
+                }
             }
             applyState(msg.state);
         } else if (msg.type === "transpose_ack") {
@@ -2812,15 +2825,13 @@
             });
 
             // MIRROR (OSC): when OSC level-mirror is on, mirror per-OSC sliders
-            // to their twin. Covers reverb sends, per-OSC ADSR knobs, pan, and
-            // independent filter cutoff. Without pan + cutoff in the mirror
-            // set, panning OSC1 with LINK on left OSC2 unchanged — silent
-            // divergence the user wouldn't see until a song called for it.
+            // to their twin. Covers reverb sends, per-OSC ADSR knobs, and
+            // independent filter cutoff. Pan is deliberately NOT mirrored:
+            // each OSC keeps its own stereo placement under LINK — only the
+            // hard-pan WIDE mode (osc_hard_pan, DSP-side) forces L/R.
             var mirrorTwin = null;
             if (param === "osc1_reverb_send") mirrorTwin = "osc2_reverb_send";
             else if (param === "osc2_reverb_send") mirrorTwin = "osc1_reverb_send";
-            else if (param === "osc1_pan") mirrorTwin = "osc2_pan";
-            else if (param === "osc2_pan") mirrorTwin = "osc1_pan";
             else if (param === "osc1_indep_cutoff") mirrorTwin = "osc2_indep_cutoff";
             else if (param === "osc2_indep_cutoff") mirrorTwin = "osc1_indep_cutoff";
             else if (param.indexOf("adsr_osc1.") === 0) mirrorTwin = "adsr_osc2." + param.slice(10);
@@ -3049,15 +3060,15 @@
 
     // Snap OSC2 per-OSC params to match OSC1 when MIRROR is enabled. Covers
     // every param the live MIRROR mirror watches: reverb sends, fx bypass,
-    // ADSR knobs, pan, indep cutoff, filter-enabled, plus the front-panel
-    // OSC1/OSC2 level faders. Waveform + trim are left alone so deliberate
-    // cross-OSC differences survive toggling MIRROR.
+    // ADSR knobs, indep cutoff, filter-enabled, plus the front-panel
+    // OSC1/OSC2 level faders. Waveform, trim, and pan are left alone so
+    // deliberate cross-OSC differences (especially stereo placement)
+    // survive toggling MIRROR — only hard-pan WIDE forces L/R.
     function snapMirrorOsc2ToOsc1() {
         // Menu sliders — dispatching 'input' re-runs the setting-slider handler,
         // which sends to backend and (because linkOscLevels is on) mirrors to twin.
         var sliderPairs = [
             ["osc1_reverb_send", "osc2_reverb_send"],
-            ["osc1_pan", "osc2_pan"],
             ["osc1_indep_cutoff", "osc2_indep_cutoff"],
             ["adsr_osc1.attack_ms", "adsr_osc2.attack_ms"],
             ["adsr_osc1.decay_ms", "adsr_osc2.decay_ms"],
@@ -3603,6 +3614,10 @@
             }
 
             if (value === undefined) return;
+
+            // Small-Pi profile: backend pins unison_voices to 3 (Faust fast
+            // path). Show the effective value, not a stale saved one.
+            if (param === "unison_voices" && unisonPinned) value = 3;
 
             // Reverse the normalization
             if (param === "osc1_pan" || param === "osc2_pan") {
