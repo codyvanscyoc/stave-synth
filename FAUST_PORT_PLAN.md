@@ -178,3 +178,9 @@ FluidSynth stays (sample playback). Flag: `STAVE_FAUST_PIANO_CHAIN`.
   implementation notes above). Flag default OFF; not yet deployed
   anywhere. Next: Pi 4 deploy → render % measurement → robot ears →
   user ear check.
+- **2026-07-22** — Phase 1 deployed to Pi 4 (commit 184b853, flag ON in its
+  faust.conf drop-in). Real-patch chords: 75.2% → 73.5% render; robot ears
+  clean (0 dropouts / 0 clicks). Modest delta is expected — Phase 1 scope
+  excluded LFO application and the fast-path send copy; the structural win
+  arrives with Phase 4's osc_bank→pad_bus merge (kills the inter-module
+  buffer shuttling). Pi 5: flag still OFF, nothing changed.
