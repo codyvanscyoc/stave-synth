@@ -396,3 +396,11 @@ divergence at epsilon-level signal; every other segment is ≤1.5e-13.
   yet deployed anywhere. Next: Pi 4 deploy (build.sh picks up the new
   .dsp; add STAVE_FAUST_PIANO_CHAIN=1 to the faust.conf drop-in) →
   render % with piano-heavy patch → robot ears → user ear check.
+- **2026-07-22 (later)** — Phase 3 deployed to Pi 4 (commit 970c6c5,
+  STAVE_FAUST_PIANO_CHAIN=1 in its drop-in). Chords with all 3 phases
+  live: **70.5%** render (was 75.2 pre-port), robot ears clean (0
+  dropouts). Pi 5: all port flags still OFF. REMAINING: Phase 4 (the
+  osc_bank→pad_bus merge — targeted fix for the full-blast CPU spikes
+  the user hears) + ring ratchet with user present + the post-port
+  tuning session (voicings/comp re-dial/limiter/gain). User ear check
+  on Phase 3 piano pending.
