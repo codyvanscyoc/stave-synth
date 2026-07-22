@@ -289,3 +289,12 @@ FluidSynth stays (sample playback). Flag: `STAVE_FAUST_PIANO_CHAIN`.
   Not yet deployed anywhere. Next: Pi 4 rebuild (`faust/build.sh` picks
   up the .dsp timestamp automatically) → render % → robot ears → user
   ear check with shimmer + CLOUD engaged.
+- **2026-07-22 (later)** — Phase 2 deployed to Pi 4 (commit 8369ea9).
+  Chords + shimmer + CLOUD: 74.9% render, 0 dropouts. Robot-ears
+  false-positive discovered: the |delta|>0.25 absolute click threshold
+  trips on legitimate hot bright content (shimmer at 0.6 mix, peak 0.36)
+  — Python-path A/B showed equivalent counts (153 vs 190, run variance),
+  |delta|>0.5 both ~1-2. TODO: make the click detector relative to local
+  signal statistics. Pi 5: still flag-off. Next: Phase 3 (piano chain) or
+  Phase 4 (osc_bank→pad_bus merge — the big CPU win); user ear check on
+  Phase 2 shimmer pending.
