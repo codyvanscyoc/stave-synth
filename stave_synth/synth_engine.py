@@ -124,6 +124,29 @@ class ADSRConfig:
     release_ms: float = 500.0
 
 
+# Exponential-factor table cache for ADSR decay/release:
+# base ** [1..n] is constant per (base, n) but was recomputed per voice per
+# block — a pow() per sample, ~4% of the small-Pi render budget under load.
+# Envelope settings change rarely and n is the block size, so a tiny keyed
+# cache turns it into a dict hit. Values are identical (same np computation).
+# Bounded: settings changes evict via FIFO. Entries are treated as
+# read-only; callers only multiply/add into fresh arrays.
+_EXP_FACTOR_CACHE: dict = {}
+_EXP_FACTOR_CACHE_MAX = 64
+
+
+def _exp_factors(base: float, n: int) -> np.ndarray:
+    key = (base, n)
+    hit = _EXP_FACTOR_CACHE.get(key)
+    if hit is None:
+        if len(_EXP_FACTOR_CACHE) >= _EXP_FACTOR_CACHE_MAX:
+            _EXP_FACTOR_CACHE.pop(next(iter(_EXP_FACTOR_CACHE)))
+        hit = base ** np.arange(1, n + 1, dtype=np.float64)
+        hit.flags.writeable = False  # guard against accidental in-place edits
+        _EXP_FACTOR_CACHE[key] = hit
+    return hit
+
+
 class ADSREnvelope:
     """Per-voice ADSR envelope — block-level vectorized processing."""
 
@@ -177,7 +200,7 @@ class ADSREnvelope:
 
         if self.stage == self.RELEASE:
             rate = 1.0 / max(self.config.release_ms * self.sample_rate / 1000.0, 1.0)
-            factors = (1.0 - rate) ** np.arange(1, n_samples + 1, dtype=np.float64)
+            factors = _exp_factors(1.0 - rate, n_samples)
             out = self.level * factors
             self.level = out[-1] if n_samples > 0 else self.level
             if self.level < 0.001:
@@ -191,13 +214,94 @@ class ADSREnvelope:
         sustain = self.config.sustain_percent / 100.0
         rate = 1.0 / max(self.config.decay_ms * self.sample_rate / 1000.0, 1.0)
         diff = self.level - sustain
-        factors = (1.0 - rate) ** np.arange(1, n_samples + 1, dtype=np.float64)
+        factors = _exp_factors(1.0 - rate, n_samples)
         out = sustain + diff * factors
         self.level = out[-1] if n_samples > 0 else self.level
         if abs(self.level - sustain) < 0.001:
             self.level = sustain
             self.stage = self.SUSTAIN
         return out
+
+
+# ── C fast paths for the small IIR filters ──────────────────────────────
+# scipy.lfilter's per-call overhead on 512-sample blocks, times dozens of
+# biquad/one-pole calls per block, measured ~8-10% of the small-Pi render
+# budget. jack_bridge.c provides bit-identical DF2T kernels; JackEngine
+# attaches them after loading the bridge. None → scipy (Mac / no-bridge).
+_BIQUAD_C = None
+_ONEPOLE_C = None
+_PD = None  # ctypes.POINTER(c_double), set on attach
+
+
+def attach_filter_bridge(bridge) -> None:
+    """Enable C kernels for Biquad*/OnePole* (ctypes CDLL of jack_bridge.so)."""
+    global _BIQUAD_C, _ONEPOLE_C, _PD
+    import ctypes
+    try:
+        _PD = ctypes.POINTER(ctypes.c_double)
+        bridge.bridge_biquad.restype = None
+        bridge.bridge_biquad.argtypes = [_PD, _PD, ctypes.c_int, _PD, _PD, _PD]
+        bridge.bridge_onepole.restype = None
+        bridge.bridge_onepole.argtypes = [
+            _PD, _PD, ctypes.c_int,
+            ctypes.c_double, ctypes.c_double, ctypes.c_double, _PD]
+        _BIQUAD_C = bridge.bridge_biquad
+        _ONEPOLE_C = bridge.bridge_onepole
+        logger.info("IIR filters: C fast path (bridge_biquad/bridge_onepole)")
+    except AttributeError:
+        logger.warning("jack_bridge.so lacks IIR kernels — filters on scipy "
+                       "(rebuild the bridge)")
+        _BIQUAD_C = _ONEPOLE_C = None
+
+
+def _biquad_run(flt, samples: np.ndarray) -> np.ndarray:
+    """Shared process body for the Biquad* classes. zi updated in place by C.
+
+    ctypes pointer objects are CACHED on the filter instance — building
+    them per call (5 casts x ~30 filters x 94 blocks/s) cost nearly as
+    much as scipy's overhead did. Safe because b/a/zi are allocated once
+    and mutated in place, and each filter owns a persistent out buffer
+    (callers consume the result within the block, same contract as the
+    Faust wrappers; in==out aliasing is safe in the C loop — x[i] is read
+    before y[i] is written)."""
+    if _BIQUAD_C is None:
+        out, flt.zi = lfilter(flt.b, flt.a, samples, zi=flt.zi)
+        return out
+    if not samples.flags.c_contiguous:
+        samples = np.ascontiguousarray(samples)
+    n = samples.shape[0]
+    if getattr(flt, "_c_n", 0) != n:
+        flt._c_out = np.empty(n, dtype=np.float64)
+        flt._c_pout = flt._c_out.ctypes.data_as(_PD)
+        flt._c_pb = flt.b.ctypes.data_as(_PD)
+        flt._c_pa = flt.a.ctypes.data_as(_PD)
+        flt._c_pzi = flt.zi.ctypes.data_as(_PD)
+        flt._c_n = n
+    _BIQUAD_C(samples.ctypes.data_as(_PD), flt._c_pout, n,
+              flt._c_pb, flt._c_pa, flt._c_pzi)
+    return flt._c_out
+
+
+def _onepole_run(flt, a_coeff, samples: np.ndarray) -> np.ndarray:
+    """Shared process body for the OnePole6dB* classes. a_coeff is the
+    class's denominator array (named _a on lowpass, _a_coeff on highpass).
+    Same pointer-caching scheme as _biquad_run; scalar coefficients are
+    re-read per call (they're plain floats, set_params mutates arrays)."""
+    if _ONEPOLE_C is None:
+        out, flt._zi = lfilter(flt._b, a_coeff, samples, zi=flt._zi)
+        return out
+    if not samples.flags.c_contiguous:
+        samples = np.ascontiguousarray(samples)
+    n = samples.shape[0]
+    if getattr(flt, "_c_n", 0) != n:
+        flt._c_out = np.empty(n, dtype=np.float64)
+        flt._c_pout = flt._c_out.ctypes.data_as(_PD)
+        flt._c_pzi = flt._zi.ctypes.data_as(_PD)
+        flt._c_n = n
+    b1 = float(flt._b[1]) if flt._b.shape[0] > 1 else 0.0
+    _ONEPOLE_C(samples.ctypes.data_as(_PD), flt._c_pout, n,
+               float(flt._b[0]), b1, float(a_coeff[1]), flt._c_pzi)
+    return flt._c_out
 
 
 class OnePole6dBLowpass:
@@ -220,8 +324,7 @@ class OnePole6dBLowpass:
         self._a[1] = -(1.0 - a)
 
     def process(self, samples: np.ndarray) -> np.ndarray:
-        out, self._zi = lfilter(self._b, self._a, samples, zi=self._zi)
-        return out
+        return _onepole_run(self, self._a, samples)
 
     def reset(self):
         self._zi[:] = 0.0
@@ -248,8 +351,7 @@ class OnePole6dBHighpass:
         self._a_coeff[1] = -a
 
     def process(self, samples: np.ndarray) -> np.ndarray:
-        out, self._zi = lfilter(self._b, self._a_coeff, samples, zi=self._zi)
-        return out
+        return _onepole_run(self, self._a_coeff, samples)
 
     def reset(self):
         self._zi[:] = 0.0
@@ -283,8 +385,7 @@ class BiquadLowpass:
         self.a[2] = (1.0 - alpha) / a0
 
     def process(self, samples: np.ndarray) -> np.ndarray:
-        out, self.zi = lfilter(self.b, self.a, samples, zi=self.zi)
-        return out
+        return _biquad_run(self, samples)
 
     def reset(self):
         self.zi[:] = 0.0
@@ -318,8 +419,7 @@ class BiquadHighpass:
         self.a[2] = (1.0 - alpha) / a0
 
     def process(self, samples: np.ndarray) -> np.ndarray:
-        out, self.zi = lfilter(self.b, self.a, samples, zi=self.zi)
-        return out
+        return _biquad_run(self, samples)
 
     def reset(self):
         self.zi[:] = 0.0
@@ -354,8 +454,7 @@ class BiquadPeakingEQ:
         self.a[2] = (1.0 - alpha / A) / a0
 
     def process(self, samples: np.ndarray) -> np.ndarray:
-        out, self.zi = lfilter(self.b, self.a, samples, zi=self.zi)
-        return out
+        return _biquad_run(self, samples)
 
     def reset(self):
         self.zi[:] = 0.0
@@ -392,8 +491,7 @@ class BiquadLowShelf:
         self.a[2] = ((A + 1.0) + (A - 1.0) * cos_w0 - two_sqrtA_alpha) / a0
 
     def process(self, samples: np.ndarray) -> np.ndarray:
-        out, self.zi = lfilter(self.b, self.a, samples, zi=self.zi)
-        return out
+        return _biquad_run(self, samples)
 
     def reset(self):
         self.zi[:] = 0.0

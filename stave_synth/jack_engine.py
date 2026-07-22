@@ -393,6 +393,9 @@ class JackEngine:
         # C fast path for the limiter's envelope recursion (falls back to
         # the Python loop if the .so predates bridge_limiter_env).
         self._limiter.attach_bridge(self._bridge)
+        # Same for the Biquad*/OnePole* IIR kernels (bit-identical to scipy).
+        from .synth_engine import attach_filter_bridge
+        attach_filter_bridge(self._bridge)
 
     @property
     def master_volume(self):

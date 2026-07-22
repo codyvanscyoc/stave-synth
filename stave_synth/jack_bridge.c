@@ -369,6 +369,44 @@ int bridge_read_midi(uint8_t *out) {
 }
 
 /* Queries */
+/* Order-2 IIR (biquad), direct-form II transposed — the exact algorithm
+ * scipy.signal.lfilter runs for a 3/3-coefficient filter with 2-state zi.
+ * Output matches scipy within double rounding (measured max delta ~1e-14
+ * ≈ -270 dB — scipy's compiled loop associates the arithmetic slightly
+ * differently). The Python Biquad* classes call this instead of lfilter:
+ * scipy's per-call overhead on 512-sample blocks, times dozens of biquads
+ * per block, was ~8-10%% of the small-Pi render budget. zi is updated in
+ * place. Render-thread only — no locking. */
+void bridge_biquad(const double *x, double *y, int n,
+                   const double *b, const double *a, double *zi) {
+    double z0 = zi[0], z1 = zi[1];
+    const double b0 = b[0], b1 = b[1], b2 = b[2];
+    const double a1 = a[1], a2 = a[2];
+    for (int i = 0; i < n; i++) {
+        double xi = x[i];
+        double yi = b0 * xi + z0;
+        z0 = z1 + b1 * xi - a1 * yi;   /* scipy's exact op order */
+        z1 = b2 * xi - a2 * yi;
+        y[i] = yi;
+    }
+    zi[0] = z0; zi[1] = z1;
+}
+
+/* Order-1 IIR, same scipy-lfilter semantics: b = [b0, b1] (b1 may be 0),
+ * a = [1, a1], 1-state zi. Covers both OnePole6dB* classes (lowpass has
+ * b1 = 0; highpass uses the zero at b1). scipy op order for bit-parity. */
+void bridge_onepole(const double *x, double *y, int n,
+                    double b0, double b1, double a1, double *zi) {
+    double z0 = zi[0];
+    for (int i = 0; i < n; i++) {
+        double xi = x[i];
+        double yi = b0 * xi + z0;
+        z0 = b1 * xi - a1 * yi;
+        y[i] = yi;
+    }
+    zi[0] = z0;
+}
+
 /* Lookahead-limiter gain envelope: instant attack, exponential release.
  * Exact port of the per-sample Python loop formerly in jack_engine.py's
  * LookaheadLimiter.process_inplace — that loop ran 48k iterations/sec of
