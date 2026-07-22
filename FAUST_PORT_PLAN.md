@@ -404,3 +404,43 @@ divergence at epsilon-level signal; every other segment is ≤1.5e-13.
   the user hears) + ring ratchet with user present + the post-port
   tuning session (voicings/comp re-dial/limiter/gain). User ear check
   on Phase 3 piano pending.
+
+### Phase 4 design brief (authored 2026-07-22, pre-implementation)
+**Goal:** collapse the Python sandwich between osc_bank and pad_bus — the
+per-block glue (f32→f64 conversions, buffer shuttling, LFO application in
+numpy) that causes the full-blast CPU spikes the user hears.
+
+**Design A — C shim (BUILD THIS FIRST):** one C function (new file
+faust/merged_shim.c or extension of jack_bridge.c — builder's choice,
+document it) that calls computeStaveOscBank → converts f32→double in C →
+computes StavePadBus, buffers handed in-memory. ONE cffi call per block.
+Each module keeps its own precision + existing parity proofs. Flag:
+STAVE_FAUST_MERGED (requires OSC_BANK + PAD_BUS flags; default OFF).
+
+**LFO ramp port (the delicate part):** Python currently applies LFO
+amp/pan BETWEEN the modules as an exact linear per-block ramp (start→end,
+anti-click by design — read the _osc_amp_pan region comments). Move the
+application into pad_bus.dsp as per-bus linear block ramps: Python
+computes each block's start/end gain per bus (osc1_l/r, osc2_l/r — study
+the actual bus structure) and pushes BOTH as zones; the .dsp interpolates
+(i/n ramp — NOT si.smoo). Must honor per-OSC LFO receive flags
+(osc*_recv_lfo*), both LFO targets (amp gate formula + pan), spread,
+poly-LFO interaction (poly amp is already inside osc_bank — verify no
+double-application), and the target=="bus"/"filter" cases which do NOT
+apply here (filter LFO already feeds the cutoff zones; bus target applies
+post-mix in jack_engine — leave both alone).
+
+**Parity:** extend tools/compare_pad_bus.py with LFO-active scenarios
+(amp + pan targets, both LFOs, spread, recv-flag combinations, depth
+ramps, poly on/off) and a merged-path run — bar unchanged (~1e-6, expect
+much better). Flag-off delta must be exactly 0.0.
+
+**Explicitly OUT of the builder's scope (needs the user present):**
+8-slot bank decision (sustain-pedal ear test) and the ring ratchet
+(16/8 → 12/6 → 10/5 → …, robot ears + user feel per step, stop at first
+starvation; latency NEVER goes up). These happen in a live session after
+the merge soaks.
+
+**Design B (mega-module, single Faust graph) is fallback ONLY** if the
+shim + LFO port leaves the spikes unresolved — it forces a single
+precision and invalidates two parity harnesses; do not attempt first.
