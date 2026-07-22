@@ -56,6 +56,67 @@ The fat middle of `synth_engine._render_locked` (~lines 2800–3300):
   dry L/R, wet-send L/R, bypass L/R (6 ch). Zones for every param above.
 - Flag: `STAVE_FAUST_PAD_BUS`.
 
+### Phase 1 implementation notes (shipped 2026-07-22, awaiting Pi 4 soak)
+Files: `faust/pad_bus.dsp` (StavePadBus, 5-in/6-out), `stave_synth/faust_pad_bus.py`,
+`tools/compare_pad_bus.py`, `config.USE_FAUST_PAD_BUS`, surgical branches in
+`synth_engine._render_locked`. Flag OFF by default — Pi 5 behavior unchanged.
+
+**Included:** OSC2 Haas delay (write-gated line, int samples, 4096 = 40 ms @
+96 k headroom) · shared/indep filter routing incl. the render_osc2 dry gate ·
+shared 12/24 dB lowpass (24 = staggered-Q cascade, stage-2 input gated by
+slope so its state mirrors Python's frozen-when-12 instance) · filter comp
+between stages · indep per-OSC lowpass + own comps · shared highpass
+(input-gated) · per-OSC reverb-send weighted sum through the
+`_rev_send_filter_*` mirror (input gated by `send_filter_active` so state
+advances only on slow-path blocks, like Python).
+
+**Excluded (stays Python):** LFO amp/pan application (mid-region, Phase 4) ·
+FX-bypass dry carve (post-LFO, data-dependent magnitude ratio — bypass_l/r
+outputs reserved, always 0) · reverb-send FAST path (engine still copies the
+post-LFO dry bus when both sends == 1) · shimmer chain (Phase 2; inert
+post-filter `shimmer_send_gain` hook is wired) · everything upstream
+(voices/ADSR/blend) and downstream (delay/reverb/sympathetic).
+
+**Plan corrections found while porting (follow-the-code):** per-OSC pan law
++ width are NOT in this region — pan is applied per-unison inside osc
+generation (osc_bank.dsp owns it on the Faust path); only the Haas half of
+WIDE lives here. And osc*_fx_bypass never reroutes the wet send to a bypass
+bus — it zeroes that OSC's send weight and the dry carve happens post-LFO.
+The I/O sketch's "piano stereo (for sends)" was also unnecessary: piano
+reaches the reverb via external_reverb_send after this region.
+
+**Precision:** built with `-double` + `-DFAUSTFLOAT=double` (only this
+module) — pole-near-unity biquads can't hold 1e-6 in float32, and double
+zones/IO let the wrapper pass the engine's float64 blocks zero-copy (no
+f32 scratch). Biquads implemented as DF2-transposed, the exact scipy
+lfilter recurrence, with BiquadLowpass/Highpass's clamps copied.
+
+**Zone ownership:** Python pushes per block: `_filter_cutoff_last_set` +
+`_filter_res_last_set` (so the >0.1 Hz set_params skip is mirrored, and
+LFO/drift/wobble effective-cutoff math stays in Python), f_pos + per-OSC
+f_pos zones, smoothed indep + highpass cutoffs, bypass-zeroed sends,
+haas_on/samples, render_osc2. NO si.smoo anywhere in the module.
+
+**Parity (tools/compare_pad_bus.py):** two full engines, identical
+notes/params/seed, both on the Faust osc bank; taps at ping-pong entry
+(dry), reverb entry (send), and render output. 1300 blocks covering sweep
+down/up, 12→24, resonance, Haas via pans + hard-pan, slow-path sends,
+bursts, highpass, both indep filters, chord change, osc2-blend-to-zero.
+Result: peak |Δ| 2.9e-13 (dry), 1.7e-13 (send), 2.1e-13 (final) — PASS
+at the 1e-6 bar with ~6.5 orders of margin.
+
+**Known transition-only divergences (documented, sub-audible, steady-state
+exact):** re-engaging a branch whose state Python froze while Faust's
+decayed (24→12→24, HP off→on→off→on, Haas re-engage inside the window
+where Python replays stale ring content vs our zeros, fast→slow send
+transitions warm vs frozen send-filter state). First engagement of every
+branch is exact by construction (input gating).
+
+**Faust gotchas earned this port (added below):** `-(expr)` is partial
+application of subtraction — a phantom-input block, NOT unary negation;
+and with-local closures inside `~` get lambda-lifted (keep the recursion
+tick top-level with coefficients as explicit args).
+
 ### Phase 2 — shimmer chain
 Shimmer HP split, CLOUD multi-tap pre-verb delay, shimmer delay lines,
 +12/+24 handling glue. Flag: `STAVE_FAUST_SHIMMER`.
@@ -90,6 +151,13 @@ FluidSynth stays (sample playback). Flag: `STAVE_FAUST_PIANO_CHAIN`.
   notes = polluted measurements)
 - Snapshot/restore `current_state.json` around any WS-driven test
   (autosave pollutes within 30 s)
+- `-(expr)` in Faust is PARTIAL APPLICATION of subtraction (`_ - expr`,
+  a 1-input block), not unary negation — it silently adds a phantom input
+  to whatever consumes it (biquad b1 coefficient bug, Phase 1). Write
+  `0.0 - expr`.
+- A `with`-local function that closes over outer args gets lambda-lifted
+  inside `~` — define the recursion tick at top level and pass the
+  captured values as explicit arguments.
 
 ## Pi 5 adoption checklist (per phase, AFTER Pi 4 soak)
 1. `git pull` on the Pi 5 (build.sh now carries `-mcpu=native` — fine)
@@ -105,3 +173,8 @@ FluidSynth stays (sample playback). Flag: `STAVE_FAUST_PIANO_CHAIN`.
 - **2026-07-21** — Plan written. Profile basis: Pi 4 real-patch chords
   75.2% render (osc_bank 22%, piano 12%, reverb 6%, skeleton glue ~45%).
   Phase 1 scoped. Max-everything torture: 1 dropout/36 s remaining.
+- **2026-07-22** — Phase 1 implemented + parity-proven offline (peak |Δ|
+  2.9e-13 across dry/send/final over a 1300-block torture scenario — see
+  implementation notes above). Flag default OFF; not yet deployed
+  anywhere. Next: Pi 4 deploy → render % measurement → robot ears →
+  user ear check.

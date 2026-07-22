@@ -75,6 +75,13 @@ USE_FAUST_SYMPATHETIC = os.environ.get("STAVE_FAUST_SYMPATHETIC", "0") not in ("
 # B3 organ engine rendered in Faust (tonewheel bank + Leslie).
 USE_FAUST_ORGAN = os.environ.get("STAVE_FAUST_ORGAN", "0") not in ("0", "", "false", "False")
 
+# Phase 1 render-skeleton port (FAUST_PORT_PLAN.md): Haas + shared/indep
+# filter paths + filter comp + highpass + reverb-send filter path run as one
+# Faust module downstream of the Faust osc bank. Engages per block only when
+# the osc bank produced the 5-channel block (i.e. STAVE_FAUST_OSC_BANK=1 and
+# unison=3); otherwise the Python skeleton runs unchanged.
+USE_FAUST_PAD_BUS = os.environ.get("STAVE_FAUST_PAD_BUS", "0") not in ("0", "", "false", "False")
+
 DEFAULT_STATE = {
     "synth_pad": {
         "osc1_blend": 0.6,

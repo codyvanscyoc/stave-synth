@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from .config import (
     SAMPLE_RATE, LOW_RAM_MODE,
     USE_FAUST_REVERB, USE_FAUST_PING_PONG, USE_FAUST_OSC_BANK, USE_FAUST_SYMPATHETIC,
+    USE_FAUST_PAD_BUS,
 )
 
 from scipy.signal import lfilter
@@ -1781,6 +1782,24 @@ class SynthEngine:
             except Exception as e:
                 logger.warning("osc bank: Faust init failed (%s); falling back to numpy", e)
 
+        # Phase 1 render-skeleton port (FAUST_PORT_PLAN.md): Haas + filter
+        # routing + shared/indep lowpass + comp + highpass + reverb-send
+        # filter path as one Faust module. Engages per block only when the
+        # Faust osc bank produced the 5-channel block; the Python skeleton
+        # below stays byte-identical when the flag is off.
+        self._faust_pad_bus = None
+        if USE_FAUST_PAD_BUS:
+            try:
+                from .faust_pad_bus import FaustPadBus
+                self._faust_pad_bus = FaustPadBus(sample_rate)
+                logger.info("pad bus: Faust native path (STAVE_FAUST_PAD_BUS=1)")
+                if self._faust_osc_bank is None:
+                    logger.warning(
+                        "pad bus: engages only on Faust-osc-bank blocks — "
+                        "enable STAVE_FAUST_OSC_BANK too or it stays idle")
+            except Exception as e:
+                logger.warning("pad bus: Faust init failed (%s); falling back to numpy", e)
+
         self._sample_indices = np.arange(1, 513, dtype=np.float64)
 
         # Pre-allocated render buffers — avoids per-block allocation/GC jitter
@@ -2146,6 +2165,10 @@ class SynthEngine:
         self._rev_send_filter_r.reset()
         self._rev_send_filter2_l.reset()
         self._rev_send_filter2_r.reset()
+        # Faust pad bus carries the same filter + Haas state natively —
+        # flush it with the rest so panic leaves no ringing.
+        if self._faust_pad_bus is not None:
+            self._faust_pad_bus.clear()
         # LFO state — both phases and the per-block mod_last values.
         # Without this a hard chord right after panic re-engages the LFO
         # from whatever value it was riding when the panic landed, causing
@@ -2686,6 +2709,9 @@ class SynthEngine:
         if self._faust_osc_bank is not None and hasattr(self._faust_osc_bank, "supports_unison"):
             unison_ok = self._faust_osc_bank.supports_unison(self.unison_voices)
         use_faust = (self._faust_osc_bank is not None) and (not skip_voices) and unison_ok
+        # Faust pad bus consumes the osc bank's 5-ch block directly — it can
+        # only engage on blocks the Faust bank actually produced.
+        use_pad_bus = use_faust and (self._faust_pad_bus is not None)
         if use_faust:
             self._faust_osc_bank.set_osc_params(
                 osc1_wf=osc1_wf, osc2_wf=osc2_wf,
@@ -2888,7 +2914,13 @@ class SynthEngine:
                     self._faust_osc_bank.clear_voice(slot)
 
             osc_out = self._faust_osc_bank.process(n_samples)  # (5, n)
-            if self.osc1_filter_enabled:
+            if use_pad_bus:
+                # Faust pad bus takes the raw block — skip the Python
+                # filter-buffer routing (those buffers only feed the Python
+                # filter path). Pre-filter taps below still fill so the LFO
+                # split-path / FX-bypass magnitude ratios keep working.
+                pass
+            elif self.osc1_filter_enabled:
                 filter_buf[0] += osc_out[0]
                 filter_buf[1] += osc_out[1]
             else:
@@ -2902,8 +2934,13 @@ class SynthEngine:
             if render_shimmer:
                 shimmer_sines += osc_out[4]
 
-        # Apply Haas delay to OSC2 if pans are separated and osc2 is audible
-        if haas_active and render_osc2:
+        # Apply Haas delay to OSC2 if pans are separated and osc2 is audible.
+        # (Faust pad bus applies Haas internally — incl. for its send tap —
+        # so on that path the Python ring buffer stays untouched and
+        # _osc2_pre_* below holds the pre-Haas signal; it only feeds the
+        # LFO-split / FX-bypass magnitude ratios there, where a <=40 ms
+        # shift is immaterial.)
+        if haas_active and render_osc2 and not use_pad_bus:
             delay = self._haas_delay_samples
             bs = self._haas_buf_size
             pos = self._haas_pos
@@ -2942,7 +2979,7 @@ class SynthEngine:
         np.copyto(self._osc2_pre_r[:n_samples], osc2_accum_r)
 
         # Route OSC2 (possibly delayed) to filter buffers
-        if render_osc2:
+        if render_osc2 and not use_pad_bus:
             if self.osc2_filter_enabled:
                 filter_buf[0] += osc2_accum_l
                 filter_buf[1] += osc2_accum_r
@@ -3113,42 +3150,105 @@ class SynthEngine:
         output_l[:] = 0
         output_r = self._output_r[:n_samples]
         output_r[:] = 0
-        if self.osc1_filter_enabled or self.osc2_filter_enabled:
-            filtered_l = self.filter_l.process(filter_buf[0]) * filter_comp
-            filtered_r = self.filter_r.process(filter_buf[1]) * filter_comp
-            if self.filter_slope == 24:
-                filtered_l = self.filter2_l.process(filtered_l)
-                filtered_r = self.filter2_r.process(filtered_r)
-            output_l += filtered_l
-            output_r += filtered_r
-        # Independent (non-shared) filter paths get the same
-        # brightness-vs-loudness compensation, derived from each OSC's own
-        # cutoff. Without it, unchecking "shared filter" jumped that OSC up
-        # by the shared path's comp amount (~11 dB at the default cutoff).
-        if not self.osc1_filter_enabled:
-            f1_pos = np.log(max(self._osc1_indep_cutoff_cur, f_min) / f_min) / np.log(f_max / f_min)
-            f1_pos = max(0.0, min(1.0, f1_pos))
-            comp1 = 10.0 ** (-15.0 * f1_pos ** 1.3 / 20.0)
-            output_l += self.osc1_indep_filter_l.process(osc1_indep_buf[0]) * comp1
-            output_r += self.osc1_indep_filter_r.process(osc1_indep_buf[1]) * comp1
-        if not self.osc2_filter_enabled:
-            f2_pos = np.log(max(self._osc2_indep_cutoff_cur, f_min) / f_min) / np.log(f_max / f_min)
-            f2_pos = max(0.0, min(1.0, f2_pos))
-            comp2 = 10.0 ** (-15.0 * f2_pos ** 1.3 / 20.0)
-            output_l += self.osc2_indep_filter_l.process(osc2_indep_buf[0]) * comp2
-            output_r += self.osc2_indep_filter_r.process(osc2_indep_buf[1]) * comp2
+        # Faust pad bus send output for the reverb section below (None on
+        # the Python path or when the fast copy path applies).
+        pad_bus_send_l = None
+        pad_bus_send_r = None
+        if use_pad_bus:
+            # ── Faust pad bus: push per-block zones, run the 6-ch module ──
+            # Python keeps ALL parameter-side work (log-space cutoff
+            # smoothing, LFO/drift/wobble effective cutoff, the >0.1 Hz
+            # set_params skip via _filter_cutoff_last_set, f_pos math);
+            # Faust consumes the zone values verbatim — no double-smoothing.
+            if not self.osc1_filter_enabled:
+                f1_pos = np.log(max(self._osc1_indep_cutoff_cur, f_min) / f_min) / np.log(f_max / f_min)
+                f1_pos = max(0.0, min(1.0, f1_pos))
+            else:
+                f1_pos = 0.0  # branch input is zero — comp value is moot
+            if not self.osc2_filter_enabled:
+                f2_pos = np.log(max(self._osc2_indep_cutoff_cur, f_min) / f_min) / np.log(f_max / f_min)
+                f2_pos = max(0.0, min(1.0, f2_pos))
+            else:
+                f2_pos = 0.0
+            # Highpass smoothing — mirrors the Python block in the else
+            # branch (which is skipped on this path).
+            hp_on = False
+            if self.filter_highpass_hz > 25.0 or self._filter_highpass_cur > 25.0:
+                lc_hp = np.log(max(self._filter_highpass_cur, 20.0))
+                lt_hp = np.log(max(self.filter_highpass_hz, 20.0))
+                lc_hp += alpha_s * (lt_hp - lc_hp)
+                self._filter_highpass_cur = np.exp(lc_hp)
+                hp_on = self._filter_highpass_cur > 25.0
+            # Per-OSC sends with fx-bypass zeroing — same formula as the
+            # reverb section below; send_filter_active mirrors Python's
+            # slow-path condition so the Faust send-filter state advances
+            # only on blocks where _rev_send_filter_* would process.
+            _s1 = 0.0 if self.osc1_fx_bypass else float(self.osc1_reverb_send)
+            _s2 = 0.0 if self.osc2_fx_bypass else float(self.osc2_reverb_send)
+            _send_slow = not (abs(_s1 - 1.0) < 1e-6 and abs(_s2 - 1.0) < 1e-6)
+            self._faust_pad_bus.set_block_params(
+                cutoff_hz=self._filter_cutoff_last_set,
+                resonance=self._filter_res_last_set,
+                slope24=(self.filter_slope == 24),
+                f_pos=f_pos,
+                osc1_filter_enabled=self.osc1_filter_enabled,
+                osc2_filter_enabled=self.osc2_filter_enabled,
+                osc1_indep_cutoff=self._osc1_indep_cutoff_cur,
+                osc2_indep_cutoff=self._osc2_indep_cutoff_cur,
+                osc1_f_pos=f1_pos, osc2_f_pos=f2_pos,
+                hp_on=hp_on, hp_cutoff=self._filter_highpass_cur,
+                osc1_send=_s1, osc2_send=_s2,
+                send_filter_active=_send_slow,
+                haas_on=(haas_active and render_osc2),
+                haas_samps=self._haas_delay_samples,
+                osc2_audible=render_osc2,
+            )
+            pad_out = self._faust_pad_bus.process(osc_out)  # (6, n)
+            np.copyto(output_l, pad_out[0])
+            np.copyto(output_r, pad_out[1])
+            if _send_slow:
+                pad_bus_send_l = pad_out[2]
+                pad_bus_send_r = pad_out[3]
+            # pad_out[4]/[5] (fx-bypass bus) are reserved — always zero in
+            # Phase 1; the bypass carve stays in Python below (post-LFO,
+            # data-dependent magnitude ratio).
+        else:
+            if self.osc1_filter_enabled or self.osc2_filter_enabled:
+                filtered_l = self.filter_l.process(filter_buf[0]) * filter_comp
+                filtered_r = self.filter_r.process(filter_buf[1]) * filter_comp
+                if self.filter_slope == 24:
+                    filtered_l = self.filter2_l.process(filtered_l)
+                    filtered_r = self.filter2_r.process(filtered_r)
+                output_l += filtered_l
+                output_r += filtered_r
+            # Independent (non-shared) filter paths get the same
+            # brightness-vs-loudness compensation, derived from each OSC's own
+            # cutoff. Without it, unchecking "shared filter" jumped that OSC up
+            # by the shared path's comp amount (~11 dB at the default cutoff).
+            if not self.osc1_filter_enabled:
+                f1_pos = np.log(max(self._osc1_indep_cutoff_cur, f_min) / f_min) / np.log(f_max / f_min)
+                f1_pos = max(0.0, min(1.0, f1_pos))
+                comp1 = 10.0 ** (-15.0 * f1_pos ** 1.3 / 20.0)
+                output_l += self.osc1_indep_filter_l.process(osc1_indep_buf[0]) * comp1
+                output_r += self.osc1_indep_filter_r.process(osc1_indep_buf[1]) * comp1
+            if not self.osc2_filter_enabled:
+                f2_pos = np.log(max(self._osc2_indep_cutoff_cur, f_min) / f_min) / np.log(f_max / f_min)
+                f2_pos = max(0.0, min(1.0, f2_pos))
+                comp2 = 10.0 ** (-15.0 * f2_pos ** 1.3 / 20.0)
+                output_l += self.osc2_indep_filter_l.process(osc2_indep_buf[0]) * comp2
+                output_r += self.osc2_indep_filter_r.process(osc2_indep_buf[1]) * comp2
 
-        # Highpass (low cut) — smooth in log space like the lowpass
-        if self.filter_highpass_hz > 25.0 or self._filter_highpass_cur > 25.0:
-            lc_hp = np.log(max(self._filter_highpass_cur, 20.0))
-            lt_hp = np.log(max(self.filter_highpass_hz, 20.0))
-            lc_hp += alpha_s * (lt_hp - lc_hp)
-            self._filter_highpass_cur = np.exp(lc_hp)
-            if self._filter_highpass_cur > 25.0:
-                self.filter_hp_l.set_params(self._filter_highpass_cur, 0.707)
-                self.filter_hp_r.set_params(self._filter_highpass_cur, 0.707)
-                output_l = self.filter_hp_l.process(output_l)
-                output_r = self.filter_hp_r.process(output_r)
+            # Highpass (low cut) — smooth in log space like the lowpass
+            if self.filter_highpass_hz > 25.0 or self._filter_highpass_cur > 25.0:
+                lc_hp = np.log(max(self._filter_highpass_cur, 20.0))
+                lt_hp = np.log(max(self.filter_highpass_hz, 20.0))
+                lc_hp += alpha_s * (lt_hp - lc_hp)
+                self._filter_highpass_cur = np.exp(lc_hp)
+                if self._filter_highpass_cur > 25.0:
+                    self.filter_hp_l.set_params(self._filter_highpass_cur, 0.707)
+                    self.filter_hp_r.set_params(self._filter_highpass_cur, 0.707)
+                    output_l = self.filter_hp_l.process(output_l)
+                    output_r = self.filter_hp_r.process(output_r)
 
         # ─── LFO amp/pan modulation on pad bus ───
         # Each LFO's contribution ramps linearly from its own previous block's
@@ -3390,6 +3490,11 @@ class SynthEngine:
         if abs(s1 - 1.0) < 1e-6 and abs(s2 - 1.0) < 1e-6:
             np.copyto(reverb_in_l, output_l)
             np.copyto(reverb_in_r, output_r)
+        elif pad_bus_send_l is not None:
+            # Faust pad bus already produced the weighted + send-filtered
+            # slow-path signal (incl. filter_comp and the 24 dB stage).
+            np.copyto(reverb_in_l, pad_bus_send_l)
+            np.copyto(reverb_in_r, pad_bus_send_r)
         else:
             osc1_pre_l = self._osc1_pre_l[:n_samples]
             osc1_pre_r = self._osc1_pre_r[:n_samples]

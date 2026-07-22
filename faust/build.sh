@@ -31,6 +31,8 @@ build_module() {
     local name=$1       # dsp file stem (no extension)
     local cname=$2      # C class name passed to faust -cn
     local libname=$3    # output library stem (libNAME.so)
+    local faust_extra="${4:-}"   # optional extra faust flags (e.g. -double)
+    local cc_extra="${5:-}"      # optional extra gcc flags (e.g. -DFAUSTFLOAT=double)
 
     local out="lib${libname}.so"
     if [ "$FORCE" -eq 0 ] && [ -f "$out" ] && [ "$out" -nt "${name}.dsp" ] && [ "$out" -nt "faust_cprelude.h" ]; then
@@ -41,8 +43,8 @@ build_module() {
     # NOTE: tried `faust -vec` for SIMD vectorization but gcc's optimizer
     # OOMed the Pi 5 trying to compile the unrolled 16-voice osc_bank code
     # (5+ min, 1.3GB RAM, didn't finish). Sticking with scalar.
-    faust -lang c -cn "$cname" -o "${name}.c" "${name}.dsp"
-    gcc $CFLAGS -o "$out" "${name}.c"
+    faust -lang c $faust_extra -cn "$cname" -o "${name}.c" "${name}.dsp"
+    gcc $CFLAGS $cc_extra -o "$out" "${name}.c"
     ls -la "$out"
 }
 
@@ -97,6 +99,11 @@ build_module organ        StaveOrgan         stave_organ
 build_module plate        StavePlate         stave_plate
 build_module drone        StaveDrone         stave_drone
 build_module piano_room   StavePianoRoom     stave_piano_room
+# pad_bus builds in DOUBLE precision (-double + FAUSTFLOAT=double): its
+# pole-near-unity biquads at low cutoffs can't hold the ~1e-6 parity bar
+# in float32, and double zones/IO let faust_pad_bus.py pass the engine's
+# float64 blocks zero-copy. No per-voice state → no lite variant.
+build_module pad_bus      StavePadBus        stave_pad_bus  "-double"  "-DFAUSTFLOAT=double"
 
 # 12-slot lite variants for low-RAM boxes (config.LOW_RAM_MODE)
 build_lite_module osc_bank     StaveOscBank      stave_osc_bank     'NVOICES = 24;' 'NVOICES = 12;'
