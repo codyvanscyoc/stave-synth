@@ -104,6 +104,12 @@ build_module piano_room   StavePianoRoom     stave_piano_room
 # in float32, and double zones/IO let faust_pad_bus.py pass the engine's
 # float64 blocks zero-copy. No per-voice state → no lite variant.
 build_module pad_bus      StavePadBus        stave_pad_bus  "-double"  "-DFAUSTFLOAT=double"
+# piano_chain (Phase 3) also builds in DOUBLE precision — same rationale:
+# the piano EQ's low-frequency bells (150-300 Hz) and 40 Hz low cut are
+# pole-near-unity biquads that can't hold ~1e-6 parity in float32, and
+# double IO lets faust_piano_chain.py pass float64 blocks zero-copy.
+# No per-voice state → no lite variant.
+build_module piano_chain  StavePianoChain    stave_piano_chain  "-double"  "-DFAUSTFLOAT=double"
 
 # 12-slot lite variants for low-RAM boxes (config.LOW_RAM_MODE)
 build_lite_module osc_bank     StaveOscBank      stave_osc_bank     'NVOICES = 24;' 'NVOICES = 12;'

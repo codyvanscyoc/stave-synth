@@ -82,6 +82,14 @@ USE_FAUST_ORGAN = os.environ.get("STAVE_FAUST_ORGAN", "0") not in ("0", "", "fal
 # unison=3); otherwise the Python skeleton runs unchanged.
 USE_FAUST_PAD_BUS = os.environ.get("STAVE_FAUST_PAD_BUS", "0") not in ("0", "", "false", "False")
 
+# Phase 3 render-skeleton port: the piano post-processing chain (volume
+# gain + 24dB low/high-cut cascades + 4-band EQ + comp-sidechain mono tap)
+# runs as one Faust module inside FluidSynthPlayer.render_block. The LA-2A
+# compressor's block-rate envelope + gain ramp stays in Python, fed by the
+# module's mono output; velocity-brightness, tremolo and the piano-room
+# mix stay Python too (post-comp). FluidSynth sample generation unchanged.
+USE_FAUST_PIANO_CHAIN = os.environ.get("STAVE_FAUST_PIANO_CHAIN", "0") not in ("0", "", "false", "False")
+
 DEFAULT_STATE = {
     "synth_pad": {
         "osc1_blend": 0.6,

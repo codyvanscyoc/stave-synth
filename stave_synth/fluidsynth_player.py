@@ -14,6 +14,7 @@ import numpy as np
 from pathlib import Path
 
 from .config import SOUNDFONT_DIR, SAMPLE_RATE, LOW_RAM_MODE
+from .config import USE_FAUST_PIANO_CHAIN
 
 logger = logging.getLogger(__name__)
 
@@ -266,6 +267,24 @@ class FluidSynthPlayer:
         self._vel_bright_filter_l = BiquadLowpass(18000.0, 0.707, sample_rate)
         self._vel_bright_filter_r = BiquadLowpass(18000.0, 0.707, sample_rate)
         self._vel_bright_last_cutoff = 18000.0
+
+        # ── Faust piano chain (Phase 3, FAUST_PORT_PLAN.md) ──
+        # Volume gain + low/high-cut cascades + 4-band EQ run as one Faust
+        # module; the LA-2A comp (block-rate envelope) + velocity
+        # brightness + tremolo + piano-room mix stay in Python. Flag OFF
+        # by default — the Python DSP path below is byte-identical.
+        # Module-global read (not config.) so the parity harness can flip
+        # it per instance, same pattern as synth_engine's flags.
+        self._faust_chain = None
+        if USE_FAUST_PIANO_CHAIN:
+            try:
+                from .faust_piano_chain import FaustPianoChain
+                self._faust_chain = FaustPianoChain(sample_rate)
+                logger.info("Faust piano chain enabled")
+            except Exception as e:
+                logger.warning("Faust piano chain unavailable, Python DSP "
+                               "path stays: %s", e)
+                self._faust_chain = None
 
     def start(self, soundfont_name: str = "Salamander"):
         """Initialize FluidSynth and PRE-LOAD every available soundfont so
@@ -598,66 +617,76 @@ class FluidSynthPlayer:
 
         self._render_count += 1
 
-        # Convert interleaved int16 stereo to separate L/R float64
-        inv_scale = 1.0 / 32768.0
-        left = raw[0::2].astype(np.float64) * inv_scale
-        right = raw[1::2].astype(np.float64) * inv_scale
-
-        # Smooth volume changes (~10ms time constant at 48kHz/128 block)
+        # Smooth volume changes (~10ms time constant at 48kHz/128 block).
+        # Scalar state shared by both DSP paths below (Faust chain / Python
+        # chain) — hoisted above the branch, order vs the int16 conversion
+        # is immaterial (independent scalar math).
         smooth_alpha = 1.0 - np.exp(-n_samples / (0.01 * self.sample_rate))
         self._volume_cur += smooth_alpha * (self.volume - self._volume_cur)
 
-        # Apply volume (dB curve for musical fader response)
-        if self._volume_cur <= 0.001:
-            left = np.zeros_like(left)
-            right = np.zeros_like(right)
+        if self._faust_chain is not None:
+            # ── Phase 3 Faust path (STAVE_FAUST_PIANO_CHAIN) ──
+            # Volume gain + low/high-cut + EQ + sidechain mono run in
+            # faust/piano_chain.dsp; the LA-2A gain ramp stays here.
+            left, right = self._render_chain_faust(raw, n_samples)
         else:
-            gain = 10.0 ** ((self._volume_cur - 1.0) * 40.0 / 20.0)  # -40dB to 0dB
-            left = left * gain
-            right = right * gain
+            # ── Python DSP path (default — byte-identical to pre-Phase-3) ──
+            # Convert interleaved int16 stereo to separate L/R float64
+            inv_scale = 1.0 / 32768.0
+            left = raw[0::2].astype(np.float64) * inv_scale
+            right = raw[1::2].astype(np.float64) * inv_scale
 
-        # Apply low-cut filter — 24dB/oct (cascaded biquads). Always running
-        # (no bypass at boundary) so filter state stays fresh — bypass-then-
-        # rejoin caused stale-state clicks when user swept the fader back
-        # below the threshold.
-        for f in self.lowcut_filter_l:
-            left = f.process(left)
-        for f in self.lowcut_filter_r:
-            right = f.process(right)
+            # Apply volume (dB curve for musical fader response)
+            if self._volume_cur <= 0.001:
+                left = np.zeros_like(left)
+                right = np.zeros_like(right)
+            else:
+                gain = 10.0 ** ((self._volume_cur - 1.0) * 40.0 / 20.0)  # -40dB to 0dB
+                left = left * gain
+                right = right * gain
 
-        # Apply high-cut filter — always running (same reasoning as low-cut).
-        # At filter_highcut_hz = 20000 the 24dB response is imperceptible
-        # inside the audible band, but keeping state continuous avoids the
-        # click when sweeping the tone fader.
-        for f in self.highcut_filter_l:
-            left = f.process(left)
-        for f in self.highcut_filter_r:
-            right = f.process(right)
+            # Apply low-cut filter — 24dB/oct (cascaded biquads). Always running
+            # (no bypass at boundary) so filter state stays fresh — bypass-then-
+            # rejoin caused stale-state clicks when user swept the fader back
+            # below the threshold.
+            for f in self.lowcut_filter_l:
+                left = f.process(left)
+            for f in self.lowcut_filter_r:
+                right = f.process(right)
 
-        # 4-band parametric EQ — applied pre-compressor so the comp reacts
-        # to the tone-shaped signal (post-EQ hotness hits the threshold the
-        # way the user hears it). Each band skipped when disabled so you
-        # only pay biquad cost for what's actually engaged.
-        for i, band in enumerate(self.eq_bands):
-            if band["enabled"]:
-                left = self.eq_filters_l[i].process(left)
-                right = self.eq_filters_r[i].process(right)
+            # Apply high-cut filter — always running (same reasoning as low-cut).
+            # At filter_highcut_hz = 20000 the 24dB response is imperceptible
+            # inside the audible band, but keeping state continuous avoids the
+            # click when sweeping the tone fader.
+            for f in self.highcut_filter_l:
+                left = f.process(left)
+            for f in self.highcut_filter_r:
+                right = f.process(right)
 
-        # Compressor: mono sidechain, stereo gain, parallel wet/dry blend.
-        # The fader1-ALT=COMP knob on the front screen maps directly to
-        # `comp_wet` (0 = bypass, 1 = fully wet) so the user can dial in
-        # "amount of compression" without touching threshold/ratio.
-        if self.comp_enabled and self.comp_wet > 0.001:
-            mono = (left + right) * 0.5
-            compressed = self._compress(mono)
-            safe_mono = np.where(np.abs(mono) > 1e-10, mono, 1.0)
-            wet_gain = compressed / safe_mono
-            # Parallel: out = dry * (1-wet) + compressed * wet, expressed as
-            # an effective scalar-per-sample `blend` applied to each channel.
-            w = self.comp_wet
-            blend = (1.0 - w) + wet_gain * w
-            left = left * blend
-            right = right * blend
+            # 4-band parametric EQ — applied pre-compressor so the comp reacts
+            # to the tone-shaped signal (post-EQ hotness hits the threshold the
+            # way the user hears it). Each band skipped when disabled so you
+            # only pay biquad cost for what's actually engaged.
+            for i, band in enumerate(self.eq_bands):
+                if band["enabled"]:
+                    left = self.eq_filters_l[i].process(left)
+                    right = self.eq_filters_r[i].process(right)
+
+            # Compressor: mono sidechain, stereo gain, parallel wet/dry blend.
+            # The fader1-ALT=COMP knob on the front screen maps directly to
+            # `comp_wet` (0 = bypass, 1 = fully wet) so the user can dial in
+            # "amount of compression" without touching threshold/ratio.
+            if self.comp_enabled and self.comp_wet > 0.001:
+                mono = (left + right) * 0.5
+                compressed = self._compress(mono)
+                safe_mono = np.where(np.abs(mono) > 1e-10, mono, 1.0)
+                wet_gain = compressed / safe_mono
+                # Parallel: out = dry * (1-wet) + compressed * wet, expressed as
+                # an effective scalar-per-sample `blend` applied to each channel.
+                w = self.comp_wet
+                blend = (1.0 - w) + wet_gain * w
+                left = left * blend
+                right = right * blend
 
         # ── Velocity-aware brightness ──
         # Dynamic lowpass whose cutoff tracks a smoothed recent-velocity
@@ -719,6 +748,57 @@ class FluidSynthPlayer:
 
         return np.array([left, right])
 
+    def _render_chain_faust(self, raw, n_samples: int):
+        """Phase 3 flag path (see faust/piano_chain.dsp + FAUST_PORT_PLAN.md):
+        the int16 conversion lands directly in the module's persistent input
+        rows, volume gain + 24dB low/high-cut + 4-band EQ run natively, and
+        the LA-2A comp consumes the module's post-EQ mono output.
+
+        The comp gain ramp is applied DIRECTLY here. The legacy path
+        recovers the very same ramp as compressed/safe_mono — a per-sample
+        divide whose epsilon guard (|mono| <= 1e-10 → that sample's wet
+        path silently drops to dry) is a hazard, not a feature: (mono·g)/
+        mono == g to ~1 ulp wherever the guard doesn't trip, and at
+        anticorrelated zero crossings (L ≈ −R, channels loud) the direct
+        ramp is strictly more correct. Equivalence measured on real piano
+        material in tools/compare_piano_chain.py."""
+        chain = self._faust_chain
+        buf = chain.in_buffer(n_samples)
+        inv_scale = 1.0 / 32768.0
+        # int16 → float64 straight into the persistent rows. Same values as
+        # the Python path's astype(float64) * inv_scale: the int16→double
+        # widening is exact and 2^-15 is a power of two.
+        np.multiply(raw[0::2], inv_scale, out=buf[0])
+        np.multiply(raw[1::2], inv_scale, out=buf[1])
+
+        # Volume gain zone — the exact dB-curve branch from the Python
+        # path. gain == 0.0 mirrors np.zeros_like: the module's filters
+        # keep processing zeros, so their state decays identically.
+        if self._volume_cur <= 0.001:
+            gain = 0.0
+        else:
+            gain = 10.0 ** ((self._volume_cur - 1.0) * 40.0 / 20.0)  # -40dB to 0dB
+
+        chain.set_block_params(gain=gain,
+                               lowcut_hz=self.lowcut_hz,
+                               highcut_hz=self.highcut_hz,
+                               eq_bands=self.eq_bands)
+        out = chain.process_in_place(n_samples)
+        left = out[0]
+        right = out[1]
+
+        # LA-2A comp — same gate as the Python path; sidechain mono is the
+        # module's output 2 (post-EQ (L+R)/2). Block-rate envelope + ramp
+        # stay in Python by design (the RMS applies to the block it was
+        # measured from — Faust can't see the block boundary).
+        if self.comp_enabled and self.comp_wet > 0.001:
+            gain_ramp = self._comp_gain_ramp(out[2])
+            w = self.comp_wet
+            blend = (1.0 - w) + gain_ramp * w
+            left = left * blend
+            right = right * blend
+        return left, right
+
     def _compress(self, samples: np.ndarray) -> np.ndarray:
         """LA-2A-flavoured feed-forward compressor. Soft-knee + per-sample
         gain interpolation. The interpolation across the block is critical
@@ -726,6 +806,14 @@ class FluidSynthPlayer:
         the soft knee is what gives the musical optical character —
         compression engages smoothly ~knee/2 dB below threshold instead of
         hard-switching.
+
+        Envelope math + gain ramp live in _comp_gain_ramp (shared with the
+        Faust-chain path, which applies the ramp to L/R directly)."""
+        return samples * self._comp_gain_ramp(samples)
+
+    def _comp_gain_ramp(self, samples: np.ndarray) -> np.ndarray:
+        """Compute the LA-2A per-sample gain ramp for one block from the
+        (post-EQ mono) sidechain. Updates envelope + prev-gain state.
 
         DRIVE is pre-comp input gain (matches LA-2A Gain knob workflow):
         push signal into the fixed-ish threshold without touching makeup.
@@ -779,7 +867,7 @@ class FluidSynthPlayer:
         n = len(samples)
         gain_ramp = np.linspace(prev_gain, gain, n, dtype=samples.dtype)
         self._prev_comp_gain = gain
-        return samples * gain_ramp
+        return gain_ramp
 
     def set_eq_band(self, index: int, *, freq_hz: float = None, gain_db: float = None,
                     q: float = None, enabled: bool = None):

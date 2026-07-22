@@ -201,10 +201,90 @@ inputs bit-identical). Same trap again with fast→slow send re-entry.
 Phase-1 known divergences constrain scenario ORDER for all later phases:
 engage Haas/slow-sends once, or keep re-engages out of measured segments.
 
-### Phase 3 — piano chain
+### Phase 3 — piano chain — DONE (2026-07-22, awaiting Pi 4 soak)
 LA-2A comp (careful: its soft-knee is the CORRECT reference formula),
 4-band piano EQ + voicing curves, velocity-brightness filter, tremolo.
 FluidSynth stays (sample playback). Flag: `STAVE_FAUST_PIANO_CHAIN`.
+
+### Phase 3 implementation notes (shipped 2026-07-22, awaiting Pi 4 soak)
+Files: `faust/piano_chain.dsp` (StavePianoChain, 2-in/3-out),
+`stave_synth/faust_piano_chain.py`, `tools/compare_piano_chain.py`,
+`config.USE_FAUST_PIANO_CHAIN`, surgical branch in
+`fluidsynth_player.render_block` (+ `_compress` split into a shared
+`_comp_gain_ramp`). Flag OFF by default — Pi 5 behavior unchanged
+(verified: flag-off render EXACTLY 0.0 vs a pre-change baseline over a
+1200-block piano-heavy scenario with the identical stored int16 source).
+
+**Included:** volume gain (Python owns the ~10 ms one-pole + dB curve +
+≤0.001 hard-zero and pushes ONE block-constant zone; gain 0.0 mirrors
+np.zeros_like — filters keep processing zeros, state decays identically) ·
+24 dB low-cut (2× cascaded RBJ highpass, always running) · 24 dB high-cut
+(2× cascaded RBJ lowpass, always running) · 4-band parametric EQ
+(BiquadPeakingEQ mirror — NB its q clamp is 20, not the lowpass's 10;
+per-band `enabled` uses the Phase-2 FROZEN-state biquad so a disabled
+band's zi holds exactly like Python skipping .process(), and re-enable is
+sample-exact even after retuning while frozen) · comp-sidechain mono tap
+(output 3 = post-EQ (L+R)·0.5) · int16 conversion lands directly in the
+wrapper's persistent input rows (np.multiply(int16_view, 2⁻¹⁵, out=row)
+is bit-identical to astype-then-multiply).
+
+**Excluded (stays Python — follow-the-code):** the LA-2A compressor
+ENTIRELY — its envelope is block-rate (one RMS per block, attack/release
+coefficients derived from block length) and the resulting gain ramp
+applies to the SAME block the RMS was measured from; Faust can't see the
+block boundary, and a sample-rate envelope would change the sonics. The
+flag path feeds `_comp_gain_ramp` from the module's mono output (two
+vector multiplies left in Python). · velocity brightness — per-note-event
+parameterized (tracker updates in note_on), per-block work is two scalar
+ops + one biquad pair, and it sits POST-comp (porting it would need a
+second Faust island). · tremolo — post-comp, preset-gated (Suitcase
+only), vectorized numpy sin. · piano-room reverb — already its own Faust
+island. · silence skip / disabled early-outs — upstream of the branch;
+skipped blocks never call compute(), freezing module state exactly like
+Python's untouched filters.
+
+**LA-2A divide-hazard resolution (CR#9 dumb-list item 6):** the legacy
+wet path recovers the gain ramp as `compressed / safe_mono` — a
+per-sample divide with an epsilon guard (|mono| ≤ 1e-10 → that sample's
+wet path silently drops to dry, even when L ≈ −R with loud channels).
+`_compress` was split so the ramp is returned directly; the flag path
+applies `blend = (1−w) + ramp·w` with no divide. Equivalence PROVEN on
+real piano material (harness records every Python-player (mono, ramp)
+pair): max |divide-recovered − direct| = 4.4e-16 (~1 ulp) over 327,680
+guarded sidechain samples; 10,679 guard trips occurred — ALL inside the
+volume-zero segment where the signal itself is ≤ ~1e-9, and they are the
+sole source of the full-run parity peak (legacy drops the wet path on
+those samples; ramp-direct keeps it — strictly more correct). Python
+path untouched: `_compress` still returns `samples * ramp` byte-identically.
+
+**Precision:** same `-double + -DFAUSTFLOAT=double` build as pad_bus —
+the 150–300 Hz EQ bells and 40 Hz low cut are pole-near-unity biquads
+that can't hold 1e-6 in float32; double IO gives zero-copy float64
+blocks. Same DF2-transposed recurrence as pad_bus (scipy lfilter /
+bridge_biquad exact). Coefficients recompute per block from zones —
+Python's setters keep attrs and filter coefficients in lockstep, so the
+recompute always lands the same values (retuning a DISABLED band works
+the same way: next enabled block sees the new coefficients on both paths).
+
+**Panic:** Python's all_notes_off resets only comp state (+piano-room
+clear) and NEVER resets the chain biquads — mirrored exactly: nothing
+calls `FaustPianoChain.clear()` in normal operation. clear() itself does
+a FULL init (the Phase-2 rwtable gotcha pattern; no init-time zones to
+re-push here) and is smoke-tested: post-clear silence is exact 0.0,
+signal processes after.
+
+**Parity (tools/compare_piano_chain.py):** input identity by
+construction — ONE real FluidSynth instance (FluidR3_GM grand, fixed
+schedule, reverb/chorus off) pre-renders the int16 stream once; both
+players replay the SAME array through a dummy `fs` stub (chosen over two
+live FluidSynth engines: no 2× soundfont RAM, no reliance on assumed
+cross-instance determinism). 1400 blocks covering comp on/wet-sweep/
+off/on + drive, voicing switches, EQ band retune + freeze + retune-while-
+frozen + re-engage, volume sweeps incl. hard-zero + recovery, velbright
+sweeps, tremolo, piano-room off/on. Result: peak |Δ| 1.42e-9 (L) /
+1.44e-9 (R) — PASS at 1e-6 with ~2.8 orders of margin. The peak lives
+entirely in the volume-zero segment and is the documented epsilon-guard
+divergence at epsilon-level signal; every other segment is ≤1.5e-13.
 
 ### Phase 4 — consolidation
 - Merge adjacent modules where Python shuttling between them is the cost
@@ -304,3 +384,15 @@ FluidSynth stays (sample playback). Flag: `STAVE_FAUST_PIANO_CHAIN`.
   clips at hot settings (parked for the post-port tuning session:
   limiter/gain/comp re-dial). User verdict: "full Faust is absolutely
   the best call for CPU space."
+- **2026-07-22** — Phase 3 (piano chain) implemented + parity-proven
+  offline: peak |Δ| 1.42e-9 L / 1.44e-9 R over a 1400-block real-piano
+  scenario (pre-rendered FluidSynth feed, identical to both players);
+  outside the volume-zero segment every |Δ| ≤ 1.5e-13, and the peak is
+  the documented divide-guard divergence at epsilon-level signal. LA-2A
+  stays Python (block-rate envelope), fed by the module's mono tap; its
+  wet-path divide replaced with direct ramp application (proven ≤4.4e-16
+  from the divide form on 327k real sidechain samples). Flag-off render
+  verified EXACTLY 0.0 vs a pre-change baseline. Flag default OFF; not
+  yet deployed anywhere. Next: Pi 4 deploy (build.sh picks up the new
+  .dsp; add STAVE_FAUST_PIANO_CHAIN=1 to the faust.conf drop-in) →
+  render % with piano-heavy patch → robot ears → user ear check.
