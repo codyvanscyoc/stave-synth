@@ -1782,11 +1782,12 @@ class SynthEngine:
             except Exception as e:
                 logger.warning("osc bank: Faust init failed (%s); falling back to numpy", e)
 
-        # Phase 1 render-skeleton port (FAUST_PORT_PLAN.md): Haas + filter
+        # Phase 1+2 render-skeleton port (FAUST_PORT_PLAN.md): Haas + filter
         # routing + shared/indep lowpass + comp + highpass + reverb-send
-        # filter path as one Faust module. Engages per block only when the
-        # Faust osc bank produced the 5-channel block; the Python skeleton
-        # below stays byte-identical when the flag is off.
+        # filter path + the shimmer chain (HP split, mix, CLOUD multi-tap)
+        # as one Faust module. Engages per block only when the Faust osc
+        # bank produced the 5-channel block; the Python skeleton below
+        # stays byte-identical when the flag is off.
         self._faust_pad_bus = None
         if USE_FAUST_PAD_BUS:
             try:
@@ -2931,7 +2932,10 @@ class SynthEngine:
             self._osc1_pre_r[:n_samples] += osc_out[1]
             osc2_accum_l += osc_out[2]
             osc2_accum_r += osc_out[3]
-            if render_shimmer:
+            if render_shimmer and not use_pad_bus:
+                # Pad-bus path: the shimmer channel reaches the Faust
+                # shimmer chain directly as pad-bus input 5 — the Python
+                # chain (which is what consumes shimmer_sines) is skipped.
                 shimmer_sines += osc_out[4]
 
         # Apply Haas delay to OSC2 if pans are separated and osc2 is audible.
@@ -3186,6 +3190,16 @@ class SynthEngine:
             _s1 = 0.0 if self.osc1_fx_bypass else float(self.osc1_reverb_send)
             _s2 = 0.0 if self.osc2_fx_bypass else float(self.osc2_reverb_send)
             _send_slow = not (abs(_s1 - 1.0) < 1e-6 and abs(_s2 - 1.0) < 1e-6)
+            # Phase 2 shimmer chain (Faust-side): Python keeps the ~80 ms
+            # mix one-pole, advancing it ONLY on active blocks — exactly
+            # like the Python chain below (skipped on this path) does at
+            # its own gate. The HP cutoff zone carries the mode-dependent
+            # value; Faust swaps coefficients with state carried, so the
+            # deferred-flip bookkeeping (_shimmer_hp_high_last) is not
+            # needed here and Python's _shimmer_hp stays untouched.
+            _shimmer_on = render_shimmer and voice_idx > 0
+            if _shimmer_on:
+                self._shimmer_mix_cur += alpha_s * (self.shimmer_mix - self._shimmer_mix_cur)
             self._faust_pad_bus.set_block_params(
                 cutoff_hz=self._filter_cutoff_last_set,
                 resonance=self._filter_res_last_set,
@@ -3202,16 +3216,21 @@ class SynthEngine:
                 haas_on=(haas_active and render_osc2),
                 haas_samps=self._haas_delay_samples,
                 osc2_audible=render_osc2,
+                shimmer_active=_shimmer_on,
+                shimmer_hp_hz=(1200.0 if self.shimmer_high else 400.0),
+                shimmer_mix_cur=self._shimmer_mix_cur,
+                shimmer_send=self.shimmer_send,
             )
-            pad_out = self._faust_pad_bus.process(osc_out)  # (6, n)
+            pad_out = self._faust_pad_bus.process(osc_out)  # (9, n)
             np.copyto(output_l, pad_out[0])
             np.copyto(output_r, pad_out[1])
             if _send_slow:
                 pad_bus_send_l = pad_out[2]
                 pad_bus_send_r = pad_out[3]
-            # pad_out[4]/[5] (fx-bypass bus) are reserved — always zero in
-            # Phase 1; the bypass carve stays in Python below (post-LFO,
-            # data-dependent magnitude ratio).
+            # pad_out[4]/[5] (fx-bypass bus) are reserved — always zero;
+            # the bypass carve stays in Python below (post-LFO,
+            # data-dependent magnitude ratio). pad_out[6..8] (shimmer +
+            # CLOUD) are added to reverb_in in the reverb section below.
         else:
             if self.osc1_filter_enabled or self.osc2_filter_enabled:
                 filtered_l = self.filter_l.process(filter_buf[0]) * filter_comp
@@ -3510,7 +3529,19 @@ class SynthEngine:
             np.copyto(reverb_in_l, filtered_l)
             np.copyto(reverb_in_r, filtered_r)
 
-        if render_shimmer and voice_idx > 0:
+        if use_pad_bus:
+            # Faust pad bus already produced the whole shimmer chain (HP
+            # split × smoothed mix on ch 6, CLOUD taps ×shimmer_send on
+            # ch 7/8) — outputs are gated to exact zeros when the chain is
+            # inactive, and the adds below mirror the Python chain's order
+            # (shimmer both channels, then cloud per channel).
+            if render_shimmer and voice_idx > 0:
+                reverb_in_l += pad_out[6]
+                reverb_in_r += pad_out[6]
+                if self.shimmer_send > 0.001:
+                    reverb_in_l += pad_out[7]
+                    reverb_in_r += pad_out[8]
+        elif render_shimmer and voice_idx > 0:
             # Update shimmer HP cutoff when the mode flips so +12 mode
             # (2× pitch) gets a 400 Hz HP that actually lets fundamentals
             # through, instead of the 1200 Hz HP that made +12 silent below A4.

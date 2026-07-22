@@ -117,9 +117,89 @@ application of subtraction — a phantom-input block, NOT unary negation;
 and with-local closures inside `~` get lambda-lifted (keep the recursion
 tick top-level with coefficients as explicit args).
 
-### Phase 2 — shimmer chain
+### Phase 2 — shimmer chain — DONE (2026-07-22, awaiting Pi 4 soak)
 Shimmer HP split, CLOUD multi-tap pre-verb delay, shimmer delay lines,
-+12/+24 handling glue. Flag: `STAVE_FAUST_SHIMMER`.
++12/+24 handling glue. **Design decision: extended `faust/pad_bus.dsp`
+instead of a separate module** — the chain's input is pad_bus's existing
+input 5 (the osc bank's shimmer channel), its only Python entanglements
+are per-block scalars, and its output lands at the reverb entry pad_bus
+already computes toward. One merged compute, no new island boundary, and
+**no `STAVE_FAUST_SHIMMER` flag — `STAVE_FAUST_PAD_BUS` governs it all.**
+
+### Phase 2 implementation notes (shipped 2026-07-22, awaiting Pi 4 soak)
+Files: `faust/pad_bus.dsp` (now 5-in/9-out), `stave_synth/faust_pad_bus.py`,
+`tools/compare_pad_bus.py` (11 new shimmer segments), surgical branches in
+`synth_engine._render_locked`. Same flag, still OFF by default — Pi 5
+behavior unchanged (verified: flag-off render bit-identical to a
+pre-change baseline, max |Δ| exactly 0.0 over a 500-block shimmer-heavy
+scenario).
+
+**Included:** shimmer HP split (BiquadHighpass mirror; 400 Hz +12 / 1200 Hz
++24, cutoff pushed as a zone, coefficients swap with state carried) ·
+mix scaling from the Python-owned ~80 ms one-pole (`_shimmer_mix_cur`
+advanced at the zone-push site under the exact `render_shimmer and
+voice_idx > 0` gate, then consumed as a block-constant) · CLOUD multi-tap
+pre-reverb delay (one 65536-slot rwtable, ring wrap at `int(0.6·SR)`,
+4 taps per channel, gains 0.65/0.50/0.36/0.22) · new outputs 7/8/9
+(shimmer mono, cloud L/R already ×shimmer_send) added by the engine to
+reverb_in in the legacy add order, on fast-path AND slow-path blocks.
+
+**Excluded (stays Python):** the `render_shimmer` / `voice_idx > 0` gate
+logic and mix smoothing (pushed as zones) · the reverb_in adds themselves
+(shimmer must join on fast-path blocks where send_L/R are ignored — this
+is WHY shimmer got dedicated outputs instead of riding the send bus) ·
+shimmer pitch generation (osc bank, was already Faust).
+
+**Beyond the Phase-1 parity bar — frozen-state emulation:** Python
+*freezes* shimmer state when the chain is inactive (skipped `.process()`
+= frozen biquad zi; no ring write = frozen delay content AND index).
+Phase 1 accepted decayed-vs-frozen re-engage transients; Phase 2 mirrors
+the freezes exactly: a select2-held biquad (`biquad_tick_frozen`) and an
+rwtable whose write index advances only while the cloud is active
+(`cloud_widx`). Re-engagement after arbitrary pauses is sample-exact —
+including Python's stale-content CLOUD replay. (The one intentional
+divergence: while frozen, Faust rewrites one ring slot with 0.0 each
+sample; that slot is overwritten by the first re-engage write before any
+tap can read it, so it is unobservable.)
+
+**Plan corrections found while porting (follow-the-code):** the inert
+`shimmer_send_gain` hook from Phase 1 was the wrong shape and is REMOVED
+— shimmer cannot join `send_L/R` because those outputs are ignored on
+fast-path blocks while shimmer still reaches the reverb. Also
+`shimmer_high` touches this region ONLY via the HP cutoff; the ×2/×4
+pitch lives in the osc bank. And Python's deferred HP-mode bookkeeping
+(`_shimmer_hp_high_last`) needs no mirror: pushing `1200 if high else
+400` every block lands the same coefficients on every processed block.
+
+**Precision:** same `-double + -DFAUSTFLOAT=double` build. Tap offsets and
+ring length are init-time zones computed by the WRAPPER with Python's
+exact expressions — `int(0.289·96000) == 27743`, an in-Faust recompute
+can round differently. Cloud output grouping verified in the generated C:
+`raw·(send·active)` with active ∈ {0,1} exactly, so the multiply matches
+Python's `cloud * send` bit-for-bit.
+
+**Panic:** `FaustPadBus.clear()` now does a FULL `initStavePadBus` + static
+zone re-push, because Faust puts rwtable initialization in
+`instanceConstants` — `instanceClear` alone would leave up to 0.6 s of
+cloud material to replay after panic. Verified by smoke test: post-panic
+output exactly 0.0, notes work after, static zones intact.
+
+**Parity (tools/compare_pad_bus.py):** scenario extended 1300 → 2100
+blocks: shimmer on over warm slow-path sends, mix sweep, +12↔+24 flips,
+slow→fast send transition under shimmer, CLOUD freeze + re-engage,
+chain off/on (frozen HP), mix-threshold gate off/on. Result: full-run
+peak |Δ| 2.9e-13 (dry) / 1.7e-13 (send) / 2.1e-13 (final) — the peaks
+still come from Phase 1's slope-24 segment; every shimmer segment sits
+at ≤5e-14, including both re-engagements. PASS at 1e-6 with ~6.5 orders
+of margin.
+
+**Scenario gotcha (cost an hour):** the first shimmer segment restored
+`osc2_blend` from 0 with hard-pan WIDE still engaged → Haas RE-engage →
+the documented Phase-1 stale-ring transient polluted every following
+segment (looked like a shimmer failure at 1e-1; the osc-bank tap proved
+inputs bit-identical). Same trap again with fast→slow send re-entry.
+Phase-1 known divergences constrain scenario ORDER for all later phases:
+engage Haas/slow-sends once, or keep re-engages out of measured segments.
 
 ### Phase 3 — piano chain
 LA-2A comp (careful: its soft-knee is the CORRECT reference formula),
@@ -158,6 +238,22 @@ FluidSynth stays (sample playback). Flag: `STAVE_FAUST_PIANO_CHAIN`.
 - A `with`-local function that closes over outer args gets lambda-lifted
   inside `~` — define the recursion tick at top level and pass the
   captured values as explicit arguments.
+- Faust initializes rwtable contents in `instanceConstants`, NOT in
+  `instanceClear` — a panic clear() that only calls instanceClear leaves
+  the table full. Call full `init` and re-push any init-time zones
+  (Phase 2 cloud ring).
+- Multiple `rwtable` reads DO share one table when (size, init, widx,
+  wsig) are structurally identical — hash-consing merges them (verified
+  in generated C: one `ftbl0`, 8 reads). Use this for multi-tap.
+- Faust `%` on ints is C-semantics (can go negative) — add the modulus
+  before taking it (`(w - off + len) % len`), unlike Python's `%`.
+- `int(sec * SR)` tap offsets must be computed on the PYTHON side and
+  pushed as zones — float truncation differs between formulations
+  (`int(0.289·96000) == 27743`, not 27744).
+- To mirror Python code that SKIPS processing (frozen zi / frozen ring
+  index), don't input-gate (state decays) — freeze: select2-hold the
+  biquad state registers, advance the rwtable write index by the gate.
+  Makes re-engagement sample-exact instead of transition-divergent.
 
 ## Pi 5 adoption checklist (per phase, AFTER Pi 4 soak)
 1. `git pull` on the Pi 5 (build.sh now carries `-mcpu=native` — fine)
@@ -184,3 +280,12 @@ FluidSynth stays (sample playback). Flag: `STAVE_FAUST_PIANO_CHAIN`.
   excluded LFO application and the fast-path send copy; the structural win
   arrives with Phase 4's osc_bank→pad_bus merge (kills the inter-module
   buffer shuttling). Pi 5: flag still OFF, nothing changed.
+- **2026-07-22** — Phase 2 (shimmer chain) implemented as a pad_bus
+  extension (no new flag/module) + parity-proven offline: full-run peak
+  |Δ| 2.9e-13 dry / 1.7e-13 send / 2.1e-13 final over a 2100-block
+  scenario; shimmer segments ≤5e-14 with frozen-state emulation making
+  on/off re-engagement sample-exact. Flag-off path verified bit-identical
+  (Δ = 0.0). panic clear() upgraded to full re-init (rwtable gotcha).
+  Not yet deployed anywhere. Next: Pi 4 rebuild (`faust/build.sh` picks
+  up the .dsp timestamp automatically) → render % → robot ears → user
+  ear check with shimmer + CLOUD engaged.

@@ -1,4 +1,4 @@
-"""Parity harness for the Faust pad bus (Phase 1 render-skeleton port).
+"""Parity harness for the Faust pad bus (Phase 1 + 2 render-skeleton port).
 
 Drives two full SynthEngine instances through an IDENTICAL multi-block
 scenario — same notes, same param timeline, same RNG seed — one on the
@@ -25,13 +25,20 @@ Taps (per channel, matching the module's outputs):
               On fast-path blocks (sends == 1) both engines copy the dry
               bus, so slow-path segments are where the send port is tested.
   final L/R — the engine's render() output, end-to-end incl. reverb.
-  bypass    — reserved channels, always 0.0 in Phase 1 (asserted once).
+  bypass    — reserved channels, always 0.0 (asserted once).
+
+The Phase 2 shimmer chain feeds reverb_in directly, so its parity shows
+up on the send and final taps (on fast-path AND slow-path blocks — the
+shimmer add happens after the path selection).
 
 Scenario segments: fast-path sends → filter sweep down → slope 24 +
 resonance → sweep up → pan spread (Haas via plain pans) → hard-pan WIDE →
 slow-path sends → burst transients → highpass engage → independent OSC1
 filter → chord change → independent OSC2 filter → osc2 blend to zero
-(render_osc2 gate).
+(render_osc2 gate) → [Phase 2] shimmer on (+12, fast-path sends) → mix
+sweep → +12↔+24 flips → CLOUD send to 0 and re-engage (frozen-ring
+exactness) → shimmer off/on (frozen-HP exactness) → slow-path sends with
+shimmer → mix-threshold gate off/on.
 
 Parity bar: max |delta| <= 1e-6 on every tapped channel.
 
@@ -58,7 +65,7 @@ from stave_synth import synth_engine as se  # noqa: E402
 
 SR = 48000
 N_BLK = 256
-N_BLOCKS = 1300          # ~6.9 s
+N_BLOCKS = 2100          # ~11.2 s (1300 Phase 1 + 800 Phase 2 shimmer)
 SEED = 0xC0DE
 BAR = 1e-6
 
@@ -128,6 +135,45 @@ def scenario():
                           setattr(e, "osc2_indep_cutoff", 900.0))),
         (1200, "osc2 blend → 0 (render_osc2 gate)",
                lambda e: setattr(e, "osc2_blend", 0.0)),
+        # ── Phase 2: shimmer chain ──
+        # Two scenario constraints inherited from documented Phase-1
+        # transition-only divergences (NOT shimmer behavior):
+        #   1. Pans come back inside the Haas threshold BEFORE osc2
+        #      re-engages — re-engaging Haas replays stale Python ring
+        #      content vs Faust zeros.
+        #   2. Sends stay on the (warm since block 640) slow path first,
+        #      then move slow→fast ONCE — a fast→slow re-entry would pit
+        #      Python's frozen-warm send-filter state against Faust's
+        #      decayed state.
+        (1300, "shimmer ON +12 over slow-path sends",
+               lambda e: (setattr(e, "osc_hard_pan", False),
+                          setattr(e, "osc1_pan", 0.0),
+                          setattr(e, "osc2_pan", 0.3),
+                          setattr(e, "osc2_blend", 0.4),
+                          setattr(e, "shimmer_mix", 0.6),
+                          setattr(e, "shimmer_enabled", True))),
+        (1400, "shimmer mix sweep → 0.15",
+               lambda e: setattr(e, "shimmer_mix", 0.15)),
+        (1480, "shimmer +24 (HP → 1200 Hz, state carried)",
+               lambda e: setattr(e, "shimmer_high", True)),
+        (1560, "shimmer back to +12 (HP → 400 Hz)",
+               lambda e: setattr(e, "shimmer_high", False)),
+        (1640, "sends → fast path, shimmer still on",
+               lambda e: (setattr(e, "osc1_reverb_send", 1.0),
+                          setattr(e, "osc2_reverb_send", 1.0),
+                          setattr(e, "shimmer_mix", 0.5))),
+        (1720, "CLOUD send → 0 (ring freezes)",
+               lambda e: setattr(e, "shimmer_send", 0.0)),
+        (1800, "CLOUD send → 1.6 (frozen-ring re-engage)",
+               lambda e: setattr(e, "shimmer_send", 1.6)),
+        (1860, "shimmer OFF (HP state freezes)",
+               lambda e: setattr(e, "shimmer_enabled", False)),
+        (1920, "shimmer ON again (frozen-HP re-engage)",
+               lambda e: setattr(e, "shimmer_enabled", True)),
+        (2000, "mix → 0.0005 (render_shimmer threshold gate)",
+               lambda e: setattr(e, "shimmer_mix", 0.0005)),
+        (2040, "mix → 0.5 (gate re-engage)",
+               lambda e: setattr(e, "shimmer_mix", 0.5)),
     ]
 
 
@@ -181,12 +227,12 @@ def run_engine(pad_bus: bool):
         final[0, i * N_BLK:(i + 1) * N_BLK] = l
         final[1, i * N_BLK:(i + 1) * N_BLK] = r
 
-    # Phase 1 contract: bypass channels stay silent.
+    # Contract: 9 outputs, bypass channels stay silent.
     if pad_bus:
         pb_out = e._faust_pad_bus._out
-        assert pb_out.shape[0] == 6
+        assert pb_out.shape[0] == 9
         assert np.all(pb_out[4] == 0.0) and np.all(pb_out[5] == 0.0), \
-            "bypass channels must be zero in Phase 1"
+            "bypass channels must be zero (reserved)"
 
     del e
     gc.collect()
