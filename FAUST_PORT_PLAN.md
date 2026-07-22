@@ -334,6 +334,25 @@ divergence at epsilon-level signal; every other segment is ≤1.5e-13.
   index), don't input-gate (state decays) — freeze: select2-hold the
   biquad state registers, advance the rwtable write index by the gate.
   Makes re-engagement sample-exact instead of transition-divergent.
+- Faust NORMALIZES arithmetic: `1-d + d*(1+r)*0.5` came out of codegen as
+  `d*(0.5*(r+1)-1)+1` — algebraically equal, ~1-ulp different rounding.
+  Fine for outputs (under the parity bar) but NEVER let canonical state
+  flow through such an expression — keep state in its own recurrence
+  (which Faust preserves verbatim) so ulps can't accumulate (Phase 4
+  smoother: bit-exact; only the gate/pan output composition rounds).
+- Bargraph zones make block-end STATE READBACK possible: hbargraph in
+  scalar C writes the zone every sample, so after compute it holds the
+  last sample's value. Record bargraph zones in the UI glue's _bar
+  callback and read post-compute (Phase 4 smoother-state handoff;
+  bus_comp's gr_db was the precedent). Keep the signal alive with attach.
+- Faust has no block boundaries, but you can synthesize one: Python bumps
+  a counter zone once per block; `zone != zone'` fires exactly on the
+  first sample of the next compute (slider values are block-cached, the
+  one-sample delay carries the previous block's value across the call).
+  Drives ramp-index reset + zone-loaded state (Phase 4 i/(n-1) ramps).
+- np.linspace forcibly sets its endpoint (y[-1] = stop exactly);
+  `(n-1)·(1/(n-1))` in Faust can be 1 ulp off 1.0 — push n-1 as a zone
+  and select2-snap the last sample's t to exactly 1.0.
 
 ## Pi 5 adoption checklist (per phase, AFTER Pi 4 soak)
 1. `git pull` on the Pi 5 (build.sh now carries `-mcpu=native` — fine)
@@ -404,6 +423,19 @@ divergence at epsilon-level signal; every other segment is ≤1.5e-13.
   the user hears) + ring ratchet with user present + the post-port
   tuning session (voicings/comp re-dial/limiter/gain). User ear check
   on Phase 3 piano pending.
+- **2026-07-22** — Phase 4 (Design A) implemented + parity-proven offline:
+  C shim (`faust/merged_shim.c`, pointer-based — lite-bank-agnostic) fuses
+  bank compute → f32→f64 → pad-bus compute into ONE cffi call; LFO amp/pan
+  block ramps + one-pole smoothing + dip-only gate ported into pad_bus.dsp
+  for fast-path (all-recv) blocks with Python-canonical smoother state
+  (zone in / bargraph out — fallback blocks sample-exact). 3-run harness
+  over 2950 blocks: merged-path peaks identical to the two-call path
+  (2.85e-13), all 12 LFO segments ≤ 4.1e-14. Flag-off AND merged-off
+  renders EXACTLY 0.0 vs pre-change baselines. Panic smoke green. Flag
+  `STAVE_FAUST_MERGED` default OFF; NOT committed, NOT deployed anywhere
+  — Pi 5 untouched. Next: commit → Pi 4 deploy (steps in the Phase 4
+  notes) → render % + full-blast spike check → user ear check → then the
+  live-session items (8-slot decision, ring ratchet) with the user.
 
 ### Phase 4 design brief (authored 2026-07-22, pre-implementation)
 **Goal:** collapse the Python sandwich between osc_bank and pad_bus — the
@@ -444,3 +476,145 @@ the merge soaks.
 **Design B (mega-module, single Faust graph) is fallback ONLY** if the
 shim + LFO port leaves the spikes unresolved — it forces a single
 precision and invalidates two parity harnesses; do not attempt first.
+
+### Phase 4 implementation notes (shipped 2026-07-22, Design A, NOT yet committed/deployed)
+Files: `faust/merged_shim.c` (NEW — plain C, not a Faust module; built by a
+new plain-gcc step in `faust/build.sh`; NB `.gitignore` gained
+`!faust/merged_shim.c` — the blanket `faust/*.c` rule for generated files
+would have silently kept this hand-written source out of the commit and
+broken the Pi 4 build), `stave_synth/faust_merged.py`
+(NEW wrapper), `faust/pad_bus.dsp` (Phase 4 LFO section, still 5-in/9-out),
+`stave_synth/faust_pad_bus.py` (`push_lfo_block` / `read_lfo_states`,
+bargraph capture in the UI glue), `config.USE_FAUST_MERGED`, surgical
+branches in `synth_engine._render_locked`, `tools/compare_pad_bus.py`
+extended 2100 → 2950 blocks (12 LFO segments) and to a 3-run comparison.
+Flag `STAVE_FAUST_MERGED` default OFF; requires OSC_BANK + PAD_BUS and
+engages per block only when the Faust bank produced the block. Pi 5
+behavior unchanged — VERIFIED: all-flags-off render EXACTLY 0.0 vs a
+pre-change baseline over the full 2950-block scenario (dry/send/final all
+0.0), and the two-call pad-bus path (PAD_BUS on, MERGED off) is ALSO
+exactly 0.0 against its pre-change baseline even with the rebuilt .so
+(the LFO section's ×1.0/+0.0 identity is IEEE-exact and gcc emitted the
+existing math unchanged).
+
+**Included — C shim:** `stave_merged_compute` runs computeStaveOscBank →
+f32→f64 widen (exact, in C) → computeStavePadBus as ONE cffi call.
+Builder's choice per brief: new file `faust/merged_shim.c`, NOT
+jack_bridge.c (that file is audio-callback territory — routing-caution
+rule). It links against nothing: compute-function pointers AND both dsp
+pointers arrive from Python as void* (cast via uintptr_t across FFI
+instances), so the 12-slot lite bank works unchanged — whichever .so
+faust_osc_bank.py selected is what gets called (verified by construction:
+lite exports identical symbols; only the full bank was runnable on this
+Pi 5). Each module keeps its own precision (bank f32, pad bus double) and
+its existing parity proofs. The wrapper owns all buffers (bank f32 rows,
+the f64 conversion block — returned to the engine as osc_out for the
+magnitude taps — and the 9-row output), realloc only on block-size change.
+
+**Included — LFO ramp port (fast path):** pad_bus.dsp now applies, on the
+post-highpass dry bus, the EXACT Python fast-path composition
+`dry := (dry × amp_gate₁·amp_gate₂) × (1 + pan₁ + pan₂)`:
+linear block ramps start→end as `i/(n-1)` with the last sample snapped to
+exactly 1.0 (np.linspace endpoint semantics), NOT si.smoo · the optional
+`lfo_smooth` one-pole (scipy-lfilter DF2T recurrence `y=(1-a)x+z, z=ay,
+zi=a·state` — bit-exact, incl. `a=0.0` == Python's ≤0.001 passthrough) ·
+the dip-only amp gate `1-d+d(1+r)/2` copied exactly (peaks at 1.0, no
+makeup — limiter-safe by construction) · pan `±(r_a·d/2)` where only the
+A channel drives pan and the spread/B channel is amp-R only (as in
+Python) · per-OSC recv flags, poly, target and depth conditions are all
+folded into the `en/is_amp` zones by Python, mirroring _osc_amp_pan's
+branch logic — poly amp LFOs push en=0 (osc_bank applies them per voice:
+no double application, exercised by the harness poly on/off segments).
+
+**State ownership (the load-bearing design):** the module holds NO
+cross-block LFO state. Python bumps a counter zone per merged block; the
+.dsp detects block start via `ctr != ctr'`, resets the ramp index and
+loads the smoother state from a ZONE; block-end states export through
+bargraphs which the engine syncs back into `_lfo*_smooth_*_state` — for
+exactly the LFOs whose ramps Faust computed that block (mirrors which
+_smooth_one_pole calls Python would have made, incl. the bus-target and
+split-path stepping patterns). Result: Python-fallback blocks and
+Faust blocks interleave sample-exactly on the same state variables.
+
+**Excluded (stays Python — per-block fallback, documented):** the per-OSC
+recv SPLIT path (`not all_recv`) — its L/R split ratio is data-dependent
+on THIS block's osc-bank output magnitudes, which don't exist until the
+merged call has run; blocks on the split path get en=0 zones and the
+legacy Python application (harness segments 2450–2590 prove the
+transition both ways) · the bus-target LFO (post-reverb sidechain pump,
+applies far downstream) · the filter-target LFO (already feeds the cutoff
+zones) · _advance_lfo itself + all scalar work (rate/tempo/S&H/spread
+phase math) · poly amp application (already inside osc_bank.dsp).
+
+**Plan corrections found while porting (follow-the-code):** the brief's
+"per-bus start/end gain per bus (osc1_l/r, osc2_l/r)" model is not how
+the code works — the fast path applies ONE combined mod to the combined
+post-filter dry bus, and per-OSC routing exists only in the split path
+via the data-dependent magnitude ratio (hence the fallback, not a
+per-OSC-bus port). Also what Python pushes are the raw bipolar RAMP
+ENDPOINTS, not gains — the smoother filters the raw ramp BEFORE the
+gate/pan formulas, so pushing "gains" would reorder the smoothing. The
+brief also didn't mention `lfo_smooth`; it must move with the
+application, solved via the zone-state/bargraph handoff above. One
+non-issue discovered: dead-voice gate clears were feared to reorder
+around the deferred bank compute, but the pre-compute unused-slot sweep
+already zeroes them before process() on BOTH paths — no divergence.
+
+**Precision:** merged-path output is not bit-identical to Python (unlike
+the state path): Faust normalized the gate to `d*(0.5*(r+1)-1)+1` and
+left-associated the multiply chain — ~1-ulp per sample, non-accumulating
+because the smoother recurrence (the only carried quantity) IS bit-exact.
+Measured: every LFO segment ≤ 4.1e-14 (indistinguishable from run B's
+Phase-1 background deltas).
+
+**Ordering equivalence (merged block):** bank zones + gate clears land
+before the fused compute exactly as before; the pre-filter tap adds,
+osc2_accum accumulation and the _osc2_pre snapshot are deferred to just
+after the merged call (pure reads of osc_out — order-equivalent); RNG
+call order is untouched (no RNG between the old and new compute sites).
+
+**Panic:** nothing new to flush — the shim is stateless, FaustOscBank
+.panic() and FaustPadBus.clear() (full re-init per the Phase-2 rwtable
+gotcha) already cover the real state, the LFO zones reset to their
+inert defaults (en=0) on init, and the smoother state lives in Python
+(reset in _apply_panic as before). Smoke-tested on the merged path:
+post-panic output exactly 0.0 for 10 blocks, notes sound after, state
+readback still in sync. NB: the smoother state does NOT stay 0 after
+panic — the LFO keeps ramping on silent blocks, identical to Python.
+
+**Parity (tools/compare_pad_bus.py, 3 runs × 2950 blocks):**
+run B (two-call) vs Python: peak |Δ| 2.62e-13/2.85e-13 dry, 1.57e-13/
+1.70e-13 send, 2.09e-13/1.92e-13 final — unchanged from Phase 2/3 (peaks
+still live in the slope-24 segment). run C (MERGED + in-Faust LFO) vs
+Python: same peaks to the digit, and every Phase-4 LFO segment ≤ 4.1e-14
+across all channels — including recv-split fallback, all-recv re-engage
+(state handoff), poly on/off, bus-target coexistence, saw + smooth, and
+depth-cap dual-gate stacking. PASS at 1e-6 with ~6.5 orders of margin.
+Engagement positively proven (not silent fallback): shim buffers sized,
+push_lfo_block ran every block, two-call process() never allocated, amp
+swing 3.6× audible, states == bargraphs.
+
+**Pi 5 bench (informational — the target is the Pi 4):** 8-note chord +
+shimmer + both LFOs, 256-sample blocks: 2009 → 1945 µs/block (−64 µs,
+−3.2% of render). The Pi 4 delta should be proportionally larger (slower
+cores, same fixed Python overhead removed); the real success metric is
+the full-blast CPU-spike behavior there.
+
+**Exact Pi 4 enablement steps (after this is committed):**
+1. Commit this work on the Pi 5 (NOT done by the builder — session rule)
+   and `git pull` on the Pi 4.
+2. `cd ~/stave-synth/faust && ./build.sh` — picks up pad_bus.dsp and the
+   new merged_shim.c automatically (no --force needed); confirm
+   `libstave_merged_shim.so` and a fresh `libstave_pad_bus.so` appear.
+   The Pi 4's lite bank needs no special handling (pointer-based shim).
+3. Add `Environment=STAVE_FAUST_MERGED=1` to
+   `~/.config/systemd/user/stave-synth.service.d/faust.conf` (alongside
+   the existing OSC_BANK / PAD_BUS / PIANO_CHAIN lines).
+4. `systemctl --user daemon-reload && systemctl --user restart
+   stave-synth` — NOT on a Saturday night.
+5. Verify engagement in the journal log: "merged shim: single-call
+   osc_bank→pad_bus path (STAVE_FAUST_MERGED=1)".
+6. Measure render % (same-ssh-session PID capture), robot ears (use the
+   |Δ|>0.5 threshold pending the relative-click-detector TODO), then the
+   full-blast spike check with LFOs + shimmer + CLOUD engaged, then user
+   ear check. Pi 5: flag stays OFF until the Pi 4 soak passes.

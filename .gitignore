@@ -19,3 +19,4 @@ env/
 
 # Faust build artifacts — regenerated from .dsp by faust/build.sh (invoked by install.sh)
 faust/*.c
+!faust/merged_shim.c

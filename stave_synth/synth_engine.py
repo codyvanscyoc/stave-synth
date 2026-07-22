@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from .config import (
     SAMPLE_RATE, LOW_RAM_MODE,
     USE_FAUST_REVERB, USE_FAUST_PING_PONG, USE_FAUST_OSC_BANK, USE_FAUST_SYMPATHETIC,
-    USE_FAUST_PAD_BUS,
+    USE_FAUST_PAD_BUS, USE_FAUST_MERGED,
 )
 
 from scipy.signal import lfilter
@@ -1801,6 +1801,28 @@ class SynthEngine:
             except Exception as e:
                 logger.warning("pad bus: Faust init failed (%s); falling back to numpy", e)
 
+        # Phase 4 (FAUST_PORT_PLAN.md): ONE C call per block fuses the osc
+        # bank compute, the f32→f64 widen and the pad-bus compute — kills
+        # the Python buffer shuttle between the two islands — and unlocks
+        # the in-Faust LFO amp/pan block ramps (fast-path blocks only).
+        self._faust_merged = None
+        if USE_FAUST_MERGED:
+            if self._faust_pad_bus is None or self._faust_osc_bank is None:
+                logger.warning(
+                    "merged shim: STAVE_FAUST_MERGED needs STAVE_FAUST_OSC_BANK "
+                    "and STAVE_FAUST_PAD_BUS both active — staying on the "
+                    "two-call path")
+            else:
+                try:
+                    from .faust_merged import FaustMergedShim
+                    self._faust_merged = FaustMergedShim(
+                        self._faust_osc_bank, self._faust_pad_bus)
+                    logger.info("merged shim: single-call osc_bank→pad_bus "
+                                "path (STAVE_FAUST_MERGED=1)")
+                except Exception as e:
+                    logger.warning(
+                        "merged shim: init failed (%s); two-call path", e)
+
         self._sample_indices = np.arange(1, 513, dtype=np.float64)
 
         # Pre-allocated render buffers — avoids per-block allocation/GC jitter
@@ -2713,6 +2735,8 @@ class SynthEngine:
         # Faust pad bus consumes the osc bank's 5-ch block directly — it can
         # only engage on blocks the Faust bank actually produced.
         use_pad_bus = use_faust and (self._faust_pad_bus is not None)
+        # Phase 4: single-call bank→pad_bus shim (subset of pad-bus blocks).
+        use_merged = use_pad_bus and (self._faust_merged is not None)
         if use_faust:
             self._faust_osc_bank.set_osc_params(
                 osc1_wf=osc1_wf, osc2_wf=osc2_wf,
@@ -2914,29 +2938,38 @@ class SynthEngine:
                 if slot not in active_slots:
                     self._faust_osc_bank.clear_voice(slot)
 
-            osc_out = self._faust_osc_bank.process(n_samples)  # (5, n)
-            if use_pad_bus:
-                # Faust pad bus takes the raw block — skip the Python
-                # filter-buffer routing (those buffers only feed the Python
-                # filter path). Pre-filter taps below still fill so the LFO
-                # split-path / FX-bypass magnitude ratios keep working.
-                pass
-            elif self.osc1_filter_enabled:
-                filter_buf[0] += osc_out[0]
-                filter_buf[1] += osc_out[1]
+            if use_merged:
+                # Phase 4 merged path: the bank compute is fused into the
+                # single C call at the pad-bus site below. All bank zones
+                # (set_voice / gate clears above) are already written, and
+                # the gate clears land before the bank compute on BOTH
+                # paths — same relative order. The pre-filter tap adds and
+                # the _osc2_pre snapshot are deferred to that site.
+                osc_out = None
             else:
-                osc1_indep_buf[0] += osc_out[0]
-                osc1_indep_buf[1] += osc_out[1]
-            # OSC1 pre-filter snapshot for the reverb-send tap.
-            self._osc1_pre_l[:n_samples] += osc_out[0]
-            self._osc1_pre_r[:n_samples] += osc_out[1]
-            osc2_accum_l += osc_out[2]
-            osc2_accum_r += osc_out[3]
-            if render_shimmer and not use_pad_bus:
-                # Pad-bus path: the shimmer channel reaches the Faust
-                # shimmer chain directly as pad-bus input 5 — the Python
-                # chain (which is what consumes shimmer_sines) is skipped.
-                shimmer_sines += osc_out[4]
+                osc_out = self._faust_osc_bank.process(n_samples)  # (5, n)
+                if use_pad_bus:
+                    # Faust pad bus takes the raw block — skip the Python
+                    # filter-buffer routing (those buffers only feed the Python
+                    # filter path). Pre-filter taps below still fill so the LFO
+                    # split-path / FX-bypass magnitude ratios keep working.
+                    pass
+                elif self.osc1_filter_enabled:
+                    filter_buf[0] += osc_out[0]
+                    filter_buf[1] += osc_out[1]
+                else:
+                    osc1_indep_buf[0] += osc_out[0]
+                    osc1_indep_buf[1] += osc_out[1]
+                # OSC1 pre-filter snapshot for the reverb-send tap.
+                self._osc1_pre_l[:n_samples] += osc_out[0]
+                self._osc1_pre_r[:n_samples] += osc_out[1]
+                osc2_accum_l += osc_out[2]
+                osc2_accum_r += osc_out[3]
+                if render_shimmer and not use_pad_bus:
+                    # Pad-bus path: the shimmer channel reaches the Faust
+                    # shimmer chain directly as pad-bus input 5 — the Python
+                    # chain (which is what consumes shimmer_sines) is skipped.
+                    shimmer_sines += osc_out[4]
 
         # Apply Haas delay to OSC2 if pans are separated and osc2 is audible.
         # (Faust pad bus applies Haas internally — incl. for its send tap —
@@ -2978,9 +3011,11 @@ class SynthEngine:
 
         # Snapshot OSC2 post-Haas for the reverb-send tap BEFORE routing into
         # shared or indep filter (we want this signal with Haas applied but
-        # before any filter stage).
-        np.copyto(self._osc2_pre_l[:n_samples], osc2_accum_l)
-        np.copyto(self._osc2_pre_r[:n_samples], osc2_accum_r)
+        # before any filter stage). (Merged path: osc2_accum is still empty
+        # here — the snapshot is taken right after the merged call instead.)
+        if not use_merged:
+            np.copyto(self._osc2_pre_l[:n_samples], osc2_accum_l)
+            np.copyto(self._osc2_pre_r[:n_samples], osc2_accum_r)
 
         # Route OSC2 (possibly delayed) to filter buffers
         if render_osc2 and not use_pad_bus:
@@ -3150,6 +3185,28 @@ class SynthEngine:
         # f_pos^1.3 with -15dB max: even attenuation from low-mids through highs
         filter_comp = 10.0 ** (-15.0 * f_pos ** 1.3 / 20.0)
 
+        # ─── Phase 4 (merged path): decide where LFO amp/pan applies ───
+        # all_recv is the legacy fast path — one combined mod on the dry
+        # bus. Only that case moves into pad_bus.dsp: the per-OSC split
+        # path's ratio is data-dependent on THIS block's osc magnitudes,
+        # which don't exist until the merged call has run, so it stays in
+        # Python as a per-block fallback (smoother state is canonical in
+        # Python and handed to/from Faust each block, so the transition is
+        # sample-exact). Conditions mirror _osc_amp_pan's branches exactly
+        # (recv=True on the fast path; used_here excludes filter/bus
+        # targets and poly-amp-via-Faust — no double application).
+        all_recv = (self.osc1_recv_lfo1 and self.osc1_recv_lfo2
+                    and self.osc2_recv_lfo1 and self.osc2_recv_lfo2)
+        merged_lfo_block = use_merged and all_recv
+        _l1_via_faust = use_faust and self.lfo_poly and self.lfo_target == "amp"
+        _l2_via_faust = use_faust and self.lfo2_poly and self.lfo2_target == "amp"
+        faust_lfo1 = (merged_lfo_block and lfo1_d > 0.001
+                      and (self.lfo_target == "pan"
+                           or (self.lfo_target == "amp" and not _l1_via_faust)))
+        faust_lfo2 = (merged_lfo_block and lfo2_d > 0.001
+                      and (self.lfo2_target == "pan"
+                           or (self.lfo2_target == "amp" and not _l2_via_faust)))
+
         output_l = self._output_l[:n_samples]
         output_l[:] = 0
         output_r = self._output_r[:n_samples]
@@ -3221,7 +3278,59 @@ class SynthEngine:
                 shimmer_mix_cur=self._shimmer_mix_cur,
                 shimmer_send=self.shimmer_send,
             )
-            pad_out = self._faust_pad_bus.process(osc_out)  # (9, n)
+            if use_merged:
+                # ── Phase 4: push LFO zones, then ONE C call runs the
+                # bank compute → f32→f64 widen → pad-bus compute. Python
+                # stays the owner of every scalar (LFO advance, ramp
+                # endpoints, depth caps, smoother coefficient) AND the
+                # smoother state — pushed in, read back post-compute — so
+                # fallback blocks (recv split path, bus target) continue
+                # sample-exact in Python on the same state variables.
+                _sm1 = self.lfo_smooth
+                _sm2 = self.lfo2_smooth
+                self._faust_pad_bus.push_lfo_block(
+                    n_samples=n_samples,
+                    en1=faust_lfo1, amp1=(self.lfo_target == "amp"),
+                    d1=lfo1_d,
+                    a1_start=self._lfo_mod_a_last, a1_end=lfo1_a,
+                    b1_start=self._lfo_mod_b_last, b1_end=lfo1_b,
+                    # Exact _smooth_one_pole coefficient formula (0.0 ==
+                    # its <=0.001 passthrough — identical arithmetic).
+                    sm1=(0.0 if _sm1 <= 0.001 else math.exp(
+                        -1.0 / max((0.0005 + 0.0995 * _sm1) * self.sample_rate, 1.0))),
+                    st1_a=self._lfo_smooth_a_state,
+                    st1_b=self._lfo_smooth_b_state,
+                    en2=faust_lfo2, amp2=(self.lfo2_target == "amp"),
+                    d2=lfo2_d,
+                    a2_start=self._lfo2_mod_a_last, a2_end=lfo2_a,
+                    b2_start=self._lfo2_mod_b_last, b2_end=lfo2_b,
+                    sm2=(0.0 if _sm2 <= 0.001 else math.exp(
+                        -1.0 / max((0.0005 + 0.0995 * _sm2) * self.sample_rate, 1.0))),
+                    st2_a=self._lfo2_smooth_a_state,
+                    st2_b=self._lfo2_smooth_b_state,
+                )
+                pad_out, osc_out = self._faust_merged.process(n_samples)
+                # Sync smoother states for exactly the LFOs Faust ramped
+                # (mirrors which _smooth_one_pole calls Python would make).
+                if faust_lfo1:
+                    self._lfo_smooth_a_state, self._lfo_smooth_b_state = \
+                        self._faust_pad_bus.read_lfo_states(1)
+                if faust_lfo2:
+                    self._lfo2_smooth_a_state, self._lfo2_smooth_b_state = \
+                        self._faust_pad_bus.read_lfo_states(2)
+                # Deferred pre-filter taps + OSC2 post-loop accumulation
+                # (the two-call path does these at the bank-compute site;
+                # they only feed the LFO-split / FX-bypass magnitude
+                # ratios on this path — pure reads of osc_out, so the
+                # later position is order-equivalent).
+                self._osc1_pre_l[:n_samples] += osc_out[0]
+                self._osc1_pre_r[:n_samples] += osc_out[1]
+                osc2_accum_l += osc_out[2]
+                osc2_accum_r += osc_out[3]
+                np.copyto(self._osc2_pre_l[:n_samples], osc2_accum_l)
+                np.copyto(self._osc2_pre_r[:n_samples], osc2_accum_r)
+            else:
+                pad_out = self._faust_pad_bus.process(osc_out)  # (9, n)
             np.copyto(output_l, pad_out[0])
             np.copyto(output_r, pad_out[1])
             if _send_slow:
@@ -3375,17 +3484,24 @@ class SynthEngine:
             # No cap needed — gate naturally stays in [1-d, 1.0].
             return amul_l, amul_r, pmod_l, pmod_r
 
-        all_recv = (self.osc1_recv_lfo1 and self.osc1_recv_lfo2
-                    and self.osc2_recv_lfo1 and self.osc2_recv_lfo2)
+        # all_recv was computed pre-pad-bus (Phase 4 hoist) — the merged
+        # path needed it before the compute to route the LFO zones.
         if all_recv:
-            # Fast path — single combined mod, identical to legacy behaviour.
-            amp_mul_l, amp_mul_r, pan_mod_l_add, pan_mod_r_add = _osc_amp_pan(True, True)
-            if amp_mul_l is not None:
-                output_l *= amp_mul_l
-                output_r *= amp_mul_r
-            if pan_mod_l_add is not None:
-                output_l *= (1.0 + pan_mod_l_add)
-                output_r *= (1.0 + pan_mod_r_add)
+            if merged_lfo_block:
+                # Phase 4: pad_bus.dsp already applied the amp gate + pan
+                # (same ramps, same one-pole, states synced post-compute).
+                # _osc_amp_pan must NOT run here — it would double-step
+                # the smoother state.
+                pass
+            else:
+                # Fast path — single combined mod, identical to legacy behaviour.
+                amp_mul_l, amp_mul_r, pan_mod_l_add, pan_mod_r_add = _osc_amp_pan(True, True)
+                if amp_mul_l is not None:
+                    output_l *= amp_mul_l
+                    output_r *= amp_mul_r
+                if pan_mod_l_add is not None:
+                    output_l *= (1.0 + pan_mod_l_add)
+                    output_r *= (1.0 + pan_mod_r_add)
         else:
             # Per-OSC split path. Ratio from pre-filter magnitudes; if both
             # OSCs are silent, ratios fall back to 0.5/0.5 (mod has nothing

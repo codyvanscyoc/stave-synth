@@ -1,11 +1,14 @@
-"""Faust-native port of the render-skeleton "pad bus" (Phases 1 + 2).
+"""Faust-native port of the render-skeleton "pad bus" (Phases 1 + 2 + 4).
 
 Consumes the Faust osc bank's 5-channel block (osc1 L/R, osc2 L/R,
 shimmer_mono) and produces 9 channels:
 
     [0] dry_L    [1] dry_R    — Haas + filter routing + shared 12/24 dB
                                 lowpass + comp + indep per-OSC filters +
-                                shared highpass
+                                shared highpass; on MERGED blocks also the
+                                Phase 4 LFO amp/pan block ramps
+                                (push_lfo_block / read_lfo_states —
+                                exact ×1.0 pass-through otherwise)
     [2] send_L   [3] send_R   — per-OSC reverb-send weighted sum through
                                 the _rev_send_filter_* mirror (slow path)
     [4] bypass_L [5] bypass_R — reserved; always zero (the FX bypass
@@ -105,6 +108,12 @@ class FaustPadBus:
         self._keepalive = _install_ui_callbacks(self._dsp, self._zones)
         self._push_static_zones()
 
+        # Phase 4: monotonically bumped per merged block — arms the .dsp's
+        # block-start detector (ramp index reset + smoother state load).
+        # Survives clear() (the zone resets to 0, so the next bump differs
+        # and the detector still fires).
+        self._lfo_blk_ctr = 0.0
+
         # Persistent float64 out buffer + cached FFI pointers (zero-alloc
         # render rule). Input pointers are cached against the caller's
         # buffer base address — the osc bank's (5, n) block is persistent,
@@ -197,6 +206,66 @@ class FaustPadBus:
         z["shimmer_mix_cur"][0] = float(shimmer_mix_cur)
         z["shimmer_send"][0] = float(shimmer_send)
 
+    def push_lfo_block(self, *, n_samples: int,
+                       en1: bool, amp1: bool, d1: float,
+                       a1_start: float, a1_end: float,
+                       b1_start: float, b1_end: float,
+                       sm1: float, st1_a: float, st1_b: float,
+                       en2: bool, amp2: bool, d2: float,
+                       a2_start: float, a2_end: float,
+                       b2_start: float, b2_end: float,
+                       sm2: float, st2_a: float, st2_b: float):
+        """Phase 4 (merged path only): per-block LFO amp/pan ramp zones.
+
+        Python owns every scalar here — the LFO oscillators, ramp endpoints
+        (previous block end → new end), depth (motion-mix × cap applied),
+        the one-pole coefficient (0.0 == the <=0.001 passthrough, exact)
+        and the smoother STATE, which the .dsp loads at block start and
+        exports at block end (read_lfo_states). The counter bump arms the
+        block-start detector. The two-call path never calls this, so the
+        .dsp's LFO section stays at its exact-identity defaults there."""
+        z = self._zones
+        self._lfo_blk_ctr += 1.0
+        if self._lfo_blk_ctr > 1.0e9:
+            self._lfo_blk_ctr = 1.0
+        z["lfo_blk_ctr"][0] = self._lfo_blk_ctr
+        if n_samples > 1:
+            z["lfo_ramp_step"][0] = 1.0 / (n_samples - 1)
+            z["lfo_last_i"][0] = float(n_samples - 1)
+        else:
+            # np.linspace(0, 1, 1) == [0.0] — keep t at 0·step = 0.
+            z["lfo_ramp_step"][0] = 0.0
+            z["lfo_last_i"][0] = 1.0e9
+        z["lfo1_en"][0] = 1.0 if en1 else 0.0
+        z["lfo1_is_amp"][0] = 1.0 if amp1 else 0.0
+        z["lfo1_depth"][0] = float(d1)
+        z["lfo1_a_start"][0] = float(a1_start)
+        z["lfo1_a_end"][0] = float(a1_end)
+        z["lfo1_b_start"][0] = float(b1_start)
+        z["lfo1_b_end"][0] = float(b1_end)
+        z["lfo1_smooth_coef"][0] = float(sm1)
+        z["lfo1_state_a"][0] = float(st1_a)
+        z["lfo1_state_b"][0] = float(st1_b)
+        z["lfo2_en"][0] = 1.0 if en2 else 0.0
+        z["lfo2_is_amp"][0] = 1.0 if amp2 else 0.0
+        z["lfo2_depth"][0] = float(d2)
+        z["lfo2_a_start"][0] = float(a2_start)
+        z["lfo2_a_end"][0] = float(a2_end)
+        z["lfo2_b_start"][0] = float(b2_start)
+        z["lfo2_b_end"][0] = float(b2_end)
+        z["lfo2_smooth_coef"][0] = float(sm2)
+        z["lfo2_state_a"][0] = float(st2_a)
+        z["lfo2_state_b"][0] = float(st2_b)
+
+    def read_lfo_states(self, which: int) -> tuple[float, float]:
+        """Block-end smoother states (a, b) for one LFO — the bargraph
+        zones hold the last sample written by the compute that just ran.
+        Call only for LFOs whose ramp Faust actually applied this block
+        (mirrors which _smooth_one_pole calls Python would have made)."""
+        z = self._zones
+        p = "lfo1" if int(which) == 1 else "lfo2"
+        return float(z[p + "_state_a_out"][0]), float(z[p + "_state_b_out"][0])
+
     def process(self, inputs: np.ndarray) -> np.ndarray:
         """Run one block. `inputs` is the osc bank's (5, n) float64
         C-contiguous block. Returns the persistent (9, n) float64 output
@@ -251,7 +320,9 @@ def _install_ui_callbacks(dsp, zones: dict):
 
     @_ffi.callback("void(void*, const char*, double*, double, double)")
     def _bar(ui, label, zone, lo, hi):  # noqa: ARG001
-        pass
+        # Bargraphs are read-back zones (Phase 4 LFO smoother block-end
+        # states) — record them alongside the sliders.
+        zones[_ffi.string(label).decode()] = zone
 
     @_ffi.callback("void(void*, const char*, const char*, void**)")
     def _sf(ui, label, url, sf):  # noqa: ARG001

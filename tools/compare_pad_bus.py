@@ -1,9 +1,16 @@
-"""Parity harness for the Faust pad bus (Phase 1 + 2 render-skeleton port).
+"""Parity harness for the Faust pad bus (Phase 1 + 2 + 4 render-skeleton port).
 
-Drives two full SynthEngine instances through an IDENTICAL multi-block
-scenario — same notes, same param timeline, same RNG seed — one on the
-Python render skeleton (STAVE_FAUST_PAD_BUS off) and one on the Faust pad
-bus (flag on). Both run the Faust osc bank, so the pad-bus region receives
+Drives full SynthEngine instances through an IDENTICAL multi-block
+scenario — same notes, same param timeline, same RNG seed:
+
+  run A — Python render skeleton (STAVE_FAUST_PAD_BUS off)  [reference]
+  run B — Faust pad bus, two-call path (PAD_BUS on, MERGED off)
+  run C — Phase 4 merged path (PAD_BUS + MERGED on): ONE C call per block
+          (osc_bank compute → f32→f64 convert → pad_bus compute) with the
+          LFO amp/pan block ramps applied inside pad_bus.dsp on fast-path
+          (all-recv) blocks, Python per-block fallback otherwise.
+
+All runs use the Faust osc bank, so the pad-bus region receives
 bit-identical 5-channel input; every delta below is attributable to the
 ported region alone.
 
@@ -38,9 +45,14 @@ filter → chord change → independent OSC2 filter → osc2 blend to zero
 (render_osc2 gate) → [Phase 2] shimmer on (+12, fast-path sends) → mix
 sweep → +12↔+24 flips → CLOUD send to 0 and re-engage (frozen-ring
 exactness) → shimmer off/on (frozen-HP exactness) → slow-path sends with
-shimmer → mix-threshold gate off/on.
+shimmer → mix-threshold gate off/on → [Phase 4] LFO1 amp → LFO1 pan +
+spread → dual LFO mixed targets → one-pole smoothing on → depth-cap dual
+amp → recv-flag split (merged run drops to the Python per-block fallback)
+→ all-recv restore (Faust re-engage + smoother-state handoff) → poly LFO
+on/off (no-double-application check) → LFO2 bus target (Python-side, state
+sharing) → LFO2 pan saw + smooth → depths to 0.
 
-Parity bar: max |delta| <= 1e-6 on every tapped channel.
+Parity bar: max |delta| <= 1e-6 on every tapped channel, every run pair.
 
 Run:  cd stave-synth && venv/bin/python tools/compare_pad_bus.py
 """
@@ -65,7 +77,7 @@ from stave_synth import synth_engine as se  # noqa: E402
 
 SR = 48000
 N_BLK = 256
-N_BLOCKS = 2100          # ~11.2 s (1300 Phase 1 + 800 Phase 2 shimmer)
+N_BLOCKS = 2950          # 1300 Phase 1 + 800 Phase 2 shimmer + 850 Phase 4 LFO
 SEED = 0xC0DE
 BAR = 1e-6
 
@@ -174,17 +186,63 @@ def scenario():
                lambda e: setattr(e, "shimmer_mix", 0.0005)),
         (2040, "mix → 0.5 (gate re-engage)",
                lambda e: setattr(e, "shimmer_mix", 0.5)),
+        # ── Phase 4: LFO amp/pan (merged run applies these in pad_bus.dsp
+        # on all-recv blocks; runs A/B keep the Python application — every
+        # run must land on the same samples). Sends stay on the fast path
+        # and Haas stays disengaged throughout (Phase-1 transition rules).
+        # Shapes avoid "sh" so the render path stays RNG-free.
+        (2100, "LFO1 amp sine 2 Hz d0.5",
+               lambda e: (setattr(e, "lfo_target", "amp"),
+                          setattr(e, "lfo_rate_hz", 2.0),
+                          setattr(e, "lfo_depth", 0.5))),
+        (2170, "LFO1 → pan, spread 0.5",
+               lambda e: (setattr(e, "lfo_target", "pan"),
+                          setattr(e, "lfo_spread", 0.5))),
+        (2240, "LFO2 amp tri 0.8 Hz d0.7 sprd 0.6",
+               lambda e: (setattr(e, "lfo2_target", "amp"),
+                          setattr(e, "lfo2_shape", "triangle"),
+                          setattr(e, "lfo2_rate_hz", 0.8),
+                          setattr(e, "lfo2_spread", 0.6),
+                          setattr(e, "lfo2_depth", 0.7))),
+        (2310, "LFO smoothing on (0.4 / 0.15)",
+               lambda e: (setattr(e, "lfo_smooth", 0.4),
+                          setattr(e, "lfo2_smooth", 0.15))),
+        (2380, "LFO1 → amp d1.0 (0.7 cap, dual gates)",
+               lambda e: (setattr(e, "lfo_target", "amp"),
+                          setattr(e, "lfo_depth", 1.0))),
+        (2450, "recv split: osc2 drops LFO1 (fallback)",
+               lambda e: setattr(e, "osc2_recv_lfo1", False)),
+        (2520, "all-recv restored (state handoff)",
+               lambda e: setattr(e, "osc2_recv_lfo1", True)),
+        (2590, "poly LFO1 (amp per-voice in bank)",
+               lambda e: setattr(e, "lfo_poly", True)),
+        (2660, "poly off (amp back on the bus)",
+               lambda e: setattr(e, "lfo_poly", False)),
+        (2730, "LFO2 → bus (post-reverb, Python)",
+               lambda e: setattr(e, "lfo2_target", "bus")),
+        (2800, "LFO2 → pan saw + smooth 0.3",
+               lambda e: (setattr(e, "lfo2_target", "pan"),
+                          setattr(e, "lfo2_shape", "saw"),
+                          setattr(e, "lfo2_smooth", 0.3))),
+        (2870, "LFO depths → 0 (idle path)",
+               lambda e: (setattr(e, "lfo_depth", 0.0),
+                          setattr(e, "lfo2_depth", 0.0))),
     ]
 
 
-def run_engine(pad_bus: bool):
+def run_engine(pad_bus: bool, merged: bool = False):
     se.USE_FAUST_PAD_BUS = pad_bus       # module global, read at __init__
+    se.USE_FAUST_MERGED = merged
     np.random.seed(SEED)
     e = se.SynthEngine(sample_rate=SR)
     if pad_bus:
         assert e._faust_pad_bus is not None, (
             "STAVE_FAUST_PAD_BUS engine has no pad bus — build "
             "faust/libstave_pad_bus.so (faust/build.sh) and retry")
+    if merged:
+        assert e._faust_merged is not None, (
+            "STAVE_FAUST_MERGED engine has no shim — build "
+            "faust/libstave_merged_shim.so (faust/build.sh) and retry")
     assert e._faust_osc_bank is not None, "Faust osc bank required"
     configure(e)
 
@@ -217,8 +275,6 @@ def run_engine(pad_bus: bool):
     e.reverb.process = tapped_rev
 
     events = dict((b, (d, fn)) for b, d, fn in scenario())
-    if pad_bus:
-        pad_bus_engaged = 0
     for i in range(N_BLOCKS):
         blk_ref["i"] = i
         if i in events:
@@ -229,7 +285,7 @@ def run_engine(pad_bus: bool):
 
     # Contract: 9 outputs, bypass channels stay silent.
     if pad_bus:
-        pb_out = e._faust_pad_bus._out
+        pb_out = e._faust_merged._bus_out if merged else e._faust_pad_bus._out
         assert pb_out.shape[0] == 9
         assert np.all(pb_out[4] == 0.0) and np.all(pb_out[5] == 0.0), \
             "bypass channels must be zero (reserved)"
@@ -239,12 +295,10 @@ def run_engine(pad_bus: bool):
     return dry, send, final
 
 
-def main():
-    print("Rendering Python-skeleton engine (STAVE_FAUST_PAD_BUS off)...")
-    dry_a, send_a, fin_a = run_engine(pad_bus=False)
-    print("Rendering Faust pad-bus engine (STAVE_FAUST_PAD_BUS on)...")
-    dry_b, send_b, fin_b = run_engine(pad_bus=True)
-
+def report(tag, ref, run):
+    """Per-segment + full-run peak |delta| table for one run pair."""
+    dry_a, send_a, fin_a = ref
+    dry_b, send_b, fin_b = run
     segs = scenario()
     bounds = [b for b, _, _ in segs] + [N_BLOCKS]
     channels = {
@@ -253,7 +307,8 @@ def main():
         "final_L": (fin_a[0], fin_b[0]), "final_R": (fin_a[1], fin_b[1]),
     }
 
-    print(f"\n{'segment':<44}" + "".join(f"{k:>10}" for k in channels))
+    print(f"\n══ {tag} ══")
+    print(f"{'segment':<44}" + "".join(f"{k:>10}" for k in channels))
     for si in range(len(segs)):
         lo, hi = bounds[si] * N_BLK, bounds[si + 1] * N_BLK
         row = f"[{bounds[si]:>4}:{bounds[si+1]:>4}] {segs[si][1]:<34.34}"
@@ -264,13 +319,26 @@ def main():
     print("-" * (44 + 10 * len(channels)))
     ok = True
     row = f"{'PEAK over full run':<44}"
-    peaks = {}
     for k, (a, b) in channels.items():
         p = float(np.abs(a - b).max())
-        peaks[k] = p
         ok &= p <= BAR
         row += f"{p:>10.2e}"
     print(row)
+    return ok
+
+
+def main():
+    print("Rendering Python-skeleton engine (STAVE_FAUST_PAD_BUS off)...")
+    ref = run_engine(pad_bus=False)
+    print("Rendering Faust pad-bus engine (PAD_BUS on, MERGED off)...")
+    two_call = run_engine(pad_bus=True)
+    print("Rendering merged engine (PAD_BUS + MERGED on, one C call)...")
+    merged = run_engine(pad_bus=True, merged=True)
+
+    ok = report("run B: two-call pad bus vs Python reference", ref, two_call)
+    ok &= report("run C: MERGED shim + in-Faust LFO vs Python reference", ref, merged)
+
+    dry_a, send_a, fin_a = ref
     print(f"\nsignal peaks (sanity): dry {np.abs(dry_a).max():.3f}  "
           f"send {np.abs(send_a).max():.3f}  final {np.abs(fin_a).max():.3f}")
     print(f"\nparity bar {BAR:.0e}: {'PASS' if ok else 'FAIL'}")

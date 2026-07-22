@@ -28,6 +28,9 @@ declare description "Phase 1+2 render-skeleton port: Haas + filter routing + sha
 //   • LFO amp/pan application — sits between the highpass and the FX
 //     bypass carve; the block-ramp smoothing character is deliberate
 //     (plan: revisit in Phase 4 only with A/B)
+//     → PORTED in Phase 4 for the merged path's fast-path blocks — the
+//       exact same block ramps, not si.smoo; see the Phase 4 banner below.
+//       The recv split path + bus target stay in Python.
 //   • FX-bypass dry carve — happens POST-LFO on a data-dependent
 //     magnitude ratio, so outputs 5/6 (bypass_l/r) are reserved and
 //     always 0.0 in Phase 1. NOTE (follow-the-code): the osc*_fx_bypass
@@ -144,6 +147,40 @@ shim_tap_r1       = hslider("shim_tap_r1",  8304.0, 0.0, 65535.0, 1.0);     // i
 shim_tap_r2       = hslider("shim_tap_r2", 13871.0, 0.0, 65535.0, 1.0);     // int(0.289·SR) — yes, 13871: float truncation
 shim_tap_r3       = hslider("shim_tap_r3", 19440.0, 0.0, 65535.0, 1.0);     // int(0.405·SR)
 shim_tap_r4       = hslider("shim_tap_r4", 25104.0, 0.0, 65535.0, 1.0);     // int(0.523·SR)
+
+// ── Phase 4 LFO amp/pan zones (merged path only — see the Phase 4 banner
+// above pad_bus below). Pushed by faust_pad_bus.push_lfo_block every
+// MERGED block; on the two-call path they keep these defaults (enables 0)
+// and the whole section collapses to exact ×1.0 pass-through.
+// Python remains the owner of EVERYTHING scalar: the LFO oscillators
+// (_advance_lfo), ramp endpoints (prev block end → new end), depth caps,
+// the smoother coefficient, and — critically — the smoother STATE, which
+// arrives as a zone each block and leaves via bargraph readback. This
+// module holds NO cross-block LFO state, so Python-fallback blocks (recv
+// split path, bus target) continue sample-exact on the same state vars.
+lfo_blk_ctr   = hslider("lfo_blk_ctr", 0.0, 0.0, 1.0e9, 1.0);    // bumped per merged block → block-start trig
+lfo_ramp_step = hslider("lfo_ramp_step", 0.0, 0.0, 1.0, 0.0);    // 1/(n-1); 0 when n == 1
+lfo_last_i    = hslider("lfo_last_i", 1.0e9, 0.0, 1.0e9, 1.0);   // n-1: last sample snaps t to exactly 1.0 (np.linspace endpoint)
+lfo1_en       = hslider("lfo1_en", 0.0, 0.0, 1.0, 1.0);          // faust_lfo1 (recv/depth/target conditions, Python-side)
+lfo1_is_amp   = hslider("lfo1_is_amp", 0.0, 0.0, 1.0, 1.0);      // 1 = amp gate, 0 = pan (only read when en)
+lfo1_depth    = hslider("lfo1_depth", 0.0, 0.0, 1.0, 0.0);       // lfo1_d (motion-mix × cap already applied)
+lfo1_a_start  = hslider("lfo1_a_start", 0.0, -1.0, 1.0, 0.0);    // _lfo_mod_a_last
+lfo1_a_end    = hslider("lfo1_a_end", 0.0, -1.0, 1.0, 0.0);      // this block's lfo1_a
+lfo1_b_start  = hslider("lfo1_b_start", 0.0, -1.0, 1.0, 0.0);    // _lfo_mod_b_last (spread channel)
+lfo1_b_end    = hslider("lfo1_b_end", 0.0, -1.0, 1.0, 0.0);
+lfo1_sm       = hslider("lfo1_smooth_coef", 0.0, 0.0, 1.0, 0.0); // one-pole a; 0.0 == Python's <=0.001 passthrough (exact)
+lfo1_st_a     = hslider("lfo1_state_a", 0.0, -2.0, 2.0, 0.0);    // _lfo_smooth_a_state (block-start load)
+lfo1_st_b     = hslider("lfo1_state_b", 0.0, -2.0, 2.0, 0.0);
+lfo2_en       = hslider("lfo2_en", 0.0, 0.0, 1.0, 1.0);
+lfo2_is_amp   = hslider("lfo2_is_amp", 0.0, 0.0, 1.0, 1.0);
+lfo2_depth    = hslider("lfo2_depth", 0.0, 0.0, 1.0, 0.0);
+lfo2_a_start  = hslider("lfo2_a_start", 0.0, -1.0, 1.0, 0.0);
+lfo2_a_end    = hslider("lfo2_a_end", 0.0, -1.0, 1.0, 0.0);
+lfo2_b_start  = hslider("lfo2_b_start", 0.0, -1.0, 1.0, 0.0);
+lfo2_b_end    = hslider("lfo2_b_end", 0.0, -1.0, 1.0, 0.0);
+lfo2_sm       = hslider("lfo2_smooth_coef", 0.0, 0.0, 1.0, 0.0);
+lfo2_st_a     = hslider("lfo2_state_a", 0.0, -2.0, 2.0, 0.0);
+lfo2_st_b     = hslider("lfo2_state_b", 0.0, -2.0, 2.0, 0.0);
 
 // Staggered-Q Butterworth ratios — synth_engine._Q24_S1_RATIO / _Q24_S2_RATIO
 Q24_S1_RATIO = 0.5412 / 0.707;
@@ -288,6 +325,81 @@ with {
     delayed = (x * haas_on) : de.delay(HAAS_MAX, int(min(haas_samps, HAAS_MAX - 1)));
 };
 
+// ═══ Phase 4 (2026-07-22): LFO amp/pan application (merged path) ═══════
+// Mirrors synth_engine's post-highpass fast path (all_recv == True):
+//   _fill_ramp  → linear per-block ramp from prev block's end value to the
+//                 new _advance_lfo value (np.linspace — the anti-click
+//                 block-ramp smoothing, ported as an i/(n-1) ramp with the
+//                 endpoint snapped to exactly 1.0, NOT si.smoo)
+//   _smooth_one_pole → optional one-pole LP on the ramp (scipy lfilter
+//                 b=[1-a], a=[1,-a], zi=a·prev — the DF2T recurrence
+//                 y = (1-a)x + z, z = a·y, with z(sample 0) = a·state_in).
+//                 State loads from a ZONE at every block start and exports
+//                 through a bargraph, so Python stays the state owner.
+//   _amp_gate   → 1 - d + d(1+r)/2 — tremolo-style DIP-ONLY gate: peaks at
+//                 exactly 1.0, NO makeup gain, can never push above unity
+//                 regardless of depth or stacking (limiter-safe by
+//                 construction). Copied EXACTLY, incl. operand order.
+//   pan         → ±(r_a·d/2) on L/+R (only the A channel drives pan; the
+//                 spread/B channel is amp-R only — exactly like Python).
+// Composition matches the Python fast path: amp gates from both LFOs
+// multiply, pan mods add, then dry := (dry × amp) × (1 + pan).
+// The per-OSC recv split path and the bus-target LFO do NOT run here —
+// Python keeps them (split ratio is data-dependent on this block's osc
+// magnitudes; bus target applies post-reverb). Poly amp LFOs are already
+// applied per-voice inside osc_bank.dsp — Python pushes en=0 for those,
+// so there is no double application.
+// Block-start detector: Python bumps lfo_blk_ctr once per merged block;
+// the != against its one-sample delay fires on the first sample only.
+lfo_blk_first = lfo_blk_ctr != lfo_blk_ctr';
+lfo_idx_tick(t, p) = select2(t > 0.5, p + 1.0, 0.0);
+lfo_blk_i = (lfo_idx_tick(lfo_blk_first) ~ _);
+// t = i/(n-1), with the last sample forced to exactly 1.0 — np.linspace
+// sets its endpoint explicitly, and (n-1)·(1/(n-1)) can be 1 ulp off.
+lfo_t = select2(lfo_blk_i >= lfo_last_i, lfo_blk_i * lfo_ramp_step, 1.0);
+// Python: np.multiply(t, end-start, out) ; out += start
+lfo_ramp(s, e) = s + (e - s) * lfo_t;
+
+// One-pole with zone-loaded state (tick at top level — lambda-lift gotcha).
+// first/ac/st are block constants; zp is the in-block recursion.
+lfo_sm_tick(first, ac, st, zp, x) = zn, y
+with {
+    zeff = select2(first > 0.5, zp, ac * st);   // zi = a·prev_state at sample 0
+    y    = (1.0 - ac) * x + zeff;               // b0·x + z
+    zn   = ac * y;                              // z' = a·y  (b1 = 0)
+};
+lfo_smooth1p(first, ac, st) = (lfo_sm_tick(first, ac, st) ~ _) : (!, _);
+
+lfo1_ra = lfo_smooth1p(lfo_blk_first, lfo1_sm, lfo1_st_a, lfo_ramp(lfo1_a_start, lfo1_a_end));
+lfo1_rb = lfo_smooth1p(lfo_blk_first, lfo1_sm, lfo1_st_b, lfo_ramp(lfo1_b_start, lfo1_b_end));
+lfo2_ra = lfo_smooth1p(lfo_blk_first, lfo2_sm, lfo2_st_a, lfo_ramp(lfo2_a_start, lfo2_a_end));
+lfo2_rb = lfo_smooth1p(lfo_blk_first, lfo2_sm, lfo2_st_b, lfo_ramp(lfo2_b_start, lfo2_b_end));
+
+// Dip-only amp gate — copy of synth_engine._amp_gate, same operand order.
+lfo_amp_gate(r, d) = 1.0 - d + d * (1.0 + r) * 0.5;
+
+// Per-LFO contributions. Inactive → exact identity (×1.0 / +0.0), which is
+// bit-transparent in IEEE — matching Python skipping the multiply.
+lfo1_g_l = select2((lfo1_en * lfo1_is_amp) > 0.5, 1.0, lfo_amp_gate(lfo1_ra, lfo1_depth));
+lfo1_g_r = select2((lfo1_en * lfo1_is_amp) > 0.5, 1.0, lfo_amp_gate(lfo1_rb, lfo1_depth));
+lfo2_g_l = select2((lfo2_en * lfo2_is_amp) > 0.5, 1.0, lfo_amp_gate(lfo2_ra, lfo2_depth));
+lfo2_g_r = select2((lfo2_en * lfo2_is_amp) > 0.5, 1.0, lfo_amp_gate(lfo2_rb, lfo2_depth));
+lfo1_p   = select2((lfo1_en * (1.0 - lfo1_is_amp)) > 0.5, 0.0, lfo1_ra * lfo1_depth * 0.5);
+lfo2_p   = select2((lfo2_en * (1.0 - lfo2_is_amp)) > 0.5, 0.0, lfo2_ra * lfo2_depth * 0.5);
+
+lfo_amp_l = lfo1_g_l * lfo2_g_l;
+lfo_amp_r = lfo1_g_r * lfo2_g_r;
+lfo_pan_l = lfo1_p + lfo2_p;
+// Python: pmod_r = ((-r)·d)·0.5 per LFO — exact negation of the L term.
+lfo_pan_r = (0.0 - lfo1_p) + (0.0 - lfo2_p);
+
+// Block-end smoother state exports (bargraph zone holds the last written
+// sample after compute returns — read by faust_pad_bus.read_lfo_states).
+lfo1_export_a = lfo1_ra : hbargraph("lfo1_state_a_out", -4.0, 4.0);
+lfo1_export_b = lfo1_rb : hbargraph("lfo1_state_b_out", -4.0, 4.0);
+lfo2_export_a = lfo2_ra : hbargraph("lfo2_state_a_out", -4.0, 4.0);
+lfo2_export_b = lfo2_rb : hbargraph("lfo2_state_b_out", -4.0, 4.0);
+
 pad_bus(o1l, o1r, o2l, o2r, shim) = dry_l, dry_r, send_l, send_r, bypass_l, bypass_r,
                                     shim_out, cloud_out_l, cloud_out_r
 with {
@@ -318,8 +430,17 @@ with {
 
     // Shared highpass (low cut). Input gated by hp_on → state stays zero
     // while off, exactly like Python's never-processed filter_hp_*.
-    dry_l = select2(hp_on > 0.5, pre_hp_l, (pre_hp_l * hp_on) : hpf(hp_cutoff, 0.707));
-    dry_r = select2(hp_on > 0.5, pre_hp_r, (pre_hp_r * hp_on) : hpf(hp_cutoff, 0.707));
+    post_hp_l = select2(hp_on > 0.5, pre_hp_l, (pre_hp_l * hp_on) : hpf(hp_cutoff, 0.707));
+    post_hp_r = select2(hp_on > 0.5, pre_hp_r, (pre_hp_r * hp_on) : hpf(hp_cutoff, 0.707));
+
+    // Phase 4: LFO amp gate + pan on the dry bus (merged path; exact ×1.0
+    // pass-through when the enables are 0 — the two-call path never pushes
+    // them). Order mirrors Python: output *= amp, then *= (1 + pan). The
+    // attaches keep all four smoother-state bargraph exports alive.
+    dry_l = attach(attach((post_hp_l * lfo_amp_l) * (1.0 + lfo_pan_l),
+                          lfo1_export_a), lfo2_export_a);
+    dry_r = attach(attach((post_hp_r * lfo_amp_r) * (1.0 + lfo_pan_r),
+                          lfo1_export_b), lfo2_export_b);
 
     // Per-OSC reverb-send weighted sum → dedicated send-filter path.
     // Mirrors synth_engine.py:3394-3406 (_rev_send_filter_* slow path).

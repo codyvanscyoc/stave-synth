@@ -115,5 +115,19 @@ build_module piano_chain  StavePianoChain    stave_piano_chain  "-double"  "-DFA
 build_lite_module osc_bank     StaveOscBank      stave_osc_bank     'NVOICES = 24;' 'NVOICES = 12;'
 build_lite_module sympathetic  StaveSympathetic  stave_sympathetic  'N_SLOTS = 24;' 'N_SLOTS = 12;'
 
+# Phase 4 merged shim — plain C, no Faust step: one call runs osc_bank
+# compute → f32→f64 widen → pad_bus compute. Function + dsp pointers come
+# from Python at runtime, so it needs no link against the Faust .so files
+# and works with the full OR lite osc bank unchanged. The faust prelude
+# -include from CFLAGS is harmless here (plain typedefs only).
+shim_out="libstave_merged_shim.so"
+if [ "$FORCE" -eq 0 ] && [ -f "$shim_out" ] && [ "$shim_out" -nt merged_shim.c ]; then
+    echo "─── merged_shim → $shim_out  (up-to-date, skip)"
+else
+    echo "─── merged_shim → $shim_out ───"
+    gcc $CFLAGS -o "$shim_out" merged_shim.c
+    ls -la "$shim_out"
+fi
+
 echo
 echo "Faust modules built. Restart the synth to pick up changes."

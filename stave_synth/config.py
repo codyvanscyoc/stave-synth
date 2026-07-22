@@ -90,6 +90,16 @@ USE_FAUST_PAD_BUS = os.environ.get("STAVE_FAUST_PAD_BUS", "0") not in ("0", "", 
 # mix stay Python too (post-comp). FluidSynth sample generation unchanged.
 USE_FAUST_PIANO_CHAIN = os.environ.get("STAVE_FAUST_PIANO_CHAIN", "0") not in ("0", "", "false", "False")
 
+# Phase 4 consolidation (FAUST_PORT_PLAN.md): run the Faust osc bank and the
+# Faust pad bus as ONE C call per block — faust/libstave_merged_shim.so does
+# bank compute → f32→f64 widen → pad-bus compute in C — and move the LFO
+# amp/pan block-ramp application into pad_bus.dsp on fast-path (all-recv)
+# blocks. Requires STAVE_FAUST_OSC_BANK and STAVE_FAUST_PAD_BUS both on;
+# engages per block only when the Faust bank produced the 5-channel block.
+# The per-OSC recv split path and the bus-target LFO stay in Python (the
+# split ratio is data-dependent on the current block's osc output).
+USE_FAUST_MERGED = os.environ.get("STAVE_FAUST_MERGED", "0") not in ("0", "", "false", "False")
+
 DEFAULT_STATE = {
     "synth_pad": {
         "osc1_blend": 0.6,
