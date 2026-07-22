@@ -618,3 +618,12 @@ the full-blast CPU-spike behavior there.
    |Δ|>0.5 threshold pending the relative-click-detector TODO), then the
    full-blast spike check with LFOs + shimmer + CLOUD engaged, then user
    ear check. Pi 5: flag stays OFF until the Pi 4 soak passes.
+- **2026-07-22 (Phase 4 deployed)** — commit c78686f, STAVE_FAUST_MERGED=1
+  on the Pi 4. Max-everything + BOTH LFOs (harder than any prior test):
+  69.8-76.3% render, **0 dropouts** in the DAC capture, 1 starvation
+  across the whole storm (was 79.8-85.8% / 1-4 dropouts without LFOs).
+  The full-blast spike scenario is resolved. ALL FOUR PORT PHASES LIVE
+  ON THE PI 4. Remaining (live sessions with the user): Phase 3+4 ear
+  checks, 8-slot decision, ring ratchet (the latency prize), post-port
+  tuning pass (voicings/comp/limiter/gain). Pi 5: all port flags still
+  OFF, awaiting soak + the adoption checklist.
