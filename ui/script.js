@@ -238,7 +238,37 @@
         }
     }
 
+    // Resolve a setting's slot in the local `state` mirror. Dotted params
+    // (adsr_osc1.attack_ms) walk into the nested object — the same shape
+    // updateSettingsSliders reads — instead of landing on a flat key the
+    // sync loop would never see. Returns {obj, key} or null.
+    function resolveSettingSlot(section, param) {
+        if (!state || !section || param === undefined || !state[section]) return null;
+        var obj = state[section];
+        var path = String(param).split(".");
+        for (var i = 0; i < path.length - 1; i++) {
+            var k = path[i];
+            if (typeof obj[k] !== "object" || obj[k] === null) obj[k] = {};
+            obj = obj[k];
+        }
+        return { obj: obj, key: path[path.length - 1] };
+    }
+
+    function mirrorSettingToState(section, param, value) {
+        var slot = resolveSettingSlot(section, param);
+        if (slot) slot.obj[slot.key] = value;
+    }
+
     function send(msg) {
+        // Keep the local state mirror in lockstep with every outgoing
+        // setting (this is the single choke point all senders go through,
+        // including mirror/LINK flushes and the offline queue). The server
+        // echoes setting_ack with the same value, so the ack handler's
+        // comparison then no-ops for our own edits — no resync storm while
+        // a knob is being dragged.
+        if (msg && msg.type === "setting") {
+            mirrorSettingToState(msg.section, msg.param, msg.value);
+        }
         if (ws && ws.readyState === WebSocket.OPEN) {
             try {
                 ws.send(JSON.stringify(msg));
@@ -259,6 +289,63 @@
             settingsResyncRaf = null;
             if (typeof updateSettingsSliders === "function") updateSettingsSliders();
         });
+    }
+
+    // ═══ Drag guard ═══
+    // While a finger/pointer is down on a control, no resync path may
+    // reposition that control — a mid-drag write from (possibly stale)
+    // state fights the finger and the knob "glitches / doesn't stay".
+    // Track every active press at the document level (capture phase, so
+    // per-control stopPropagation can't starve it). Ancestry facts (.knob
+    // wrapper, piano-EQ graph membership) are captured at press time
+    // because the piano-EQ nodes are innerHTML-rebuilt mid-drag — the
+    // stored target may be disconnected from the DOM by the time we check.
+    var _dragPoints = {};   // "p"+pointerId / "t"+touchId → {t, knob, eq}
+    function _dragStart(id, target) {
+        if (!target || !target.closest) return;
+        _dragPoints[id] = {
+            t: target,
+            knob: target.closest(".knob"),
+            eq: !!target.closest("#piano-eq-graph"),
+        };
+    }
+    function _dragEnd(id) { delete _dragPoints[id]; }
+    document.addEventListener("pointerdown", function (e) { _dragStart("p" + e.pointerId, e.target); }, true);
+    document.addEventListener("pointerup", function (e) { _dragEnd("p" + e.pointerId); }, true);
+    document.addEventListener("pointercancel", function (e) { _dragEnd("p" + e.pointerId); }, true);
+    document.addEventListener("touchstart", function (e) {
+        for (var i = 0; i < e.changedTouches.length; i++) _dragStart("t" + e.changedTouches[i].identifier, e.target);
+    }, true);
+    function _touchDragEnd(e) {
+        for (var i = 0; i < e.changedTouches.length; i++) _dragEnd("t" + e.changedTouches[i].identifier);
+    }
+    document.addEventListener("touchend", _touchDragEnd, true);
+    document.addEventListener("touchcancel", _touchDragEnd, true);
+    // Safety valve: a missed pointerup (tab switch mid-drag) must never
+    // leave a control permanently guarded against resyncs.
+    window.addEventListener("blur", function () { _dragPoints = {}; });
+
+    // True when the user is actively pressing `el`, a descendant of it, or
+    // a sibling inside the same .knob wrapper (knob drags press the dial,
+    // not the hidden range input).
+    function isUserDragging(el) {
+        if (!el) return false;
+        var elKnob = el.closest ? el.closest(".knob") : null;
+        for (var k in _dragPoints) {
+            var d = _dragPoints[k];
+            if (!d) continue;
+            if (el === d.t || (el.contains && el.contains(d.t))) return true;
+            if (elKnob && d.knob && elKnob === d.knob) return true;
+        }
+        return false;
+    }
+    // True while a piano-EQ node drag is in flight (the drag target is an
+    // SVG circle, not the eq_band* sliders it writes to).
+    function isDraggingPianoEq() {
+        for (var k in _dragPoints) {
+            if (_dragPoints[k] && _dragPoints[k].eq) return true;
+        }
+        return false;
     }
 
     function handleServerMessage(msg) {
@@ -532,13 +619,16 @@
             updateCCIndicators();
         } else if (msg.type === "setting_ack") {
             // Broadcast from another client (or the echo of our own send).
-            // Only act when the value differs from our local mirror — our
-            // own sends already updated the UI, so this is a cheap no-op
-            // for the sender and a real sync for second screens.
-            if (msg.section && msg.param !== undefined &&
-                state && state[msg.section] &&
-                state[msg.section][msg.param] !== msg.value) {
-                state[msg.section][msg.param] = msg.value;
+            // send() already mirrored our own edits into `state` (dotted
+            // params resolved into their nested object — comparing against
+            // a flat "adsr_osc1.attack_ms" key always read undefined and
+            // turned every own-ack into a knob-fighting resync), so the
+            // echo compares equal and no-ops; only a genuinely remote
+            // change schedules a resync for second screens.
+            var ackSlot = (msg.section && msg.param !== undefined)
+                ? resolveSettingSlot(msg.section, msg.param) : null;
+            if (ackSlot && ackSlot.obj[ackSlot.key] !== msg.value) {
+                ackSlot.obj[ackSlot.key] = msg.value;
                 if (msg.param === "shimmer_high") {
                     // Two controls share this param (front-panel +12 button
                     // and the LAYER +12/+24 button) — keep both honest.
@@ -3591,9 +3681,18 @@
     function updateSettingsSliders() {
         if (!state) return;
 
+        // Drag guard: never reposition a control the user is actively
+        // touching — a resync mid-drag (remote ack, bus-comp preset, state
+        // broadcast) would yank the knob out from under the finger. The
+        // piano-EQ node drag writes to eq_band* sliders while the finger is
+        // on an SVG circle, so those params are guarded as a group.
+        var eqDragActive = isDraggingPianoEq();
+
         document.querySelectorAll(".setting-slider").forEach(function (slider) {
             const section = slider.dataset.section;
             const param = slider.dataset.param;
+            if (isUserDragging(slider)) return;
+            if (eqDragActive && param && param.indexOf("eq_band") === 0) return;
             let sectionData = state[section];
             if (!sectionData) return;
 
@@ -3784,6 +3883,7 @@
 
         // Update checkboxes
         document.querySelectorAll(".setting-checkbox").forEach(function (checkbox) {
+            if (isUserDragging(checkbox)) return;
             const section = checkbox.dataset.section;
             const param = checkbox.dataset.param;
             let sectionData = state[section];
@@ -3795,6 +3895,7 @@
 
         // Update selects
         document.querySelectorAll(".setting-select").forEach(function (select) {
+            if (isUserDragging(select)) return;
             const section = select.dataset.section;
             const param = select.dataset.param;
             let sectionData = state[section];
