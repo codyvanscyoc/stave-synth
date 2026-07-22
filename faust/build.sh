@@ -18,6 +18,15 @@ done
 
 CFLAGS="-shared -fPIC -O3 -ffast-math -include $(pwd)/faust_cprelude.h"
 
+# Tune for the machine we're building ON — .so files are built per-device by
+# install.sh (never shipped), so -mcpu=native is safe and buys real NEON
+# autovectorization on DSP loops (measured win on Pi 4's A72). Guarded so
+# exotic toolchains without the flag still build.
+if echo 'int main(){return 0;}' | gcc -mcpu=native -x c - -o /dev/null 2>/dev/null; then
+    CFLAGS="$CFLAGS -mcpu=native"
+    echo "── native CPU tuning enabled (-mcpu=native)"
+fi
+
 build_module() {
     local name=$1       # dsp file stem (no extension)
     local cname=$2      # C class name passed to faust -cn
