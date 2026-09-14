@@ -1,5 +1,10 @@
 # Stave Synth
 
+This branch, `pi4-stage-pro`, develops the Pi4 stage edition. Start with the
+[Pi4 product vision](docs/pi4/PRODUCT_VISION.md),
+[validation plan](docs/pi4/ENGINEERING_VALIDATION.md), and
+[preserved baseline](docs/pi4/BASELINE.md). The original Pi5 documentation follows.
+
 Live MIDI synthesizer for Raspberry Pi 5 — worship ambient pad with piano layer.
 
 ## Install
