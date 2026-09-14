@@ -11,6 +11,13 @@ Pi). Node UI regression, Python parsing, shell/JS syntax and diff checks passed
 on Mac. Full target startup, normal service deployment and software rollback
 have now been exercised; physical playing qualification is next.
 
+Latest runtime source: **`483d953`**. Its targeted pointer-allocation correction
+removes the reproduced idle GC stall; **294 tests pass on Mac and Pi**, and a
+120-second target idle window spanning cleanup had zero new underruns/xruns.
+Full measurements and retained startup counters are in
+[STARTUP_CHECKPOINT.md](STARTUP_CHECKPOINT.md). Next:
+[real playing test](TEST_TONIGHT.md), not further broad feature work.
+
 This page is the short operational index. The evidence and qualifications remain
 in [REPAIR_PLAN.md](REPAIR_PLAN.md), [TARGET_BUILD.md](TARGET_BUILD.md), the
 [complete review](COMPLETE_CODE_REVIEW.md), the
@@ -74,7 +81,7 @@ in [REPAIR_PLAN.md](REPAIR_PLAN.md), [TARGET_BUILD.md](TARGET_BUILD.md), the
 | C09–C10 | **Implemented/offline-tested; requires media test** | Recorder and pad replacement have unique ownership, bounded queues/finalization, error truth, size/memory limits, transactional replacement and joined shutdown. Real SD throughput, ENOSPC and power interruption remain open. |
 | C11 | **Implemented; requires hardware** | Full repaired-app startup, listeners and native profile passed on target. Physical output/MIDI are not yet proven; READY alone does not prove audible Peavey output. |
 | C12–C13 | **Implemented/offline-tested** | Complete validated scene application, pending/completion truth, global-field preservation and one atomic preset bank replace the partial multi-file behavior. Audition engine/type changes and tails. |
-| C14 | **Implemented mitigation; requires soak/audition** | GC now waits for measured mixed-output inactivity and excludes active bed/freeze/recorder/panic conditions. Only a representative long Pi4 run can establish scheduler reserve and absence of audible interruption. |
+| C14 | **Implemented; short target retest passed; requires soak/audition** | GC waits for measured output/source inactivity. Six per-call pointer conversions no longer create cyclic garbage; first idle collection dropped from 84.6 to 5.9 ms, then 0.2 ms, with zero new underruns in the 120-second retest. Full playing-load reserve and long memory stability remain open. |
 | C15–C16 | **Implemented/offline-tested** | Debug no longer consumes piano samples; health labels were corrected; non-finite control/state input and final native output are guarded. Physical-meter meaning remains limited to internal engine signal, not PA audibility. |
 | C17 | **Policy/mitigation; still needs product work** | Current minimum-velocity, omni/channel merge and pedal policy are preserved for tomorrow. Multi-channel note identity, original MIDI timestamps/clock accuracy and the velocity threshold need explicit design plus Yamaha/Dexibell audition before code changes. |
 

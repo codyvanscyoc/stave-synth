@@ -16,6 +16,11 @@ See [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) and
 **Next gate: connect the Peavey interface/Yamaha keyboard and test the actual
 playing setup.** No physical-audio or full-stage qualification is yet claimed.
 
+Latest code `483d953`: 294 tests pass on Mac and Pi. Actual idle testing exposed
+an 84.6 ms cleanup stall, traced to six per-call NumPy pointer conversions;
+the targeted correction passed a 120-second target retest through cleanup with
+zero new underruns/xruns. See the checkpoint for the measurements and limitations.
+
 ## Order of work
 
 | Order | Outcome | Current status |

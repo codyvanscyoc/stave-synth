@@ -115,3 +115,36 @@ conversions yield zero collectible cycles; 2,000 old conversions yield 4,000.
 Typed-pointer and synchronous biquad results are checked. The complete Mac
 suite now passes **294 tests, zero skips**, plus Node UI regression/syntax.
 Target retest through the 90-second collection boundary is required next.
+
+### Retest result — correction verified on Pi
+
+Runtime source **`483d953ccaa7bf16af31eaf9275b6018612d4faa`** passed all
+**294 tests with zero skips on Pi** (25.552 s) and Mac. No native source/binary,
+dependency, kernel, sample-rate or buffer setting changed for this correction.
+
+The normal service restarted to readiness at 17:58:31.994 CDT, PID **120053**,
+invocation `de9572b0bbc24f2aa90336138a6e0346`. It remains the candidate process
+at this checkpoint; the isolated test unit is stopped.
+
+A measured 120-second idle window, 17:59:04–18:01:04 CDT, spans the original
+90-second cleanup boundary and the following collection:
+
+- 11,263 accepted render blocks and 11,263 consumed JACK callbacks advanced.
+- **Zero new underruns**, zero xruns, zero dropped MIDI events, zero missed
+  telemetry samples, and healthy native/UI/control/graph status throughout.
+- Seven initial startup underruns remained **7 → 7**, rather than being reset.
+  Two render cycles exceeded the block period, but neither exhausted the ring.
+- Window mean render 4.841 ms; p95 bucket 5.120–5.227 ms; p99 6.400–6.507 ms.
+  These are software render times, **not physical latency or full playing load**.
+- First gen-0 collection: **487 objects, 5.9 ms** at 18:00:01.
+  Next: **103 objects, 0.2 ms** at 18:00:31. This contrasts with the prior
+  68,398 objects / 84.6 ms pause. Collection policy was not disabled or retimed.
+- Service remained active with zero automatic restarts and advancing watchdog
+  heartbeat. Point-in-time RSS approximately 169 MiB; 68.1 °C; throttling flags zero.
+- A LAN WebSocket client also connected during this run. Its actual browser
+  type, touch behavior and musical use are not inferred from the connection log.
+
+**Next required gate:** [TEST_TONIGHT.md](TEST_TONIGHT.md). Connect the actual
+Peavey/Yamaha setup, verify selected routes, then play/listen/rehearse. This
+short idle success does not certify tomorrow's show, cold boots, hot-plug
+recovery, maximum layered load, or an eight-hour soak.

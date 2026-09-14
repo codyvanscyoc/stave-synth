@@ -11,3 +11,12 @@ Read `docs/pi4/ENGINEERING_VALIDATION.md` before testing. A separate checkout do
 Keep reliability fixes separate from intentional tonal changes. Verify which native/Faust path is active before attributing a defect to fallback Python code. Match baseline sound levels when comparing audio, and report observed results separately from static risks and proposed targets. Buffer capacity is not measured end-to-end latency.
 
 Publish scoped Pi4 commits with their verification. Rebuild native components on the target architecture before deployment; copying Python source alone does not update compiled DSP. Keep private runtime/settings archives and credentials out of the repository. Use the release plan to determine when live deployment, hardware interruption, and whole-device recovery testing are appropriate.
+
+Operational checkpoint, 2026-09-14: the Pi's normal `stave-synth.service` now
+uses `/home/codyvanscyoc/stave-synth-pi4-stage` through the removable
+`90-pi4-stage-candidate.conf` user-service drop-in. The original checkout is
+preserved for rollback. Do not assume the Pi4 development checkout is idle:
+verify actual service ownership before modifying/syncing runtime files there,
+and use an authorized maintenance window or a separate isolated candidate.
+See `docs/pi4/STARTUP_CHECKPOINT.md` and `docs/pi4/RELEASE_CHECKLIST.md` for
+current evidence and the still-required physical playing/rehearsal gates.
