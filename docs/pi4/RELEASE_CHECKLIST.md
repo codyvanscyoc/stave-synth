@@ -18,6 +18,14 @@ Full measurements and retained startup counters are in
 [STARTUP_CHECKPOINT.md](STARTUP_CHECKPOINT.md). Next:
 [real playing test](TEST_TONIGHT.md), not further broad feature work.
 
+Digital audition follow-up: five actual Pi-rendered MIDI takes are now captured
+([results](DIGITAL_AUDITION.md)). Capture/bridge counters stayed clear during
+each take, but four takes exceeded the strict render-time gate and both piano
+comparisons contain brief source-zero blocks near MIDI events. Piano ownership
+and shimmer timing reserve remain **open release findings**, not cleared by a
+running service or zero xruns. Normal stage service and saved settings restored;
+325 offline tests pass on Mac. Physical playing/rehearsal is still required.
+
 This page is the short operational index. The evidence and qualifications remain
 in [REPAIR_PLAN.md](REPAIR_PLAN.md), [TARGET_BUILD.md](TARGET_BUILD.md), the
 [complete review](COMPLETE_CODE_REVIEW.md), the

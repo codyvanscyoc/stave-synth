@@ -21,6 +21,13 @@ an 84.6 ms cleanup stall, traced to six per-call NumPy pointer conversions;
 the targeted correction passed a 120-second target retest through cleanup with
 zero new underruns/xruns. See the checkpoint for the measurements and limitations.
 
+Digital audition follow-up: five controlled Pi MIDI recordings are available;
+see [DIGITAL_AUDITION.md](DIGITAL_AUDITION.md). Before sign-off, investigate/fix
+the repeated 512-frame piano source-zero blocks (probable MIDI/native-lock
+contention) and establish adequate shimmer/control timing reserve. These are
+new measured findings, not closed repairs. No application/DSP changes were made
+by the recording tools; the normal stage service and original settings are back.
+
 ## Order of work
 
 | Order | Outcome | Current status |
@@ -28,7 +35,7 @@ zero new underruns/xruns. See the checkpoint for the measurements and limitation
 | 1 | Protect the working instrument and establish safe regression tests | Baseline audit/backups preserved; Pi4 candidate deployed through a removable override. Original-source software rollback exercised. |
 | 2 | Correct held notes, STOP, state saves, recording and connection truth | Two software repair batches implemented with offline regression coverage; real devices and acoustic behavior still require qualification. |
 | 3 | Bound control and audio work; finish state, recorder and native ownership | Schema/transactions, bounded queues/pads, MIDI overflow, graph contract, native lifecycle and UI recovery implemented. Target timing and fault qualification remain open. |
-| 4 | Prove sound, latency and reserve on Pi4 | Not measured: use piano + OSC1 + OSC2 + effects + optional recorded bed, with the actual controllers/interface. Preserve favorite sounds. |
+| 4 | Prove sound, latency and reserve on Pi4 | Five short digital MIDI takes measured; source-zero blocks and shimmer timing reserve remain open. Actual controller/interface latency, favorite sounds, optional recorded bed and full rehearsal still require qualification. |
 | 5 | Refine the Stage UI and pass release qualification | Software rollback passed; Safari/portrait, cold boots, hardware reconnects, fault tests, eight-hour soak, rehearsal and SD recovery remain open. |
 
 Do not lower unison, layer count, sample rate or sound quality merely to produce
