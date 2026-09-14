@@ -10,7 +10,7 @@ current passing regression suite.
 
 | Order | Outcome | Current status |
 | --- | --- | --- |
-| 1 | Protect the working instrument and establish safe regression tests | Baseline audit/backups preserved; isolated identity and explicit offline test runner implemented locally. No deployment. |
+| 1 | Protect the working instrument and establish safe regression tests | Baseline audit/backups preserved; repairs published to Pi4 branch and synced to separate target checkout. No live deployment. |
 | 2 | Correct held notes, STOP, state saves, recording and connection truth | Two software repair batches implemented with offline regression coverage; real devices and acoustic behavior still require qualification. |
 | 3 | Bound control and audio work; finish state, recorder and native ownership | Schema/transactions, bounded queues/pads, MIDI overflow, graph contract, native lifecycle and UI recovery implemented. Target timing and fault qualification remain open. |
 | 4 | Prove sound, latency and reserve on Pi4 | Not measured: use piano + OSC1 + OSC2 + effects + optional recorded bed, with the actual controllers/interface. Preserve favorite sounds. |
@@ -129,10 +129,10 @@ those migrations.
 
 ## Next gate: target checks, then hands-on qualification
 
-Rebuild/load the native artifacts in the separate Pi4 checkout, record their
-identity, and perform device-free finite-output smoke checks for both slot
-profiles. These checks do not start JACK or a second synth. See
-[TARGET_BUILD.md](TARGET_BUILD.md) for observed results and exact scope.
+The separate Pi4 checkout has passed native rebuild/load checks for both slot
+profiles and all 257 Python regressions. Those checks did not start a second
+synth or connect physical devices. Native hashes, test scope and the remaining
+limits are recorded in [TARGET_BUILD.md](TARGET_BUILD.md).
 
 Then confirm an off-stage window and prepare a reversible test deployment with
 complete required soundfont/state backups. Connect the reference hardware and
