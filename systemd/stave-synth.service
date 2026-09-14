@@ -22,16 +22,17 @@ StartLimitIntervalSec=600
 Type=notify
 # Allow slow cold boots (SD-card Pi 4: imports + soundfont load + JACK).
 TimeoutStartSec=120
-# Wait for PipeWire to be reachable, with 3s hard cap. Replaces the old
-# blind `sleep 3` — typically returns in <300ms once wireplumber notifies
-# READY, saving ~2.5s of boot time on every start.
-ExecStartPre=/bin/sh -c 'for i in 1 2 3 4 5 6 7 8 9 10; do pw-cli i 0 >/dev/null 2>&1 && exit 0; sleep 0.3; done; exit 0'
-# Some USB DACs only expose Master (no PCM control) — probe with sget first
-# and skip silently if neither is present so the unit still starts.
-ExecStartPre=-/bin/bash -c 'for c in /proc/asound/card*/id; do n=$$(dirname $$c | grep -o "[0-9]*"); if grep -qi usb "$$c" 2>/dev/null; then if amixer -c $$n sget PCM >/dev/null 2>&1; then amixer -c $$n set PCM 100%% >/dev/null 2>&1; elif amixer -c $$n sget Master >/dev/null 2>&1; then amixer -c $$n set Master 100%% >/dev/null 2>&1; fi; fi; done; true'
+# Fail truthfully if PipeWire is unavailable. The outer timeout also bounds a
+# pw-cli probe that itself hangs; systemd owns any remaining child processes.
+ExecStartPre=/usr/bin/timeout 5 /bin/sh -c 'until pw-cli i 0 >/dev/null 2>&1; do sleep 0.3; done'
+# Do not force every USB mixer's volume to 100% during boot/recovery. Output
+# selection belongs to this synth; physical interface gains are verified during
+# setup, not changed globally as a startup side effect.
 ExecStart=/usr/bin/pw-jack %h/stave-synth/venv/bin/python -m stave_synth.main --no-gui
 WorkingDirectory=%h/stave-synth
 Environment=XDG_RUNTIME_DIR=/run/user/%U
+Environment=STAVE_INSTANCE=stage
+UnsetEnvironment=STAVE_INSTANCE_ROOT STAVE_HTTP_PORT STAVE_WEBSOCKET_PORT
 # Cap glibc malloc arenas to reduce fragmentation for 24/7 operation.
 # Combined with malloc_trim() in the idle GC thread, this keeps RSS stable.
 Environment=MALLOC_ARENA_MAX=2

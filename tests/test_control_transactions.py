@@ -9,6 +9,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 from stave_synth.config import DEFAULT_STATE
@@ -57,6 +58,24 @@ def controller():
 
 
 class ControlTransactionTests(unittest.TestCase):
+    def test_get_state_uses_jack_recorder_owner_and_detaches_hydration(self):
+        for has_jack in (True, False):
+            app, namespace = controller()
+            namespace["FluidSynthPlayer"] = SimpleNamespace(list_available_soundfonts=lambda: [])
+            namespace["LOW_RAM_MODE"] = True
+            app._health_status = Mock(return_value={"healthy": True})
+            app.synth.reverb.available_types.return_value = {}
+            status = {"recording": False, "writer_pending": True, "status": "stopping"}
+            recorder = SimpleNamespace(current_status=lambda: status)
+            app.jack = SimpleNamespace(_fade_target=1.0, recorder=recorder) if has_jack else None
+            self.assertFalse(hasattr(app, "recorder"))
+            result = app._handle_ws_message({"type": "get_state"})
+            self.assertEqual(result["type"], "state")
+            self.assertEqual(result["record_status"]["status"], "stopping" if has_jack else "idle")
+            if has_jack:
+                status["status"] = "complete"
+                self.assertEqual(result["record_status"]["status"], "stopping")
+
     def test_malformed_message_never_mutates_or_dispatches(self):
         for bad in (float("nan"), float("inf"), [], {}, "false"):
             app, _ = controller()

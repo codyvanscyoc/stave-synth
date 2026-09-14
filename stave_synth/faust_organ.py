@@ -198,6 +198,12 @@ class FaustOrganEngine:
         self._in_mono = np.empty(0, dtype=np.float32)
         self._out_l = np.empty(0, dtype=np.float32)
         self._out_r = np.empty(0, dtype=np.float32)
+        # Faust's established organ fader curve bottoms out at -40 dB.  Keep
+        # that curve unchanged for every nonzero setting, but make the exact
+        # zero endpoint a real mute after one short render-block fade.
+        self._zero_volume_muted = False
+        self._zero_volume_fade_pending = False
+        self._zero_volume_fade = np.empty(0, dtype=np.float64)
         self._in_ptrs = _ffi.new("float*[1]")
         self._out_ptrs = _ffi.new("float*[2]")
 
@@ -240,8 +246,21 @@ class FaustOrganEngine:
 
     # ── Parameter setters ──
     def set_volume(self, v: float):
-        self.volume = max(0.0, min(1.0, float(v)))
-        self._zones["volume"][0] = self.volume
+        value = max(0.0, min(1.0, float(v)))
+        with self._lock:
+            previous = self.volume
+            self.volume = value
+            if value == 0.0:
+                if previous > 0.0:
+                    # Only a transition from audible, enabled output needs a
+                    # fade. Repeated zero writes must not cancel that fade.
+                    self._zero_volume_fade_pending = self.enabled
+                    self._zero_volume_muted = not self.enabled
+            else:
+                # Strictly positive settings retain the native gain law exactly.
+                self._zero_volume_fade_pending = False
+                self._zero_volume_muted = False
+            self._zones["volume"][0] = self.volume
 
     def set_highcut(self, freq_hz: float):
         self.highcut_hz = max(200.0, min(12000.0, float(freq_hz)))
@@ -374,6 +393,9 @@ class FaustOrganEngine:
             self._in_mono = np.zeros(n_samples, dtype=np.float32)
             self._out_l = np.empty(n_samples, dtype=np.float32)
             self._out_r = np.empty(n_samples, dtype=np.float32)
+            self._zero_volume_fade = np.linspace(
+                1.0, 0.0, n_samples, dtype=np.float64,
+            )
             self._in_ptrs[0] = _ffi.cast("float*", self._in_mono.ctypes.data)
             self._out_ptrs[0] = _ffi.cast("float*", self._out_l.ctypes.data)
             self._out_ptrs[1] = _ffi.cast("float*", self._out_r.ctypes.data)
@@ -480,6 +502,13 @@ class FaustOrganEngine:
         out = np.empty((2, n_samples), dtype=np.float64)
         np.copyto(out[0], self._out_l, casting="unsafe")
         np.copyto(out[1], self._out_r, casting="unsafe")
+        if self.volume == 0.0:
+            if self._zero_volume_fade_pending and not self._zero_volume_muted:
+                out *= self._zero_volume_fade
+                self._zero_volume_fade_pending = False
+                self._zero_volume_muted = True
+            else:
+                out.fill(0.0)
         return out
 
     # ── OrganEngine-compatible param dispatch ──
@@ -488,6 +517,9 @@ class FaustOrganEngine:
             self.set_volume(float(params["volume"]))
         if "enabled" in params:
             self.enabled = bool(params["enabled"])
+            if not self.enabled and self.volume == 0.0:
+                self._zero_volume_fade_pending = False
+                self._zero_volume_muted = True
         if "preset" in params:
             self.set_preset(params["preset"])
         if "drawbars" in params:

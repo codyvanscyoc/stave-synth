@@ -20,6 +20,7 @@ from .synth_engine import (SynthEngine, BiquadLowpass, BiquadHighpass,
                            BusCompressor,
                            fader_to_amplitude, blend_to_amplitude)
 from .config import SAMPLE_RATE, BTL_MODE, LOW_RAM_MODE, ISOLATED, JACK_CLIENT_NAME
+from .render_metrics import RenderMetrics
 
 # MIDI poll interval: 0.5ms on the full profile. On the small-Pi profile the
 # wakeup itself is a measurable slice of a slower core (~11% of profile
@@ -672,6 +673,11 @@ class JackEngine:
                 f"blocksize={bs}, graph_error={graph_error}; restart with the fixed profile"
             )
 
+        # The graph contract is now verified. Size RT scratch and cumulative
+        # whole-cycle telemetry before any render/MIDI/GC worker can start.
+        self._sat_scratch = np.empty((2, bs), dtype=np.float64)
+        self.render_metrics = RenderMetrics(bs / sr)
+
         self._push_master_to_bridge()
         self._bridge.bridge_set_btl_mode(1 if BTL_MODE else 0)
         # Verify BTL mode was set correctly (restype declared in _setup_bridge_types)
@@ -787,6 +793,7 @@ class JackEngine:
                     _in_starvation = False
 
                 if fill < self.ring_threshold:
+                    _cycle_t0 = time.perf_counter()
                     # Snapshot note sets — the MIDI thread mutates these
                     # concurrently, and iterating live sets would raise a
                     # RuntimeError mid-render that gets swallowed silently.
@@ -1110,6 +1117,11 @@ class JackEngine:
                         left_f32.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
                         right_f32.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
                         bs
+                    )
+                    _cycle_dt = time.perf_counter() - _cycle_t0
+                    post_write_fill = self._bridge.bridge_get_ring_fill()
+                    self.render_metrics.record(
+                        _cycle_dt, post_write_fill, written=(write_result == 1),
                     )
                     if write_result < 0:
                         raise RuntimeError("native bridge rejected render block: graph changed")

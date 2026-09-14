@@ -25,6 +25,26 @@ These artifacts preserve source history and the app/runtime configuration availa
 
 ## Observed environment
 
+### Additional pre-deployment rollback archive
+
+On 2026-09-14, before stopping the baseline service, an additional private archive
+was created and copied to the Mac as
+`pi4-live-checkpoint-20260914-with-fluid-and-venv.tar.gz`.
+It includes the live source/native artifacts, Python virtual environment,
+settings/data, installed user service/drop-ins, user PipeWire configuration,
+and the **actual** `/usr/share/sounds/sf2/FluidR3_GM.sf2` bytes.
+Both Pi and Mac copies have SHA-256
+`7d9ecbeeb133b187f705b59c3dd558c47f105a6c9d499a0129533378a695f061`.
+Gzip integrity and required archive entries were checked. The archived soundfont
+hash matches the installed asset:
+`74594e8f4250680adf590507a306655a299935343583256f3b722c48a1bc1cb0`.
+
+This closes the earlier archive's missing external soundfont/venv scope, but is
+still **not a bootable SD image**, full OS/package backup, or rehearsed whole-device
+restore. The archive remains private and is not committed to GitHub.
+
+### Earlier baseline inspection
+
 - Raspberry Pi 4 Model B Rev 1.5, approximately 2 GB RAM; headless.
 - Linux `6.18.34+rpt-rpi-v8`, aarch64; Python `3.13.5`.
 - Relevant installed Python package versions: NumPy `2.2.4`, SciPy `1.15.3`, CFFI `2.1.0`, pyFluidSynth `1.4.0`, websockets `16.1.1`, psutil `7.2.2`.

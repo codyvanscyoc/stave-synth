@@ -246,10 +246,12 @@ class StaveSynth:
             # page while faded out shows a silent synth with the FADE button
             # in its normal state and no clue why.
             faded_out = bool(self.jack and self.jack._fade_target < 0.5)
+            recorder = getattr(self.jack, "recorder", None)
             return {"type": "state", "state": self.state,
                     "health": self._health_status(),
-                    "record_status": (self.recorder.current_status() if self.recorder
-                                      else {"recording": False, "finalizing": False}),
+                    "record_status": (recorder.current_status() if recorder is not None
+                                      else {"recording": False, "writer_pending": False,
+                                            "status": "idle", "complete": None}),
                     "faded_out": faded_out,
                     "soundfonts_available": sf_list,
                     # Small-Pi profile pins unison_voices to 3 (the Faust
@@ -2021,6 +2023,13 @@ class StaveSynth:
                                "midi_dropped": int(bridge.bridge_get_midi_drop_count()),
                                "midi_recoveries": int(bridge.bridge_get_midi_recovery_count()),
                                "ring_slots": int(bridge.bridge_get_ring_slots())}
+            metrics = getattr(self.jack, "render_metrics", None)
+            snapshot = getattr(metrics, "snapshot", None)
+            if callable(snapshot):
+                try:
+                    status["audio"]["render_metrics"] = snapshot()
+                except Exception as exc:
+                    logger.debug("Render metrics snapshot unavailable: %s", exc)
         return status
 
     def _ui_watch_loop(self):
