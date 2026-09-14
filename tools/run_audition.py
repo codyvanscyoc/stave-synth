@@ -265,35 +265,102 @@ async def verify_runtime(fetcher=fetch_runtime_config) -> dict:
     return parse_runtime_config(await asyncio.to_thread(fetcher))
 
 
-async def receive_matching(ws, predicate, *, timeout=5.0) -> dict:
-    deadline = asyncio.get_running_loop().time() + timeout
-    for _ in range(64):
-        remaining = deadline - asyncio.get_running_loop().time()
-        if remaining <= 0:
-            break
-        raw = await asyncio.wait_for(ws.recv(), remaining)
-        message = json.loads(raw)
-        if message.get("type") == "error":
-            raise RuntimeError(message.get("message", "Stave returned an error"))
-        if predicate(message):
-            return message
-    raise TimeoutError("timed out waiting for matching Stave response")
+class CommandSocket:
+    """Continuously drain WS traffic and dispatch one bounded command reply.
+
+    Stave broadcasts state and acknowledgements to every connected client. A
+    capture can otherwise leave more than ``max_queue`` unsolicited frames
+    unread for 55 seconds, eventually starving WebSocket keepalive handling.
+    This object is the sole recv owner and intentionally retains no broadcast
+    backlog.
+    """
+
+    def __init__(self, websocket):
+        self.websocket = websocket
+        self._request_lock = asyncio.Lock()
+        self._pending = None
+        self._reader_task = None
+        self.unsolicited_count = 0
+
+    async def start(self):
+        if self._reader_task is None:
+            self._reader_task = asyncio.create_task(self._reader())
+        return self
+
+    async def stop(self):
+        task, self._reader_task = self._reader_task, None
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def _reader(self):
+        try:
+            while True:
+                raw = await self.websocket.recv()
+                try:
+                    message = json.loads(raw)
+                except (TypeError, UnicodeDecodeError, json.JSONDecodeError):
+                    self.unsolicited_count += 1
+                    continue
+                pending = self._pending
+                if pending is not None and not pending.done():
+                    predicate, future = pending.predicate, pending.future
+                    if message.get("type") == "error":
+                        future.set_exception(RuntimeError(
+                            message.get("message", "Stave returned an error")))
+                        continue
+                    if predicate(message):
+                        future.set_result(message)
+                        continue
+                self.unsolicited_count += 1
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:
+            pending = self._pending
+            if pending is not None and not pending.done():
+                pending.future.set_exception(RuntimeError(f"WebSocket reader stopped: {exc}"))
+
+    async def request(self, message: dict, predicate, *, timeout=5.0) -> dict:
+        await self.start()
+        async with self._request_lock:
+            future = asyncio.get_running_loop().create_future()
+            self._pending = _PendingResponse(predicate, future)
+            try:
+                await self.websocket.send(json.dumps(message, separators=(",", ":"), allow_nan=False))
+                return await asyncio.wait_for(future, timeout)
+            finally:
+                self._pending = None
+
+
+class _PendingResponse:
+    __slots__ = ("predicate", "future")
+
+    def __init__(self, predicate, future):
+        self.predicate = predicate
+        self.future = future
+
+    def done(self):
+        return self.future.done()
 
 
 async def send_command(ws, message: dict) -> dict:
-    await ws.send(json.dumps(message, separators=(",", ":"), allow_nan=False))
     kind = message["type"]
     if kind == "setting":
-        reply = await receive_matching(ws, lambda item: item.get("type") == "setting_ack"
-                                       and item.get("section") == message["section"]
-                                       and item.get("param") == message["param"])
+        reply = await ws.request(message, lambda item: item.get("type") == "setting_ack"
+                                 and item.get("section") == message["section"]
+                                 and item.get("param") == message["param"])
         if not _values_equal(reply.get("value"), message["value"]):
             raise RuntimeError(
                 f"setting acknowledgement value mismatch for {message['section']}.{message['param']}: "
                 f"{reply.get('value')!r} != {message['value']!r}")
         return reply
     expected = {"get_state": "state", "debug": "debug", "panic": "panic_ack"}[kind]
-    return await receive_matching(ws, lambda reply: reply.get("type") == expected)
+    if kind == "get_state":
+        # Setting broadcasts also use type=state but omit authoritative health.
+        # Never hydrate a qualification checkpoint from one of those frames.
+        return await ws.request(message, lambda reply: reply.get("type") == "state"
+                                and isinstance(reply.get("health"), dict))
+    return await ws.request(message, lambda reply: reply.get("type") == expected)
 
 
 def _values_equal(actual, expected) -> bool:
@@ -557,7 +624,8 @@ async def run(args) -> int:
     schedule_text = render_schedule(events)
 
     async with websockets.connect(WS_URL, open_timeout=5, close_timeout=3,
-                                  max_size=4 * 1024 * 1024, max_queue=16) as ws:
+                                  max_size=4 * 1024 * 1024, max_queue=16) as raw_ws:
+        ws = await CommandSocket(raw_ws).start()
         original_response = await send_command(ws, {"type": "get_state"})
         original = copy.deepcopy(original_response["state"])
         # Validate all state paths and plan commands before the first panic.
@@ -599,7 +667,10 @@ async def run(args) -> int:
                     manifest["restore_failure"] = "; ".join(restore_mismatches)
             except Exception as exc:
                 manifest["restore_failure"] = f"{type(exc).__name__}: {exc}"
-            _write_json_exclusive(output_dir / "manifest.json", manifest)
+            try:
+                _write_json_exclusive(output_dir / "manifest.json", manifest)
+            finally:
+                await ws.stop()
         if manifest.get("restore_failure"):
             return 1
         return 0 if all(item["status"] == "PASS" for item in manifest["cases"]) else 1

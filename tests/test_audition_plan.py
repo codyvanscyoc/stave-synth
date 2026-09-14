@@ -3,6 +3,8 @@ import importlib.util
 from pathlib import Path
 import unittest
 
+import websockets
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("run_audition", ROOT / "tools" / "run_audition.py")
@@ -23,16 +25,92 @@ def baseline():
 class AuditionPlanTests(unittest.TestCase):
     def test_setting_ack_requires_the_exact_canonical_value(self):
         class FakeSocket:
+            def __init__(self):
+                self.incoming = asyncio.Queue()
+
             async def send(self, payload):
                 self.sent = payload
+                await self.incoming.put(
+                    '{"type":"setting_ack","section":"master",'
+                    '"param":"volume","value":0.5}')
 
             async def recv(self):
-                return ('{"type":"setting_ack","section":"master",'
-                        '"param":"volume","value":0.5}')
+                return await self.incoming.get()
 
-        with self.assertRaises(RuntimeError):
-            asyncio.run(AUDITION.send_command(
-                FakeSocket(), AUDITION.setting("master", "volume", 0.75)))
+        async def exercise():
+            socket = await AUDITION.CommandSocket(FakeSocket()).start()
+            try:
+                with self.assertRaises(RuntimeError):
+                    await AUDITION.send_command(
+                        socket, AUDITION.setting("master", "volume", 0.75))
+            finally:
+                await socket.stop()
+        asyncio.run(exercise())
+
+    def test_dispatcher_continuously_discards_unsolicited_flood(self):
+        class FloodSocket:
+            def __init__(self):
+                self.incoming = asyncio.Queue()
+
+            async def send(self, payload):
+                for sequence in range(100):
+                    await self.incoming.put('{"type":"meter","sequence":%d}' % sequence)
+                await self.incoming.put('{"type":"panic_ack","fade_reset":true}')
+
+            async def recv(self):
+                return await self.incoming.get()
+
+        async def exercise():
+            socket = await AUDITION.CommandSocket(FloodSocket()).start()
+            try:
+                reply = await AUDITION.send_command(socket, {"type": "panic"})
+                self.assertEqual(reply["type"], "panic_ack")
+                self.assertEqual(socket.unsolicited_count, 100)
+            finally:
+                await socket.stop()
+        asyncio.run(exercise())
+
+    def test_loopback_dispatcher_drains_while_idle_and_keeps_ping_alive(self):
+        async def exercise():
+            flooded = asyncio.Event()
+
+            async def handler(websocket):
+                for sequence in range(120):
+                    await websocket.send('{"type":"meter","sequence":%d}' % sequence)
+                # This state-shaped broadcast must not satisfy a later
+                # authoritative get_state request because it has no health.
+                await websocket.send('{"type":"state","state":{"stale":true}}')
+                flooded.set()
+                async for raw in websocket:
+                    if '"get_state"' in raw:
+                        await websocket.send(
+                            '{"type":"state","state":{"fresh":true},'
+                            '"health":{"native_profile":{"ready":true}}}')
+
+            try:
+                server = await websockets.serve(handler, "127.0.0.1", 0,
+                                                ping_interval=0.02, ping_timeout=0.1)
+            except PermissionError:
+                self.skipTest("sandbox forbids even an ephemeral loopback listener")
+            try:
+                port = server.sockets[0].getsockname()[1]
+                async with websockets.connect(
+                        f"ws://127.0.0.1:{port}", max_queue=16,
+                        ping_interval=0.02, ping_timeout=0.1) as raw:
+                    socket = await AUDITION.CommandSocket(raw).start()
+                    try:
+                        await flooded.wait()
+                        await asyncio.sleep(0.2)
+                        self.assertGreaterEqual(socket.unsolicited_count, 121)
+                        reply = await AUDITION.send_command(socket, {"type": "get_state"})
+                        self.assertEqual(reply["state"], {"fresh": True})
+                    finally:
+                        await socket.stop()
+            finally:
+                server.close()
+                await server.wait_closed()
+
+        asyncio.run(asyncio.wait_for(exercise(), 1.5))
 
     def test_schedule_is_deterministic_sorted_and_has_fixed_bounds(self):
         one = AUDITION.build_schedule()
