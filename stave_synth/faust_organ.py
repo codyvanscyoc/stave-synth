@@ -172,6 +172,8 @@ class FaustOrganEngine:
 
         # ── Faust DSP instance ──
         self._dsp = _lib.newStaveOrgan()
+        if self._dsp == _ffi.NULL:
+            raise RuntimeError("newStaveOrgan() returned NULL")
         _lib.initStaveOrgan(self._dsp, self.sample_rate)
         self._zones: dict[str, _ffi.CData] = {}
         self._keepalive = _install_ui_callbacks(self._dsp, self._zones)

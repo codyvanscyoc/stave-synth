@@ -16,6 +16,7 @@ Stave is a headless worship instrument: play an expressive piano, blend two osci
 - The first test rig will use the Peavey USB audio interface and Yamaha keyboard; exact models, USB hub and power arrangement still need to be inventoried. The player can connect that rig when software is ready for hardware tests.
 - Device support must not be hard-coded to those brands. Discover compatible USB MIDI/audio devices exposed by the Pi's OS, provide clear selection/status, and recover intended connections. The first test rig is a reference configuration, not a promise that every possible device has been qualified.
 - This work targets Raspberry Pi 4. Pi5 work will be handled later. Development and GitHub publishing use `pi4-stage-pro`.
+- The player chose open browser control on trusted private stage Wi-Fi, without pairing. Anyone with network access can control Stave; shared guest/public networks and Internet exposure are outside this operating boundary.
 
 ## The musical contract
 

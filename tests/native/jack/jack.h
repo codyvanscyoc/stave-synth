@@ -22,6 +22,8 @@ void *jack_port_get_buffer(jack_port_t *, jack_nframes_t);
 jack_nframes_t jack_get_buffer_size(jack_client_t *);
 jack_nframes_t jack_get_sample_rate(jack_client_t *);
 int jack_set_process_callback(jack_client_t *, int (*)(jack_nframes_t, void *), void *);
+int jack_set_buffer_size_callback(jack_client_t *, int (*)(jack_nframes_t, void *), void *);
+int jack_set_sample_rate_callback(jack_client_t *, int (*)(jack_nframes_t, void *), void *);
 int jack_set_xrun_callback(jack_client_t *, int (*)(void *), void *);
 void jack_on_shutdown(jack_client_t *, void (*)(void *), void *);
 int jack_activate(jack_client_t *);

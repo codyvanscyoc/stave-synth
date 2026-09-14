@@ -960,6 +960,13 @@ class SamplePlayer:
     RELEASE_S = 4.0    # 4 s — linear ramp 1→0
     XFADE_MS = 500     # 500 ms — generous loop crossfade hides any seam
 
+    # Pi4 policy bounds, not a measured whole-application RAM guarantee.
+    MAX_SLOT_BYTES = 32 * 1024 * 1024
+    MAX_SOURCE_BYTES = 64 * 1024 * 1024
+    MAX_PREPARE_BYTES = 128 * 1024 * 1024
+    MAX_RESAMPLE_FACTOR = 1024
+    MIN_FRAMES = 4
+
     # RISE envelope — drawn on top of normal looping playback.
     # Volume: 0 → 1 over rise_seconds, then quick decay to RISE_SUSTAIN, hold.
     # Filter: log-sweep 200 → 3000 Hz over rise_seconds, then hold.
@@ -972,8 +979,10 @@ class SamplePlayer:
 
     def __init__(self, sample_rate: int = SAMPLE_RATE):
         self.sample_rate = int(sample_rate)
-        self.samples_l = None   # np.ndarray float64 or None when unloaded
+        self.samples_l = None   # immutable float32/float64 arrays when loaded
         self.samples_r = None
+        self.source_signature = None
+        self.last_load_error = None
         self.length = 0
         self.loaded = False
         self.active = False
@@ -994,59 +1003,179 @@ class SamplePlayer:
         self._rise_lp_l = BiquadLowpass(self.rise_cutoff_open, 0.707, self.sample_rate)
         self._rise_lp_r = BiquadLowpass(self.rise_cutoff_open, 0.707, self.sample_rate)
 
+    @property
+    def memory_bytes(self) -> int:
+        if not self.loaded:
+            return 0
+        return self.samples_l.nbytes + (0 if self.samples_r is self.samples_l else self.samples_r.nbytes)
+
+    @classmethod
+    def _inspect_wave(cls, stream, sample_rate, max_bytes):
+        """Read bounded RIFF metadata before allocating any sample payload.
+
+        Supports little-endian mono/stereo PCM8/16/24/32 and IEEE float32/64,
+        including their WAVE_FORMAT_EXTENSIBLE subtypes. No silent truncation,
+        compressed formats, RF64, or multichannel downmix is performed.
+        """
+        import math
+        import os
+        import struct
+
+        stat = os.fstat(stream.fileno())
+        if stat.st_size > cls.MAX_SOURCE_BYTES:
+            raise ValueError("Pad source exceeds the 64 MiB file limit")
+        header = stream.read(12)
+        if len(header) != 12 or header[:4] != b"RIFF" or header[8:] != b"WAVE":
+            raise ValueError("Pad must be a little-endian RIFF WAVE file")
+        end = struct.unpack("<I", header[4:8])[0] + 8
+        if end > stat.st_size or end < 12:
+            raise ValueError("Truncated or invalid RIFF size")
+        fmt = None
+        payload = None
+        chunks = 0
+        while stream.tell() + 8 <= end:
+            chunk_id, size = struct.unpack("<4sI", stream.read(8))
+            offset = stream.tell()
+            if offset + size > end:
+                raise ValueError("Truncated WAV chunk")
+            chunks += 1
+            if chunks > 1024:
+                raise ValueError("Too many WAV chunks")
+            if chunk_id == b"fmt ":
+                if fmt is not None or size < 16:
+                    raise ValueError("Invalid or duplicate WAV format chunk")
+                fmt = stream.read(min(size, 40))
+            elif chunk_id == b"data":
+                if payload is not None:
+                    raise ValueError("Multiple WAV data chunks are unsupported")
+                payload = (offset, size)
+            stream.seek(offset + size + (size & 1))
+        if fmt is None or payload is None:
+            raise ValueError("WAV requires format and data chunks")
+        tag, channels, rate, byte_rate, align, bits = struct.unpack("<HHIIHH", fmt[:16])
+        if tag == 0xFFFE:
+            if len(fmt) < 40 or struct.unpack("<H", fmt[16:18])[0] < 22:
+                raise ValueError("Invalid extensible WAV format")
+            valid_bits = struct.unpack("<H", fmt[18:20])[0]
+            guid_tail = b"\x00\x00\x10\x00\x80\x00\x00\xaa\x00\x38\x9b\x71"
+            if fmt[28:40] != guid_tail or not 0 < valid_bits <= bits:
+                raise ValueError("Unsupported extensible WAV subtype")
+            tag = struct.unpack("<I", fmt[24:28])[0]
+        if (channels not in (1, 2) or not 8000 <= rate <= 192000
+                or not 8000 <= sample_rate <= 192000
+                or (tag == 1 and bits not in (8, 16, 24, 32))
+                or (tag == 3 and bits not in (32, 64)) or tag not in (1, 3)):
+            raise ValueError("Unsupported pad format, channels, or sample rate")
+        if align != channels * (bits // 8) or byte_rate != rate * align:
+            raise ValueError("Invalid WAV frame alignment or byte rate")
+        offset, size = payload
+        if size % align:
+            raise ValueError("WAV payload ends in a partial frame")
+        frames = size // align
+        out_frames = (frames * sample_rate + rate - 1) // rate
+        if min(frames, out_frames) < cls.MIN_FRAMES:
+            raise ValueError("Pad WAV must contain at least 4 complete frames")
+        divisor = math.gcd(rate, sample_rate)
+        up, down = sample_rate // divisor, rate // divisor
+        if max(up, down) > cls.MAX_RESAMPLE_FACTOR:
+            raise ValueError("Pad resampling ratio exceeds the preparation bound")
+        # Exact float32 storage for native PCM <=24-bit and float32 samples.
+        # Keep float64 for PCM32, float64 and resampled audio, preserving the
+        # prior normalisation/polyphase precision instead of rounding it.
+        dtype = np.float64 if rate != sample_rate or bits == 64 or (tag == 1 and bits == 32) else np.float32
+        itemsize = np.dtype(dtype).itemsize
+        output_bytes = out_frames * channels * itemsize
+        if output_bytes > min(cls.MAX_SLOT_BYTES, max_bytes):
+            raise ValueError("Pad decoded audio exceeds the slot or available bank byte budget")
+        decode_bytes = frames * channels * itemsize
+        # Conservative application-array estimate; SciPy/allocator internals
+        # still require target RSS qualification. FIR ratio is separately capped.
+        working = size + decode_bytes + output_bytes + 1024 * 1024
+        if bits == 24:
+            working += frames * channels * 8  # unpack/sign-extension scratch
+        if rate != sample_rate:
+            working += output_bytes * 2 + max(up, down) * 256
+        if working > cls.MAX_PREPARE_BYTES:
+            raise ValueError("Pad decoding/resampling exceeds the 128 MiB preparation budget")
+        return {"offset": offset, "size": size, "frames": frames, "out_frames": out_frames,
+                "channels": channels, "rate": rate, "tag": tag, "bits": bits,
+                "dtype": dtype, "up": up, "down": down, "bytes": output_bytes,
+                "signature": (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)}
+
+    @classmethod
+    def prepare(cls, path, sample_rate=SAMPLE_RATE, max_bytes=None):
+        """Return a fresh validated player; never mutate an existing slot."""
+        import os
+        from pathlib import Path
+
+        sample_rate = int(sample_rate)
+        limit = cls.MAX_SLOT_BYTES if max_bytes is None else int(max_bytes)
+        with Path(path).open("rb") as stream:
+            info = cls._inspect_wave(stream, sample_rate, limit)
+            stream.seek(info["offset"])
+            payload = stream.read(info["size"])
+            stat = os.fstat(stream.fileno())
+            signature = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+            if len(payload) != info["size"] or signature != info["signature"]:
+                raise ValueError("Pad source changed or truncated during preparation")
+        bits, dtype = info["bits"], info["dtype"]
+        if info["tag"] == 3:
+            decoded = np.frombuffer(payload, dtype=f"<f{bits // 8}").astype(dtype)
+        elif bits == 24:
+            raw = np.frombuffer(payload, dtype=np.uint8).reshape(-1, 3)
+            signed = raw[:, 0].astype(np.int32)
+            signed |= raw[:, 1].astype(np.int32) << 8
+            signed |= raw[:, 2].astype(np.int32) << 16
+            signed = (signed ^ 0x800000) - 0x800000
+            decoded = signed.astype(dtype)
+            decoded /= 8388608.0
+            del raw, signed
+        else:
+            source_dtype = np.uint8 if bits == 8 else f"<i{bits // 8}"
+            decoded = np.frombuffer(payload, dtype=source_dtype).astype(dtype)
+            if bits == 8:
+                decoded -= 128.0
+            decoded /= float(1 << (bits - 1))
+        del payload
+        if not np.isfinite(decoded).all():
+            raise ValueError("Pad WAV contains non-finite audio samples")
+        decoded = decoded.reshape(info["frames"], info["channels"])
+        left = decoded[:, 0]
+        right = decoded[:, 1] if info["channels"] == 2 else left
+        if info["rate"] != sample_rate:
+            # Failure is fatal: never acknowledge a pad playing at wrong pitch.
+            from scipy.signal import resample_poly
+            left = resample_poly(left, info["up"], info["down"])
+            right = resample_poly(right, info["up"], info["down"]) if info["channels"] == 2 else left
+        left = np.ascontiguousarray(left, dtype=dtype)
+        right = np.ascontiguousarray(right, dtype=dtype) if info["channels"] == 2 else left
+        if (left.size != info["out_frames"] or right.size != left.size
+                or not np.isfinite(left).all() or not np.isfinite(right).all()):
+            raise ValueError("Invalid resampled pad audio")
+        left.setflags(write=False)
+        right.setflags(write=False)
+        player = cls(sample_rate)
+        player.samples_l, player.samples_r = left, right
+        player.length = left.size
+        player.xfade_len = max(1, min(int(cls.XFADE_MS * sample_rate / 1000.0), player.length // 4))
+        player.loaded = True
+        player.source_signature = info["signature"]
+        return player
+
     def load(self, path) -> bool:
+        """Compatibility loader; an invalid replacement leaves playback intact."""
         try:
-            from scipy.io import wavfile
-            sr, data = wavfile.read(str(path))
-        except Exception as e:
-            logger.warning("SamplePlayer.load(%s): %s", path, e)
-            self.loaded = False
+            prepared = self.prepare(path, self.sample_rate)
+        except Exception as exc:
+            self.last_load_error = str(exc)
+            logger.warning("SamplePlayer.load(%s): %s", path, exc)
             return False
-        # Normalize to float64 in [-1, 1]
-        if data.dtype == np.int16:
-            f = data.astype(np.float64) / 32768.0
-        elif data.dtype == np.int32:
-            f = data.astype(np.float64) / 2147483648.0
-        elif data.dtype == np.uint8:
-            f = (data.astype(np.float64) - 128.0) / 128.0
-        elif data.dtype in (np.float32, np.float64):
-            f = data.astype(np.float64)
-        else:
-            logger.warning("SamplePlayer: unsupported dtype %s", data.dtype)
-            return False
-        # Mono or stereo split
-        if f.ndim == 1:
-            left = f
-            right = f
-        else:
-            left = f[:, 0]
-            right = f[:, 1] if f.shape[1] > 1 else f[:, 0]
-        # Resample if the file sample rate differs from our engine's
-        if sr != self.sample_rate:
-            try:
-                from scipy.signal import resample_poly
-                import math
-                g = math.gcd(int(sr), int(self.sample_rate))
-                up = int(self.sample_rate) // g
-                down = int(sr) // g
-                left = resample_poly(left, up, down)
-                right = resample_poly(right, up, down)
-                logger.info("SamplePlayer: resampled %d→%d Hz for %s",
-                            sr, self.sample_rate, path)
-            except Exception as e:
-                logger.warning("SamplePlayer: resample failed (%s); playing at "
-                               "native rate — pitch will be off", e)
-        self.samples_l = np.ascontiguousarray(left, dtype=np.float64)
-        self.samples_r = np.ascontiguousarray(right, dtype=np.float64)
-        self.length = self.samples_l.shape[0]
-        # Xfade length can't exceed a quarter of the sample (safety for tiny files)
-        self.xfade_len = max(1, min(int(self.XFADE_MS * self.sample_rate / 1000.0),
-                                    self.length // 4))
+        self.samples_l, self.samples_r = prepared.samples_l, prepared.samples_r
+        self.length, self.xfade_len = prepared.length, prepared.xfade_len
+        self.source_signature = prepared.source_signature
         self.loaded = True
-        self.active = False
-        self.read_pos = 0.0
-        self.env = 0.0
-        self.env_target = 0.0
+        self.last_load_error = None
+        self.hard_stop()
         return True
 
     def trigger(self, rise_seconds: float = 0.0,
@@ -1098,7 +1227,7 @@ class SamplePlayer:
     def process(self, n: int, out_l: np.ndarray, out_r: np.ndarray):
         """Additively mix (enveloped) playback into out_l / out_r. No-op
         when idle."""
-        if not self.active or not self.loaded:
+        if n <= 0 or not self.active or not self.loaded:
             return
         sr = self.sample_rate
         # Envelope — when rise mode is active and not released, drive env
@@ -1151,11 +1280,10 @@ class SamplePlayer:
         loop_size = max(1, self.length - self.xfade_len)
         raw_positions = self.read_pos + np.arange(n, dtype=np.float64)
         positions = raw_positions.copy()
-        # Up to 2 wraps per block (defensive; one is the normal case)
+        # Preserve the first pass, then wrap any number of times. Short but
+        # valid samples can loop many times within one render block.
         mask = positions >= self.length
-        positions[mask] -= loop_size
-        mask = positions >= self.length
-        positions[mask] -= loop_size
+        positions[mask] = self.xfade_len + (positions[mask] - self.length) % loop_size
         idx = np.clip(positions.astype(np.int64), 0, self.length - 1)
 
         primary_l = self.samples_l[idx]
@@ -2562,9 +2690,104 @@ class SynthEngine:
         68: "pad_Gs.wav", 69: "pad_A.wav", 70: "pad_As.wav", 71: "pad_B.wav",
     }
 
+    MAX_PAD_BANK_BYTES = 192 * 1024 * 1024
+    _PAD_LIBRARY_LOCK = threading.RLock()  # control-only; never held by render
+
+    class _PreparedPadSlot:
+        def __init__(self, note):
+            self.note = note
+            self.player = None
+
+    def prepare_pad_sample(self, note: int, path):
+        """Reserve one inactive target and prepare its replacement off-render.
+
+        ``path=None`` reserves a clear transaction. Caller must install or
+        discard the returned opaque reservation, including on file failures.
+        One outstanding reservation bounds staging and prevents bank-budget
+        races between validation and an external atomic file commit.
+        """
+        if type(note) is not int or note not in self._PAD_NOTE_FILENAMES:
+            raise ValueError("Invalid pad slot")
+        with self._PAD_LIBRARY_LOCK:
+            if getattr(self, "_pad_prepared", None) is not None:
+                raise RuntimeError("Another pad update is already being prepared")
+            with self._render_lock:
+                old = self._pad_samples.get(note)
+                if old is not None and old.active:
+                    raise RuntimeError("Stop this pad before replacing it")
+                others = sum(player.memory_bytes for key, player in self._pad_samples.items() if key != note)
+                available = max(0, self.MAX_PAD_BANK_BYTES - others)
+                reservation = self._PreparedPadSlot(note)
+                self._pad_prepared = reservation
+        try:
+            if path is not None:
+                reservation.player = SamplePlayer.prepare(path, self.sample_rate, max_bytes=available)
+            return reservation
+        except Exception:
+            self.discard_prepared_pad(reservation)
+            raise
+
+    def install_pad_sample(self, note: int, prepared):
+        """Install only the reserved slot at a render boundary; no file I/O."""
+        with self._PAD_LIBRARY_LOCK:
+            with self._render_lock:
+                if (getattr(self, "_pad_prepared", None) is not prepared
+                        or prepared is None or prepared.note != note):
+                    raise ValueError("Pad preparation does not own this slot")
+                # Public trigger methods reject reserved targets; this check
+                # also fails safely if another caller bypasses that contract.
+                old = self._pad_samples.get(note)
+                if old is not None and old.active:
+                    raise RuntimeError("Stop this pad before replacing it")
+                updated = dict(self._pad_samples)
+                if prepared.player is None:
+                    updated.pop(note, None)
+                else:
+                    updated[note] = prepared.player
+                self._pad_samples = updated
+                self._pad_prepared = None
+                errors = getattr(self, "_pad_load_errors", {})
+                errors.pop(note, None)
+
+    def discard_prepared_pad(self, prepared):
+        """Release a failed/cancelled file transaction without touching slots."""
+        with self._PAD_LIBRARY_LOCK:
+            with self._render_lock:
+                if getattr(self, "_pad_prepared", None) is prepared:
+                    self._pad_prepared = None
+                    return True
+        return False
+
+    def clear_pad_sample(self, note: int):
+        """Clear an inactive in-memory target; file transactions use prepare(None)."""
+        prepared = self.prepare_pad_sample(note, None)
+        try:
+            self.install_pad_sample(note, prepared)
+        finally:
+            self.discard_prepared_pad(prepared)
+
+    def pad_sample_status(self) -> dict:
+        with self._render_lock:
+            pending = getattr(self, "_pad_prepared", None)
+            return {
+                "memory_bytes": sum(player.memory_bytes for player in self._pad_samples.values()),
+                "max_bank_bytes": self.MAX_PAD_BANK_BYTES,
+                "max_slot_bytes": SamplePlayer.MAX_SLOT_BYTES,
+                "preparing_note": pending.note if pending is not None else None,
+                "errors": dict(getattr(self, "_pad_load_errors", {})),
+                "slots": {note: {"loaded": player.loaded, "active": player.active,
+                                 "duration_seconds": player.length / self.sample_rate,
+                                 "memory_bytes": player.memory_bytes}
+                          for note, player in self._pad_samples.items()},
+            }
+
     def load_pad_samples(self, pad_dir=None) -> int:
-        """Load any pad-slot WAVs found in pad_dir. Returns the count loaded.
-        Creates the directory if it doesn't exist so users can drop files in."""
+        """Load changed valid slots, retaining every unaffected/invalid old slot.
+
+        Startup and explicit directory scans are bounded one slot at a time.
+        Missing files do not discard a previously loaded bed; an explicit
+        clear transaction does that. Errors are available via pad_sample_status.
+        """
         from pathlib import Path
         if pad_dir is None:
             from .config import DATA_DIR
@@ -2572,25 +2795,30 @@ class SynthEngine:
         pad_dir = Path(pad_dir)
         pad_dir.mkdir(parents=True, exist_ok=True)
         self._pad_samples_dir = pad_dir
-        # Decode/resample into FRESH players entirely off-lock (disk I/O +
-        # resample_poly can take hundreds of ms), then swap the dict under
-        # the render lock. Mutating _pad_samples / swapping buffers in place
-        # raced the render thread, which iterates _pad_samples.values() and
-        # reads player buffers every block a pad is sounding. Behavior is
-        # unchanged: load() always reset active=False on every slot anyway.
-        loaded = 0
-        new_map = {}
+        errors = {}
         for note, fname in self._PAD_NOTE_FILENAMES.items():
             path = pad_dir / fname
             if not path.exists():
-                continue  # slot empty — caller falls back to live synth
-            player = SamplePlayer(self.sample_rate)
-            if player.load(path):
-                new_map[note] = player
-                loaded += 1
+                continue
+            prepared = None
+            try:
+                stat = path.stat()
+                signature = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+                with self._render_lock:
+                    old = self._pad_samples.get(note)
+                    if old is not None and old.loaded and old.source_signature == signature:
+                        continue
+                prepared = self.prepare_pad_sample(note, path)
+                self.install_pad_sample(note, prepared)
+            except Exception as exc:
+                errors[note] = str(exc)
+                logger.warning("Pad slot %s was not replaced: %s", note, exc)
+            finally:
+                if prepared is not None:
+                    self.discard_prepared_pad(prepared)
         with self._render_lock:
-            self._pad_samples.clear()
-            self._pad_samples.update(new_map)
+            self._pad_load_errors = errors
+            loaded = len(self._pad_samples)
         logger.info("Pad samples loaded: %d / 12 from %s", loaded, pad_dir)
         return loaded
 
@@ -2600,21 +2828,26 @@ class SynthEngine:
         was available and triggered. False means no slot file — caller should
         fall back to the live synth drone. rise_seconds > 0 enables RISE mode."""
         note = int(note)
-        player = self._pad_samples.get(note)
-        if player is None or not player.loaded:
-            return False
-        # Release any other active slots so we don't stack notes
-        for n, p in self._pad_samples.items():
-            if n != note and p.active:
-                p.release()
-        player.trigger(rise_seconds=rise_seconds, rise_cutoff_open=rise_cutoff_open)
-        return True
+        with self._render_lock:
+            prepared = getattr(self, "_pad_prepared", None)
+            if prepared is not None and prepared.note == note:
+                raise RuntimeError("This pad slot is being updated; try again when it finishes")
+            player = self._pad_samples.get(note)
+            if player is None or not player.loaded:
+                return False
+            # Release any other active slots so we don't stack notes.
+            for n, p in self._pad_samples.items():
+                if n != note and p.active:
+                    p.release()
+            player.trigger(rise_seconds=rise_seconds, rise_cutoff_open=rise_cutoff_open)
+            return True
 
     def release_pad_samples(self):
         """Fade out all active pad samples (e.g., when switching to live mode)."""
-        for p in self._pad_samples.values():
-            if p.active:
-                p.release()
+        with self._render_lock:
+            for p in self._pad_samples.values():
+                if p.active:
+                    p.release()
 
     def render(self, n_samples: int, separate_fx: bool = False,
                external_reverb_send: np.ndarray = None,
@@ -4034,14 +4267,15 @@ class SynthEngine:
             self.filter_range_max = float(params["filter_range_max"])
         if "filter_slope" in params:
             slope = int(params["filter_slope"])
-            if slope in (12, 24):
-                self.filter_slope = slope
-                if slope == 12:
-                    self.filter2_l.reset()
-                    self.filter2_r.reset()
-                # Invalidate coefficient cache so filter2 picks up the current
-                # cutoff on the next render when switching 12 → 24.
-                self._filter_cutoff_last_set = -1.0
+            if slope in (12, 24) and slope != self.filter_slope:
+                with self._render_lock:
+                    self.filter_slope = slope
+                    if slope == 12:
+                        self.filter2_l.reset()
+                        self.filter2_r.reset()
+                    # Invalidate coefficient cache so filter2 picks up the
+                    # current cutoff on the next render when switching 12→24.
+                    self._filter_cutoff_last_set = -1.0
         if "filter_highpass_hz" in params:
             self.filter_highpass_hz = max(20.0, min(2000.0, float(params["filter_highpass_hz"])))
         if "osc1_filter_enabled" in params:
@@ -4078,12 +4312,10 @@ class SynthEngine:
             # Fans out to plate/drone backends too (FaustReverb.set_damp);
             # Python fallback has no set_damp → silently ignored, as before.
             self.reverb.set_damp(float(params["reverb_damp"]))
-        if "reverb_shimmer_fb" in params and hasattr(self.reverb, "_zones"):
-            z = self.reverb._zones.get("shimmer_fb")
-            if z is not None: z[0] = max(0.0, min(1.0, float(params["reverb_shimmer_fb"])))
-        if "reverb_noise_mod" in params and hasattr(self.reverb, "_zones"):
-            z = self.reverb._zones.get("noise_mod")
-            if z is not None: z[0] = max(0.0, min(1.0, float(params["reverb_noise_mod"])))
+        if "reverb_shimmer_fb" in params and hasattr(self.reverb, "set_shimmer_feedback"):
+            self.reverb.set_shimmer_feedback(float(params["reverb_shimmer_fb"]))
+        if "reverb_noise_mod" in params and hasattr(self.reverb, "set_noise_mod"):
+            self.reverb.set_noise_mod(float(params["reverb_noise_mod"]))
         if "reverb_low_cut" in params:
             self.reverb.set_low_cut(float(params["reverb_low_cut"]))
         if "reverb_high_cut" in params:
@@ -4268,9 +4500,13 @@ class SynthEngine:
         if "drone_level" in params:
             self.drone_level = max(0.0, min(1.0, float(params["drone_level"])))
         if "pad_mellow_enabled" in params:
-            self.pad_mellow_enabled = bool(params["pad_mellow_enabled"])
-            if self.pad_mellow_enabled:
-                self._pad_mellow_lp_l.reset()
-                self._pad_mellow_lp_r.reset()
+            new_mellow = bool(params["pad_mellow_enabled"])
+            if new_mellow and not self.pad_mellow_enabled:
+                with self._render_lock:
+                    self._pad_mellow_lp_l.reset()
+                    self._pad_mellow_lp_r.reset()
+                    self.pad_mellow_enabled = new_mellow
+            else:
+                self.pad_mellow_enabled = new_mellow
         if "pad_mellow_cutoff_hz" in params:
             self.pad_mellow_cutoff_hz = max(100.0, min(8000.0, float(params["pad_mellow_cutoff_hz"])))

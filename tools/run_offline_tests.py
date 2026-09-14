@@ -29,6 +29,20 @@ SAFE_TESTS = (
     "test_pad_and_recording.py",
     "test_control_guards.py",
     "test_application_lifecycle.py",
+    "test_state_schema.py",
+    "test_control_mapping.py",
+    "test_control_transactions.py",
+    "test_native_bridge_contract.py",
+    "test_jack_bridge_contract.py",
+    "test_native_lifecycle.py",
+    "test_recorder_lifecycle.py",
+    "test_pad_preparation.py",
+    "test_native_allocation_guards.py",
+    "test_ui_recovery.py",
+    "test_pad_transactions.py",
+    "test_native_profile.py",
+    "test_retired_stress_guards.py",
+    "test_routing.py",
 )
 
 

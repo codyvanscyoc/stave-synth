@@ -66,6 +66,8 @@ class FaustPlate:
     def __init__(self, sample_rate: int = 48000):
         self.sample_rate = int(sample_rate)
         self._dsp = _lib.newStavePlate()
+        if self._dsp == _ffi.NULL:
+            raise RuntimeError("newStavePlate() returned NULL")
         _lib.initStavePlate(self._dsp, self.sample_rate)
 
         self._zones: dict[str, _ffi.CData] = {}

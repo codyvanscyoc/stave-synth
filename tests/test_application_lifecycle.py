@@ -7,6 +7,8 @@ import os
 import signal as signal_module
 import subprocess
 import sys
+import threading
+import time
 import tempfile
 import unittest
 from pathlib import Path
@@ -94,6 +96,24 @@ def _run_namespace(app, *, sleep_effect=KeyboardInterrupt()):
 
 
 class ApplicationLifecycleTests(unittest.TestCase):
+    def test_failed_piano_start_retains_owner_and_does_not_continue_to_audio(self):
+        tree = ast.parse(MAIN_PATH.read_text())
+        stave = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "StaveSynth")
+        start = next(n for n in stave.body if isinstance(n, ast.FunctionDef) and n.name == "start")
+        piano = mock.Mock(start=mock.Mock(side_effect=RuntimeError("program failed")))
+        namespace = {"logger": mock.Mock(), "ensure_jack_running": lambda: True,
+                     "FluidSynthPlayer": lambda: piano}
+        module = ast.Module(body=[start], type_ignores=[])
+        ast.fix_missing_locations(module)
+        exec(compile(module, str(MAIN_PATH), "exec"), namespace)
+        owner = SimpleNamespace(_controls=mock.Mock(), presets=mock.Mock(),
+                                _rebuild_preset_saved=mock.Mock(),
+                                state={"ui": {"preset_labels": [""] * 10}}, piano=None)
+        with self.assertRaisesRegex(RuntimeError, "piano startup failed: program failed"):
+            namespace["start"](owner)
+        self.assertIs(owner.piano, piano)
+        piano.update_params.assert_not_called()
+
     def test_start_failure_cleans_without_saving_and_preserves_failure(self):
         failure = RuntimeError("listener bind failed")
         app = _App(start_effect=failure)
@@ -148,7 +168,7 @@ class ApplicationLifecycleTests(unittest.TestCase):
     def test_stop_flag_skips_only_final_state_save(self):
         save_state = mock.Mock()
         logger = mock.Mock()
-        namespace = {"save_state": save_state, "logger": logger}
+        namespace = {"save_state": save_state, "logger": logger, "time": time, "threading": threading}
         module = ast.Module(body=[_STOP_NODE], type_ignores=[])
         ast.fix_missing_locations(module)
         exec(compile(module, str(MAIN_PATH), "exec"), namespace)
@@ -157,18 +177,23 @@ class ApplicationLifecycleTests(unittest.TestCase):
             state={"partially": "initialized"},
             _running=True,
             _crossfade_cancel=mock.Mock(),
+            _stop_event=threading.Event(),
+            _controls=mock.Mock(),
+            _ui_lifecycle_lock=threading.Lock(),
+            _control_lock=threading.RLock(),
             jack=mock.Mock(),
             piano=mock.Mock(),
             organ=mock.Mock(),
-            ws_server=mock.Mock(),
+            ws_server=mock.Mock(stop=mock.Mock(return_value=True)),
         )
         namespace["stop"](owner, save_final_state=False)
 
         save_state.assert_not_called()
         self.assertFalse(owner._running)
         owner._crossfade_cancel.set.assert_called_once_with()
-        owner.jack.stop.assert_called_once_with()
-        owner.piano.stop.assert_called_once_with()
+        owner.jack.stop.assert_called_once()
+        owner.piano.stop.assert_called_once()
+        self.assertGreaterEqual(owner.jack.stop.call_args.kwargs["timeout"], 0)
         owner.organ.all_notes_off.assert_called_once_with()
         owner.ws_server.stop.assert_called_once_with()
 

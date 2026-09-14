@@ -9,10 +9,12 @@ import ast
 import copy
 import logging
 import re
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
+from stave_synth.state_schema import ValidationError, validate_message, validate_setting
 
 
 def _handlers():
@@ -26,9 +28,11 @@ def _handlers():
                          for target in node.targets))
     methods = [node for node in owner.body
                if isinstance(node, ast.FunctionDef)
-               and node.name in ("_handle_setting", "_handle_ws_message")]
-    assert len(methods) == 2
-    namespace = {"_re": re, "logger": logging.getLogger(__name__)}
+               and node.name in ("_handle_setting", "_handle_ws_message", "_apply_setting", "_dispatch_ws_message")]
+    assert len(methods) == 4
+    namespace = {"_re": re, "logger": logging.getLogger(__name__), "copy": copy,
+                 "ValidationError": ValidationError, "validate_message": validate_message,
+                 "validate_setting": validate_setting}
     exec(compile(ast.Module(body=[regex, *methods], type_ignores=[]), str(source), "exec"), namespace)
     return namespace
 
@@ -39,8 +43,14 @@ _HANDLERS = _handlers()
 class Controller:
     _handle_setting = _HANDLERS["_handle_setting"]
     _handle_ws_message = _HANDLERS["_handle_ws_message"]
+    _apply_setting = _HANDLERS["_apply_setting"]
+    _dispatch_ws_message = _HANDLERS["_dispatch_ws_message"]
 
     def __init__(self):
+        self._control_lock = threading.RLock()
+        self._stopping = False
+        self._crossfade_cancel = threading.Event()
+        self.synth = Mock()
         self.state = {
             "master": {"piano_octave": 0, "volume": 0.7},
             "piano": {"volume": 0.5, "eq_bands": [
@@ -49,6 +59,7 @@ class Controller:
             ]},
             "synth_pad": {"osc1_octave": 1, "osc2_octave": -1},
             "organ": {},
+            "macros": [],
         }
         self.jack = SimpleNamespace(piano_octave=0)
         self.piano = SimpleNamespace(update_params=Mock())
@@ -85,7 +96,7 @@ class SettingGuardTests(unittest.TestCase):
                     app = Controller()
                     bands = app.state["piano"]["eq_bands"]
                     before = copy.deepcopy(app.state)
-                    result = app._handle_setting({"section": "piano", "param": f"eq_band{index}_{suffix}",
+                    result = app._handle_ws_message({"type": "setting", "section": "piano", "param": f"eq_band{index}_{suffix}",
                                                   "value": value})
                     self.assertEqual(result["type"], "error")
                     self.assertEqual(app.state, before)
@@ -96,7 +107,7 @@ class SettingGuardTests(unittest.TestCase):
     def test_invalid_eq_index_does_not_even_create_missing_band_list(self):
         app = Controller()
         del app.state["piano"]["eq_bands"]
-        result = app._handle_setting({"section": "piano", "param": "eq_band1000000_gain", "value": 3})
+        result = app._handle_ws_message({"type": "setting", "section": "piano", "param": "eq_band1000000_gain", "value": 3})
         self.assertEqual(result["type"], "error")
         self.assertNotIn("eq_bands", app.state["piano"])
         app.piano.update_params.assert_not_called()
@@ -108,7 +119,7 @@ class SettingGuardTests(unittest.TestCase):
         self.assertEqual(result["type"], "setting_ack")
         self.assertEqual(len(app.state["piano"]["eq_bands"]), 4)
         self.assertEqual(app.state["piano"]["eq_bands"][3]["freq_hz"], 1200.0)
-        app.piano.update_params.assert_called_once_with({"eq_band3_freq": "1200"})
+        app.piano.update_params.assert_called_once_with({"eq_band3_freq": 1200.0})
 
 
 class DebugReadOnlyTests(unittest.TestCase):

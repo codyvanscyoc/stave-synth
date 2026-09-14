@@ -425,123 +425,13 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 
 def load_state():
-    """Load current state from disk, merged with defaults so new keys exist."""
-    defaults = json.loads(json.dumps(DEFAULT_STATE))
-    state = defaults
-    if STATE_FILE.exists():
-        try:
-            with open(STATE_FILE) as f:
-                saved = json.load(f)
-            if not isinstance(saved, dict):
-                raise ValueError("saved state must be a JSON object")
-            # Migration: legacy preset stored a single ADSR under
-            # synth_pad.adsr; per-OSC ADSR shipped in 5278d8e splits this
-            # into adsr_osc1 / adsr_osc2. Splat the legacy block to BOTH
-            # before deep-merge so a saved attack/release survives upgrade.
-            sp = saved.get("synth_pad")
-            if isinstance(sp, dict) and "adsr" in sp and isinstance(sp["adsr"], dict):
-                if "adsr_osc1" not in sp:
-                    sp["adsr_osc1"] = dict(sp["adsr"])
-                if "adsr_osc2" not in sp:
-                    sp["adsr_osc2"] = dict(sp["adsr"])
-                sp.pop("adsr", None)
-            # Purge retired LFO Enabled keys (session 04-23a). Old saves keep
-            # them at False, which in earlier code zeroed lfo_depth on every
-            # load — silently neutering the LFO unless the user touched the
-            # depth slider. Drop them so they stop riding along on autosave.
-            if isinstance(sp, dict):
-                sp.pop("lfo_enabled", None)
-                sp.pop("lfo2_enabled", None)
-            state = _deep_merge(defaults, saved)
-        except (ValueError, OSError) as e:
-            # Previously silent-swallowed — which meant a corrupted state
-            # file silently reset every preset/fader to defaults with no
-            # indication to the user. Log loudly so a stage-side surprise
-            # is at least findable in the journal.
-            logger.warning(
-                "Failed to load saved state from %s: %s — falling back to defaults",
-                STATE_FILE, e,
-            )
-
-    # Migration: pad preset arrays if they're shorter than current default
-    # (handles users upgrading from 5-slot → 10-slot layout).
-    ui = state.setdefault("ui", {})
-    for key, filler in (("preset_saved", False), ("preset_labels", "")):
-        arr = ui.get(key, [])
-        if not isinstance(arr, list):
-            arr = []
-        if len(arr) < 10:
-            arr = list(arr) + [filler] * (10 - len(arr))
-            ui[key] = arr
-
-    # Migration: piano voicings were renamed 2026-04-20 to short single-word
-    # keys ("acoustic_grand" → "acoustic", etc). Also the old electric_piano_*
-    # entries are gone — those are Sound-dropdown concerns, not voicings.
-    _VOICING_RENAME = {
-        "acoustic_grand":   "acoustic",
-        "bright_studio":    "bright",
-        "mellow_warm":      "mellow",
-        "electric_piano_1": "acoustic",
-        "electric_piano_2": "acoustic",
-    }
-    _VALID_VOICINGS = {"acoustic", "bright", "mellow", "warm", "dark", "vintage", "stage"}
-    # Migration: soundfont names moved from raw file stems to preset keys
-    # 2026-04-20. "FluidR3_GM" saved state → "Fluid" preset, etc.
-    _SOUNDFONT_RENAME = {
-        "FluidR3_GM": "Fluid",
-        "TimGM6mb":   "Fluid",   # TimGM6mb removed entirely; Fluid is the closest GM bank
-        "Arachno":    "Fluid",
-        "system":     "Fluid",
-        "default-GM": "Fluid",
-    }
-    _VALID_SOUNDFONTS = {"Salamander", "Fluid", "Rhodes", "Suitcase"}
-    piano_state = state.get("piano")
-    if isinstance(piano_state, dict):
-        v = piano_state.get("voicing")
-        if v in _VOICING_RENAME:
-            piano_state["voicing"] = _VOICING_RENAME[v]
-        elif v not in _VALID_VOICINGS:
-            piano_state["voicing"] = "acoustic"
-        sf = piano_state.get("soundfont")
-        if sf in _SOUNDFONT_RENAME:
-            piano_state["soundfont"] = _SOUNDFONT_RENAME[sf]
-        elif sf not in _VALID_SOUNDFONTS:
-            piano_state["soundfont"] = "Fluid" if LOW_RAM_MODE else "Salamander"
-        # Small-Pi profile: Salamander is not loaded at all on <3 GB boxes —
-        # remap a migrated/copied state so the piano isn't silent.
-        if LOW_RAM_MODE and piano_state.get("soundfont") == "Salamander":
-            logger.info("LOW_RAM_MODE: remapping saved soundfont Salamander → Fluid")
-            piano_state["soundfont"] = "Fluid"
-
-    # Migration: extend macros array to 8 if saved state had fewer (handles
-    # upgrading from the original 4-macro layout to the 4+4 A/B-layer design).
-    macros = state.get("macros", [])
-    if not isinstance(macros, list):
-        macros = []
-    if len(macros) < 8:
-        for idx in range(len(macros), 8):
-            macros.append({"name": f"M{idx+1}", "value": 0.0, "bipolar": False, "assignments": []})
-        state["macros"] = macros
-    for m in macros:
-        if isinstance(m, dict) and "bipolar" not in m:
-            m["bipolar"] = False
-    # Migration: add setlists array if missing or short
-    setlists = state.get("setlists", [])
-    if not isinstance(setlists, list):
-        setlists = []
-    if len(setlists) < 10:
-        for _ in range(10 - len(setlists)):
-            setlists.append({"name": "", "presets": None})
-        state["setlists"] = setlists
-    return state
+    """Load a validated state, recovering a last-good snapshot if necessary."""
+    from .state_persistence import load
+    return load(STATE_FILE)
 
 
 def save_state(state):
-    """Save a private snapshot with a unique, fsynced sibling temporary file.
-
-    Deepcopy detaches the object before serialization; scene-level transaction
-    consistency still belongs to the control plane, not this file writer.
-    """
-    snapshot = copy.deepcopy(state)
+    """Persist a validated snapshot and retain the preceding known-good state."""
+    from .state_persistence import save
     ensure_dirs()
-    atomic_write_json(STATE_FILE, snapshot)
+    save(STATE_FILE, state)

@@ -69,6 +69,8 @@ class FaustPianoRoom:
     def __init__(self, sample_rate: int = 48000):
         self.sample_rate = int(sample_rate)
         self._dsp = _lib.newStavePianoRoom()
+        if self._dsp == _ffi.NULL:
+            raise RuntimeError("newStavePianoRoom() returned NULL")
         _lib.initStavePianoRoom(self._dsp, self.sample_rate)
 
         self._zones: dict[str, _ffi.CData] = {}

@@ -177,7 +177,11 @@ class FluidSynthPlayer:
         # Placeholder only — always overwritten by start()'s startup resolve.
         self.current_soundfont = ""
         self.reverb_dry_wet = 0.4
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._piano_room_lock = threading.RLock()
+        self._preload_stop = threading.Event()
+        self._preload_thread = None
+        self._closing = False
 
         # Our own DSP chain — 24dB/oct (cascaded biquads) for audible piano EQ
         from .synth_engine import BiquadLowpass, BiquadHighpass, BiquadPeakingEQ
@@ -302,6 +306,8 @@ class FluidSynthPlayer:
         Memory cost on the Pi 5 (8 GB): Salamander ~1.2 GB + FluidR3_GM
         ~150 MB = ~1.35 GB resident. Fine.
         """
+        self._closing = False
+        self._preload_stop.clear()
         self.fs = fluidsynth.Synth(samplerate=float(self.sample_rate))
 
         # Configure — gain at 1.0 since our pipeline handles volume.
@@ -362,30 +368,35 @@ class FluidSynthPlayer:
         startup_preset = SOUNDFONT_PRESETS.get(soundfont_name)
         startup_file = startup_preset["file"] if startup_preset else soundfont_name
 
-        def _load_one(file_key):
-            """Load one soundfont (deduped). Safe to call from background
-            thread — FluidSynth's sfload is internally serialized."""
-            if file_key in self._sfid_by_file:
+        def _load_one(file_key, allow_fallback=True):
+            """Load one soundfont without racing native render or shutdown."""
+            if self._preload_stop.is_set():
                 return
-            sf_path = self._find_soundfont(file_key)
+            sf_path = (self._find_soundfont(file_key) if allow_fallback
+                       else self._find_soundfont_exact(file_key))
             if sf_path is None:
                 logger.warning("Soundfont not found for file='%s' — "
                                "preset(s) using it will be unavailable", file_key)
                 return
             path_str = str(sf_path)
-            if path_str in _sfid_by_path:
-                self._sfid_by_file[file_key] = _sfid_by_path[path_str]
-                return
-            try:
-                sfid = self.fs.sfload(path_str)
-            except Exception as e:
-                logger.error("sfload crashed for %s: %s", path_str, e)
-                return
-            if sfid < 0:
-                logger.warning("sfload returned %d for %s", sfid, path_str)
-                return
-            self._sfid_by_file[file_key] = sfid
-            _sfid_by_path[path_str] = sfid
+            with self._lock:
+                if self._closing or self._preload_stop.is_set() or self.fs is None:
+                    return
+                if file_key in self._sfid_by_file:
+                    return
+                if path_str in _sfid_by_path:
+                    self._sfid_by_file[file_key] = _sfid_by_path[path_str]
+                    return
+                try:
+                    sfid = self.fs.sfload(path_str)
+                except Exception as e:
+                    logger.error("sfload crashed for %s: %s", path_str, e)
+                    return
+                if sfid < 0:
+                    logger.warning("sfload returned %d for %s", sfid, path_str)
+                    return
+                self._sfid_by_file[file_key] = sfid
+                _sfid_by_path[path_str] = sfid
             logger.info("Preloaded soundfont file='%s' path='%s' sfid=%d",
                          file_key, path_str, sfid)
 
@@ -398,13 +409,19 @@ class FluidSynthPlayer:
         def _bg_preload_rest():
             try:
                 for preset_name, preset in SOUNDFONT_PRESETS.items():
-                    _load_one(preset["file"])
-                logger.info("Background soundfont preload complete")
+                    if self._preload_stop.is_set():
+                        return
+                    # A missing secondary preset must stay unavailable rather
+                    # than caching another font under its key and selecting a
+                    # program number that belongs to the missing bank.
+                    _load_one(preset["file"], allow_fallback=False)
+                if not self._preload_stop.is_set():
+                    logger.info("Background soundfont preload complete")
             except Exception as e:
                 logger.warning("Background soundfont preload error: %s", e)
-        import threading as _threading
-        _threading.Thread(target=_bg_preload_rest, daemon=True,
-                          name="sf-preload").start()
+        self._preload_thread = threading.Thread(
+            target=_bg_preload_rest, daemon=True, name="sf-preload"
+        )
 
         # Resolve the startup name: if it's a preset key, grab the preset's
         # file (and tremolo config). Otherwise treat as a direct file stem
@@ -428,7 +445,9 @@ class FluidSynthPlayer:
         if startup_sfid is not None:
             self.sfid = startup_sfid
             self._loaded_file = file_stem
-            self.fs.program_select(0, self.sfid, 0, startup_program)
+            self._program_select_checked(
+                self.sfid, startup_program, f"startup preset '{self.current_soundfont}'"
+            )
             logger.info("Startup soundfont: preset=%s file=%s prog=%d id=%d",
                          self.current_soundfont, file_stem, startup_program, self.sfid)
         elif file_stem and preset_name is None:
@@ -441,7 +460,10 @@ class FluidSynthPlayer:
                 if self.sfid >= 0:
                     self._loaded_file = Path(sf_path).stem
                     self.current_soundfont = self._loaded_file
-                    self.fs.program_select(0, self.sfid, 0, startup_program)
+                    self._program_select_checked(
+                        self.sfid, startup_program,
+                        f"legacy startup soundfont '{self.current_soundfont}'",
+                    )
                     # Register in cache so subsequent switches are instant too.
                     self._sfid_by_file[file_stem] = self.sfid
                     logger.info("Loaded soundfont (legacy path): %s id=%d",
@@ -466,41 +488,76 @@ class FluidSynthPlayer:
         else:
             logger.warning("FluidSynth started but no soundfont loaded — piano will be silent")
 
-    def _find_soundfont(self, name: str):
-        """Search for a soundfont file by name."""
-        for ext in (".sf2", ".sf3", ".SF2", ".SF3"):
-            path = SOUNDFONT_DIR / f"{name}{ext}"
-            if path.exists():
-                return path
+        # Start asynchronous loads only after the startup program has been
+        # selected. All native calls share _lock with render and shutdown.
+        self._preload_thread.start()
 
-        # Try common system locations
+    def wait_for_preload(self, timeout: float = 30.0) -> bool:
+        """Wait a bounded time for all background soundfont loads to finish.
+
+        A False result leaves the loader and FluidSynth object owned and live;
+        the caller must abort startup and use stop() for coordinated teardown.
+        """
+        preload = self._preload_thread
+        if preload is None or not preload.is_alive():
+            return True
+        if preload is threading.current_thread():
+            logger.error("Soundfont preload cannot wait for itself")
+            return False
+        preload.join(timeout=max(0.0, float(timeout)))
+        if preload.is_alive():
+            logger.error("Soundfont preload did not finish within %.1f seconds", timeout)
+            return False
+        return True
+
+    def _find_soundfont_exact(self, name: str):
+        """Search one name without substituting a different bank."""
         import os
         system_dirs = [
             "/usr/share/sounds/sf2",
             "/usr/share/soundfonts",
             "/usr/local/share/soundfonts",
         ]
-        for d in system_dirs:
+        for ext in (".sf2", ".sf3", ".SF2", ".SF3"):
+            path = SOUNDFONT_DIR / f"{name}{ext}"
+            if path.exists():
+                return path
+        for directory in system_dirs:
             for ext in (".sf2", ".sf3"):
-                path = os.path.join(d, f"{name}{ext}")
+                path = os.path.join(directory, f"{name}{ext}")
                 if os.path.exists(path):
                     return path
+        return None
 
-        # Fallback chain — Salamander is the default, FluidR3_GM the backup.
-        # TimGM6mb was dropped 2026-04-20 (too thin).
-        fallbacks = ["Salamander", "FluidR3_GM", "default-GM"]
-        for fb in fallbacks:
-            if fb != name:
-                logger.info("Trying fallback soundfont: %s", fb)
-                result = self._find_soundfont(fb)
-                if result:
-                    return result
+    def _program_select_checked(self, sfid: int, program: int, context: str) -> None:
+        """Select one native program or raise without acknowledging new state."""
+        try:
+            status = self.fs.program_select(0, int(sfid), 0, int(program))
+        except Exception as exc:
+            raise RuntimeError(f"FluidSynth program selection failed for {context}") from exc
+        # pyfluidsynth versions normally return FluidSynth's integer status;
+        # tolerate None for bindings that expose this C call as void.
+        if status not in (None, 0):
+            raise RuntimeError(
+                f"FluidSynth program selection failed for {context} (status {status})"
+            )
 
+    def _find_soundfont(self, name: str):
+        """Search the requested name then a finite startup fallback list."""
+        candidates = [name]
+        candidates.extend(fb for fb in ("Salamander", "FluidR3_GM", "default-GM")
+                          if fb != name)
+        for index, candidate in enumerate(candidates):
+            if index:
+                logger.info("Trying fallback soundfont: %s", candidate)
+            result = self._find_soundfont_exact(candidate)
+            if result is not None:
+                return result
         return None
 
     def note_on(self, note: int, velocity: float):
         """Play a note."""
-        if not self.enabled or self.fs is None:
+        if self._closing or not self.enabled or self.fs is None:
             logger.debug("note_on skipped (enabled=%s, fs=%s)", self.enabled, self.fs is not None)
             return
         # Per-preset velocity curve — exponential bias that pushes mid-
@@ -509,23 +566,28 @@ class FluidSynthPlayer:
         # and max velocity still maps to 1.0 (no clipping, no "always slam").
         vel_shaped = velocity ** (1.0 / max(1.0, self.velocity_curve))
         vel_midi = max(1, min(127, int(vel_shaped * 127)))
-        self._note_on_count += 1
-        self._active_notes += 1
-        self._silent_blocks = 0
-        # Velocity-brightness tracker: fast attack, slow-ish blend so a run
-        # of soft notes truly reads as soft even if one loud accent sneaks in.
-        self._vel_tracker = 0.6 * self._vel_tracker + 0.4 * float(velocity)
-        logger.debug("PIANO note_on: note=%d vel=%d (count=%d)", note, vel_midi, self._note_on_count)
         with self._lock:
+            if self._closing or self.fs is None:
+                return
             self.fs.noteon(0, note, vel_midi)
+            self._note_on_count += 1
+            self._active_notes += 1
+            self._silent_blocks = 0
+            # Velocity-brightness tracker: fast attack, slow-ish blend so a
+            # run of soft notes reads as soft after one loud accent.
+            self._vel_tracker = 0.6 * self._vel_tracker + 0.4 * float(velocity)
+            logger.debug("PIANO note_on: note=%d vel=%d (count=%d)",
+                         note, vel_midi, self._note_on_count)
 
     def note_off(self, note: int):
         """Release a note."""
-        if self.fs is None:
+        if self._closing or self.fs is None:
             return
-        self._active_notes = max(0, self._active_notes - 1)
         with self._lock:
+            if self._closing or self.fs is None:
+                return
             self.fs.noteoff(0, note)
+            self._active_notes = max(0, self._active_notes - 1)
 
     def all_notes_off(self):
         """Silence all notes."""
@@ -550,7 +612,8 @@ class FluidSynthPlayer:
         # Flush piano-room tank so panic truly silences (otherwise the tail
         # keeps ringing while piano voices are killed).
         if self._piano_room is not None:
-            self._piano_room.clear()
+            with self._piano_room_lock:
+                self._piano_room.clear()
 
     def midi_callback(self, event_type: str, note: int, velocity: float):
         """Callback to be registered with JackEngine for MIDI forwarding."""
@@ -568,9 +631,11 @@ class FluidSynthPlayer:
             # the raw 14-bit number → at "center" the API saw +8192 = max bend
             # up (+2 semis with our default range), which is the "piano plays D
             # when I hit C" bug.
-            if self.fs is not None:
+            if not self._closing and self.fs is not None:
                 try:
-                    self.fs.pitch_bend(0, int(note) - 8192)
+                    with self._lock:
+                        if not self._closing and self.fs is not None:
+                            self.fs.pitch_bend(0, int(note) - 8192)
                 except Exception as e:
                     logger.debug("FluidSynth pitch_bend failed: %s", e)
 
@@ -599,7 +664,7 @@ class FluidSynthPlayer:
     def render_block(self, n_samples: int) -> np.ndarray:
         """Render FluidSynth audio and apply our DSP chain.
         Returns stereo (2, n) float64 array, ready to mix with synth pad."""
-        if self.fs is None or not self.enabled:
+        if self._closing or self.fs is None or not self.enabled:
             return np.zeros((2, n_samples), dtype=np.float64)
 
         # Skip rendering when piano is silent (no active notes + release tail finished)
@@ -609,11 +674,18 @@ class FluidSynthPlayer:
             if self._silent_blocks > 400:
                 return np.zeros((2, n_samples), dtype=np.float64)
 
-        with self._lock:
+        # A cold background sfload can own FluidSynth for hundreds of ms.
+        # Never make the render producer wait that long: emit a complete
+        # silent block while startup preload owns the native instance.
+        if not self._lock.acquire(blocking=False):
+            return np.zeros((2, n_samples), dtype=np.float64)
+        try:
             if self.fs is None:
                 return np.zeros((2, n_samples), dtype=np.float64)
             # get_samples returns interleaved stereo int16, length = 2 * n_samples
             raw = self.fs.get_samples(n_samples)
+        finally:
+            self._lock.release()
 
         self._render_count += 1
 
@@ -730,21 +802,22 @@ class FluidSynthPlayer:
         # 100% wet output from the .so; Python blends dry/wet here. When
         # enable toggles OFF we clear the tank so re-enable starts quiet.
         if self._piano_room is not None:
-            if self.piano_room_enabled and self._piano_room_was_enabled is False:
-                self._piano_room_was_enabled = True
-            elif not self.piano_room_enabled and self._piano_room_was_enabled:
-                self._piano_room.clear()
-                self._piano_room_was_enabled = False
+            with self._piano_room_lock:
+                if self.piano_room_enabled and self._piano_room_was_enabled is False:
+                    self._piano_room_was_enabled = True
+                elif not self.piano_room_enabled and self._piano_room_was_enabled:
+                    self._piano_room.clear()
+                    self._piano_room_was_enabled = False
 
-            if self.piano_room_enabled and self.reverb_dry_wet > 0.001:
-                smooth_a = 1.0 - np.exp(-n_samples / (0.03 * self.sample_rate))
-                self._piano_room_wet_cur += smooth_a * (
-                    float(self.reverb_dry_wet) - self._piano_room_wet_cur
-                )
-                wet = self._piano_room.process(np.stack([left, right]))
-                w = self._piano_room_wet_cur
-                left = left * (1.0 - w) + wet[0] * w
-                right = right * (1.0 - w) + wet[1] * w
+                if self.piano_room_enabled and self.reverb_dry_wet > 0.001:
+                    smooth_a = 1.0 - np.exp(-n_samples / (0.03 * self.sample_rate))
+                    self._piano_room_wet_cur += smooth_a * (
+                        float(self.reverb_dry_wet) - self._piano_room_wet_cur
+                    )
+                    wet = self._piano_room.process(np.stack([left, right]))
+                    w = self._piano_room_wet_cur
+                    left = left * (1.0 - w) + wet[0] * w
+                    right = right * (1.0 - w) + wet[1] * w
 
         return np.array([left, right])
 
@@ -910,16 +983,7 @@ class FluidSynthPlayer:
         currently loaded, plus any preset-specific effects (tremolo)."""
         preset = SOUNDFONT_PRESETS.get(name)
         if preset is None:
-            logger.warning("Unknown soundfont preset: %s", name)
-            return
-
-        # Always apply tremolo config — cheap, and lets Rhodes→Suitcase toggle
-        # without a soundfont reload since they share the same .sf2 file.
-        self.tremolo_hz = float(preset.get("tremolo_hz", 0.0))
-        self.tremolo_depth = float(preset.get("tremolo_depth", 0.0))
-        if self.tremolo_depth <= 1e-4:
-            self._tremolo_phase = 0.0  # reset so cycle starts clean on next engage
-        self.velocity_curve = float(preset.get("velocity_curve", 1.0))
+            raise ValueError(f"Unknown soundfont preset: {name}")
 
         target_file = preset["file"]
         target_program = int(preset.get("program", 0))
@@ -927,32 +991,11 @@ class FluidSynthPlayer:
         # Every preset's .sf2 is pre-loaded at start(); switching is just a
         # program_select on the already-resident sfid. No sfload/sfunload on
         # the audio path → no dropped audio mid-song.
-        new_sfid = getattr(self, "_sfid_by_file", {}).get(target_file)
-
         if self.fs is None:
             # Pre-start state update (set_soundfont called before start())
             self.current_soundfont = name
             self._loaded_file = target_file
             return
-
-        if new_sfid is None:
-            # Pre-load miss — could happen if the preset's file wasn't found
-            # on disk at startup. One-off sfload on the lock as a last resort
-            # (rare; shouldn't hit during normal live use).
-            logger.warning("Preset '%s' file='%s' not preloaded — attempting one-off sfload",
-                           name, target_file)
-            sf_path = self._find_soundfont(target_file)
-            if sf_path is None:
-                logger.warning("Soundfont file not found: %s — keeping %s",
-                               target_file, self.current_soundfont)
-                return
-            with self._lock:
-                loaded_id = self.fs.sfload(str(sf_path))
-                if loaded_id < 0:
-                    logger.error("one-off sfload failed for %s", sf_path)
-                    return
-                self._sfid_by_file[target_file] = loaded_id
-                new_sfid = loaded_id
 
         # Smooth handoff: `program_select` swaps the channel's program; existing
         # voices ring out naturally through their ADSR while new noteOns use the
@@ -960,15 +1003,40 @@ class FluidSynthPlayer:
         # voices + reverb tail in one block, popping the preset crossfade.
         try:
             with self._lock:
+                if self._closing or self.fs is None:
+                    raise RuntimeError("FluidSynth is closing; preset switch rejected")
+                new_sfid = getattr(self, "_sfid_by_file", {}).get(target_file)
+                if new_sfid is None:
+                    # Background preload owns all slow sfload calls. Never put
+                    # cold disk I/O on a UI/control operation competing with
+                    # the audio renderer.
+                    logger.warning("Preset '%s' file='%s' is not preloaded yet; keeping %s",
+                                   name, target_file, self.current_soundfont)
+                    raise RuntimeError(
+                        f"Soundfont preset '{name}' is unavailable or still preloading"
+                    )
                 # (No set_reverb_level here — FluidSynth's reverb is
                 # permanently disabled at start(); piano room colour comes
                 # from the Faust Dattorro in our pipeline.)
-                self.fs.program_select(0, new_sfid, 0, target_program)
+                self._program_select_checked(
+                    new_sfid, target_program, f"preset '{name}'"
+                )
         except Exception as e:
             logger.warning("program_select %d failed on preset switch: %s",
                            target_program, e)
-            return
+            if isinstance(e, RuntimeError):
+                raise
+            raise RuntimeError(
+                f"FluidSynth program switch to '{name}' failed"
+            ) from e
 
+        # Apply preset-specific post-processing only after the native program
+        # switch succeeds, so a preload miss cannot leave a hybrid preset.
+        self.tremolo_hz = float(preset.get("tremolo_hz", 0.0))
+        self.tremolo_depth = float(preset.get("tremolo_depth", 0.0))
+        if self.tremolo_depth <= 1e-4:
+            self._tremolo_phase = 0.0
+        self.velocity_curve = float(preset.get("velocity_curve", 1.0))
         self.sfid = new_sfid
         self.current_soundfont = name
         self._loaded_file = target_file
@@ -1042,10 +1110,12 @@ class FluidSynthPlayer:
             self.piano_room_enabled = bool(params["piano_room_enabled"])
         if "piano_room_size" in params and self._piano_room is not None:
             v = max(0.0, min(1.0, float(params["piano_room_size"])))
-            self._piano_room.set_zone("size", v)
+            with self._piano_room_lock:
+                self._piano_room.set_zone("size", v)
         if "piano_room_damp" in params and self._piano_room is not None:
             v = max(0.0, min(0.99, float(params["piano_room_damp"])))
-            self._piano_room.set_zone("damp", v)
+            with self._piano_room_lock:
+                self._piano_room.set_zone("damp", v)
         if "vel_bright_enabled" in params:
             self.vel_bright_enabled = bool(params["vel_bright_enabled"])
         if "vel_bright_amount" in params:
@@ -1069,8 +1139,25 @@ class FluidSynthPlayer:
         if "comp_drive_db" in params:
             self.comp_drive_db = max(-12.0, min(12.0, float(params["comp_drive_db"])))
 
-    def stop(self):
-        """Shut down FluidSynth."""
+    def stop(self, timeout: float = 5.0) -> bool:
+        """Stop preload activity, then dispose native state if quiescent.
+
+        A False result means a native preload may still be executing. The
+        FluidSynth object deliberately remains owned and must not be deleted.
+        """
+        self._closing = True
+        self.enabled = False
+        self._preload_stop.set()
+        preload = self._preload_thread
+        if preload is not None and preload is not threading.current_thread():
+            # An exception during startup can leave the Thread constructed but
+            # never started; Thread.join() raises RuntimeError in that state.
+            if preload.is_alive():
+                preload.join(timeout=max(0.0, float(timeout)))
+            if preload.is_alive():
+                logger.error("FluidSynth preload did not quiesce; native object retained")
+                return False
+
         self.all_notes_off()
         with self._lock:
             if self.fs:
@@ -1080,3 +1167,4 @@ class FluidSynthPlayer:
                     logger.warning("Error stopping FluidSynth: %s", e)
                 self.fs = None
         logger.info("FluidSynth stopped")
+        return True

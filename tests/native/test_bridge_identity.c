@@ -52,6 +52,12 @@ jack_nframes_t jack_get_sample_rate(jack_client_t *c) { (void)c; return 48000; }
 int jack_set_process_callback(jack_client_t *c, int (*cb)(jack_nframes_t, void *), void *arg) {
     (void)c; (void)cb; (void)arg; return 0;
 }
+int jack_set_buffer_size_callback(jack_client_t *c, int (*cb)(jack_nframes_t, void *), void *arg) {
+    (void)c; (void)cb; (void)arg; return 0;
+}
+int jack_set_sample_rate_callback(jack_client_t *c, int (*cb)(jack_nframes_t, void *), void *arg) {
+    (void)c; (void)cb; (void)arg; return 0;
+}
 int jack_set_xrun_callback(jack_client_t *c, int (*cb)(void *), void *arg) {
     (void)c; (void)cb; (void)arg; return 0;
 }

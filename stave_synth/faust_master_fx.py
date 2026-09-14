@@ -65,6 +65,8 @@ class FaustMasterFX:
     def __init__(self, sample_rate: int = 48000):
         self.sample_rate = int(sample_rate)
         self._dsp = _lib.newStaveMasterFX()
+        if self._dsp == _ffi.NULL:
+            raise RuntimeError("newStaveMasterFX() returned NULL")
         _lib.initStaveMasterFX(self._dsp, self.sample_rate)
 
         self._zones: dict[str, _ffi.CData] = {}

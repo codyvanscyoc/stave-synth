@@ -25,6 +25,10 @@ from .fluidsynth_player import FluidSynthPlayer
 from .organ_engine import OrganEngine
 from .preset_manager import PresetManager
 from .websocket_server import WebSocketServer
+from .state_schema import ValidationError, validate_message, validate_setting, normalize_state, GLOBAL_MASTER_KEYS
+from .control_mapping import macro_commands
+from .control_queue import ControlQueue
+from .ui_recovery import UIRecovery
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,22 +41,13 @@ _EQ_BAND_RE = _re.compile(r"^eq_band(\d+)_(freq|gain|q|enabled)$")
 
 
 def _run_with_hard_timeout(cmd, timeout_s: float = 3.0, hard_timeout_s: float = 5.0):
-    """subprocess.run with a thread-level hard timeout. subprocess.timeout
-    alone can't unblock a child wedged against PipeWire (uninterruptible
-    wait on the JACK client socket); running it in a daemon thread lets
-    the UI move on even if the child never dies."""
-    box = []
-    def _runner():
-        try:
-            box.append(subprocess.run(
-                cmd, capture_output=True, text=True, timeout=timeout_s
-            ))
-        except Exception:
-            box.append(None)
-    t = threading.Thread(target=_runner, daemon=True)
-    t.start()
-    t.join(hard_timeout_s)
-    return box[0] if box else None
+    """Bound caller wait and admit at most two tracked command workers.
+
+    An uninterruptible child is NOT cancelled by the caller's timeout. Its
+    pending worker prevents further admission until it finishes.
+    """
+    from .routing import run_bounded_command
+    return run_bounded_command(cmd, timeout_s, hard_timeout_s)
 
 
 def ensure_jack_running():
@@ -93,6 +88,13 @@ class StaveSynth:
 
         # Load persisted state
         self.state = load_state()
+        self._control_lock = threading.RLock()
+        self._control_error = None
+        self._controls = ControlQueue(self._apply_queued_control)
+        self._stop_event = threading.Event()
+        self._stopping = False
+        self._ui_lifecycle_lock = threading.Lock()
+        self._ui_recovery = UIRecovery()
 
         # Initialize components
         self.synth = SynthEngine()
@@ -129,6 +131,39 @@ class StaveSynth:
         )
 
     def _handle_ws_message(self, msg: dict) -> dict | None:
+        """Validate before mutation and serialize all control-plane owners."""
+        try:
+            command = validate_message(msg)
+            with self._control_lock:
+                if self._stopping:
+                    return {"type": "error", "message": "Synth is shutting down"}
+                scene_control = command["type"] in {
+                    "setting", "fader", "macro_value", "instrument_cycle", "transpose", "octave",
+                    "shimmer_toggle", "shimmer_high_toggle", "freeze_toggle", "piano_comp_preset", "bus_comp_preset"}
+                previous = copy.deepcopy({key: self.state[key] for key in
+                                          ("synth_pad", "piano", "organ", "master", "macros")}) if scene_control else None
+                if scene_control or command["type"] == "recall_recording_params":
+                    self._crossfade_cancel.set()
+                    self.synth.sympathetic_set_suppress(False)
+                try:
+                    result = self._dispatch_ws_message(command)
+                except Exception as exc:
+                    if previous is not None:
+                        self._restore_failed_scene(previous, exc)
+                    raise
+                if previous is not None and result and result.get("type") == "error":
+                    self._restore_failed_scene(previous, result.get("message", "control rejected"))
+                # Detach while owned, before the websocket serializes it.
+                return copy.deepcopy(result)
+        except (ValidationError, ValueError, TypeError) as exc:
+            logger.warning("Rejected control message: %s", exc)
+            return {"type": "error", "message": str(exc)}
+        except Exception as exc:
+            logger.exception("Control operation failed")
+            self._control_error = str(exc)
+            return {"type": "error", "message": f"Operation failed: {exc}"}
+
+    def _dispatch_ws_message(self, msg: dict) -> dict | None:
         """Handle an incoming WebSocket message from the UI."""
         msg_type = msg.get("type")
 
@@ -202,7 +237,7 @@ class StaveSynth:
             # Push current MIDI connection state so the top-bar pip lights
             # up correctly without waiting for the 2-second watch tick.
             try:
-                connected = bool(self._connect_midi_ports())
+                connected = bool(getattr(self, "_midi_connected", False))
                 if self.ws_server:
                     self.ws_server.broadcast_sync({"type": "midi_status", "connected": connected})
             except Exception:
@@ -212,6 +247,9 @@ class StaveSynth:
             # in its normal state and no clue why.
             faded_out = bool(self.jack and self.jack._fade_target < 0.5)
             return {"type": "state", "state": self.state,
+                    "health": self._health_status(),
+                    "record_status": (self.recorder.current_status() if self.recorder
+                                      else {"recording": False, "finalizing": False}),
                     "faded_out": faded_out,
                     "soundfonts_available": sf_list,
                     # Small-Pi profile pins unison_voices to 3 (the Faust
@@ -394,110 +432,114 @@ class StaveSynth:
         return {"type": "fader_ack", "id": fader_id, "value": value, "alt": alt}
 
     def _handle_setlist_save(self, msg: dict) -> dict:
-        """Snapshot the current 10-preset bank into a setlist slot.
-        Captures each preset's JSON content + labels."""
-        slot = int(msg.get("slot", 0))
-        name = str(msg.get("name", ""))[:24]
-        if slot < 0 or slot >= 10:
-            return {"type": "error", "message": f"Invalid setlist slot {slot}"}
-        presets_snapshot = []
-        for i in range(self.presets.num_slots):
-            presets_snapshot.append(self.presets.load(i))  # None if empty
-        labels = list(self.state.get("ui", {}).get("preset_labels", []))
-        if len(labels) < 10:
-            labels = labels + [""] * (10 - len(labels))
-        setlists = self.state.setdefault("setlists", [])
-        while len(setlists) < 10:
-            setlists.append({"name": "", "presets": None})
-        setlists[slot] = {
-            "name": name, "presets": presets_snapshot, "labels": labels[:10],
+        slot, name = msg["slot"], msg.get("name", "")
+        bank = self.presets.snapshot()  # Invalid is not confused with empty.
+        candidate = copy.deepcopy(self.state)
+        candidate["setlists"][slot] = {
+            "name": name, "presets": bank["presets"], "labels": bank["labels"],
         }
-        save_state(self.state)
+        save_state(candidate)
+        self.state = candidate
         return {"type": "setlist_save_ack", "slot": slot, "name": name}
 
     def _handle_setlist_load(self, msg: dict) -> dict:
-        """Restore a setlist's 10-preset bank to disk + state labels."""
-        slot = int(msg.get("slot", 0))
-        if slot < 0 or slot >= 10:
-            return {"type": "error", "message": f"Invalid setlist slot {slot}"}
-        setlists = self.state.get("setlists", [])
-        if slot >= len(setlists) or not setlists[slot].get("presets"):
+        slot = msg["slot"]
+        sl = self.state["setlists"][slot]
+        if sl.get("presets") is None:
             return {"type": "error", "message": f"Setlist slot {slot} is empty"}
-        sl = setlists[slot]
-        for i, pdata in enumerate(sl["presets"][:self.presets.num_slots]):
-            if pdata is None:
-                self.presets.delete(i)
-            else:
-                self.presets.save(i, pdata)
-        ui = self.state.setdefault("ui", {})
-        labels = sl.get("labels") or [""] * 10
-        ui["preset_labels"] = list(labels)[:10] + [""] * max(0, 10 - len(labels))
+        self.presets.replace_bank(sl["presets"], sl.get("labels", [""] * 10))
         self._rebuild_preset_saved()
-        save_state(self.state)
+        # The bank manifest owns scenes/labels; ui state is a rebuildable cache.
         if self.ws_server:
             self.ws_server.broadcast_sync({"type": "state", "state": self.state})
         return {"type": "setlist_load_ack", "slot": slot, "name": sl.get("name", "")}
 
     def _rebuild_preset_saved(self):
-        """Rebuild ui.preset_saved from which files actually exist on disk."""
-        saved = []
-        for i in range(self.presets.num_slots):
-            saved.append(self.presets._slot_path(i).exists())
-        if "ui" not in self.state:
-            self.state["ui"] = {}
-        self.state["ui"]["preset_saved"] = saved
+        bank = self.presets.snapshot()
+        self.state["ui"]["preset_saved"] = [p is not None for p in bank["presets"]]
+        self.state["ui"]["preset_labels"] = bank["labels"]
 
     def _handle_preset_load(self, msg: dict) -> dict:
         slot = msg.get("slot", 0)
-        state = self.presets.load(slot)
-        if state:
-            # Merge with defaults so new params added since preset was saved exist.
-            # Switched from json.loads(json.dumps(...)) to copy.deepcopy — same
-            # result, no string round-trip, ~5× faster on the WS thread so the
-            # render loop doesn't wait as long on preset load.
-            defaults = copy.deepcopy(DEFAULT_STATE)
-            old_state = copy.deepcopy(self.state)  # snapshot current
-            self.state = _deep_merge(defaults, state)
-            # Rebuild preset_saved from disk — never trust the snapshot
-            self._rebuild_preset_saved()
+        scene = self.presets.load_checked(slot)
+        if scene is None:
+            return {"type": "error", "message": f"Preset slot {slot} is empty"}
+        self._begin_scene(scene, completion={"type": "preset_loaded", "slot": slot})
+        return {"type": "preset_transition", "slot": slot, "pending": True}
 
-            # Snap discrete params (instrument mode, waveforms, on/off toggles snap
-            # at the start of the crossfade; numeric params ramp over ~400ms).
-            # _apply_instrument_mode calls all_notes_off on the outgoing engine —
-            # only invoke when the mode actually changed, otherwise it chops
-            # held notes on every preset load.
-            master = self.state.get("master", {})
-            old_mode = self.instrument_mode
-            self.instrument_mode = master.get("instrument_mode", "piano")
-            if self.instrument_mode != old_mode:
-                self._apply_instrument_mode()
-            new_transpose = int(master.get("transpose_semitones", 0))
-            self.midi.set_transpose(new_transpose)
-            if self.jack:
-                self.jack.transpose = new_transpose
+    def _apply_scene_frame(self, frame, previous):
+        """Apply one validated frame under control ownership."""
+        self.state.update(copy.deepcopy(frame))
+        mode = frame["master"]["instrument_mode"]
+        mode_changed = mode != self.instrument_mode
+        self.synth.update_params(frame["synth_pad"])
+        if self.piano:
+            self.piano.update_params(frame["piano"])
+        if self.organ:
+            self.organ.update_params(frame["organ"])
+        if self.jack:
+            # This switch belongs to the mixer, not either organ backend.
+            # Same-mode recalls and rollback must update it too.
+            self.jack.organ_filter_enabled = bool(frame["organ"].get("shared_filter_enabled", False))
+        if mode_changed:
+            self.instrument_mode = mode
+            self._apply_instrument_mode()
+        if self.piano:
+            self.piano.enabled = mode == "piano" and frame["piano"].get("enabled", True)
+        if self.organ:
+            self.organ.enabled = mode == "organ" and frame["organ"].get("enabled", True)
+        for param, value in frame["master"].items():
+            if param in GLOBAL_MASTER_KEYS or previous["master"].get(param) == value:
+                continue
+            self._handle_setting({"section": "master", "param": param, "value": value})
 
-            # Suppress sympathetic for the crossfade — held keys won't pump tone
-            # at changing levels into the reverb. Re-armed at the end of the ramp.
-            self.synth.sympathetic_set_suppress(True)
+    def _restore_failed_scene(self, previous, failure):
+        """Best-effort rollback, never report success after a native failure."""
+        current = copy.deepcopy({key: self.state[key] for key in previous})
+        try:
+            self._apply_scene_frame(previous, current)
+        except Exception:
+            logger.exception("Scene rollback failed; requesting panic")
+            self._handle_panic()
+        self._control_error = f"Scene change failed: {failure}"
+        if self.ws_server:
+            self.ws_server.broadcast_sync({"type": "error", "message": self._control_error})
+            self.ws_server.broadcast_sync({"type": "state", "state": self.state})
 
-            self._start_preset_crossfade(old_state, self.state, duration_ms=800)
-            logger.info("Loaded preset slot %d (800ms crossfade)", slot)
+    def _begin_scene(self, scene, *, completion=None):
+        # Validation precedes every state or engine change.
+        target = normalize_state(scene, scene=True)
+        old = copy.deepcopy({key: self.state[key] for key in target})
+        for key in GLOBAL_MASTER_KEYS:
+            if key in self.state["master"]:
+                target["master"][key] = self.state["master"][key]
+        for key in ("drone_enabled", "drone_key"):
+            target["synth_pad"][key] = self.state["synth_pad"].get(key)
+        self._crossfade_cancel.set()
+        initial = {key: self._interp_section(old[key], target[key], 0.0)
+                   if isinstance(target[key], dict) else copy.deepcopy(target[key])
+                   for key in target}
+        try:
+            # Snap discrete controls BEFORE accepting the transition. A
+            # missing soundfont fails here, not after a false loaded reply.
+            self._apply_scene_frame(initial, old)
+        except Exception as exc:
+            self._restore_failed_scene(old, exc)
+            raise
+        self.synth.sympathetic_set_suppress(True)
+        self._start_preset_crossfade(old, target, duration_ms=800, completion=completion)
+        if self.ws_server:
+            self.ws_server.broadcast_sync({"type": "state", "state": self.state})
 
-            if self.ws_server:
-                self.ws_server.broadcast_sync({"type": "state", "state": self.state})
-            return {"type": "preset_loaded", "slot": slot}
-        return {"type": "error", "message": f"Failed to load preset {slot}"}
-
-    def _start_preset_crossfade(self, old_state: dict, new_state: dict, duration_ms: int = 400):
+    def _start_preset_crossfade(self, old_state: dict, new_state: dict, duration_ms: int = 400, completion=None):
         """Kick off a linear ramp of numeric params from old_state to new_state.
         Cancels any in-flight crossfade. Non-numeric params are applied at step 0."""
         self._crossfade_cancel.set()
-        if self._crossfade_thread and self._crossfade_thread.is_alive():
-            self._crossfade_thread.join(timeout=0.05)
+        # Never join a worker while holding the control lock it needs to exit.
         self._crossfade_cancel = threading.Event()
         self._crossfade_thread = threading.Thread(
             target=self._run_preset_crossfade,
-            args=(old_state, new_state, duration_ms, self._crossfade_cancel),
+            args=(old_state, new_state, duration_ms, self._crossfade_cancel, completion),
             daemon=True,
         )
         self._crossfade_thread.start()
@@ -514,10 +556,12 @@ class StaveSynth:
     def _interp_section(old: dict, new: dict, t: float) -> dict:
         """Return a dict with numerics interpolated old->new at fraction t, and
         non-numerics / discrete integer params pulled from new (snap at step 0)."""
+        if t >= 1.0:
+            return copy.deepcopy(new)  # Exact endpoint, without rounding drift.
         out = {}
         for k, nv in new.items():
             ov = old.get(k, nv)
-            if k in StaveSynth._SNAP_KEYS:
+            if k in StaveSynth._SNAP_KEYS or "_split_" in k:
                 out[k] = nv
             elif isinstance(nv, bool) or isinstance(ov, bool):
                 out[k] = nv
@@ -530,83 +574,42 @@ class StaveSynth:
         return out
 
     def _run_preset_crossfade(self, old_state: dict, new_state: dict,
-                              duration_ms: int, cancel: threading.Event):
-        """Linear ramp in ~20ms steps. Cheap — just re-pushes smoothed params."""
+                              duration_ms: int, cancel: threading.Event, completion=None):
+        """Cancellable ramp; state reflects the last successfully applied frame."""
         steps = max(1, duration_ms // 20)
-        step_sec = (duration_ms / 1000.0) / steps
-        old_sp = old_state.get("synth_pad", {})
-        new_sp = new_state.get("synth_pad", {})
-        old_pi = old_state.get("piano", {})
-        new_pi = new_state.get("piano", {})
-        old_or = old_state.get("organ", {})
-        new_or = new_state.get("organ", {})
-        old_m = old_state.get("master", {})
-        new_m = new_state.get("master", {})
-
-        for i in range(1, steps + 1):
-            if cancel.is_set():
-                return
-            t = i / steps
-            try:
-                self.synth.update_params(self._interp_section(old_sp, new_sp, t))
-                if self.piano:
-                    self.piano.update_params(self._interp_section(old_pi, new_pi, t))
-                if self.organ:
-                    self.organ.update_params(self._interp_section(old_or, new_or, t))
-                if self.jack:
-                    ov = old_m.get("volume", 0.85)
-                    nv = new_m.get("volume", 0.85)
-                    self.jack.master_volume = ov + (nv - ov) * t
-                    otrim = float(old_m.get("pre_limiter_trim", 1.5))
-                    ntrim = float(new_m.get("pre_limiter_trim", 1.5))
-                    self.jack.pre_gain = max(0.5, min(3.0, otrim + (ntrim - otrim) * t))
-            except Exception as e:
-                logger.error("Preset crossfade error: %s", e)
-                if not cancel.is_set():  # don't stomp a superseding crossfade
-                    self.synth.sympathetic_set_suppress(False)
-                return
-            time.sleep(step_sec)
-
-        # Snap-apply non-interpolated master fields (bus_comp full param set,
-        # master EQ bands, master_lowcut, BPM, low_latency_mode, saturation_enabled,
-        # piano_reverb_send, piano_delay_send, etc). Only `volume` + `pre_limiter_trim`
-        # ramped above; everything else relied on the next user touch to push.
-        # Skip params whose value did not change — re-applying unchanged
-        # filter/EQ/reverb_type params re-initializes biquad coefficients and
-        # broadcasts state, which causes a static-type click on every preset load.
-        old_sections = {"master": old_m, "synth_pad": old_sp,
-                        "piano": old_pi, "organ": old_or}
-        for section_name, src in (("master", new_m), ("synth_pad", new_sp),
-                                  ("piano", new_pi), ("organ", new_or)):
-            if not isinstance(src, dict):
-                continue
-            old_src = old_sections.get(section_name) or {}
-            for param, value in src.items():
-                # Honor cancellation inside snap-apply too — a rapid preset
-                # double-tap (footswitch) starts a NEW crossfade; without this
-                # check the OLD thread keeps pushing stale params over it.
-                if cancel.is_set():
+        interval = duration_ms / 1000.0 / steps
+        try:
+            for i in range(1, steps + 1):
+                with self._control_lock:
+                    if cancel.is_set() or not self._running:
+                        return
+                    previous = copy.deepcopy({key: self.state[key] for key in new_state})
+                    frame = {key: self._interp_section(old_state[key], new_state[key], i / steps)
+                             if isinstance(new_state[key], dict) else copy.deepcopy(new_state[key])
+                             for key in new_state}
+                    self._apply_scene_frame(frame, previous)
+                if i != steps and cancel.wait(interval):
                     return
-                if isinstance(value, (dict, list)) and param not in ("eq_bands", "adsr_osc1", "adsr_osc2"):
-                    continue
-                if old_src.get(param) == value:
-                    continue
-                try:
-                    self._handle_setting({"section": section_name, "param": param, "value": value})
-                except Exception as e:
-                    logger.debug("preset crossfade snap-apply skip %s.%s: %s", section_name, param, e)
-
-        # Only un-suppress sympathetic if WE are still the current crossfade —
-        # a superseding crossfade re-suppressed it and owns the un-suppress.
-        if not cancel.is_set():
-            self.synth.sympathetic_set_suppress(False)
+            with self._control_lock:
+                if not cancel.is_set() and self.ws_server:
+                    self.ws_server.broadcast_sync({"type": "state", "state": self.state})
+                    if completion:
+                        self.ws_server.broadcast_sync(completion)
+        except Exception as exc:
+            with self._control_lock:
+                if not cancel.is_set():
+                    self._restore_failed_scene(old_state, exc)
+        finally:
+            with self._control_lock:
+                if self._crossfade_cancel is cancel:
+                    self.synth.sympathetic_set_suppress(False)
 
     def _handle_preset_save(self, msg: dict) -> dict:
         slot = msg.get("slot", 0)
         if self.presets.save(slot, self.state):
             # Rebuild from disk so it's always accurate
             self._rebuild_preset_saved()
-            save_state(self.state)
+            # The bank manifest owns scenes/labels; ui state is a rebuildable cache.
             return {"type": "preset_saved", "slot": slot}
         return {"type": "error", "message": f"Failed to save preset {slot}"}
 
@@ -620,60 +623,27 @@ class StaveSynth:
             )
             if 0 <= slot < len(labels):
                 labels[slot] = ""
-            save_state(self.state)
+            # The bank manifest owns scenes/labels; ui state is a rebuildable cache.
             return {"type": "preset_deleted", "slot": slot}
         return {"type": "error", "message": f"Failed to delete preset {slot}"}
 
     def _handle_preset_label(self, msg: dict) -> dict:
-        slot = msg.get("slot", 0)
-        label = str(msg.get("label", ""))[:16]  # cap at 16 chars
-        labels = self.state.setdefault("ui", {}).setdefault(
-            "preset_labels", [""] * self.presets.num_slots
-        )
-        if 0 <= slot < len(labels):
-            labels[slot] = label
-            save_state(self.state)
-            # Broadcast fresh state so any state-driven re-render on other
-            # clients (or a later tick on this one) doesn't clobber the
-            # just-typed label with the stale pre-edit value.
-            if self.ws_server:
-                self.ws_server.broadcast_sync({"type": "state", "state": self.state})
-            return {"type": "preset_labeled", "slot": slot, "label": label}
-        return {"type": "error", "message": f"Invalid preset slot {slot}"}
-
-    def _handle_preset_swap(self, msg: dict) -> dict:
-        """Swap preset file contents (and labels) between two slots."""
-        src = int(msg.get("source", -1))
-        dst = int(msg.get("target", -1))
-        n = self.presets.num_slots
-        if src == dst or src < 0 or src >= n or dst < 0 or dst >= n:
-            return {"type": "error", "message": f"Invalid swap {src}→{dst}"}
-        src_state = self.presets.load(src)  # None if empty
-        dst_state = self.presets.load(dst)
-        # Write swapped: source gets dst's content (or delete if dst was empty),
-        # dst gets src's content (or delete if src was empty).
-        if dst_state is None:
-            self.presets.delete(src)
-        else:
-            self.presets.save(src, dst_state)
-        if src_state is None:
-            self.presets.delete(dst)
-        else:
-            self.presets.save(dst, src_state)
-        # Swap labels too
-        labels = self.state.setdefault("ui", {}).setdefault(
-            "preset_labels", [""] * n
-        )
-        # Pad if needed
-        while len(labels) < n:
-            labels.append("")
-        labels[src], labels[dst] = labels[dst], labels[src]
+        slot, label = msg["slot"], msg.get("label", "")
+        self.presets.label(slot, label)
         self._rebuild_preset_saved()
-        save_state(self.state)
-        # Broadcast updated state so the UI's visible 5 buttons refresh
+        # The bank manifest owns scenes/labels; ui state is a rebuildable cache.
         if self.ws_server:
             self.ws_server.broadcast_sync({"type": "state", "state": self.state})
-        return {"type": "preset_swapped", "source": src, "target": dst}
+        return {"type": "preset_labeled", "slot": slot, "label": label}
+
+    def _handle_preset_swap(self, msg: dict) -> dict:
+        source, target = msg["source"], msg["target"]
+        self.presets.swap(source, target)
+        self._rebuild_preset_saved()
+        # The bank manifest owns scenes/labels; ui state is a rebuildable cache.
+        if self.ws_server:
+            self.ws_server.broadcast_sync({"type": "state", "state": self.state})
+        return {"type": "preset_swapped", "source": source, "target": target}
 
     def _handle_transpose(self, msg: dict) -> dict:
         semitones = msg.get("semitones", 0)
@@ -744,13 +714,16 @@ class StaveSynth:
         if not self.jack or not self.jack.recorder:
             return {"type": "record_ack", "recording": False, "error": "no recorder"}
         rec = self.jack.recorder
-        if rec.is_recording():
-            meta = rec.stop()
-            return {"type": "record_ack", "recording": False, "take": meta}
-        # Start — deep-copy state so later edits don't mutate the snapshot
-        snapshot = json.loads(json.dumps(self.state, default=str))
-        meta = rec.start(state_snapshot=snapshot)
-        return {"type": "record_ack", "recording": True, "take": meta}
+        try:
+            if rec.is_recording():
+                meta = rec.stop()
+            else:
+                meta = rec.start(state_snapshot=normalize_state(self.state, scene=True))
+            return {"type": "record_ack", "recording": rec.is_recording(),
+                    "take": meta, "status": rec.current_status()}
+        except (OSError, ValueError, RuntimeError, TimeoutError) as exc:
+            return {"type": "record_ack", "recording": rec.is_recording(),
+                    "error": str(exc), "status": rec.current_status()}
 
     def _handle_list_recordings(self, msg: dict) -> dict:
         from .recorder import Recorder as _R
@@ -772,24 +745,9 @@ class StaveSynth:
         if snap is None:
             return {"type": "recall_params_ack", "filename": filename,
                     "ok": False, "error": "no state snapshot"}
-        # Re-apply each section.param via _handle_setting (robust to schema drift)
-        count = 0
-        for section in ("synth_pad", "piano", "organ", "master"):
-            src = snap.get(section, {})
-            if not isinstance(src, dict):
-                continue
-            for param, value in src.items():
-                if isinstance(value, (dict, list)) and param not in ("eq_bands", "adsr_osc1", "adsr_osc2"):
-                    continue  # skip nested / complex fields we can't easily re-apply
-                try:
-                    self._handle_setting({"section": section, "param": param, "value": value})
-                    count += 1
-                except Exception as e:
-                    logger.debug("recall_params skip %s.%s: %s", section, param, e)
-        # Broadcast the refreshed state so all UI clients re-sync
-        if self.ws_server:
-            self.ws_server.broadcast_sync({"type": "state", "state": self.state})
-        return {"type": "recall_params_ack", "filename": filename, "ok": True, "params_applied": count}
+        self._begin_scene(snap, completion={"type": "recall_params_ack", "filename": filename, "ok": True})
+        return {"type": "recall_params_ack", "filename": filename, "ok": True,
+                "transition_started": True, "pending": True}
 
     # ═══ Pad sample library (per-slot WAVs) ═══
 
@@ -805,68 +763,87 @@ class StaveSynth:
         return p
 
     def _handle_list_pad_slots(self, msg: dict) -> dict:
-        """List all 12 pad slots — which have a file loaded, filename, duration."""
-        import wave as _wave
+        """Report resident slots, separate from files that failed to load."""
+        from .pad_store import MAX_SOURCE_BYTES
         pad_dir = self._pad_dir()
+        status = self.synth.pad_sample_status() if self.synth else {}
+        resident = status.get("slots", {})
+        errors = dict(status.get("errors", {}))
+        errors.update(getattr(self, "_pad_slot_errors", {}))
         slots = []
         for note in sorted(self._PAD_NOTE_FILENAMES.keys()):
             fname = self._PAD_NOTE_FILENAMES[note]
             path = pad_dir / fname
-            info = {"note": note, "filename": fname, "loaded": False,
-                    "duration_seconds": 0.0, "label": _midi_to_note_label(note)}
-            if path.exists():
-                info["loaded"] = True
-                try:
-                    with _wave.open(str(path), "rb") as w:
-                        info["duration_seconds"] = round(w.getnframes() / float(w.getframerate()), 2)
-                except Exception:
-                    pass
+            current = resident.get(note, {})
+            loaded = bool(current.get("loaded", False))
+            file_present = path.is_file()
+            error = errors.get(note)
+            if file_present and not loaded and not error:
+                error = "Synth engine is unavailable" if not self.synth else "Pad file is not loaded"
+            info = {"note": note, "filename": fname, "loaded": loaded,
+                    "active": bool(current.get("active", False)), "file_present": file_present,
+                    "duration_seconds": round(current.get("duration_seconds", 0.0), 2),
+                    "memory_bytes": current.get("memory_bytes", 0),
+                    "preparing": status.get("preparing_note") == note,
+                    "error": error, "label": _midi_to_note_label(note)}
             slots.append(info)
-        return {"type": "pad_slots", "slots": slots}
+        return {"type": "pad_slots", "slots": slots,
+                "memory_bytes": status.get("memory_bytes", 0),
+                "max_bank_bytes": status.get("max_bank_bytes"),
+                "max_slot_bytes": status.get("max_slot_bytes"),
+                "max_source_bytes": MAX_SOURCE_BYTES}
 
     def _handle_save_to_pad_slot(self, msg: dict) -> dict:
-        """Copy a take from the recordings dir into a pad slot. Reloads that slot."""
-        import shutil
+        """Commit a validated take to one inactive pad slot with rollback."""
+        from .recorder import Recorder as _R
+        from .pad_store import save_pad_slot
         source_filename = str(msg.get("source", ""))
         note = int(msg.get("note", -1))
         if note not in self._PAD_NOTE_FILENAMES:
             return {"type": "error", "message": f"invalid pad slot {note}"}
-        # Path safety
-        if "/" in source_filename or "\\" in source_filename or ".." in source_filename:
-            return {"type": "error", "message": "bad source filename"}
-        src = DATA_DIR / "recordings" / source_filename
-        if not src.exists():
-            return {"type": "error", "message": f"source not found: {source_filename}"}
+        if not self.synth:
+            return {"type": "error", "message": "Synth engine is unavailable"}
         dst = self._pad_dir() / self._PAD_NOTE_FILENAMES[note]
         try:
-            shutil.copyfile(src, dst)
-        except Exception as e:
-            return {"type": "error", "message": f"copy failed: {e}"}
-        # Reload just this slot
-        if self.synth:
-            try:
-                self.synth.load_pad_samples(self._pad_dir())
-            except Exception as e:
-                logger.warning("pad reload failed: %s", e)
-        return {"type": "pad_slot_saved", "note": note,
-                "label": _midi_to_note_label(note),
-                "slots": self._handle_list_pad_slots({}).get("slots", [])}
+            # Claim spans both bounded copying and sample preparation, so
+            # delete/prune cannot remove the source during this transaction.
+            with _R.claim_take(source_filename) as src:
+                warnings = save_pad_slot(self.synth, note, src, dst)
+        except Exception as exc:
+            if not hasattr(self, "_pad_slot_errors"):
+                self._pad_slot_errors = {}
+            self._pad_slot_errors[note] = str(exc)
+            logger.warning("save_to_pad_slot %s: %s", note, exc)
+            return {"type": "error", "message": str(exc), "note": note,
+                    "slots": self._handle_list_pad_slots({})["slots"]}
+        getattr(self, "_pad_slot_errors", {}).pop(note, None)
+        result = self._handle_list_pad_slots({})
+        result.update(type="pad_slot_saved", note=note,
+                      label=_midi_to_note_label(note), warnings=warnings)
+        return result
 
     def _handle_clear_pad_slot(self, msg: dict) -> dict:
-        """Delete the WAV for a pad slot → that key reverts to live synth."""
+        """Recoverably clear one inactive slot without restarting other beds."""
+        from .pad_store import clear_pad_slot
         note = int(msg.get("note", -1))
         if note not in self._PAD_NOTE_FILENAMES:
             return {"type": "error", "message": f"invalid pad slot {note}"}
+        if not self.synth:
+            return {"type": "error", "message": "Synth engine is unavailable"}
         path = self._pad_dir() / self._PAD_NOTE_FILENAMES[note]
         try:
-            if path.exists():
-                path.unlink()
-        except Exception as e:
-            logger.warning("clear_pad_slot: %s", e)
-        if self.synth:
-            self.synth.load_pad_samples(self._pad_dir())
-        return {"type": "pad_slot_cleared", "note": note,
-                "slots": self._handle_list_pad_slots({}).get("slots", [])}
+            warnings = clear_pad_slot(self.synth, note, path)
+        except Exception as exc:
+            if not hasattr(self, "_pad_slot_errors"):
+                self._pad_slot_errors = {}
+            self._pad_slot_errors[note] = str(exc)
+            logger.warning("clear_pad_slot %s: %s", note, exc)
+            return {"type": "error", "message": str(exc), "note": note,
+                    "slots": self._handle_list_pad_slots({})["slots"]}
+        getattr(self, "_pad_slot_errors", {}).pop(note, None)
+        result = self._handle_list_pad_slots({})
+        result.update(type="pad_slot_cleared", note=note, warnings=warnings)
+        return result
 
     # ═══ Pad player (drone key triggers from touchscreen) ═══
 
@@ -934,31 +911,37 @@ class StaveSynth:
             step_sec = duration_s / steps
             span = target - start
             for i in range(1, steps + 1):
-                if cancel.is_set():
+                with self._control_lock:
+                    if cancel.is_set() or self._stopping:
+                        return
+                    t = i / steps
+                    prog = (1.0 - math.cos(t * math.pi)) * 0.5
+                    self.synth._drone_fade_scale = max(0.0, min(1.0, start + span * prog))
+                if cancel.wait(step_sec):
                     return
-                t = i / steps
-                prog = (1.0 - math.cos(t * math.pi)) * 0.5
-                self.synth._drone_fade_scale = max(0.0, min(1.0, start + span * prog))
-                time.sleep(step_sec)
-            if not cancel.is_set():
-                self.synth._drone_fade_scale = target
+            with self._control_lock:
+                if not cancel.is_set():
+                    self.synth._drone_fade_scale = target
 
-        threading.Thread(target=run, daemon=True).start()
+        self._drone_fade_thread = threading.Thread(target=run, daemon=True)
+        self._drone_fade_thread.start()
 
     # ═══ Macros (performance morph knobs) ═══
 
     def _handle_macro_value(self, msg: dict) -> dict:
-        """Record macro value. Application is done by the UI ("invisible
-        fingers" model) via real fader/setting messages, so the controls'
-        normalization, displays, and twin-mirror logic all behave identically
-        to a human moving them."""
-        idx = int(msg.get("idx", 0))
-        value = float(msg.get("value", 0.0))
-        value = max(0.0, min(1.0, value))
-        macros = self.state.get("macros", [])
-        if idx < 0 or idx >= len(macros):
-            return {"type": "error", "message": f"Invalid macro idx {idx}"}
+        idx, value = msg["idx"], msg["value"]
+        macros = self.state["macros"]
+        # The saved ranges are DOM units; the shared mapper converts to the
+        # exact canonical fader/setting units, including linked slider twins.
+        commands = [validate_message(command) for command in macro_commands(
+            macros[idx], value, link_state=self.state["synth_pad"])]
+        for command in commands:
+            result = self._dispatch_ws_message(command)
+            if result and result.get("type") == "error":
+                return result
         macros[idx]["value"] = value
+        if self.ws_server:
+            self.ws_server.broadcast_sync({"type": "state", "state": self.state})
         return {"type": "macro_value_ack", "idx": idx, "value": value}
 
     def _handle_macro_assign(self, msg: dict) -> dict:
@@ -1021,6 +1004,10 @@ class StaveSynth:
             if action == "toggle" and existing:
                 assigns.remove(existing)
             elif not existing:
+                if len(assigns) >= 32:
+                    raise ValidationError("macro supports at most 32 assignments")
+                if "center" in msg:
+                    new_entry["center"] = msg["center"]
                 assigns.append(new_entry)
         return {
             "type": "macro_assign_ack",
@@ -1108,6 +1095,9 @@ class StaveSynth:
     def _handle_panic(self) -> dict:
         """Hard-silence everything: voices, piano, organ, freeze, drone, sympathetic, sustain."""
         self._crossfade_cancel.set()
+        controls = getattr(self, "_controls", None)
+        if controls is not None:
+            controls.clear()
         drone_cancel = getattr(self, "_drone_fade_cancel", None)
         if drone_cancel is not None:
             drone_cancel.set()
@@ -1153,128 +1143,58 @@ class StaveSynth:
         return {"type": "octave_ack", "instrument": instrument, "octave": octave}
 
     def _handle_get_audio_outputs(self) -> dict:
-        """List available audio sinks via pw-jack."""
-        outputs = []
-        current = None
+        """List complete, typed stereo sinks and verified own-client links."""
+        from .routing import read_ports, read_connections, stereo_sinks
         try:
-            # Get all JACK playback ports (sinks). pw-jack jack_lsp has been
-            # observed to wedge against PipeWire in ways subprocess.timeout
-            # alone doesn't unblock — use a thread-level hard timeout so the
-            # UI can never hang waiting for the audio-output list.
-            result = _run_with_hard_timeout(
-                ["pw-jack", "jack_lsp", "-t"],
-                timeout_s=3.0, hard_timeout_s=5.0,
-            )
-            if result is None:
-                logger.warning("audio-output list timed out")
-                return {"type": "audio_outputs", "outputs": []}
-            lines = result.stdout.strip().split("\n")
-            sinks = set()
-            for line in lines:
-                line = line.strip()
-                if ":playback_FL" in line:
-                    name = line.split(":playback_FL")[0]
-                    if name != JACK_CLIENT_NAME:
-                        sinks.add(name)
-            # Check current connections
-            result2 = _run_with_hard_timeout(
-                ["pw-jack", "jack_lsp", "-c"],
-                timeout_s=3.0, hard_timeout_s=5.0,
-            )
-            if result2 is not None:
-                conn_lines = result2.stdout.strip().split("\n")
-                for i, line in enumerate(conn_lines):
-                    if line.strip() == f"{JACK_CLIENT_NAME}:out_L" and i + 1 < len(conn_lines):
-                        connected_to = conn_lines[i + 1].strip()
-                        current = connected_to.split(":playback_FL")[0]
-                        break
-            outputs = [{"name": s, "active": s == current} for s in sorted(sinks)]
-        except Exception as e:
-            logger.error("Failed to list audio outputs: %s", e)
-        return {"type": "audio_outputs", "outputs": outputs}
+            with self._control_lock:
+                sinks = stereo_sinks(read_ports(_run_with_hard_timeout), JACK_CLIENT_NAME)
+                graph = read_connections(_run_with_hard_timeout)
+                outputs = [{"name": name, "ports": list(pair),
+                            "active": pair[0] in graph.get(f"{JACK_CLIENT_NAME}:out_L", set())
+                            and pair[1] in graph.get(f"{JACK_CLIENT_NAME}:out_R", set())}
+                           for name, pair in sorted(sinks.items())]
+                return {"type": "audio_outputs", "outputs": outputs,
+                        "preferred": self.state.get("master", {}).get("audio_output_pref")}
+        except Exception as exc:
+            return {"type": "audio_outputs", "outputs": [], "error": str(exc)}
 
     def _handle_set_audio_output(self, msg: dict) -> dict:
-        """Route StaveSynth JACK output to the selected sink.
-
-        Collects the exit status of every disconnect/connect so the UI knows
-        whether the routing actually succeeded. Previously this always
-        returned success:True, so a failed connect looked identical to a
-        working one from the user's side (no audio but UI says OK).
-        """
+        """Verify/connect a new stereo pair before retiring this client's old pair."""
+        from .routing import switch_stereo
         target = msg.get("name", "")
         if ISOLATED:
             return {"type": "audio_output_set", "name": target,
                     "success": False,
                     "error": "Automatic output routing is disabled for isolated instances"}
-        error_msg = None
         try:
-            # Disconnect all current output connections
-            result = _run_with_hard_timeout(
-                ["pw-jack", "jack_lsp", "-c"],
-                timeout_s=3.0, hard_timeout_s=5.0,
-            )
-            if result is None:
-                return {"type": "audio_output_set", "name": target,
-                        "success": False, "error": "jack_lsp timed out"}
-            lines = result.stdout.strip().split("\n")
-            for i, line in enumerate(lines):
-                stripped = line.strip()
-                if stripped in (f"{JACK_CLIENT_NAME}:out_L", f"{JACK_CLIENT_NAME}:out_R"):
-                    # Walk every consecutive indented line — a port can have
-                    # multiple connections and each shows as its own indented row.
-                    j = i + 1
-                    while j < len(lines) and lines[j].startswith("   "):
-                        dest = lines[j].strip()
-                        d_res = _run_with_hard_timeout(
-                            ["pw-jack", "jack_disconnect", stripped, dest],
-                            timeout_s=3.0, hard_timeout_s=5.0,
-                        )
-                        # Disconnect failures are non-fatal (the port may
-                        # already be disconnected by the time we get here)
-                        # but we still log them.
-                        if d_res is None:
-                            logger.warning("jack_disconnect timed out: %s -> %s", stripped, dest)
-                        elif d_res.returncode != 0:
-                            logger.warning("jack_disconnect failed (rc=%d): %s -> %s: %s",
-                                           d_res.returncode, stripped, dest,
-                                           (d_res.stderr or "").strip())
-                        j += 1
-            # Connect to new target — these MUST succeed or the user gets no audio.
-            for src, dst in (
-                (f"{JACK_CLIENT_NAME}:out_L", f"{target}:playback_FL"),
-                (f"{JACK_CLIENT_NAME}:out_R", f"{target}:playback_FR"),
-            ):
-                c_res = _run_with_hard_timeout(
-                    ["pw-jack", "jack_connect", src, dst],
-                    timeout_s=3.0, hard_timeout_s=5.0,
-                )
-                if c_res is None:
-                    error_msg = f"jack_connect timed out ({src} -> {dst})"
-                    break
-                if c_res.returncode != 0:
-                    # "already connected" is harmless — most jack builds
-                    # return rc=1 with an "Already" message. Anything else is real.
-                    err_txt = (c_res.stderr or "").strip()
-                    if "already" not in err_txt.lower():
-                        error_msg = f"jack_connect failed (rc={c_res.returncode}): {err_txt or 'unknown'}"
-                        break
-            if error_msg:
-                logger.error("Audio output route failed: %s (target=%s)", error_msg, target)
-                return {"type": "audio_output_set", "name": target,
-                        "success": False, "error": error_msg}
-            logger.info("Audio output routed to: %s", target)
-            # Persist preference so we can auto-reconnect after reboot or
-            # when the device gets unplugged + plugged back in mid-set.
-            self.state.setdefault("master", {})["audio_output_pref"] = target
-            try:
-                save_state(self.state)
-            except Exception:
-                pass
-            return {"type": "audio_output_set", "name": target, "success": True}
-        except Exception as e:
-            logger.error("Failed to set audio output: %s", e)
+            # Lock order is always control -> routing, including the watcher.
+            with self._control_lock:
+                if self._stopping:
+                    raise RuntimeError("Synth is shutting down")
+                if not hasattr(self, "_routing_lock"):
+                    self._routing_lock = threading.RLock()
+                with self._routing_lock:
+                    result = switch_stereo(_run_with_hard_timeout, JACK_CLIENT_NAME,
+                                           target, should_stop=lambda: self._stopping)
+                    result.update(type="audio_output_set", name=target)
+                    if not result["success"]:
+                        return result
+                    # Only a verified route may become the runtime preference.
+                    self.state.setdefault("master", {})["audio_output_pref"] = target
+                    try:
+                        save_state(copy.deepcopy(self.state))
+                        result["persisted"] = True
+                    except Exception as exc:
+                        # Do not tear down working audio merely because storage
+                        # failed; report the lost persistence explicitly.
+                        self._control_error = str(exc)
+                        result.update(persisted=False,
+                                      warning=f"Audio routed, but output preference was not saved: {exc}")
+                    return result
+        except Exception as exc:
             return {"type": "audio_output_set", "name": target,
-                    "success": False, "error": str(e)}
+                    "success": False, "error": str(exc),
+                    "uncertain": bool(getattr(exc, "uncertain", False))}
 
     # Canonical "perfect" piano compressor preset — the optical-tube-style
     # settings that give the piano that smooth, musical, slow-onset glue.
@@ -1316,6 +1236,19 @@ class StaveSynth:
         return {"type": "piano_comp_preset_ack", "preset": preset_name, "applied": True}
 
     def _handle_setting(self, msg: dict) -> dict:
+        section, param = msg.get("section"), msg.get("param")
+        value = validate_setting(section, param, msg.get("value"))
+        with self._control_lock:
+            # Validate paired fader limits before accepting either endpoint.
+            if param in ("filter_range_min", "filter_range_max", "tone_range_min", "tone_range_max"):
+                prefix = param.rsplit("_", 1)[0]
+                lo = value if param.endswith("min") else self.state[section][prefix + "_min"]
+                hi = value if param.endswith("max") else self.state[section][prefix + "_max"]
+                if lo > hi:
+                    raise ValidationError("minimum control range exceeds maximum")
+            return self._apply_setting({"section": section, "param": param, "value": value})
+
+    def _apply_setting(self, msg: dict) -> dict:
         """Handle deep settings changes from the settings menu."""
         section = msg.get("section", "")
         param = msg.get("param", "")
@@ -1400,7 +1333,7 @@ class StaveSynth:
                                      else float(value))
                 if self.piano:
                     self.piano.update_params({param: value})
-            elif param in self.state["piano"]:
+            else:  # The schema also recognizes optional piano-room controls.
                 self.state["piano"][param] = value
                 if self.piano:
                     self.piano.update_params({param: value})
@@ -1424,6 +1357,24 @@ class StaveSynth:
                 self.state["master"][param] = value
                 if self.jack:
                     self.jack.piano_octave = value
+            elif param == "volume":
+                if self.jack:
+                    self.jack.master_volume = value
+                self.state["master"][param] = value
+            elif param == "transpose_semitones":
+                self.midi.set_transpose(value)
+                if self.jack:
+                    self.jack.transpose = value
+                self.state["master"][param] = value
+            elif param == "instrument_mode":
+                if value != self.instrument_mode:
+                    self.instrument_mode = value
+                    self._apply_instrument_mode()
+                self.state["master"][param] = value
+            elif param == "split_octave_snapshot":
+                self.state["master"][param] = copy.deepcopy(value)
+            elif param == "audio_output_pref":
+                raise ValidationError("select an audio output using set_audio_output")
             elif param in ("eq_lowcut_enabled", "eq_lowcut_hz", "eq_lowcut_slope"):
                 self.state["master"][param] = value
                 if self.jack:
@@ -1530,11 +1481,12 @@ class StaveSynth:
                     setattr(self.jack, param, v)
             elif param == "low_latency_mode":
                 enabled = bool(value)
-                self.state["master"][param] = enabled
                 if self.jack:
-                    self.jack.set_low_latency_mode(enabled)
+                    if self.jack.set_low_latency_mode(enabled) is False:
+                        raise RuntimeError("Audio ring is busy; latency mode did not change")
+                self.state["master"][param] = enabled
             elif param == "bpm":
-                self.state["master"]["bpm"] = max(40, min(300, int(float(value))))
+                self.state["master"]["bpm"] = value
                 # Delay engine will query this when present
                 if self.jack and hasattr(self.jack, "set_bpm"):
                     self.jack.set_bpm(self.state["master"]["bpm"])
@@ -1671,14 +1623,35 @@ class StaveSynth:
             return {"type": "cc_map", "map": dict(self._cc_map)}
 
     def _program_change_callback(self, program: int):
+        if 0 <= program < self.presets.num_slots:
+            self._controls.submit(("program", program))
+
+    def _apply_program_change(self, program: int):
         """MIDI 0xC0 program change → load preset slot. Used for hands-free
         footswitch advance via a class-compliant footswitch with PC output,
         or by an external sequencer cueing scenes. Programs 0..9 map directly
         to preset slots 0..9; programs >9 are ignored."""
         if 0 <= program < self.presets.num_slots:
-            self._handle_preset_load({"slot": program})
+            result = self._handle_ws_message({"type": "preset_load", "slot": program})
+            if self.ws_server:
+                self.ws_server.broadcast_sync(result)
 
     def _cc_callback(self, cc_num: int, cc_val: int):
+        """Keep note dispatch independent of JSON writes and scene application."""
+        target = self._cc_map.get(str(cc_num), {})
+        ordered = self._midi_learn_active or target.get("kind") == "preset"
+        self._controls.submit(("cc", cc_num, cc_val), key=None if ordered else ("cc", cc_num))
+
+    def _apply_queued_control(self, event, generation):
+        with self._control_lock:
+            if not self._controls.is_current(generation):
+                return
+            if event[0] == "cc":
+                self._apply_cc(event[1], event[2])
+            else:
+                self._apply_program_change(event[1])
+
+    def _apply_cc(self, cc_num: int, cc_val: int):
         """Called from JACK engine MIDI thread on CC messages."""
         with self._midi_learn_lock:
             if self._midi_learn_active and self._midi_learn_target:
@@ -1714,14 +1687,10 @@ class StaveSynth:
             value = cc_val / 127.0
             kind = target.get("kind", "fader")  # legacy maps lack kind → fader
             if kind == "macro":
-                # Macros are UI-driven (invisible fingers); broadcast value and
-                # the frontend simulates control moves.
+                result = self._handle_ws_message({"type": "macro_value",
+                                                  "idx": int(target["macro_idx"]), "value": value})
                 if self.ws_server:
-                    self.ws_server.broadcast_sync({
-                        "type": "macro_cc_value",
-                        "idx": int(target["macro_idx"]),
-                        "value": value,
-                    })
+                    self.ws_server.broadcast_sync(result)
                 return
             if kind == "preset":
                 # Edge-trigger on rising edge so a momentary footswitch
@@ -1732,7 +1701,7 @@ class StaveSynth:
                 self._cc_last_value[cc_key] = cc_val
                 if last < 64 and cc_val >= 64:
                     slot = int(target.get("preset_slot", 0))
-                    self._handle_preset_load({"slot": slot})
+                    self._apply_program_change(slot)
                 return
             fader_msg = {
                 "type": "fader",
@@ -1740,7 +1709,11 @@ class StaveSynth:
                 "value": value,
                 "alt": target["alt"],
             }
-            self._handle_fader(fader_msg)
+            result = self._handle_ws_message(fader_msg)
+            if result.get("type") == "error":
+                if self.ws_server:
+                    self.ws_server.broadcast_sync(result)
+                return
             if self.ws_server:
                 self.ws_server.broadcast_sync({
                     "type": "fader_ack",
@@ -1787,7 +1760,8 @@ class StaveSynth:
         AUTOSAVE_TICKS = max(1, int(AUTOSAVE_INTERVAL * TICK_HZ))
 
         while self._running:
-            time.sleep(TICK_SEC)
+            if self._stop_event.wait(TICK_SEC):
+                break
             tick_counter += 1
             stats_counter += 1
 
@@ -1839,6 +1813,7 @@ class StaveSynth:
                         "type": "system_stats",
                         "cpu_percent": round(cpu, 1),
                         "ram_mb": round(mem.rss / 1048576, 1),
+                        "health": self._health_status(),
                     }
                     # Xrun count comes from the JACK C bridge on Linux; on Mac
                     # (MacPortAudioIO) the call won't exist. Isolate so a
@@ -1852,6 +1827,11 @@ class StaveSynth:
                         except Exception:
                             pass
                     self.ws_server.broadcast_sync(payload)
+                    if self.jack and self.jack.recorder:
+                        status = self.jack.recorder.current_status()
+                        if status != getattr(self, "_last_record_status", None):
+                            self._last_record_status = copy.deepcopy(status)
+                            self.ws_server.broadcast_sync({"type": "record_status", **status})
                 except Exception:
                     pass
 
@@ -1865,10 +1845,11 @@ class StaveSynth:
                         # setlists × 10 presets, so unconditional 30s writes
                         # were real SD-card write amplification for a synth
                         # that mostly sits at one setting all service.
-                        snapshot = json.dumps(self.state, sort_keys=True)
-                        if snapshot != getattr(self, "_last_saved_snapshot", None):
-                            save_state(self.state)
-                            self._last_saved_snapshot = snapshot
+                        with self._control_lock:
+                            snapshot = json.dumps(self.state, sort_keys=True, allow_nan=False)
+                            if snapshot != getattr(self, "_last_saved_snapshot", None):
+                                save_state(self.state)
+                                self._last_saved_snapshot = snapshot
                     except Exception as e:
                         logger.warning("Auto-save failed: %s", e)
 
@@ -1876,12 +1857,22 @@ class StaveSynth:
         """Start all components."""
         logger.info("Starting Stave Synth...")
         self._running = True
+        self._controls.start()
 
         # Ensure JACK is running
-        ensure_jack_running()
+        if not ensure_jack_running():
+            raise RuntimeError("JACK/PipeWire is not reachable; startup aborted")
 
         # Initialize presets
-        self.presets.init_defaults()
+        try:
+            self.presets.init_defaults(self.state["ui"]["preset_labels"])
+            self._rebuild_preset_saved()
+        except (ValueError, TypeError, OSError) as exc:
+            # A broken preset library must not prevent the already-validated
+            # current sound from booting. Keep the original bank for recovery.
+            self._control_error = f"Preset library unavailable: {exc}"
+            logger.error("%s", self._control_error)
+            self.state["ui"]["preset_saved"] = [False] * self.presets.num_slots
 
         # Start FluidSynth
         try:
@@ -1891,8 +1882,9 @@ class StaveSynth:
             )
             self.piano.update_params(self.state.get("piano", {}))
         except Exception as e:
-            logger.warning("FluidSynth not available: %s (piano disabled)", e)
-            self.piano = None
+            # Retain the partially initialized owner for coordinated finally
+            # cleanup. A silent piano is not an acceptable stage-ready state.
+            raise RuntimeError(f"FluidSynth piano startup failed: {e}") from e
 
         # Start organ engine (lightweight, no external deps).
         # STAVE_FAUST_ORGAN=1 routes through libstave_organ.so (native tonewheel
@@ -1962,6 +1954,17 @@ class StaveSynth:
             # modulo picks up g_active_slots on first callback.
             self.jack.set_low_latency_mode(bool(master.get(
                 "low_latency_mode", not LOW_RAM_MODE)))  # matches config default
+            # Finish heavy disk/native preparation before render readiness.
+            # No deferred sfload or whole-bank decode should stall first notes.
+            if self.piano:
+                if self.piano.wait_for_preload(timeout=30.0) is False:
+                    raise RuntimeError("Soundfont preload has not finished; startup aborted")
+            self.synth.load_pad_samples()
+            from .native_profile import require_native_profile
+            native_issues = require_native_profile(synth=self.synth, jack=self.jack,
+                                                  piano=self.piano, organ=self.organ,
+                                                  instrument_mode=self.instrument_mode)
+            self._native_profile = {"ready": not native_issues, "issues": list(native_issues)}
             self.jack.start()
         except Exception as e:
             logger.error("Failed to start JACK engine: %s", e)
@@ -1974,13 +1977,9 @@ class StaveSynth:
         # Start WebSocket + HTTP server
         self.ws_server = WebSocketServer(message_handler=self._handle_ws_message)
         self.ws_server.start()
-
-        # Load per-key recorded pads. Empty slots remain silent; there is no
-        # automatic live-synth drone fallback.
-        try:
-            self.synth.load_pad_samples()
-        except Exception as e:
-            logger.warning("pad sample load failed: %s", e)
+        self._ui_watch_thread = threading.Thread(target=self._ui_watch_loop,
+                                                  name="stave-ui-watch", daemon=True)
+        self._ui_watch_thread.start()
 
         # Start autosave
         self._autosave_thread = threading.Thread(target=self._autosave_loop, daemon=True)
@@ -2006,6 +2005,41 @@ class StaveSynth:
 
         logger.info("Stave Synth is running!")
         logger.info("  UI: http://localhost:%d", HTTP_PORT)
+
+    def _health_status(self):
+        from .state_persistence import last_load_warning
+        status = {"control_error": self._control_error, "state_warning": last_load_warning,
+                  "native_profile": getattr(self, "_native_profile", None),
+                  "controls": self._controls.status(), "ui_recovery": self._ui_recovery.status(),
+                  "ui": self.ws_server.health_status() if self.ws_server else {"healthy": False}}
+        if self.jack:
+            bridge = self.jack._bridge
+            status["audio"] = {"error": getattr(self.jack, "_last_error", None),
+                               "sample_rate": int(bridge.bridge_get_sample_rate()),
+                               "block_frames": int(bridge.bridge_get_buffer_size()),
+                               "graph_error": int(bridge.bridge_get_graph_error()),
+                               "midi_dropped": int(bridge.bridge_get_midi_drop_count()),
+                               "midi_recoveries": int(bridge.bridge_get_midi_recovery_count()),
+                               "ring_slots": int(bridge.bridge_get_ring_slots())}
+        return status
+
+    def _ui_watch_loop(self):
+        previous_callbacks = None
+        while not self._stop_event.wait(5.0):
+            try:
+                callbacks = int(self.jack._bridge.bridge_get_callback_count()) if self.jack else 0
+                last = getattr(self.jack, "last_iter_ts", 0.0)
+                audio_healthy = bool(last and time.perf_counter() - last < 5.0
+                                     and previous_callbacks is not None and callbacks > previous_callbacks
+                                     and not getattr(self.jack, "_last_error", None))
+                previous_callbacks = callbacks
+                with self._ui_lifecycle_lock:
+                    self._ui_recovery.tick(self, lambda: WebSocketServer(
+                        message_handler=self._handle_ws_message), audio_healthy=audio_healthy)
+                if self._ui_recovery.last_error:
+                    logger.error("UI recovery: %s", self._ui_recovery.last_error)
+            except Exception:
+                logger.exception("UI health check failed")
 
     def _setup_systemd_watchdog(self):
         """Wire up a systemd Type=notify watchdog heartbeat.
@@ -2056,7 +2090,8 @@ class StaveSynth:
         def _heartbeat():
             prev_cb = -1
             while self._running:
-                time.sleep(interval_s)
+                if self._stop_event.wait(interval_s):
+                    break
                 if not self.jack:
                     continue
                 last = getattr(self.jack, "last_iter_ts", 0.0)
@@ -2149,124 +2184,80 @@ class StaveSynth:
         self._audio_watch_thread.start()
 
     def _get_midi_capture_ports(self) -> list[str]:
-        """List MIDI capture ports (a2jmidid or PipeWire Midi-Bridge), real devices only.
-        PipeWire's built-in bridge exposes 'Midi-Bridge:<device> (capture)'; legacy
-        a2jmidid setups use 'a2j:<device>' style names."""
-        try:
-            result = subprocess.run(
-                ["jack_lsp", "-t"], capture_output=True, text=True, timeout=5
-            )
-            lines = result.stdout.splitlines()
-            ports = []
-            for i, raw in enumerate(lines):
-                line = raw.strip()
-                # -t output alternates: port name, then type line starting with whitespace
-                if raw.startswith((" ", "\t")):
-                    continue
-                if "Midi Through" in line:
-                    continue
-                # Only keep midi capture ports
-                type_line = lines[i + 1] if i + 1 < len(lines) else ""
-                if "midi" not in type_line.lower():
-                    continue
-                is_a2j = line.startswith("a2j:") and "capture" in line
-                is_pw_bridge = line.startswith("Midi-Bridge:") and line.endswith("(capture)")
-                if is_a2j or is_pw_bridge:
-                    ports.append(line)
-            # If a2j is active, skip Midi-Bridge duplicates to avoid double MIDI events.
-            has_a2j = any(p.startswith("a2j:") for p in ports)
-            if has_a2j:
-                ports = [p for p in ports if not p.startswith("Midi-Bridge:")]
-            return ports
-        except Exception:
-            return []
+        """Discover capture ports; remove only unambiguous per-device aliases."""
+        from .routing import read_ports, midi_capture_selection
+        with self._control_lock:
+            try:
+                ports, duplicates = midi_capture_selection(read_ports(_run_with_hard_timeout))
+                self._midi_capture_duplicates = duplicates
+                self._midi_discovery_error = None
+                return ports
+            except Exception as exc:
+                self._midi_capture_duplicates = {}
+                self._midi_discovery_error = str(exc)
+                return []
 
     def _get_port_connections(self, port: str) -> list[str]:
-        """Get list of ports connected to the given port."""
+        """Read exact connection rows with the same bounded worker admission."""
+        from .routing import read_connections
         try:
-            result = subprocess.run(
-                ["jack_lsp", "-c"], capture_output=True, text=True, timeout=5
-            )
-            lines = result.stdout.splitlines()
-            connections = []
-            found = False
-            for line in lines:
-                if not line.startswith(" ") and not line.startswith("\t"):
-                    found = (line.strip() == port)
-                elif found:
-                    connections.append(line.strip())
-            return connections
+            return sorted(read_connections(_run_with_hard_timeout).get(port, set()))
         except Exception:
             return []
 
     def _connect_midi_ports(self):
-        """Find unconnected MIDI capture ports and wire them to StaveSynth.
-        Returns True if at least one MIDI capture port is currently connected
-        to our input — used by the watch loop to drive the UI status pip."""
+        """Connect verified device sources only to this instance's MIDI input."""
+        from .routing import connect_midi_sources
         midi_input = f"{JACK_CLIENT_NAME}:midi_in"
         if ISOLATED:
             return bool(self._get_port_connections(midi_input))
-        ports = self._get_midi_capture_ports()
-        any_connected = False
-        for port in ports:
-            connections = self._get_port_connections(port)
-            if midi_input in connections:
-                any_connected = True
-                continue
+        with self._control_lock:
+            if self._stopping:
+                return False
+            if not hasattr(self, "_routing_lock"):
+                self._routing_lock = threading.RLock()
             try:
-                result = subprocess.run(
-                    ["jack_connect", port, midi_input],
-                    capture_output=True, timeout=5,
-                )
-                # Re-query on failure: another connector may have won the race.
-                if result.returncode == 0 or midi_input in self._get_port_connections(port):
-                    logger.info("Auto-connected MIDI: %s", port)
-                    any_connected = True
-                else:
-                    logger.warning("MIDI connection failed (rc=%d): %s", result.returncode, port)
-            except Exception as e:
-                logger.warning("Failed to connect MIDI port %s: %s", port, e)
-        return any_connected
+                with self._routing_lock:
+                    ports = self._get_midi_capture_ports()
+                    if self._midi_discovery_error:
+                        return False
+                    return connect_midi_sources(_run_with_hard_timeout, JACK_CLIENT_NAME,
+                                                ports, self._midi_capture_duplicates,
+                                                should_stop=lambda: self._stopping)
+            except Exception as exc:
+                self._midi_discovery_error = str(exc)
+                logger.warning("MIDI routing did not verify: %s", exc)
+                return False
 
     def _audio_watch_loop(self):
-        """Watch the user's preferred audio sink and re-route StaveSynth
-        output to it when it appears (cold boot if the device wasn't ready
-        yet, or hot-plug after unplug). Polls every 2.5s; only acts when
-        the preferred sink exists AND StaveSynth's outs are NOT currently
-        wired to it. No-op when the user has no saved preference yet."""
+        """Reconcile only the saved stereo preference; never choose a fallback."""
+        from .routing import read_ports, read_connections, stereo_sinks, route_matches
+        if ISOLATED:
+            return
         first_run = True
-        while self._running:
-            # Slightly slower poll than MIDI — audio routing is non-realtime
-            # and pw-jack subprocess invocations are expensive (~10ms each).
-            time.sleep(0.5 if first_run else 2.5)
+        while self._running and not self._stopping:
+            if self._stop_event.wait(0.5 if first_run else 2.5):
+                break
             first_run = False
             try:
-                pref = self.state.get("master", {}).get("audio_output_pref")
-                if not pref:
-                    continue
-                # Cheap probe: list ports for the preferred sink. If empty
-                # output → device is gone; nothing to do.
-                probe = _run_with_hard_timeout(
-                    ["pw-jack", "jack_lsp", pref + ":"],
-                    timeout_s=2.0, hard_timeout_s=3.0,
-                )
-                if probe is None or not probe.stdout.strip():
-                    continue
-                # Check current connections — if either of our outs is NOT
-                # connected to the preferred sink's playback ports, reroute.
-                conns = _run_with_hard_timeout(
-                    ["pw-jack", "jack_lsp", "-c", f"{JACK_CLIENT_NAME}:"],
-                    timeout_s=2.0, hard_timeout_s=3.0,
-                )
-                if conns is None:
-                    continue
-                wired_to_pref = (f"{pref}:playback_FL" in conns.stdout
-                                 and f"{pref}:playback_FR" in conns.stdout)
-                if not wired_to_pref:
-                    logger.info("audio watch: re-routing to preferred sink %s", pref)
-                    self._handle_set_audio_output({"name": pref})
-            except Exception as e:
-                logger.debug("audio watch loop iteration error: %s", e)
+                # Same lock order as explicit selection. A user change or
+                # shutdown cannot be overwritten by a stale watcher snapshot.
+                with self._control_lock:
+                    if self._stopping or not self._running:
+                        break
+                    pref = self.state.get("master", {}).get("audio_output_pref")
+                    if not pref:
+                        continue
+                    sinks = stereo_sinks(read_ports(_run_with_hard_timeout), JACK_CLIENT_NAME)
+                    if pref not in sinks:
+                        continue
+                    graph = read_connections(_run_with_hard_timeout)
+                    if not route_matches(graph, JACK_CLIENT_NAME, sinks[pref]):
+                        result = self._handle_set_audio_output({"name": pref})
+                        if not result.get("success"):
+                            logger.warning("Preferred audio route was not restored: %s", result.get("error"))
+            except Exception as exc:
+                logger.debug("audio watch loop iteration error: %s", exc)
 
     def _midi_watch_loop(self):
         """Poll for new MIDI devices every 2 seconds and auto-connect them.
@@ -2275,9 +2266,11 @@ class StaveSynth:
         keyboard is talking, dim when none)."""
         last_connected = None  # force first broadcast
         while self._running:
-            time.sleep(2)
+            if self._stop_event.wait(2):
+                break
             try:
                 connected = bool(self._connect_midi_ports())
+                self._midi_connected = connected
                 if connected != last_connected and self.ws_server:
                     self.ws_server.broadcast_sync({
                         "type": "midi_status", "connected": connected,
@@ -2287,27 +2280,49 @@ class StaveSynth:
                 pass
 
     def stop(self, *, save_final_state=True):
-        """Gracefully shut down all components."""
+        """Retire every owner before freeing its native dependencies."""
         logger.info("Shutting down Stave Synth...")
+        self._stopping = True
         self._running = False
+        self._stop_event.set()
         self._crossfade_cancel.set()
-
-        # Save final state
-        if save_final_state:
-            try:
-                save_state(self.state)
-            except Exception:
-                pass
-
-        if self.jack:
-            self.jack.stop()
-        if self.piano:
-            self.piano.stop()
+        drone_cancel = getattr(self, "_drone_fade_cancel", None)
+        if drone_cancel is not None:
+            drone_cancel.set()
+        deadline = time.monotonic() + 12.0
+        remaining = lambda: max(0.0, deadline - time.monotonic())
+        controls_safe = True
+        with self._ui_lifecycle_lock:
+            if self.ws_server:
+                controls_safe = self.ws_server.stop() is True
+        if not self._controls.stop(timeout=min(2.0, remaining())):
+            controls_safe = False
+        for name in ("_crossfade_thread", "_drone_fade_thread", "_autosave_thread",
+                     "_midi_watch_thread", "_audio_watch_thread", "_ui_watch_thread"):
+            worker = getattr(self, name, None)
+            if worker and worker is not threading.current_thread():
+                worker.join(timeout=remaining())
+                controls_safe = controls_safe and not worker.is_alive()
+        if not controls_safe:
+            # Do not free audio pointers a stuck handler still owns. systemd's
+            # process-level stop timeout remains the last-resort recovery.
+            raise RuntimeError("Control workers did not stop; native resources retained")
+        # Drain even on partial-start cleanup, where no final save is allowed.
+        if not self._control_lock.acquire(timeout=remaining()):
+            raise RuntimeError("Control ownership did not drain; native resources retained")
+        self._control_lock.release()
+        if self.jack and self.jack.stop(timeout=remaining()) is False:
+            raise RuntimeError("Audio workers did not stop; native resources retained")
+        if self.piano and self.piano.stop(timeout=remaining()) is False:
+            raise RuntimeError("Soundfont loader did not stop; FluidSynth retained")
         if self.organ:
             self.organ.all_notes_off()
-        if self.ws_server:
-            self.ws_server.stop()
-
+        if save_final_state:
+            try:
+                with self._control_lock:
+                    save_state(self.state)
+            except Exception as exc:
+                logger.error("Final state save failed: %s", exc)
         logger.info("Stave Synth stopped.")
 
 

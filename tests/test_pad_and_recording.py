@@ -240,13 +240,18 @@ class MainPanicDispatchTests(unittest.TestCase):
 
 
 def recorder_namespace(data_dir):
-    # Execute the real recorder module with only its relative config import
-    # removed. DATA_DIR is explicit before module execution/Recorder creation.
+    # Execute the actual recorder/helper modules without package/config side
+    # effects. DATA_DIR is explicit before module execution/Recorder creation.
     relative = "stave_synth/recorder.py"
     tree = ast.parse((ROOT / relative).read_text(encoding="utf-8"))
     tree.body = [node for node in tree.body
-                 if not (isinstance(node, ast.ImportFrom) and node.level == 1 and node.module == "config")]
+                 if not (isinstance(node, ast.ImportFrom) and node.level == 1
+                         and node.module in {"config", "state_store"})]
     namespace = {"__name__": "isolated_recording_test", "DATA_DIR": data_dir, "SAMPLE_RATE": 48000}
+    store_namespace = {"__name__": "isolated_recording_state_store"}
+    store_path = ROOT / "stave_synth/state_store.py"
+    exec(compile(store_path.read_text(encoding="utf-8"), str(store_path), "exec"), store_namespace)
+    namespace["atomic_write_json"] = store_namespace["atomic_write_json"]
     exec(compile(tree, relative, "exec"), namespace)
 
     class FixedDatetime:
@@ -270,13 +275,12 @@ class RecordingFilenameTests(unittest.TestCase):
 
     def assert_failed_start_preserved_existing(self, recorder, saved):
         path, wav_data, state_data = saved
-        self.assertIsNone(recorder._wav)
-        self.assertIsNone(recorder._current_path)
-        self.assertIsNone(recorder._writer_thread)
+        self.assertIsNone(recorder._take)
         self.assertFalse(recorder.is_recording())
         self.assertEqual(path.read_bytes(), wav_data)
         self.assertEqual(path.with_suffix(".state.json").read_bytes(), state_data)
-        self.assertEqual(set(path.parent.iterdir()), {path, path.with_suffix(".state.json")})
+        self.assertEqual(set(path.parent.iterdir()),
+                         {path, path.with_suffix(".state.json"), path.with_suffix(".meta.json")})
 
     def test_open_failure_removes_only_new_reserved_file_and_allows_retry(self):
         with tempfile.TemporaryDirectory(prefix="stave-recording-failure-") as temporary:

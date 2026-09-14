@@ -42,7 +42,7 @@ def _fsync_directory(directory: Path) -> None:
         os.close(fd)
 
 
-def atomic_write_json(path: PathLike, value: Any) -> None:
+def atomic_write_json(path: PathLike, value: Any, *, max_bytes: int | None = None) -> None:
     """Validate, serialize, and atomically replace *path* with JSON.
 
     Serialization happens before a temporary file is created.  NaN and
@@ -55,6 +55,8 @@ def atomic_write_json(path: PathLike, value: Any) -> None:
 
     target = Path(path)
     payload = json.dumps(value, indent=2, allow_nan=False).encode("utf-8")
+    if max_bytes is not None and len(payload) > max_bytes:
+        raise ValueError(f"JSON exceeds the {max_bytes}-byte storage limit")
 
     try:
         target_mode = stat.S_IMODE(target.stat().st_mode)

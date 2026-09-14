@@ -58,6 +58,13 @@ class _Bridge:
 
     def bridge_clear_ring(self):
         self.clear_count += 1
+        return 0
+
+    def bridge_get_midi_drop_count(self):
+        return 0
+
+    def bridge_get_midi_recovery_count(self):
+        return 0
 
 
 class _Synth:
@@ -255,6 +262,20 @@ class MidiNoteOwnershipTests(unittest.TestCase):
         engine.feed(on(), off())
         self.assertEqual(note_offs(engine.piano_events), [60])
         self.assertReleased()
+
+    def test_overflow_recovery_cc123_clears_both_pedals_and_notes(self):
+        engine = self.engine
+        engine.feed(on(), pedal(66, True), pedal(64, True), off())
+        engine.feed((0xB0, 123, 0))
+        self.assertFalse(engine._sustain_on)
+        self.assertFalse(engine._sostenuto_on)
+        self.assertEqual(engine._physically_held, set())
+        self.assertEqual(engine._sustained_notes, set())
+        self.assertEqual(engine._sostenuto_held, set())
+        self.assertEqual(engine._note_map, {})
+        self.assertIn(("all_notes_off", 0, 0), engine.synth.events)
+        self.assertIn(("all_notes_off", 0, 0), engine.piano_events)
+        self.assertIn(("all_notes_off", 0, 0), engine.ui_events)
 
     def test_repeated_pedal_up_does_not_duplicate_note_offs(self):
         engine = self.engine

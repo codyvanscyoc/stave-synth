@@ -194,6 +194,11 @@ class JackEngine:
         self.program_change_callback = program_change_callback
         self.piano_player = piano_player  # FluidSynthPlayer for rendered mixing
         self.running = False
+        self._stop_event = threading.Event()
+        self._render_thread = None
+        self._midi_thread = None
+        self._gc_thread = None
+        self._last_audio_activity_ts = time.monotonic()
         # Last render-loop iteration timestamp (perf_counter). Updated every
         # iteration once the render thread starts; read by the systemd
         # watchdog heartbeat in main.py to detect a wedged audio loop.
@@ -381,6 +386,8 @@ class JackEngine:
         self._last_traceback = None
         self._midi_events_seen = 0
         self._midi_notes_triggered = 0
+        self._midi_drops_seen = 0
+        self._midi_recoveries_seen = 0
 
         # Load C bridge
         if not os.path.exists(_BRIDGE_PATH):
@@ -460,24 +467,24 @@ class JackEngine:
             self.synth.update_params({"bpm": float(bpm)})
 
     def set_low_latency_mode(self, enabled: bool):
-        """Switch ring depth between Low Latency (6/3) and Normal (16/8).
-        The C bridge briefly mutes (~20 ms) while the ring is reset."""
+        """Switch ring depth after the native producer/callback quiesce."""
         if enabled:
             slots, threshold = 6, 3
-            label = "ON — ring 6/3 (~16ms render-ahead)"
+            label = "ON — ring 6/3"
         else:
             slots, threshold = 16, 8
-            label = "OFF — ring 16/8 (~43ms render-ahead)"
+            label = "OFF — ring 16/8"
         try:
             ret = self._bridge.bridge_set_ring_slots(slots)
             if ret != 0:
                 logger.warning("bridge_set_ring_slots(%d) returned %d", slots, ret)
-                return
+                return False
         except Exception as e:
             logger.warning("bridge_set_ring_slots failed: %s", e)
-            return
+            return False
         self.ring_threshold = threshold
         logger.info("Low Latency Mode %s", label)
+        return True
 
     def _warm_dsp_state(self, n_blocks: int = 16):
         """Push ~85ms of low-level noise through every stateful filter so the
@@ -630,6 +637,8 @@ class JackEngine:
         b.bridge_get_xrun_count.restype = ctypes.c_int
         b.bridge_get_underrun_count.restype = ctypes.c_int
         b.bridge_get_midi_event_count.restype = ctypes.c_int
+        b.bridge_get_midi_drop_count.restype = ctypes.c_int
+        b.bridge_get_midi_recovery_count.restype = ctypes.c_int
         b.bridge_get_ring_fill.restype = ctypes.c_int
         b.bridge_set_btl_mode.argtypes = [ctypes.c_int]
         b.bridge_set_btl_mode.restype = None
@@ -638,10 +647,12 @@ class JackEngine:
         b.bridge_get_ring_slots.restype = ctypes.c_int
         b.bridge_clear_ring.restype = ctypes.c_int
         b.bridge_is_shutdown.restype = ctypes.c_int
+        b.bridge_get_graph_error.restype = ctypes.c_int
         b.bridge_get_btl_mode.restype = ctypes.c_int
 
     def start(self):
         """Start the C bridge JACK client."""
+        self._stop_event.clear()
         if not hasattr(self._bridge, "bridge_start_named"):
             raise RuntimeError("JACK bridge is outdated: rebuild jack_bridge.so on the target before starting")
         ret = self._bridge.bridge_start_named(
@@ -653,6 +664,13 @@ class JackEngine:
         sr = self._bridge.bridge_get_sample_rate()
         bs = self._bridge.bridge_get_buffer_size()
         logger.info("JACK C bridge active: sr=%d, blocksize=%d", sr, bs)
+        graph_error = self._bridge.bridge_get_graph_error()
+        if sr != SAMPLE_RATE or bs <= 0 or graph_error:
+            self._bridge.bridge_stop()
+            raise RuntimeError(
+                f"unsupported JACK graph: rate={sr} (required {SAMPLE_RATE}), "
+                f"blocksize={bs}, graph_error={graph_error}; restart with the fixed profile"
+            )
 
         self._push_master_to_bridge()
         self._bridge.bridge_set_btl_mode(1 if BTL_MODE else 0)
@@ -684,19 +702,8 @@ class JackEngine:
         bs = self._bridge.bridge_get_buffer_size()
         sr = self._bridge.bridge_get_sample_rate()
         block_time = bs / sr
-        # Sample-rate mismatch guard: every engine (Faust zones, biquad
-        # coefficients, the C bridge's smoothing constant) is built at
-        # config.SAMPLE_RATE. If the JACK graph comes up at a different
-        # rate (e.g. a fresh box with PipeWire at 44.1k), EVERYTHING is
-        # detuned/mistimed with zero errors. Scream about it — install.sh
-        # pins clock.rate via a PipeWire drop-in, so this firing means the
-        # pin is missing on this machine.
-        if sr and sr != SAMPLE_RATE:
-            logger.critical(
-                "SAMPLE RATE MISMATCH: JACK graph is %d Hz but the engine "
-                "was built for %d Hz — audio will be detuned. Pin the rate "
-                "(PipeWire: clock.rate=%d) and restart.",
-                sr, SAMPLE_RATE, SAMPLE_RATE)
+        # start() has already rejected a mismatched initial graph. Native
+        # callbacks latch any later size/rate change and fail audio silent.
         consecutive_errors = 0
         MAX_CONSECUTIVE_ERRORS = 20
         # Starvation detector: if the C-bridge ring buffer runs dry, the bridge
@@ -755,6 +762,14 @@ class JackEngine:
                 # Exit if JACK server disappeared — systemd will restart us
                 if self._bridge.bridge_is_shutdown():
                     logger.critical("JACK server shut down — exiting for systemd restart")
+                    os._exit(1)
+                graph_error = self._bridge.bridge_get_graph_error()
+                if graph_error:
+                    logger.critical(
+                        "JACK graph changed incompatibly (flags=%d) — "
+                        "native output is muted; exiting for a clean fixed-profile restart",
+                        graph_error,
+                    )
                     os._exit(1)
 
                 # Check ring buffer fill level
@@ -1026,6 +1041,8 @@ class JackEngine:
 
                     # Track pre-limiter peak for metering (shows how hard limiter is hit)
                     pre_peak = float(np.abs(stereo).max())
+                    if pre_peak > 1e-5:
+                        self._last_audio_activity_ts = time.monotonic()
                     if pre_peak > self._peak_output:
                         self._peak_output = pre_peak
                     # Pop-diagnostic: catch amplitude spikes + block-to-block
@@ -1089,12 +1106,15 @@ class JackEngine:
                     if self.recorder.is_recording():
                         self.recorder.feed(left_f32, right_f32)
 
-                    self._bridge.bridge_write_stereo(
+                    write_result = self._bridge.bridge_write_stereo(
                         left_f32.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
                         right_f32.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
                         bs
                     )
-                    self._callback_count += 1
+                    if write_result < 0:
+                        raise RuntimeError("native bridge rejected render block: graph changed")
+                    if write_result == 1:
+                        self._callback_count += 1
                 else:
                     # Ring is full enough — sleep briefly
                     time.sleep(block_time * 0.5)
@@ -1119,19 +1139,59 @@ class JackEngine:
                     )
                     os._exit(1)
 
+    def _gc_sources_idle(self, quiet_seconds: float = 90.0, now=None) -> bool:
+        """Return True only when every known audio source has been quiet.
+
+        The synth lock is acquired nonblocking: GC is optional, so it yields
+        immediately rather than competing with a render/control operation.
+        """
+        now = time.monotonic() if now is None else float(now)
+        if now - self._last_audio_activity_ts < quiet_seconds:
+            return False
+        try:
+            status = self.recorder.current_status()
+            if status.get("recording") or status.get("writer_pending"):
+                return False
+        except Exception:
+            return False
+        if self._piano_notes_active:
+            return False
+        piano = self.piano_player
+        if piano is not None and getattr(piano, "_active_notes", 0):
+            return False
+        if piano is not None and getattr(piano, "voices", None):
+            return False
+
+        lock = getattr(self.synth, "_render_lock", None)
+        if lock is None or not lock.acquire(blocking=False):
+            return False
+        try:
+            if getattr(self.synth, "_panic_pending", False):
+                return False
+            if getattr(self.synth, "freeze_enabled", False):
+                return False
+            reverb = getattr(self.synth, "reverb", None)
+            if reverb is not None and getattr(reverb, "frozen", False):
+                return False
+            if getattr(self.synth, "voices", None):
+                return False
+            if any(getattr(player, "active", False)
+                   for player in getattr(self.synth, "_pad_samples", {}).values()):
+                return False
+        finally:
+            lock.release()
+        return True
+
     def _gc_loop(self):
         """Idle-triggered cyclic GC + malloc arena trim.
 
-        Every 30 s, when no voices and no piano notes are held, runs
-        gen-0 gc + malloc_trim(0). Fast (~7 ms gc, ~0.2 ms trim), well
-        inside the ring's 127 ms headroom.
+        Every 30 s, after 90 s of measured output silence and with every
+        known voice, pad bed, freeze and recorder source idle, runs gen-0 GC
+        plus malloc_trim(0).
 
         Additionally, once per day at 3 AM local time, runs a full
-        gen-2 gc as backstop against long-lived cyclic leaks. Only
-        fires after 90 s of confirmed silence — reverb / freeze /
-        shimmer tails have fully decayed so the GIL hold produces no
-        audible dropout. If 3 AM arrives with active play, skips
-        silently and retries tomorrow.
+        gen-2 gc as backstop against long-lived cyclic leaks. If 3 AM arrives
+        with active audio, it skips silently and retries tomorrow.
         """
         import gc
         CHECK_INTERVAL_S = 30.0
@@ -1161,14 +1221,13 @@ class JackEngine:
             return 0
 
         _silent_cycles = 0
-        _last_full = 0.0
+        _last_full_mono = 0.0
         while self.running:
-            time.sleep(CHECK_INTERVAL_S)
+            if self._stop_event.wait(CHECK_INTERVAL_S):
+                return
             if not self.running:
                 return
-            idle = (len(self.synth.voices) == 0
-                    and len(self._piano_notes_active) == 0)
-            if not idle:
+            if not self._gc_sources_idle():
                 _silent_cycles = 0
                 continue
             _silent_cycles += 1
@@ -1195,9 +1254,10 @@ class JackEngine:
                         collected, freed_kb, rss_after, gc_ms, trim_ms)
 
             # Daily full sweep at 3 AM — backstop for long-lived cyclic leaks.
-            now = time.time()
-            if (time.localtime(now).tm_hour == FULL_GC_HOUR
-                    and (now - _last_full) > MIN_FULL_GC_INTERVAL_S
+            now_wall = time.time()
+            now_mono = time.monotonic()
+            if (time.localtime(now_wall).tm_hour == FULL_GC_HOUR
+                    and (now_mono - _last_full_mono) > MIN_FULL_GC_INTERVAL_S
                     and _silent_cycles >= SILENCE_CYCLES_REQUIRED):
                 t2 = time.perf_counter()
                 try:
@@ -1214,7 +1274,7 @@ class JackEngine:
                         except Exception as e:
                             logger.warning("daily malloc_trim failed: %s", e)
                         full_trim_ms = (time.perf_counter() - t3) * 1000.0
-                    _last_full = now
+                    _last_full_mono = now_mono
                     logger.info("DAILY full GC: collected=%d rss=%dKB "
                                 "gc=%.1fms trim=%.1fms (silence=%ds)",
                                 full_collected, _rss_kb(),
@@ -1257,6 +1317,22 @@ class JackEngine:
         midi_buf = (ctypes.c_uint8 * 4)()
 
         while self.running:
+            dropped = self._bridge.bridge_get_midi_drop_count()
+            recoveries = self._bridge.bridge_get_midi_recovery_count()
+            if dropped != getattr(self, "_midi_drops_seen", 0):
+                logger.critical(
+                    "MIDI bridge overflow: dropped=%d recoveries=%d; "
+                    "queued batch will be replaced by all-notes-off",
+                    dropped, recoveries,
+                )
+                self._midi_drops_seen = dropped
+            if recoveries != getattr(self, "_midi_recoveries_seen", 0):
+                logger.warning(
+                    "MIDI overflow recovery applied: recoveries=%d; "
+                    "pedals and active notes were released",
+                    recoveries,
+                )
+            self._midi_recoveries_seen = recoveries
             while True:
                 n = self._bridge.bridge_read_midi(midi_buf)
                 if n == 0:
@@ -1549,11 +1625,14 @@ class JackEngine:
         # Release the brickwall limiter so the next hit doesn't inherit
         # a pumped-down gain from whatever peak we were catching at panic time.
         self._limiter.reset()
-        # Flush the C bridge ring (~20ms mute). Without this, pre-rendered
-        # audio in the ring still plays for ~80ms (16-slot) / ~16ms (low-lat)
-        # after panic, so a feedback howl rings on for a beat after STOP.
+        # Flush the C bridge ring after native producer/callback quiescence.
+        # Without this, pre-rendered
+        # audio in the ring still plays after panic, so a feedback howl can
+        # ring on after STOP.
         try:
-            self._bridge.bridge_clear_ring()
+            ret = self._bridge.bridge_clear_ring()
+            if ret != 0:
+                logger.error("bridge_clear_ring returned %d; queued audio was not reset", ret)
         except Exception as e:
             logger.warning("bridge_clear_ring failed: %s", e)
 
@@ -1572,10 +1651,29 @@ class JackEngine:
         self._piano_peak = 0.0
         return {"pad": pad, "piano": piano}
 
-    def stop(self):
-        """Shut down."""
+    def stop(self, timeout: float = 5.0) -> bool:
+        """Quiesce Python producers before releasing the native JACK client.
+
+        False leaves the bridge owned because at least one producer could
+        still call it. The caller must not dispose dependent native engines.
+        """
         self.synth.all_notes_off()
         self.running = False
-        time.sleep(0.1)
+        self._stop_event.set()
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        alive = []
+        for name, thread in (("render", self._render_thread),
+                             ("MIDI", self._midi_thread),
+                             ("GC", self._gc_thread)):
+            if thread is None or thread is threading.current_thread():
+                continue
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+            if thread.is_alive():
+                alive.append(name)
+        if alive:
+            logger.critical("JACK stop could not quiesce %s thread(s); bridge retained",
+                            ", ".join(alive))
+            return False
         self._bridge.bridge_stop()
         logger.info("JACK engine stopped")
+        return True

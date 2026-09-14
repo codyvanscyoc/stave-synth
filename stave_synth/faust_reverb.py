@@ -10,6 +10,7 @@ The engine uses float64 internally, so we convert at the edges.
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +20,17 @@ logger = logging.getLogger(__name__)
 
 _HERE = Path(__file__).parent.parent / "faust"
 _LIB = _HERE / "libstave_reverb.so"
+
+
+def _native_owned(method):
+    """Serialize native control/reset operations with native compute."""
+    def owned(self, *args, **kwargs):
+        lock = getattr(self, "_native_lock", None)
+        if lock is None:
+            return method(self, *args, **kwargs)
+        with lock:
+            return method(self, *args, **kwargs)
+    return owned
 
 
 _ffi = FFI()
@@ -121,6 +133,7 @@ class FaustReverb:
     """Public API mirrors FeedbackDelayReverb. Internally backed by the Faust DSP."""
 
     def __init__(self, decay_seconds: float = 6.0, sample_rate: int = 48000):
+        self._native_lock = threading.RLock()
         self.sample_rate = int(sample_rate)
         self._dsp = _lib.newStaveReverb()
         if self._dsp == _ffi.NULL:
@@ -211,6 +224,7 @@ class FaustReverb:
         }
 
     # ─────────────── lifecycle ───────────────
+    @_native_owned
     def __del__(self):
         try:
             if getattr(self, "_dsp", None):
@@ -219,6 +233,7 @@ class FaustReverb:
         except Exception:
             pass
 
+    @_native_owned
     def panic(self):
         """Flush all internal state. Mirrors FeedbackDelayReverb.panic()."""
         self._restore_normal_controls()
@@ -230,6 +245,7 @@ class FaustReverb:
         if self._drone is not None:
             self._drone.clear()
 
+    @_native_owned
     def _restore_normal_controls(self):
         """Leave freeze using the current desired settings, without clearing."""
         self.frozen = False
@@ -242,6 +258,7 @@ class FaustReverb:
         _set_zone(self._zones, "er_scale", preset.get("er_scale", 0.4))
 
     # ─────────────── parameter setters ───────────────
+    @_native_owned
     def _mirror_zone(self, label: str, value: float):
         """Write a zone to the plate/drone backends too (no-op where the
         zone doesn't exist — their set_zone ignores unknown labels). Shared
@@ -252,6 +269,7 @@ class FaustReverb:
         if self._drone is not None:
             self._drone.set_zone(label, value)
 
+    @_native_owned
     def set_decay(self, seconds: float):
         self.decay_seconds = seconds
         if seconds > 0:
@@ -282,16 +300,19 @@ class FaustReverb:
         if self._plate is not None and seconds > 0:
             self._plate.set_zone("feedback", _plate_decay_from_seconds(seconds))
 
+    @_native_owned
     def set_low_cut(self, freq_hz: float):
         self.low_cut_hz = max(20.0, float(freq_hz))
         _set_zone(self._zones, "low_cut_hz", self.low_cut_hz)
         self._mirror_zone("low_cut_hz", self.low_cut_hz)
 
+    @_native_owned
     def set_high_cut(self, freq_hz: float):
         self.high_cut_hz = min(20000.0, float(freq_hz))
         _set_zone(self._zones, "high_cut_hz", self.high_cut_hz)
         self._mirror_zone("high_cut_hz", self.high_cut_hz)
 
+    @_native_owned
     def set_damp(self, value: float):
         """Damp slider — fans out to all backends (drone's damp zone is
         currently inert in the topology, harmless)."""
@@ -302,6 +323,19 @@ class FaustReverb:
             _set_zone(self._zones, "damp", damp)
             self._mirror_zone("damp", damp)
 
+    @_native_owned
+    def set_shimmer_feedback(self, value: float):
+        """Set the FDN shimmer feedback without bypassing native ownership."""
+        _set_zone(self._zones, "shimmer_fb",
+                  max(0.0, min(1.0, float(value))))
+
+    @_native_owned
+    def set_noise_mod(self, value: float):
+        """Set the FDN modulation amount without racing native compute."""
+        _set_zone(self._zones, "noise_mod",
+                  max(0.0, min(1.0, float(value))))
+
+    @_native_owned
     def set_predelay(self, ms: float):
         self.predelay_ms = max(0.0, min(150.0, float(ms)))
         _set_zone(self._zones, "predelay_ms", self.predelay_ms)
@@ -310,6 +344,7 @@ class FaustReverb:
         if self._drone is not None:
             self._drone.set_zone("predelay_ms", self.predelay_ms)
 
+    @_native_owned
     def set_type(self, name: str):
         """Apply a reverb-type preset. 'plate' and 'drone' lazy-load dedicated
         .so files and process() routes through them. Other types stay on the
@@ -438,6 +473,7 @@ class FaustReverb:
         self.space = max(0.0, min(1.0, float(value)))
         # Shuffler runs in JackEngine on master bus; parity-only mirror.
 
+    @_native_owned
     def set_freeze(self, enabled: bool):
         # Fan the freeze zones out to plate/drone too — freezing while one of
         # them is the active backend was previously a complete no-op (the most
@@ -459,6 +495,7 @@ class FaustReverb:
             self._restore_normal_controls()
 
     # ─────────────── main process ───────────────
+    @_native_owned
     def process(self, samples: np.ndarray) -> np.ndarray:
         """Stereo (2, n) float64 → stereo (2, n) float64 wet output."""
         if samples.ndim == 2:

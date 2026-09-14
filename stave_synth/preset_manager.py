@@ -1,83 +1,140 @@
-"""Preset manager: save/load JSON presets to ~/.config/stave-synth/presets/."""
+"""Atomic, schema-checked ten-slot preset bank with legacy file migration.
 
-import json
+One manifest owns scenes AND labels, so a swap or setlist replacement has one
+atomic commit point. Old preset_N.json files remain untouched for recovery.
+"""
+
 import copy
 import logging
+import threading
 from pathlib import Path
 
 from .config import PRESETS_DIR, ensure_dirs
+from .state_schema import MAX_JSON_BYTES, ValidationError, index, normalize_state, text
+from .state_persistence import read_json
 from .state_store import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
 
 class PresetManager:
-    """Manages preset persistence — save, load, list, and label editing."""
-
-    def __init__(self, num_slots: int = 10):
+    def __init__(self, num_slots=10, *, directory=None):
+        if num_slots != 10:
+            raise ValueError("the stage preset bank has exactly ten slots")
         self.num_slots = num_slots
-        ensure_dirs()
-        # Never sweep another writer's files. Each atomic save owns its temp.
+        self.directory = Path(directory) if directory is not None else PRESETS_DIR
+        if directory is None:
+            ensure_dirs()
+        self._lock = threading.RLock()
+        self._bank = None
+        self._legacy_labels = [""] * num_slots
 
-    def _slot_path(self, slot: int) -> Path:
-        return PRESETS_DIR / f"preset_{slot + 1}.json"
+    @property
+    def bank_path(self):
+        return self.directory / "preset_bank.json"
 
-    def save(self, slot: int, state: dict):
-        """Save a state dict to a preset slot."""
-        if slot < 0 or slot >= self.num_slots:
-            logger.warning("Invalid preset slot: %d", slot)
-            return False
+    def _slot_path(self, slot):
+        return self.directory / f"preset_{index(slot, self.num_slots) + 1}.json"
 
-        path = self._slot_path(slot)
+    def _validated_bank(self, presets, labels):
+        if not isinstance(presets, list) or len(presets) != self.num_slots:
+            raise ValidationError("preset bank must contain exactly ten slots")
+        if not isinstance(labels, list) or len(labels) != self.num_slots:
+            raise ValidationError("preset bank must contain exactly ten labels")
+        return {"version": 1,
+                "presets": [None if p is None else normalize_state(p, scene=True) for p in presets],
+                "labels": [text(label, 16) for label in labels]}
+
+    def _read_bank(self):
+        if self._bank is None:
+            try:
+                raw = read_json(self.bank_path)
+            except FileNotFoundError:
+                presets = []
+                for slot in range(self.num_slots):
+                    try:
+                        presets.append(read_json(self._slot_path(slot)))
+                    except FileNotFoundError:
+                        presets.append(None)
+                raw = {"version": 1, "presets": presets, "labels": self._legacy_labels}
+            if not isinstance(raw, dict) or raw.get("version") != 1:
+                raise ValidationError("unsupported or invalid preset bank")
+            self._bank = self._validated_bank(raw.get("presets"), raw.get("labels"))
+        return self._bank
+
+    def snapshot(self):
+        with self._lock:
+            return copy.deepcopy(self._read_bank())
+
+    def _commit(self, bank):
+        self.directory.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(self.bank_path, bank, max_bytes=MAX_JSON_BYTES)
+        self._bank = bank
+
+    def replace_bank(self, presets, labels):
+        bank = self._validated_bank(copy.deepcopy(presets), copy.deepcopy(labels))
+        with self._lock:
+            # A corrupt existing bank is not silently overwritten by a
+            # setlist operation. Recovery must first resolve the bad source.
+            self._read_bank()
+            self._commit(bank)
+        return True
+
+    def load_checked(self, slot):
+        with self._lock:
+            return copy.deepcopy(self._read_bank()["presets"][index(slot, self.num_slots)])
+
+    def load(self, slot):
         try:
-            atomic_write_json(path, copy.deepcopy(state))
-            logger.info("Saved preset to slot %d: %s", slot, path)
-            return True
-        except (OSError, ValueError, TypeError) as e:
-            logger.error("Failed to save preset %d: %s", slot, e)
-            return False
-
-    def load(self, slot: int) -> dict | None:
-        """Load a preset from a slot. Returns state dict or None."""
-        if slot < 0 or slot >= self.num_slots:
-            logger.warning("Invalid preset slot: %d", slot)
+            return self.load_checked(slot)
+        except (ValueError, TypeError, OSError) as exc:
+            logger.error("Failed to load preset %s: %s", slot, exc)
             return None
 
-        path = self._slot_path(slot)
-        if not path.exists():
-            logger.info("Preset slot %d is empty", slot)
-            return None
-
+    def save(self, slot, state):
         try:
-            with open(path) as f:
-                state = json.load(f)
-            if not isinstance(state, dict):
-                raise ValueError("preset must be a JSON object")
-            logger.info("Loaded preset from slot %d", slot)
-            return state
-        except (ValueError, OSError) as e:
-            logger.error("Failed to load preset %d: %s", slot, e)
-            return None
-
-    def delete(self, slot: int) -> bool:
-        """Delete a preset from a slot."""
-        if slot < 0 or slot >= self.num_slots:
-            logger.warning("Invalid preset slot: %d", slot)
+            slot = index(slot, self.num_slots)
+            scene = normalize_state(copy.deepcopy(state), scene=True)
+            with self._lock:
+                bank = copy.deepcopy(self._read_bank())
+                bank["presets"][slot] = scene
+                self._commit(bank)
+            return True
+        except (ValueError, TypeError, OSError) as exc:
+            logger.error("Failed to save preset %s: %s", slot, exc)
             return False
 
-        path = self._slot_path(slot)
-        if not path.exists():
-            logger.info("Preset slot %d already empty", slot)
-            return True
-
+    def delete(self, slot):
         try:
-            path.unlink()
-            logger.info("Deleted preset from slot %d", slot)
+            slot = index(slot, self.num_slots)
+            with self._lock:
+                bank = copy.deepcopy(self._read_bank())
+                bank["presets"][slot] = None
+                bank["labels"][slot] = ""
+                self._commit(bank)
             return True
-        except OSError as e:
-            logger.error("Failed to delete preset %d: %s", slot, e)
+        except (ValueError, TypeError, OSError) as exc:
+            logger.error("Failed to delete preset %s: %s", slot, exc)
             return False
 
-    def init_defaults(self):
-        """Initialize preset system."""
-        ensure_dirs()
+    def label(self, slot, label):
+        slot, label = index(slot, self.num_slots), text(label, 16)
+        with self._lock:
+            bank = copy.deepcopy(self._read_bank())
+            bank["labels"][slot] = label
+            self._commit(bank)
+
+    def swap(self, source, target):
+        source, target = index(source, self.num_slots), index(target, self.num_slots)
+        with self._lock:
+            bank = copy.deepcopy(self._read_bank())
+            for key in ("presets", "labels"):
+                bank[key][source], bank[key][target] = bank[key][target], bank[key][source]
+            self._commit(bank)
+        return True
+
+    def init_defaults(self, labels=None):
+        with self._lock:
+            if labels is not None:
+                self._legacy_labels = [text(label, 16) for label in labels]
+            self._read_bank()

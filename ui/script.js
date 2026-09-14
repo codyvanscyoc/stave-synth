@@ -81,6 +81,7 @@
     const statusIndicator = document.getElementById("status-indicator");
     const midiIndicator = document.getElementById("midi-indicator");
     const audioIndicator = document.getElementById("audio-indicator");
+    const healthWarning = document.getElementById("health-warning");
     // bus_comp_gr broadcasts at 20Hz from the engine — absence = wedge.
     // 0 sentinel means we haven't received the first heartbeat yet (don't
     // paint DOWN until we have something to compare to).
@@ -102,6 +103,8 @@
     let midiLearnActive = false;
     let midiLearnWaiting = false;  // true after fader selected, waiting for CC
     let ccMap = {};  // { "cc_number": { id, alt } }
+    let pendingPresetSlot = -1;
+    let pendingRecallFilename = null;
 
     // ═══ WebSocket ═══
     function connectWS() {
@@ -403,6 +406,10 @@
                         ? "Pinned to 3 on this hardware (Faust fast path)" : "";
                 }
             }
+            // A record_status stream is change-driven. Hydrate from get_state
+            // so a browser joining midway through recording/finalization does
+            // not incorrectly show an idle recorder until the next change.
+            if (msg.record_status) applyRecordingStatus(msg.record_status);
             applyState(msg.state);
         } else if (msg.type === "transpose_ack") {
             transposeValue = msg.semitones;
@@ -425,9 +432,18 @@
                 fadedOut = false;
                 updateFadeDisplay();
             }
+            freezeEnabled = false;
+            updateFreezeDisplay();
+            updateShimmerDisplay();
+            padActiveNote = null;
+            if (typeof updatePadKeyVisuals === "function") updatePadKeyVisuals();
+            if (padFadeBtn) padFadeBtn.classList.remove("fading-out");
         } else if (msg.type === "preset_saved") {
             markPresetSaved(msg.slot);
+        } else if (msg.type === "preset_transition") {
+            if (msg.pending) markPresetApplying(msg.slot);
         } else if (msg.type === "preset_loaded") {
+            clearPresetApplying();
             markPresetLoaded(msg.slot);
             // Reset BOTH alt-cycling faders + clear BPM tap history. Previously
             // only fader 3 (FX) reset on preset load; fader 1 (Vol/Tone/Comp|Leslie)
@@ -515,6 +531,7 @@
             if (sysRam && typeof msg.ram_mb === "number") {
                 sysRam.textContent = msg.ram_mb.toFixed(0);
             }
+            renderHealthWarnings(msg.health);
             // Xrun badge — only show when count exceeds the dismiss threshold.
             // Server counter is monotonic; client tracks "acknowledged so far"
             // so dismissing hides until the next dropout bumps the total.
@@ -583,19 +600,28 @@
             updateMidiLearnUI();
             updateCCIndicators();
         } else if (msg.type === "record_ack") {
-            setRecordingState(!!msg.recording);
-            // Refresh takes list after a recording finishes so it appears
-            if (!msg.recording) send({ type: "list_recordings" });
+            applyRecordingStatus(msg.status || msg);
+            if (msg.error && recTimeEl) recTimeEl.title = msg.error;
+            // A timed-out writer is not a finished take yet.
+            if (!msg.recording && !(msg.status && msg.status.writer_pending)) {
+                send({ type: "list_recordings" });
+            }
+        } else if (msg.type === "record_status") {
+            applyRecordingStatus(msg);
         } else if (msg.type === "recordings_list") {
             renderTakes(msg.takes || []);
         } else if (msg.type === "recording_deleted") {
             renderTakes(msg.takes || []);
         } else if (msg.type === "pad_slots") {
-            renderPadSlots(msg.slots || []);
+            renderPadSlots(msg.slots || [], msg);
         } else if (msg.type === "pad_slot_saved" || msg.type === "pad_slot_cleared") {
-            renderPadSlots(msg.slots || []);
+            renderPadSlots(msg.slots || [], msg);
         } else if (msg.type === "recall_params_ack") {
-            // Backend broadcasts a state message too — that'll re-sync sliders.
+            if (msg.pending) {
+                setRecallPending(msg.filename, true);
+            } else {
+                setRecallPending(msg.filename, false, msg.ok, msg.error);
+            }
         } else if (msg.type === "drone_key_ack") {
             padActiveNote = (msg.enabled && typeof msg.note === "number") ? msg.note : null;
             if (typeof updatePadKeyVisuals === "function") updatePadKeyVisuals();
@@ -607,14 +633,18 @@
             }
             applyMacroVisuals();
         } else if (msg.type === "macro_cc_value") {
-            // CC mapped to macro arrived — drive macro just like a slot drag.
-            sendMacroValue(msg.idx, msg.value);
+            // Compatibility with older servers: this is display-only. Macro
+            // assignment fanout is owned by the server so MIDI keeps working
+            // headless and two browsers cannot apply the same gesture twice.
+            if (state && state.macros && state.macros[msg.idx]) {
+                state.macros[msg.idx].value = msg.value;
+            }
             applyMacroVisuals();
         } else if (msg.type === "macro_value_ack") {
             if (state && state.macros && state.macros[msg.idx]) {
                 state.macros[msg.idx].value = msg.value;
             }
-            // No slider refresh — UI fingers already moved the controls.
+            applyMacroVisuals();
         } else if (msg.type === "setlist_save_ack") {
             // Update local state cache so dropdown re-renders with new name + presets.
             if (state && state.setlists && state.setlists[msg.slot]) {
@@ -709,6 +739,70 @@
                 faderValues[id] = val;
             }
             updateFader(id);
+        } else if (msg.type === "error") {
+            // Scene failures are followed by authoritative state. Clear any
+            // optimistic progress labels; never imply a transition completed.
+            clearPresetApplying();
+            if (pendingRecallFilename) {
+                setRecallPending(pendingRecallFilename, false, false, msg.message);
+            }
+            if (Array.isArray(msg.slots)) renderPadSlots(msg.slots, msg);
+        }
+    }
+
+    function healthWarnings(health) {
+        if (!health || typeof health !== "object") return [];
+        var warnings = [];
+        function add(value) {
+            if (value && warnings.indexOf(String(value)) < 0) warnings.push(String(value));
+        }
+        add(health.control_error);
+        add(health.state_warning);
+        var nativeProfile = health.native_profile;
+        if (nativeProfile && nativeProfile.ready === false) {
+            var issues = Array.isArray(nativeProfile.issues) ? nativeProfile.issues : [];
+            add(issues.length ? "Native profile: " + issues.join("; ")
+                : "Required native audio profile is unavailable");
+        }
+        var controls = health.controls || {};
+        if (Number(controls.dropped) > 0) {
+            add("Control queue dropped " + Number(controls.dropped) + " update(s)");
+        }
+        if (controls.closed || controls.alive === false) add("Control worker is unavailable");
+        var audio = health.audio || {};
+        add(audio.error);
+        if (audio.graph_error != null && Number(audio.graph_error) !== 0) {
+            add("Audio graph error " + audio.graph_error);
+        }
+        if (Number(audio.midi_dropped) > 0) {
+            add("MIDI queue dropped " + Number(audio.midi_dropped) + " event(s)");
+        }
+        var ui = health.ui || {};
+        if (ui.healthy === false) add("Browser control service is unhealthy");
+        if (Number(ui.producer_overflows) > 0) {
+            add("Browser update queue overflowed " + Number(ui.producer_overflows) + " time(s)");
+        }
+        var recovery = health.ui_recovery || {};
+        if (recovery.blocked) add(recovery.error || "Browser control recovery needs attention");
+        return warnings;
+    }
+
+    function renderHealthWarnings(health) {
+        var warnings = healthWarnings(health);
+        var detail = document.getElementById("sys-health-warning");
+        if (healthWarning) {
+            healthWarning.classList.toggle("hidden", warnings.length === 0);
+            healthWarning.textContent = warnings.length ? "WARN " + warnings.length : "WARN";
+            healthWarning.title = warnings.join("\n") || "No reported system warnings";
+        }
+        if (detail) {
+            detail.classList.toggle("hidden", warnings.length === 0);
+            detail.innerHTML = "";
+            warnings.forEach(function (warning) {
+                var line = document.createElement("div");
+                line.textContent = warning;
+                detail.appendChild(line);
+            });
         }
     }
 
@@ -1450,79 +1544,14 @@
         applyMacroVisuals();
     }
 
-    // Macro = invisible fingers on the UI. Move every assigned control as if
-    // the user were dragging it; the controls' own input handlers do the
-    // normalization + sending + visual updates. Backend just records the
-    // macro value (for save/recall) — it does NOT apply settings directly.
+    // Macro fanout is server-owned for identical browser and headless MIDI
+    // behavior. The acknowledgement/state broadcast hydrates affected controls.
     function sendMacroValue(idx, value) {
         send({ type: "macro_value", idx: idx, value: value });
         if (state && state.macros && state.macros[idx]) {
             state.macros[idx].value = value;
         }
-        var macros = getMacros();
-        var m = macros[idx];
-        if (!m) return;
-        var bip = !!m.bipolar;
-        (m.assignments || []).forEach(function (a) {
-            applyMacroFinger(a, value, bip);
-        });
-    }
-
-    function applyMacroFinger(a, value, bipolar) {
-        var mn = parseFloat(a.min != null ? a.min : 0);
-        var mx = parseFloat(a.max != null ? a.max : 1);
-        var target;
-        if (a.is_bool) {
-            target = value >= 0.5;
-        } else if (bipolar) {
-            var center = (a.center != null) ? parseFloat(a.center) : (mn + mx) * 0.5;
-            if (value <= 0.5) target = center + (mn - center) * (1 - 2 * value);
-            else target = center + (mx - center) * (2 * value - 1);
-        } else {
-            target = mn + value * (mx - mn);
-        }
-
-        if ((a.kind || "param") === "fader") {
-            applyFaderFinger(parseInt(a.fader_id, 10), parseInt(a.fader_alt || 0, 10), target);
-            return;
-        }
-        var sel = '[data-section="' + a.section + '"][data-param="' + a.param + '"]';
-        var ctl = document.querySelector(sel);
-        if (!ctl) return;
-        if (ctl.type === "checkbox") {
-            var newChecked = !!target;
-            if (ctl.checked !== newChecked) {
-                ctl.checked = newChecked;
-                ctl.dispatchEvent(new Event("change", { bubbles: true }));
-            }
-        } else if (ctl.tagName === "SELECT") {
-            // Skip — selects don't lerp meaningfully
-        } else {
-            ctl.value = target;
-            ctl.dispatchEvent(new Event("input", { bubbles: true }));
-            var knob = ctl.closest(".knob");
-            if (knob && typeof updateKnobRotation === "function") updateKnobRotation(knob);
-        }
-    }
-
-    function applyFaderFinger(id, alt, value) {
-        if (!isFinite(id)) return;
-        value = Math.max(0, Math.min(1, value));
-        if (id === 1) {
-            if (alt === 0) faderValues[1] = value;
-            else if (alt === 1) altFaderValues[1] = value;
-            else fader1CompValue = value;
-        } else if (id === 3) {
-            if (alt === 0) faderValues[3] = value;
-            else if (alt === 1) altFaderValues[3] = value;
-            else fader3MotionValue = value;
-        } else if (alt === 1) {
-            altFaderValues[id] = value;
-        } else {
-            faderValues[id] = value;
-        }
-        send({ type: "fader", id: id, value: value, alt: alt });
-        if (getFaderAlt(id) === alt) updateFader(id);
+        applyMacroVisuals();
     }
 
     // Pointer drag on macro slot → value 0..1 based on horizontal position.
@@ -1988,10 +2017,29 @@
     }
 
     function markPresetLoaded(slot) {
+        clearPresetApplying();
         presetBtns.forEach(function (b) { b.classList.remove("loaded"); });
         var btn = btnForSlot(slot);
         if (btn) btn.classList.add("loaded");
         loadedPreset = slot;
+    }
+
+    function markPresetApplying(slot) {
+        clearPresetApplying();
+        pendingPresetSlot = slot;
+        var btn = btnForSlot(slot);
+        if (btn) {
+            btn.classList.add("applying");
+            btn.setAttribute("aria-busy", "true");
+        }
+    }
+
+    function clearPresetApplying() {
+        presetBtns.forEach(function (btn) {
+            btn.classList.remove("applying");
+            btn.removeAttribute("aria-busy");
+        });
+        pendingPresetSlot = -1;
     }
 
     function markPresetDeleted(slot) {
@@ -2413,6 +2461,7 @@
     var recording = false;
     var recStartMs = 0;
     var recTimer = null;
+    var recordWriterPending = false;
 
     function fmtDur(sec) {
         sec = Math.max(0, Math.floor(sec));
@@ -2422,6 +2471,7 @@
     }
 
     function setRecordingState(on) {
+        if (!!on === recording) return;
         recording = !!on;
         var recBox = document.getElementById("record-box");
         if (recBox) recBox.classList.toggle("recording", recording);
@@ -2438,6 +2488,40 @@
             recTimer = null;
             if (recTimeEl) recTimeEl.textContent = "";
         }
+    }
+
+    function applyRecordingStatus(status) {
+        status = status || {};
+        var wasPending = recordWriterPending;
+        recordWriterPending = !!status.writer_pending;
+        setRecordingState(!!status.recording);
+        if (!recTimeEl) return;
+        recTimeEl.title = status.error || "";
+        if (status.recording && typeof status.duration_seconds === "number") {
+            recTimeEl.textContent = fmtDur(status.duration_seconds);
+        } else if (recordWriterPending) {
+            recTimeEl.textContent = "FINALIZING…";
+        } else if (status.error || status.status === "error" || status.status === "incomplete") {
+            recTimeEl.textContent = "REC ERROR";
+        } else if (wasPending) {
+            recTimeEl.textContent = status.complete ? "SAVED" : "INCOMPLETE";
+            send({ type: "list_recordings" });
+        }
+    }
+
+    function setRecallPending(filename, pending, ok, error) {
+        if (!filename) filename = pendingRecallFilename;
+        pendingRecallFilename = pending ? filename : null;
+        document.querySelectorAll(".take-row").forEach(function (row) {
+            if (row.dataset.filename !== filename) return;
+            var btn = row.querySelector("button.recall");
+            if (!btn) return;
+            btn.disabled = !!pending;
+            btn.textContent = pending ? "…" : "⟲";
+            btn.title = pending ? "Applying saved sound…"
+                : (ok === false ? (error || "Sound recall failed")
+                    : "Recall parameters from record-start");
+        });
     }
 
     if (recordBtn) {
@@ -2466,6 +2550,7 @@
         takes.forEach(function (t) {
             var row = document.createElement("div");
             row.className = "take-row";
+            row.dataset.filename = t.filename;
 
             var name = document.createElement("span");
             name.className = "take-name";
@@ -2511,6 +2596,7 @@
             recall.title = "Recall parameters from record-start";
             recall.disabled = !t.has_state;
             recall.addEventListener("click", function () {
+                setRecallPending(t.filename, true);
                 send({ type: "recall_recording_params", filename: t.filename });
             });
             row.appendChild(recall);
@@ -2555,20 +2641,31 @@
         });
     }
 
-    function renderPadSlots(slots) {
+    function renderPadSlots(slots, summary) {
         var el = document.getElementById("pad-slots-list");
         if (!el) return;
         el.innerHTML = "";
         slots.forEach(function (s) {
             var slot = document.createElement("div");
-            slot.className = "pad-slot" + (s.loaded ? " loaded" : "");
+            var classes = ["pad-slot"];
+            if (s.loaded) classes.push("loaded");
+            if (s.active) classes.push("active");
+            if (s.preparing) classes.push("preparing");
+            if (s.error) classes.push("error");
+            if (s.file_present) classes.push("file-present");
+            else classes.push("empty");
+            slot.className = classes.join(" ");
+            if (s.error) slot.title = s.error;
             var key = document.createElement("span");
             key.className = "slot-key";
             key.textContent = s.label;
             slot.appendChild(key);
             var dur = document.createElement("span");
             dur.className = "slot-dur";
-            dur.textContent = s.loaded ? fmtDur(s.duration_seconds) : "—";
+            dur.textContent = s.preparing ? "PREP…"
+                : s.error ? "ERROR"
+                    : s.active ? "PLAY"
+                        : s.loaded ? fmtDur(s.duration_seconds) : "EMPTY";
             slot.appendChild(dur);
             var clr = document.createElement("button");
             clr.className = "clear";
@@ -2582,6 +2679,42 @@
             slot.appendChild(clr);
             el.appendChild(slot);
         });
+        var statusEl = document.getElementById("pad-slots-status");
+        if (statusEl) {
+            var loaded = slots.filter(function (slot) { return !!slot.loaded; }).length;
+            var errors = slots.filter(function (slot) { return !!slot.error; });
+            var parts = [loaded + "/" + slots.length + " pads resident"];
+            if (summary && typeof summary.memory_bytes === "number") {
+                var usedMb = summary.memory_bytes / 1048576;
+                var bankText = usedMb.toFixed(1);
+                if (typeof summary.max_bank_bytes === "number"
+                        && isFinite(summary.max_bank_bytes) && summary.max_bank_bytes > 0) {
+                    bankText += "/" + (summary.max_bank_bytes / 1048576).toFixed(0);
+                }
+                parts.push(bankText + " MB");
+            }
+            var limits = [];
+            if (summary && typeof summary.max_slot_bytes === "number"
+                    && isFinite(summary.max_slot_bytes) && summary.max_slot_bytes > 0) {
+                limits.push("slot " + (summary.max_slot_bytes / 1048576).toFixed(0) + " MB");
+            }
+            if (summary && typeof summary.max_source_bytes === "number"
+                    && isFinite(summary.max_source_bytes) && summary.max_source_bytes > 0) {
+                limits.push("source " + (summary.max_source_bytes / 1048576).toFixed(0) + " MB");
+            }
+            if (limits.length) parts.push(limits.join(" / ") + " max");
+            if (errors.length) {
+                parts.push(errors.map(function (slot) {
+                    return slot.label + ": " + slot.error;
+                }).join("; "));
+            }
+            if (summary && Array.isArray(summary.warnings) && summary.warnings.length) {
+                parts.push(summary.warnings.join("; "));
+            }
+            statusEl.textContent = parts.join(" · ");
+            statusEl.classList.toggle("warn", errors.length > 0
+                || !!(summary && summary.warnings && summary.warnings.length));
+        }
     }
 
     // Refresh takes + pad slots whenever the Record tab is opened.
@@ -2591,6 +2724,14 @@
         send({ type: "list_pad_slots" });
     }
     if (recordTabBtn) recordTabBtn.addEventListener("click", refreshTakes);
+
+    if (healthWarning) {
+        healthWarning.addEventListener("click", function () {
+            settingsModal.classList.remove("hidden");
+            var globalTab = document.querySelector('.settings-tab[data-tab="global"]');
+            if (globalTab) globalTab.click();
+        });
+    }
     // Initial populate once on load
     setTimeout(refreshTakes, 500);
 

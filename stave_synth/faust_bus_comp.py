@@ -67,6 +67,8 @@ class FaustBusComp:
     def __init__(self, sample_rate: int = 48000):
         self.sample_rate = int(sample_rate)
         self._dsp = _lib.newStaveBusComp()
+        if self._dsp == _ffi.NULL:
+            raise RuntimeError("newStaveBusComp() returned NULL")
         _lib.initStaveBusComp(self._dsp, self.sample_rate)
 
         self._zones: dict[str, _ffi.CData] = {}

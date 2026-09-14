@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from pathlib import Path
@@ -47,11 +48,15 @@ def _main_methods(*names: str, isolated: bool, jack_name: str):
     if {node.name for node in selected} != set(names):
         raise AssertionError("requested StaveSynth method missing")
     namespace = {
+        # Relative imports may load pure routing helpers, never main/native
+        # audio. Every executable command remains the injected mock below.
+        "__name__": "stave_synth._isolated_main_methods",
+        "__package__": "stave_synth",
         "ISOLATED": isolated,
         "JACK_CLIENT_NAME": jack_name,
         "logger": mock.Mock(),
         "subprocess": mock.Mock(),
-        "threading": mock.Mock(),
+        "threading": threading,
         "time": mock.Mock(),
         "save_state": mock.Mock(),
         "_run_with_hard_timeout": mock.Mock(side_effect=AssertionError("route mutation attempted")),
@@ -80,7 +85,7 @@ ast.fix_missing_locations(module)
 namespace = {"DATA_DIR": config.DATA_DIR, "Path": Path}
 exec(compile(module, "stave_synth/main.py", "exec"), namespace)
 pad_dir = namespace["_pad_dir"](types.SimpleNamespace())
-config.save_state({"marker": "isolated"})
+config.save_state({"master": {"volume": 0.123}})
 print(json.dumps({
     "config": str(config.CONFIG_DIR),
     "data": str(config.DATA_DIR),
@@ -91,7 +96,7 @@ print(json.dumps({
     "websocket": config.WEBSOCKET_PORT,
     "host": config.WEBSOCKET_HOST,
     "jack": config.JACK_CLIENT_NAME,
-    "saved": config.load_state()["marker"],
+    "saved": config.load_state()["master"]["volume"],
 }))
 '''
             result = subprocess.run(
@@ -109,7 +114,7 @@ print(json.dumps({
             self.assertEqual(str(resolved_root / "config" / "current_state.json"), values["state"])
             self.assertEqual(str(resolved_root / "data" / "recordings"), values["recordings"])
             self.assertEqual(str(resolved_root / "data" / "pad_samples"), values["pads"])
-            self.assertEqual((38080, 38765, "127.0.0.1", "StaveSynth_integration_a", "isolated"), (
+            self.assertEqual((38080, 38765, "127.0.0.1", "StaveSynth_integration_a", 0.123), (
                 values["http"], values["websocket"], values["host"], values["jack"], values["saved"]
             ))
 
@@ -164,20 +169,27 @@ class RoutingIsolationTests(unittest.TestCase):
         namespace = _main_methods(
             "_connect_midi_ports", isolated=False, jack_name="StaveSynth"
         )
-        namespace["subprocess"].run.return_value = types.SimpleNamespace(returncode=1)
-        checked = []
+        commands = []
+
+        def run(command, **kwargs):
+            commands.append(command)
+            if command[1] == "jack_lsp":
+                return types.SimpleNamespace(returncode=0, stderr="",
+                                             stdout="Controller:capture\nStaveSynth:midi_in\n")
+            return types.SimpleNamespace(returncode=1, stderr="injected connect failure", stdout="")
+
+        namespace["_run_with_hard_timeout"].side_effect = run
         owner = types.SimpleNamespace(
+            _control_lock=threading.RLock(), _stopping=False,
+            _midi_discovery_error=None, _midi_capture_duplicates={},
             _get_midi_capture_ports=lambda: ["Controller:capture"],
-            _get_port_connections=lambda port: checked.append(port) or [],
         )
         self.assertFalse(namespace["_connect_midi_ports"](owner))
-        namespace["subprocess"].run.assert_called_once_with(
-            ["jack_connect", "Controller:capture", "StaveSynth:midi_in"],
-            capture_output=True,
-            timeout=5,
-        )
+        namespace["subprocess"].run.assert_not_called()
         self.assertEqual(
-            ["Controller:capture", "Controller:capture"], checked,
+            [["pw-jack", "jack_lsp", "-c"],
+             ["pw-jack", "jack_connect", "Controller:capture", "StaveSynth:midi_in"],
+             ["pw-jack", "jack_lsp", "-c"]], commands,
             "failed connect must be re-queried but never assumed successful",
         )
 

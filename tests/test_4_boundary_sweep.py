@@ -11,6 +11,22 @@ Pass:
   - synth PID still alive
   - peak never stuck at 0 for > 2s while a chord is being held
 """
+import sys as _sys
+import unittest as _unittest
+
+_RETIRED_MESSAGE = (
+    "RETIRED: this historical stress script can target the production synth and "
+    "cannot be run. Use `python3 tools/run_offline_tests.py`; live hardware "
+    "qualification must use approved isolated hardware-qualification tools. "
+    "There is no production override."
+)
+if __name__ == "__main__":
+    print(_RETIRED_MESSAGE, file=_sys.stderr)
+    raise SystemExit(2)
+raise _unittest.SkipTest(_RETIRED_MESSAGE)
+
+# Historical implementation retained below for audit reference. The fail-closed
+# guard above runs before its network/process dependencies can be imported.
 import asyncio
 import json
 import subprocess

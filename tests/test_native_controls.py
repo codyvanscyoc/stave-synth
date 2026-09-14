@@ -36,6 +36,8 @@ def extract(relative, names, namespace, strip_init=()):
 
 
 class FakeFFI:
+    NULL = None
+
     @staticmethod
     def new(signature):
         return [None] * int(signature.rsplit("[", 1)[1].rstrip("]"))
@@ -289,14 +291,16 @@ class Backend:
 def make_reverb():
     clears = []
     namespace = {
-        "np": np, "logger": logging.getLogger(__name__), "_ffi": FakeFFI(),
+        "np": np, "threading": threading,
+        "logger": logging.getLogger(__name__), "_ffi": FakeFFI(),
         "_lib": SimpleNamespace(instanceClearStaveReverb=lambda dsp: clears.append(True)),
     }
     extract("stave_synth/faust_reverb.py", {
-        "FaustReverb", "_set_zone", "_plate_decay_from_seconds",
+        "FaustReverb", "_native_owned", "_set_zone", "_plate_decay_from_seconds",
         "_drone_fb_from_seconds", "REVERB_PRESETS",
     }, namespace, strip_init={"FaustReverb"})
     reverb = namespace["FaustReverb"]()
+    reverb._native_lock = threading.RLock()
     reverb.sample_rate = 48000
     reverb._dsp = object()
     reverb._zones = {key: [value] for key, value in {
@@ -429,6 +433,46 @@ class FreezeRecoveryTests(unittest.TestCase):
         reverb.panic()
         self.assert_normal(reverb, namespace, 0.7)
         self.assertEqual(len(clears), 2)
+
+    def test_expert_fdn_zone_setters_are_owned_and_clamped(self):
+        reverb, _, _ = make_reverb()
+        reverb.set_shimmer_feedback(3.0)
+        reverb.set_noise_mod(-2.0)
+        self.assertEqual(reverb._zones["shimmer_fb"][0], 1.0)
+        self.assertEqual(reverb._zones["noise_mod"][0], 0.0)
+
+    def test_panic_waits_until_native_process_returns(self):
+        reverb, _, clears = make_reverb()
+        entered = threading.Event()
+        release = threading.Event()
+        panic_done = threading.Event()
+
+        def blocked_process(samples):
+            entered.set()
+            if not release.wait(2):
+                raise AssertionError("process release timed out")
+            return np.zeros_like(samples)
+
+        reverb.type = "plate"
+        reverb._plate.process = blocked_process
+        renderer = threading.Thread(target=reverb.process,
+                                    args=(np.zeros((2, 512)),))
+        panicker = threading.Thread(target=lambda: (reverb.panic(), panic_done.set()))
+        try:
+            renderer.start()
+            self.assertTrue(entered.wait(1))
+            panicker.start()
+            self.assertFalse(panic_done.wait(0.05))
+            self.assertEqual(clears, [])
+        finally:
+            release.set()
+            renderer.join(2)
+            if panicker.ident is not None:
+                panicker.join(2)
+        self.assertFalse(renderer.is_alive())
+        self.assertFalse(panicker.is_alive())
+        self.assertTrue(panic_done.is_set())
+        self.assertEqual(clears, [True])
 
 
 if __name__ == "__main__":

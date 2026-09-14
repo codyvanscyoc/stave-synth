@@ -486,8 +486,17 @@ body.retro-amber {
     font-family: var(--font);
     font-size: 0.9em;
 }
-.pad-slot:not(.loaded) button.clear { visibility: hidden; }
+.pad-slot.empty button.clear { visibility: hidden; }
 .pad-slot button.clear:hover { border-color: #FF4D6A; color: #FF4D6A; }
+.pad-slot.error { border-color: #FF4D6A; color: #FF4D6A; }
+.pad-slot.preparing { border-color: #FFB020; color: #FFB020; }
+.pad-slot.active { box-shadow: 0 0 7px var(--text-green); }
+.pad-slots-status {
+    color: var(--text-green-dim);
+    font-size: clamp(8px, 1.2vw, 10px);
+    padding: 0.3vh 0.4vw 0.8vh;
+}
+.pad-slots-status.warn { color: #FFB020; }
 
 /* Armed destructive button (two-tap confirm — see armConfirmButton) */
 .arm-confirm {
@@ -521,6 +530,18 @@ body.retro-amber {
     background: transparent;
     border: none;
 }
+
+.sys-health-warning,
+.network-trust-notice {
+    margin: 0.5vh 0;
+    padding: 0.7vh 1vw;
+    border: 1px solid #FFB020;
+    color: #FFB020;
+    font-size: clamp(9px, 1.3vw, 11px);
+    line-height: 1.45;
+}
+.sys-health-warning > div + div { margin-top: 0.3vh; }
+.network-trust-notice { color: var(--text-green-dim); border-color: var(--text-green-dim); }
 
 #limit-midi-stack {
     display: flex;
@@ -598,6 +619,15 @@ body.retro-amber {
     border-color: #cc2222;
     color: #cc2222;
     animation: status-pulse 0.8s ease-in-out infinite;
+}
+
+#health-warning {
+    border: 1px solid #FFB020;
+    background: rgba(255, 176, 32, 0.12);
+    color: #FFB020;
+    font: bold clamp(8px, 1.3vw, 11px) var(--font);
+    padding: 0.3vh 0.6vw;
+    cursor: pointer;
 }
 
 @keyframes status-pulse {
@@ -946,6 +976,20 @@ body.retro-amber {
 .preset-btn.loaded {
     opacity: 1.0;
     box-shadow: 0 0 8px var(--preset-color);
+}
+
+.preset-btn.applying::after {
+    content: "APPLYING…";
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(14, 9, 9, 0.78);
+    color: var(--preset-color);
+    font: bold clamp(8px, 1.2vw, 11px) var(--font);
+    letter-spacing: 0.08em;
+    pointer-events: none;
 }
 
 /* Save flash animation */
@@ -3061,6 +3105,56 @@ body.macro-learning #settings-box {
     transition: opacity 200ms linear, left 60ms linear;
 }
 .layer-live.lit { opacity: 1; }
+
+/* The original single-row top bar cannot fit its fixed touch controls in a
+ * 390px portrait viewport. Keep the five-fader face and wrap only the header
+ * into explicit rows; give the pad keyboard its own full-width row. */
+@media (max-width: 520px) and (orientation: portrait) {
+    #top-bar {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        grid-template-rows: repeat(3, minmax(36px, auto));
+        gap: 4px;
+        height: auto;
+        margin-top: max(6px, env(safe-area-inset-top));
+        padding: 4px 6px;
+    }
+    #top-bar > * { min-width: 0; margin-left: 0; }
+    #transpose-controls { grid-column: 1 / span 2; grid-row: 1; }
+    #osc1-btn { grid-column: 3; grid-row: 1; }
+    #osc2-btn { grid-column: 4; grid-row: 1; }
+    #piano-btn { grid-column: 5; grid-row: 1; }
+    #menu-btn { grid-column: 6; grid-row: 1; }
+    #shim-frz-stack { grid-column: 1; grid-row: 2; }
+    #layer-btn { grid-column: 2; grid-row: 2; }
+    #panic-btn { grid-column: 3; grid-row: 2; }
+    #record-box { grid-column: 4; grid-row: 2; }
+    #tempo-box { grid-column: 5 / span 2; grid-row: 2; justify-content: center; }
+    #limit-midi-stack { grid-column: 1; grid-row: 3; }
+    #status-indicator { grid-column: 2; grid-row: 3; text-align: center; }
+    #audio-indicator { grid-column: 3; grid-row: 3; text-align: center; }
+    #health-warning { grid-column: 4 / span 2; grid-row: 3; }
+    #xrun-badge { grid-column: 6; grid-row: 3; margin: auto; }
+    #output-menu { grid-column: 3 / span 4; grid-row: 4; }
+    #fader-area { max-height: none; }
+    .fader-column:nth-child(-n+2) .fader-bottom-row { flex-direction: column; }
+    #pad-player { height: 96px; flex-wrap: wrap; }
+    .pad-keys { flex-basis: 100%; height: 48px; order: 1; }
+    .pad-vol-wrap {
+        order: 2;
+        width: 100%; min-width: 100%; max-width: 100%; height: 42px;
+    }
+    #settings-header { overflow-x: auto; touch-action: pan-x; }
+    .settings-tab { flex: 0 0 auto; min-width: 76px; }
+    #settings-close { flex: 0 0 44px; position: sticky; right: 0; background: var(--bg); }
+}
+
+/* Short landscape phones and the legacy 800x480 display need the vertical
+ * space currently consumed by the decorative 7vh top margin. */
+@media (max-height: 500px) and (orientation: landscape) {
+    #top-bar { margin-top: max(2px, env(safe-area-inset-top)); }
+    #fader-area { max-height: none; }
+}
 
 #layer-bars {
     display: flex;

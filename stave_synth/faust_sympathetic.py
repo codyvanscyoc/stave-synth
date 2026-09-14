@@ -81,6 +81,8 @@ class FaustSympathetic:
     def __init__(self, sample_rate: int = 48000):
         self.sample_rate = int(sample_rate)
         self._dsp = _lib.newStaveSympathetic()
+        if self._dsp == _ffi.NULL:
+            raise RuntimeError("newStaveSympathetic() returned NULL")
         _lib.initStaveSympathetic(self._dsp, self.sample_rate)
 
         self._zones: dict[str, _ffi.CData] = {}

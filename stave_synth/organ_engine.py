@@ -22,6 +22,14 @@ from .synth_engine import (
 
 TWO_PI = 2.0 * np.pi
 
+
+def _organ_owned(method):
+    """Serialize fallback-organ voice/control mutation with one render block."""
+    def owned(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return owned
+
 # Hammond B3 drawbar harmonic ratios (footage → frequency multiplier)
 HARMONIC_RATIOS = np.array([0.5, 1.5, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0],
                            dtype=np.float64)
@@ -166,7 +174,10 @@ class OrganEngine:
 
         # Voices
         self.voices: dict[int, OrganVoice] = {}
-        self._lock = threading.Lock()
+        # RLock permits public methods to compose (midi_callback -> note_on,
+        # update_params -> setters) while excluding control mutation from the
+        # stateful render pass.
+        self._lock = threading.RLock()
 
         # Pre-allocated click noise (band-limited)
         self._click_sample = self._generate_click_sample(sample_rate)
@@ -194,6 +205,7 @@ class OrganEngine:
             raw *= (1.0 / max(total, 1.0))
         return raw
 
+    @_organ_owned
     def note_on(self, note: int, velocity: float):
         if not self.enabled:
             return
@@ -214,17 +226,20 @@ class OrganEngine:
     def _release_samples(self) -> int:
         return max(1, int(self.release_ms * 0.001 * self.sample_rate))
 
+    @_organ_owned
     def note_off(self, note: int):
         with self._lock:
             if note in self.voices:
                 self.voices[note].start_release(self._release_samples())
 
+    @_organ_owned
     def all_notes_off(self):
         rs = self._release_samples()
         with self._lock:
             for v in self.voices.values():
                 v.start_release(rs)
 
+    @_organ_owned
     def midi_callback(self, event_type: str, note: int, velocity: float):
         if event_type == "note_on":
             self.note_on(note, velocity)
@@ -233,19 +248,23 @@ class OrganEngine:
         elif event_type == "all_notes_off":
             self.all_notes_off()
 
+    @_organ_owned
     def set_volume(self, volume: float):
         self.volume = max(0.0, min(1.0, volume))
 
+    @_organ_owned
     def set_highcut(self, freq_hz: float):
         self.highcut_hz = max(200.0, min(12000.0, freq_hz))
         self.highcut_filter_l.set_params(self.highcut_hz)
         self.highcut_filter_r.set_params(self.highcut_hz)
 
+    @_organ_owned
     def set_lowcut(self, freq_hz: float):
         self.lowcut_hz = max(20.0, min(500.0, freq_hz))
         self.lowcut_filter_l.set_params(self.lowcut_hz)
         self.lowcut_filter_r.set_params(self.lowcut_hz)
 
+    @_organ_owned
     def set_tone_tilt(self, t: float):
         """0=warm (lows up, highs down), 0.5=flat, 1=bright. Volume-neutral.
         Maps to two peak EQs at 250 Hz and 3 kHz with complementary gains."""
@@ -258,16 +277,19 @@ class OrganEngine:
         self._tilt_eq_high_l.set_params(3000.0, high_db, 1.0)
         self._tilt_eq_high_r.set_params(3000.0, high_db, 1.0)
 
+    @_organ_owned
     def set_width(self, w: float):
         """Stereo width scaler on the master bus. 0=mono, 1=normal."""
         self.width = max(0.0, min(1.0, float(w)))
 
+    @_organ_owned
     def set_preset(self, name: str):
         if name in ORGAN_PRESETS:
             self.preset = name
             self.drawbars = list(ORGAN_PRESETS[name])
             self._drawbar_amps = self._compute_amps()
 
+    @_organ_owned
     def render_block(self, n_samples: int) -> np.ndarray:
         """Render organ audio. Returns stereo (2, n) float64."""
         if not self.enabled:
@@ -372,9 +394,14 @@ class OrganEngine:
 
         # Remove dead voices
         if dead_notes:
+            # Only remove the exact voice rendered in this block. This stays
+            # correct if render ownership is ever narrowed in the future and
+            # a retrigger replaces the dict entry before retirement.
+            rendered = dict(voices)
             with self._lock:
                 for n in dead_notes:
-                    self.voices.pop(n, None)
+                    if self.voices.get(n) is rendered.get(n):
+                        self.voices.pop(n, None)
 
         # ── Soft overdrive (tube amp warmth) ──
         # drive 0=clean (bypass), 1=heavy saturation
@@ -507,6 +534,7 @@ class OrganEngine:
 
         return np.array([left, right])
 
+    @_organ_owned
     def update_params(self, params: dict):
         if "volume" in params:
             self.set_volume(float(params["volume"]))
@@ -543,4 +571,3 @@ class OrganEngine:
             self.set_tone_tilt(float(params["tone_tilt"]))
         if "width" in params:
             self.set_width(float(params["width"]))
-
