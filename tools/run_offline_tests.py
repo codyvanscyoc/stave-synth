@@ -50,6 +50,9 @@ SAFE_TESTS = (
     "test_render_metrics.py",
     "test_render_metrics_integration.py",
     "test_render_pointer_cycles.py",
+    "test_native_audition.py",
+    "test_audition_plan.py",
+    "test_analyze_audition.py",
 )
 
 
