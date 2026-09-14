@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from stave_synth.config import DEFAULT_STATE
+from stave_synth.config import DEFAULT_STATE, LOW_RAM_MODE
 from stave_synth import state_persistence as storage
 from stave_synth.state_schema import (
     SCENE_SECTIONS, ValidationError, normalize_state, validate_message,
@@ -38,13 +38,16 @@ def legacy_nested_state(cycles=5):
 
 
 class SchemaTests(unittest.TestCase):
-    def test_every_default_is_supported_and_preserves_its_value(self):
+    def test_every_default_is_supported_with_explicit_profile_overrides(self):
         normalized = normalize_state(DEFAULT_STATE)
         for section in SCENE_SECTIONS[:4]:
             for param, value in DEFAULT_STATE[section].items():
                 with self.subTest(section=section, param=param):
-                    self.assertEqual(value, normalized[section][param])
-                    self.assertEqual(value, validate_setting(section, param, value))
+                    # Pi4's documented native fast path pins unison to three;
+                    # the generic (non-profile) dictionary default stays one.
+                    expected = 3 if LOW_RAM_MODE and (section, param) == ("synth_pad", "unison_voices") else value
+                    self.assertEqual(expected, normalized[section][param])
+                    self.assertEqual(expected, validate_setting(section, param, value))
 
     def test_rejects_nonfinite_before_numeric_clamp(self):
         for value in (float("nan"), float("inf"), -float("inf"), "NaN", "Infinity", "-Infinity"):
