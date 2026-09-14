@@ -32,7 +32,7 @@ in [REPAIR_PLAN.md](REPAIR_PLAN.md), [TARGET_BUILD.md](TARGET_BUILD.md), the
 - [x] Freeze broad feature and tonal work. Do not redesign the five-fader
   workflow, envelopes, oscillator routing, tails, latency profile, gain staging,
   voicing or effects the day before use.
-- [ ] Commit the tested release-preparation batch. The explicit offline suite
+- [x] Commit the tested release-preparation batch (`f7a4e02`). The explicit offline suite
   passed for the corrected recorder
   hydration owner and A08 organ exact-zero endpoint. Do not deploy an uncommitted
   working tree.
@@ -42,10 +42,9 @@ in [REPAIR_PLAN.md](REPAIR_PLAN.md), [TARGET_BUILD.md](TARGET_BUILD.md), the
 - [ ] Deploy reversibly in an off-stage window: matching Python source, locally
   built aarch64 bridge/Faust artifacts, service file and complete native-profile
   drop-in. Record hashes and keep the old runtime ready for rollback.
-- [ ] Perform one real full-application cold start. The native wrappers and
-  offline components have been tested, but the repaired app has **not yet been
-  started end to end** with its actual JACK, FluidSynth, HTTP/WS, state and
-  service owners.
+- [x] Perform one isolated full-application process start (not an OS cold boot).
+  `f7a4e02` started with native JACK/FluidSynth/DSP, copied state, and HTTP/WS.
+  See [STARTUP_CHECKPOINT.md](STARTUP_CHECKPOINT.md) for exact observations and limits.
 - [ ] Connect the actual **Peavey USB audio interface and Yamaha keyboard**.
   The user confirmed an off-stage, Wi-Fi-only maintenance window. They are not
   connected at this checkpoint; earlier target inspection

@@ -45,6 +45,7 @@ SAFE_TESTS = (
     "test_routing.py",
     "test_organ_zero_mute.py",
     "test_service_contract.py",
+    "test_stage_candidate_unit.py",
     "test_stage_preflight.py",
     "test_render_metrics.py",
     "test_render_metrics_integration.py",
