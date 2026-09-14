@@ -6,15 +6,25 @@ stage-release approval**. The complete baseline source audit is preserved at
 Historical defect probes intentionally assert the old bugs and are not the
 current passing regression suite.
 
+## Latest operational checkpoint
+
+The tested Pi4 candidate is now deployed through a removable service drop-in,
+with the original source preserved. Full native application startup, normal
+HTTP/WS access, clean shutdown and software rollback were exercised off-stage.
+See [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) and
+[STARTUP_CHECKPOINT.md](STARTUP_CHECKPOINT.md) for current evidence and next steps.
+**Next gate: connect the Peavey interface/Yamaha keyboard and test the actual
+playing setup.** No physical-audio or full-stage qualification is yet claimed.
+
 ## Order of work
 
 | Order | Outcome | Current status |
 | --- | --- | --- |
-| 1 | Protect the working instrument and establish safe regression tests | Baseline audit/backups preserved; repairs published to Pi4 branch and synced to separate target checkout. No live deployment. |
+| 1 | Protect the working instrument and establish safe regression tests | Baseline audit/backups preserved; Pi4 candidate deployed through a removable override. Original-source software rollback exercised. |
 | 2 | Correct held notes, STOP, state saves, recording and connection truth | Two software repair batches implemented with offline regression coverage; real devices and acoustic behavior still require qualification. |
 | 3 | Bound control and audio work; finish state, recorder and native ownership | Schema/transactions, bounded queues/pads, MIDI overflow, graph contract, native lifecycle and UI recovery implemented. Target timing and fault qualification remain open. |
 | 4 | Prove sound, latency and reserve on Pi4 | Not measured: use piano + OSC1 + OSC2 + effects + optional recorded bed, with the actual controllers/interface. Preserve favorite sounds. |
-| 5 | Refine the Stage UI and pass release qualification | Safari/portrait review, cold boots, reconnects, fault tests, eight-hour soak, rehearsal and rollback remain open. |
+| 5 | Refine the Stage UI and pass release qualification | Software rollback passed; Safari/portrait, cold boots, hardware reconnects, fault tests, eight-hour soak, rehearsal and SD recovery remain open. |
 
 Do not lower unison, layer count, sample rate or sound quality merely to produce
 a smaller CPU number. Make profile decisions after matched-level listening and

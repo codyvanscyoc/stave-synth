@@ -8,7 +8,11 @@ Development branch: `pi4-stage-pro`.
 
 This is the preserved, previously used Pi4 build, not a newly qualified release. The tag contains the Pi4 history that was 25 commits ahead of the original remote `main` at inspection. Do not merge or push this work onto `main` or `mac-port` as part of the Pi4 effort. Share improvements with other hardware lines only through a later deliberate review.
 
-The original stage checkout and running service remain the baseline. A separate Pi4 development worktree exists alongside it; the development worktree is not a separately running synth. The Mac development clone also uses `pi4-stage-pro`.
+The original stage checkout remains preserved. At the initial inspection it also
+owned the running service. The later off-stage candidate deployment uses a
+removable service override pointing to the separate Pi4 checkout; see
+[STARTUP_CHECKPOINT.md](STARTUP_CHECKPOINT.md) for current deployment/rollback
+evidence. The Mac development clone also uses `pi4-stage-pro`.
 
 ## Preserved artifacts
 

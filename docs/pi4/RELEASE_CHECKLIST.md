@@ -5,8 +5,11 @@ Status: **open checkpoint, not a release approval**. Updated 2026-09-14 for the
 corrected `get_state` recorder owner, A08 native-organ exact-zero endpoint,
 graph-sized saturation scratch, whole-cycle bounded render telemetry, read-only
 target preflight, and pinned/bounded stage service startup. The batch passed
-**286 Python tests, zero skips**, Node UI regression tests, Python parsing,
-shell/JS syntax and diff checks on the Mac. Full target startup is next.
+**286 Python tests, zero skips** on Mac and Pi. The reversible-unit follow-up
+increases coverage to **291** (full Mac suite; the five new tests also passed on
+Pi). Node UI regression, Python parsing, shell/JS syntax and diff checks passed
+on Mac. Full target startup, normal service deployment and software rollback
+have now been exercised; physical playing qualification is next.
 
 This page is the short operational index. The evidence and qualifications remain
 in [REPAIR_PLAN.md](REPAIR_PLAN.md), [TARGET_BUILD.md](TARGET_BUILD.md), the
@@ -39,7 +42,7 @@ in [REPAIR_PLAN.md](REPAIR_PLAN.md), [TARGET_BUILD.md](TARGET_BUILD.md), the
 - [x] Verify the private app/runtime rollback archive on both Pi and Mac,
   including the actual FluidR3 soundfont and existing venv. Hashes and scope are
   recorded in [BASELINE.md](BASELINE.md). A full SD image/OS restore is still open.
-- [ ] Deploy reversibly in an off-stage window: matching Python source, locally
+- [x] Deploy reversibly in an off-stage window: matching Python source, locally
   built aarch64 bridge/Faust artifacts, service file and complete native-profile
   drop-in. Record hashes and keep the old runtime ready for rollback.
 - [x] Perform one isolated full-application process start (not an OS cold boot).
@@ -69,7 +72,7 @@ in [REPAIR_PLAN.md](REPAIR_PLAN.md), [TARGET_BUILD.md](TARGET_BUILD.md), the
 | C06–C07 | **Implemented/offline-tested; policy/mitigation** | Startup enforces the fixed 48 kHz graph, later incompatible graph changes fail silent/restart, and ring transitions use bounded ownership rather than a sleep. Do not change PipeWire quantum tomorrow. |
 | C08 | **Implemented/offline-tested; requires hardware** | Native MIDI overflow counters and release/pedal recovery plus bounded control work are covered with mock JACK. Burst behavior on the real controller/graph is unqualified. |
 | C09–C10 | **Implemented/offline-tested; requires media test** | Recorder and pad replacement have unique ownership, bounded queues/finalization, error truth, size/memory limits, transactional replacement and joined shutdown. Real SD throughput, ENOSPC and power interruption remain open. |
-| C11 | **Partly implemented; requires hardware** | Listener readiness, health warnings, verified MIDI/output transactions and bounded UI recovery are implemented. Physical output, MIDI presence and full repaired-app startup are not yet proven; READY alone does not prove audible Peavey output. |
+| C11 | **Implemented; requires hardware** | Full repaired-app startup, listeners and native profile passed on target. Physical output/MIDI are not yet proven; READY alone does not prove audible Peavey output. |
 | C12–C13 | **Implemented/offline-tested** | Complete validated scene application, pending/completion truth, global-field preservation and one atomic preset bank replace the partial multi-file behavior. Audition engine/type changes and tails. |
 | C14 | **Implemented mitigation; requires soak/audition** | GC now waits for measured mixed-output inactivity and excludes active bed/freeze/recorder/panic conditions. Only a representative long Pi4 run can establish scheduler reserve and absence of audible interruption. |
 | C15–C16 | **Implemented/offline-tested** | Debug no longer consumes piano samples; health labels were corrected; non-finite control/state input and final native output are guarded. Physical-meter meaning remains limited to internal engine signal, not PA audibility. |
@@ -105,8 +108,8 @@ in [REPAIR_PLAN.md](REPAIR_PLAN.md), [TARGET_BUILD.md](TARGET_BUILD.md), the
   by browser count. Shared mutating results fan out while private get/list/debug
   responses remain private.
 - Current state, preset bank/labels, fade, soundfont/profile and recorder status
-  hydrate a reconnect. The newly corrected recorder owner must still enter the
-  frozen commit and suite noted above.
+  hydrate a reconnect. Corrected recorder ownership is committed/offline-tested
+  and verified through the real target WebSocket state response.
 - Preset/setlist recursive embedding was removed; scene snapshots exclude
   global libraries, routing and controller maps.
 - Non-object/oversized WS messages are rejected safely. Pad residency/errors,

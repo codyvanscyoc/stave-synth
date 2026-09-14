@@ -145,9 +145,11 @@ class LookaheadLimiter:
         # C fast path when the bridge is attached (bit-identical math); the
         # Python loop remains as the Mac/no-bridge fallback.
         if self._bridge_env is not None:
+            # Borrow addresses only for this synchronous call; target/env are
+            # live locals. NumPy data_as creates cyclic garbage on every block.
             self._gain = self._bridge_env(
-                target.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
-                env.ctypes.data_as(ctypes.POINTER(ctypes.c_double)),
+                ctypes.cast(target.ctypes.data, ctypes.POINTER(ctypes.c_double)),
+                ctypes.cast(env.ctypes.data, ctypes.POINTER(ctypes.c_double)),
                 n, self._gain, rel)
         else:
             gain = self._gain
@@ -1113,9 +1115,11 @@ class JackEngine:
                     if self.recorder.is_recording():
                         self.recorder.feed(left_f32, right_f32)
 
+                    # The bridge copies immediately; locals own both arrays
+                    # throughout the call. Avoid per-block data_as cycles.
                     write_result = self._bridge.bridge_write_stereo(
-                        left_f32.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
-                        right_f32.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                        ctypes.cast(left_f32.ctypes.data, ctypes.POINTER(ctypes.c_float)),
+                        ctypes.cast(right_f32.ctypes.data, ctypes.POINTER(ctypes.c_float)),
                         bs
                     )
                     _cycle_dt = time.perf_counter() - _cycle_t0

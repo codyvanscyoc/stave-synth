@@ -49,6 +49,7 @@ SAFE_TESTS = (
     "test_stage_preflight.py",
     "test_render_metrics.py",
     "test_render_metrics_integration.py",
+    "test_render_pointer_cycles.py",
 )
 
 

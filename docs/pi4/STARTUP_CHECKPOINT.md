@@ -48,3 +48,70 @@ latency or audible quality. Piano's sample render counter stopped at 400 during
 intentional idle sleep; mixer and JACK continued, as expected. No notes were
 played. USB recovery, Safari controls, room/PA output, favorite-patch comparison,
 service rehearsal and extended soak remain required.
+
+## Normal service and software rollback
+
+The next commit, `c509b8f`, adds deployment configuration/docs/tests without
+changing the tested application source. **291** tests now pass on Mac, including
+five additional reversible-unit contract tests.
+
+Installed only `90-pi4-stage-candidate.conf` into the existing user service's
+drop-in directory. The installed base unit, original source and original
+Faust/memory drop-ins were retained. The effective unit passed systemd verification:
+candidate WorkingDirectory, bounded precheck with no mixer mutation, existing
+venv, stage identity, strict native flags, inherited notify/watchdog lifecycle.
+
+First normal candidate process PID 116388, invocation
+`37cfb3c0db854f079fbd95a06b9a990d`, reached app/systemd readiness at
+17:47:55 CDT. HTTP identity was fetched successfully from the Mac via
+`stavepi4.local:8080`. State, recorder, native profile and audio health were good;
+no graph/control errors. Startup-inclusive counters showed eight underruns and
+zero xruns; no audible claim is made without the interface.
+
+Both isolated and first normal-candidate shutdowns returned success/PID zero.
+The isolated run closed HTTP/WS, JACK and FluidSynth and finished shutdown in
+approximately 115 ms according to its journal.
+
+Software rollback was then exercised: moved only the installed candidate drop-in
+into the private backup directory, reloaded systemd, verified WorkingDirectory
+returned to the original checkout, and started the original build. PID 116814,
+invocation `3c04860c9c5841a79265604592551178`, reached readiness at 17:49:03 CDT.
+Original HTTP/WS state and debug answered; Fluid piano remained selected/alive,
+and render/JACK callback counts advanced with no reported engine error.
+This demonstrates **software/service rollback**, not an SD-card recovery or
+physical-audio qualification. No user presets were intentionally changed.
+
+## Follow-up finding — idle garbage collection
+
+After returning to the candidate (PID 117029, invocation
+`455601ee6736454aba73f50b577183f4`), a 35-second idle window spanning the first
+idle garbage collection recorded 3277 render samples and 3283 bridge callbacks,
+mean render 4.856 ms, p95 bucket 5.013–5.120 ms and p99 6.400–6.507 ms.
+There were **six additional underruns**, one over-budget render sample,
+zero xruns, no dropped MIDI, and no graph/control/UI/native-profile failure.
+
+At 17:51:31 CDT the journal records gen-0 collection of **68,398 objects in
+84.6 ms**, alongside 35.2/58.5 ms render-loop gaps. This needs correction and
+retest; the earlier short idle pass did not cover this event. The Pi reported
+no throttling, 66.2 °C and approximately 180 MiB synth RSS. These measurements do
+not establish performance under playing load or exclude a future thermal risk.
+
+### Targeted allocation correction
+
+Offline reproduction identified the four unconditional NumPy `data_as` calls
+in the limiter and final ring write as the dominant source: two unreachable
+cyclic objects per conversion. Four calls × two objects × 93.75 blocks/s ×
+90 seconds predicts 67,500 objects, close to the observed 68,398. The two
+per-call input conversions in fallback C IIR paths had the same behavior.
+
+Replaced these **six ephemeral conversions only** with typed integer-address
+casts. Named local arrays own the memory throughout the synchronous native
+calls; native functions finish copying/processing before return. Cached owning
+pointers remain unchanged. DSP math, sample values, buffers, latency setting,
+and collection policy are unchanged.
+
+New regression evaluates the six exact production expressions: 12,000 new
+conversions yield zero collectible cycles; 2,000 old conversions yield 4,000.
+Typed-pointer and synchronous biquad results are checked. The complete Mac
+suite now passes **294 tests, zero skips**, plus Node UI regression/syntax.
+Target retest through the 90-second collection boundary is required next.

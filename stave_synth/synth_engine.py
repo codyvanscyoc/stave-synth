@@ -3,6 +3,7 @@
 Performance-critical: all audio processing uses vectorized NumPy.
 """
 
+import ctypes
 import logging
 import math
 import threading
@@ -278,7 +279,9 @@ def _biquad_run(flt, samples: np.ndarray) -> np.ndarray:
         flt._c_pa = flt.a.ctypes.data_as(_PD)
         flt._c_pzi = flt.zi.ctypes.data_as(_PD)
         flt._c_n = n
-    _BIQUAD_C(samples.ctypes.data_as(_PD), flt._c_pout, n,
+    # Borrow the live local input only for this synchronous C kernel; keep
+    # the cached owning pointers above. data_as here creates per-block cycles.
+    _BIQUAD_C(ctypes.cast(samples.ctypes.data, _PD), flt._c_pout, n,
               flt._c_pb, flt._c_pa, flt._c_pzi)
     return flt._c_out
 
@@ -300,7 +303,8 @@ def _onepole_run(flt, a_coeff, samples: np.ndarray) -> np.ndarray:
         flt._c_pzi = flt._zi.ctypes.data_as(_PD)
         flt._c_n = n
     b1 = float(flt._b[1]) if flt._b.shape[0] > 1 else 0.0
-    _ONEPOLE_C(samples.ctypes.data_as(_PD), flt._c_pout, n,
+    # As above, samples stays alive until the synchronous kernel returns.
+    _ONEPOLE_C(ctypes.cast(samples.ctypes.data, _PD), flt._c_pout, n,
                float(flt._b[0]), b1, float(a_coeff[1]), flt._c_pzi)
     return flt._c_out
 
