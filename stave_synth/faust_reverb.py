@@ -221,24 +221,25 @@ class FaustReverb:
 
     def panic(self):
         """Flush all internal state. Mirrors FeedbackDelayReverb.panic()."""
-        self.frozen = False
-        self._feedback_target = self._normal_feedback if self._normal_feedback else self._feedback_target
-        self._damp_target = self._normal_damp
-        self._freeze_capture_remaining = 0
-        _set_zone(self._zones, "feedback", self._feedback_target)
-        _set_zone(self._zones, "damp", self._damp_target)
-        _set_zone(self._zones, "freeze_input", 1.0)
-        _set_zone(self._zones, "er_scale", 0.4)
+        self._restore_normal_controls()
         _lib.instanceClearStaveReverb(self._dsp)
-        # Plate/drone are separate .so instances with their own state; if one
-        # of them is the active type, clearing only the FDN leaves it ringing
-        # (DRONE runs near self-oscillation by design). Also required for the
-        # render-path NaN trap, which recovers via panic() — a NaN stuck in
-        # plate/drone state would otherwise re-trip the trap every block.
+        # instanceClear preserves control zones: restore every backend's
+        # input gate/normal controls first or a sealed freeze stays muted.
         if self._plate is not None:
             self._plate.clear()
         if self._drone is not None:
             self._drone.clear()
+
+    def _restore_normal_controls(self):
+        """Leave freeze using the current desired settings, without clearing."""
+        self.frozen = False
+        self._freeze_capture_remaining = 0
+        self.set_decay(self.decay_seconds)
+        self.set_damp(self._normal_damp)
+        _set_zone(self._zones, "freeze_input", 1.0)
+        self._mirror_zone("freeze_input", 1.0)
+        preset = REVERB_PRESETS.get(self.type, {})
+        _set_zone(self._zones, "er_scale", preset.get("er_scale", 0.4))
 
     # ─────────────── parameter setters ───────────────
     def _mirror_zone(self, label: str, value: float):
@@ -266,9 +267,13 @@ class FaustReverb:
             fb = min(fb, fb_cap)
         else:
             fb = 0.0
+        self._normal_feedback = fb
+        if self.frozen:
+            # Knob edits update the desired normal state, not the active
+            # freeze override. All backends restore together on unfreeze.
+            return
         self._feedback_target = fb
-        if not self.frozen:
-            _set_zone(self._zones, "feedback", fb)
+        _set_zone(self._zones, "feedback", fb)
         # Drone/plate use their own decay mappings (resonator loop gain /
         # Dattorro decay, not FDN delay-loop math). Sync both whenever the
         # user moves the Decay slider so it stays live on every type.
@@ -291,8 +296,9 @@ class FaustReverb:
         """Damp slider — fans out to all backends (drone's damp zone is
         currently inert in the topology, harmless)."""
         damp = max(0.0, min(0.99, float(value)))
-        self._damp_target = damp
+        self._normal_damp = damp
         if not self.frozen:
+            self._damp_target = damp
             _set_zone(self._zones, "damp", damp)
             self._mirror_zone("damp", damp)
 
@@ -344,12 +350,10 @@ class FaustReverb:
         self.set_high_cut(preset["high_cut_hz"])
 
         damp = preset.get("damp", 0.5)
-        self._damp_target = damp
-        if not self.frozen:
-            _set_zone(self._zones, "damp", damp)
+        self.set_damp(damp)
 
         # FDN-only modifiers. Plate/drone ignore them (zones exist for parity).
-        _set_zone(self._zones, "er_scale", preset.get("er_scale", 0.4))
+        _set_zone(self._zones, "er_scale", 0.0 if self.frozen else preset.get("er_scale", 0.4))
         _set_zone(self._zones, "shimmer_fb", preset.get("shimmer_fb", 0.0))
         _set_zone(self._zones, "noise_mod", preset.get("noise_mod", 0.0))
 
@@ -375,7 +379,8 @@ class FaustReverb:
                 self._drone.set_zone("predelay_ms", self.predelay_ms)
                 self._drone.set_zone("low_cut_hz", self.low_cut_hz)
                 self._drone.set_zone("high_cut_hz", self.high_cut_hz)
-                self._drone.set_zone("damp", damp)
+                if not self.frozen:
+                    self._drone.set_zone("damp", damp)
             # set_decay owns the fb mapping; track the preset's seconds value.
             self.set_decay(preset["decay_seconds"])
         else:
@@ -399,8 +404,9 @@ class FaustReverb:
             self._plate.set_zone("predelay_ms", self.predelay_ms)
             self._plate.set_zone("low_cut_hz", self.low_cut_hz)
             self._plate.set_zone("high_cut_hz", self.high_cut_hz)
-            self._plate.set_zone("damp", damp)
-            if "decay_seconds" in preset:
+            if not self.frozen:
+                self._plate.set_zone("damp", damp)
+            if "decay_seconds" in preset and not self.frozen:
                 self._plate.set_zone("feedback",
                                      _plate_decay_from_seconds(preset["decay_seconds"]))
 
@@ -421,6 +427,11 @@ class FaustReverb:
                 _lib.instanceClearStaveReverb(self._dsp)
 
         self.type = name
+        if self.frozen:
+            # Also covers a backend instantiated while a freeze is active.
+            self._mirror_zone("feedback", 0.999)
+            self._mirror_zone("damp", 0.05)
+            self._mirror_zone("freeze_input", 1.0 if self._freeze_capture_remaining > 0 else 0.0)
         logger.info("reverb type: %s (backend=%s)", name, backend)
 
     def set_space(self, value: float):
@@ -445,24 +456,7 @@ class FaustReverb:
             self._mirror_zone("damp", 0.05)
             # freeze_input stays open during capture window
         elif not enabled and self.frozen:
-            self._feedback_target = self._normal_feedback
-            self._damp_target = self._normal_damp
-            self.frozen = False
-            _set_zone(self._zones, "feedback", self._normal_feedback)
-            _set_zone(self._zones, "damp", self._normal_damp)
-            _set_zone(self._zones, "freeze_input", 1.0)
-            _set_zone(self._zones, "er_scale", 0.4)
-            self._mirror_zone("damp", self._normal_damp)
-            self._mirror_zone("freeze_input", 1.0)
-            # Restore each backend's own decay mapping (FDN fb value would be
-            # wrong for the resonator/Dattorro topologies).
-            if self.decay_seconds > 0:
-                if self._drone is not None:
-                    self._drone.set_zone(
-                        "feedback", _drone_fb_from_seconds(self.decay_seconds))
-                if self._plate is not None:
-                    self._plate.set_zone(
-                        "feedback", _plate_decay_from_seconds(self.decay_seconds))
+            self._restore_normal_controls()
 
     # ─────────────── main process ───────────────
     def process(self, samples: np.ndarray) -> np.ndarray:

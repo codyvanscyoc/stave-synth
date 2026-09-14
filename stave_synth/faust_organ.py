@@ -186,7 +186,10 @@ class FaustOrganEngine:
         self.voices: dict[int, _Voice] = {}
         self._free_slots = list(range(N_SLOTS))
         self._slot_to_voice: dict[int, _Voice] = {}
-        self._lock = threading.Lock()
+        # The render transaction and note/slot mutations share one lock.
+        # RLock allows the small snapshot/reap sections below to re-enter.
+        self._lock = threading.RLock()
+        self._panic_pending = False
 
         # ── I/O buffers (allocated on first block) ──
         self._buf_n = 0
@@ -286,8 +289,15 @@ class FaustOrganEngine:
                 v.attack_total = attack_samples
                 return
 
-            # Allocate a slot (steal oldest non-releasing if none free)
-            if self._free_slots:
+            # A releasing same-note voice still owns its native slot. Reuse
+            # it instead of replacing the dict entry while leaving a sounding
+            # slot behind with no Python envelope to release it.
+            previous = self.voices.get(note)
+            if previous is not None:
+                slot = previous.slot
+                self._slot_to_voice.pop(slot, None)
+                self._gate_zones[slot][0] = 0.0
+            elif self._free_slots:
                 slot = self._free_slots.pop(0)
             else:
                 # Steal the oldest voice — pick any voice (dicts are insertion-ordered)
@@ -318,6 +328,26 @@ class FaustOrganEngine:
             for v in self.voices.values():
                 v.start_release(rs)
 
+    def hard_panic(self):
+        """Request a hard stop; native clearing occurs at the next render.
+
+        Unlike normal all_notes_off(), this clears every slot (including
+        orphaned legacy state) and the native effect history. Never clear a
+        DSP from a control thread while compute may be using it.
+        """
+        with self._lock:
+            self._panic_pending = True
+
+    def _apply_hard_panic_locked(self):
+        self._panic_pending = False
+        self.voices.clear()
+        self._slot_to_voice.clear()
+        self._free_slots = list(range(N_SLOTS))
+        for slot in range(N_SLOTS):
+            self._gate_zones[slot][0] = 0.0
+            self._freq_zones[slot][0] = 0.0
+        _lib.instanceClearStaveOrgan(self._dsp)
+
     def midi_callback(self, event_type: str, note: int, velocity: float):
         if event_type == "note_on":
             self.note_on(note, velocity)
@@ -328,6 +358,12 @@ class FaustOrganEngine:
 
     # ── Block render ──
     def render_block(self, n_samples: int) -> np.ndarray:
+        with self._lock:
+            if self._panic_pending:
+                self._apply_hard_panic_locked()
+            return self._render_block_locked(n_samples)
+
+    def _render_block_locked(self, n_samples: int) -> np.ndarray:
         if not self.enabled or n_samples == 0:
             return np.zeros((2, max(n_samples, 0)), dtype=np.float64)
 
@@ -382,7 +418,7 @@ class FaustOrganEngine:
             if v.releasing:
                 release_samples = max(1, v.release_total)
                 if v.release_remaining <= 0:
-                    dead_notes.append(note)
+                    dead_notes.append((note, v))
                     self._gate_zones[v.slot][0] = 0.0
                     continue
                 if v.release_remaining >= n_samples:
@@ -396,7 +432,7 @@ class FaustOrganEngine:
                     start_factor = r / release_samples
                     end_factor = (start_factor * 0.5) * (r / n_samples)
                     v.release_remaining = 0
-                    dead_notes.append(note)
+                    dead_notes.append((note, v))
                 gate *= end_factor
 
             self._gate_zones[v.slot][0] = float(max(0.0, min(1.0, gate)))
@@ -426,9 +462,13 @@ class FaustOrganEngine:
         # ── Reap dead voices ──
         if dead_notes:
             with self._lock:
-                for note in dead_notes:
-                    v = self.voices.pop(note, None)
-                    if v is not None:
+                for note, v in dead_notes:
+                    # Do not reap a replacement that happens to share the
+                    # same MIDI key. Identity also guards future scheduling
+                    # changes that might move allocation outside this lock.
+                    if (self.voices.get(note) is v
+                            and self._slot_to_voice.get(v.slot) is v):
+                        self.voices.pop(note)
                         self._slot_to_voice.pop(v.slot, None)
                         self._free_slots.append(v.slot)
                         # Safety: clear gate + freq on freed slot so any stale
