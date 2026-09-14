@@ -1,15 +1,22 @@
 """Default configuration and paths for Stave Synth."""
 
 import json
+import copy
 import logging
 import os
 from pathlib import Path
+from .runtime import load_runtime
+from .state_store import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
-CONFIG_DIR = Path.home() / ".config" / "stave-synth"
+RUNTIME = load_runtime()
+INSTANCE_NAME = RUNTIME.instance
+ISOLATED = RUNTIME.isolated
+JACK_CLIENT_NAME = RUNTIME.jack_client_name
+CONFIG_DIR = RUNTIME.config_dir
 PRESETS_DIR = CONFIG_DIR / "presets"
-DATA_DIR = Path.home() / ".local" / "share" / "stave-synth"
+DATA_DIR = RUNTIME.data_dir
 SOUNDFONT_DIR = DATA_DIR / "soundfonts"
 STATE_FILE = CONFIG_DIR / "current_state.json"
 
@@ -46,9 +53,9 @@ else:
     LOW_RAM_MODE = 0 < TOTAL_RAM_MB < 3072
 
 # Network
-WEBSOCKET_HOST = "0.0.0.0"
-WEBSOCKET_PORT = 8765
-HTTP_PORT = 8080
+WEBSOCKET_HOST = RUNTIME.host
+WEBSOCKET_PORT = RUNTIME.websocket_port
+HTTP_PORT = RUNTIME.http_port
 
 # Auto-save interval in seconds
 AUTOSAVE_INTERVAL = 30
@@ -425,6 +432,8 @@ def load_state():
         try:
             with open(STATE_FILE) as f:
                 saved = json.load(f)
+            if not isinstance(saved, dict):
+                raise ValueError("saved state must be a JSON object")
             # Migration: legacy preset stored a single ADSR under
             # synth_pad.adsr; per-OSC ADSR shipped in 5278d8e splits this
             # into adsr_osc1 / adsr_osc2. Splat the legacy block to BOTH
@@ -444,7 +453,7 @@ def load_state():
                 sp.pop("lfo_enabled", None)
                 sp.pop("lfo2_enabled", None)
             state = _deep_merge(defaults, saved)
-        except (json.JSONDecodeError, OSError) as e:
+        except (ValueError, OSError) as e:
             # Previously silent-swallowed — which meant a corrupted state
             # file silently reset every preset/fader to defaults with no
             # indication to the user. Log loudly so a stage-side surprise
@@ -528,16 +537,11 @@ def load_state():
 
 
 def save_state(state):
-    """Save current state to disk atomically (temp + fsync + rename)."""
+    """Save a private snapshot with a unique, fsynced sibling temporary file.
+
+    Deepcopy detaches the object before serialization; scene-level transaction
+    consistency still belongs to the control plane, not this file writer.
+    """
+    snapshot = copy.deepcopy(state)
     ensure_dirs()
-    tmp = STATE_FILE.with_suffix(STATE_FILE.suffix + ".tmp")
-    # Best-effort cleanup of any orphan .tmp left by a prior mid-write crash.
-    try:
-        tmp.unlink()
-    except FileNotFoundError:
-        pass
-    with open(tmp, "w") as f:
-        json.dump(state, f, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, STATE_FILE)
+    atomic_write_json(STATE_FILE, snapshot)

@@ -5,6 +5,10 @@ This branch, `pi4-stage-pro`, develops the Pi4 stage edition. Start with the
 [validation plan](docs/pi4/ENGINEERING_VALIDATION.md), and
 [preserved baseline](docs/pi4/BASELINE.md). The original Pi5 documentation follows.
 
+Pi4 development: see the [repair priorities and safe test commands](docs/pi4/REPAIR_PLAN.md).
+The Pi4 branch is not a newly qualified stage release; do not install it over the
+running baseline until target builds, qualification and rollback are approved.
+
 Live MIDI synthesizer for Raspberry Pi 5 — worship ambient pad with piano layer.
 
 ## Install
@@ -22,10 +26,10 @@ cd stave-synth
 When you want to play, launch it manually from the repo:
 
 ```bash
-./stave-synth.sh
+./stave-synth.sh --stage
 ```
 
-The UI opens at `http://localhost:8080` — or `http://<pi-ip>:8080` from any other device on the network. Stop it with Ctrl-C in the terminal (or `pkill -f stave_synth.main`).
+The UI opens at `http://localhost:8080` — or `http://<pi-ip>:8080` from any other device on the network. Stop this foreground instance with Ctrl-C in its terminal. The launcher no longer kills other instances or changes USB mixer levels; set the intended interface gain deliberately during setup. Do not run a second stage instance alongside the stage service.
 
 ### Live performance / kiosk — auto-start on boot
 
@@ -58,7 +62,7 @@ Reboot and the synth starts automatically. Plug in a USB MIDI keyboard and play.
 - Enables the hardware watchdog (auto-reboot if the whole box ever wedges)
 - Pins the PipeWire graph to 48 kHz so the DSP is never silently detuned
 - **Installs Salamander Grand v3 by default** (~296 MB download → 1.2 GB on disk; `--no-salamander` to skip) plus FluidR3_GM via apt (always — it backs the Rhodes/Suitcase presets and the small-Pi piano)
-- Builds the C audio bridge + all 10 Faust DSP modules from source
+- Builds the C audio bridge, twelve Faust DSP modules, two lite variants and merged shim from source
 - Creates a systemd user service that auto-starts on boot *(skipped with `--no-autostart`)*
 - Prints a summary of detected profile, thermals, and audio/MIDI devices at the end
 

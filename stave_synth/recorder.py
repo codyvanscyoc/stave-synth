@@ -7,7 +7,7 @@ Design:
   * A dedicated writer thread drains the queue, converts float32 → int16,
     and writes PCM blocks to a ``wave.Wave_write`` object.
   * ``start(state_snapshot)`` opens a new WAV at
-    ``~/.local/share/stave-synth/recordings/YYYY-MM-DD_HH-MM-SS.wav`` and
+    ``~/.local/share/stave-synth/recordings/YYYY-MM-DD_HH-MM-SS_<unique>.wav`` and
     writes the supplied state snapshot to ``*.state.json`` alongside it.
   * ``stop()`` flushes the queue, closes the file, joins the writer thread,
     and returns the finished take's metadata.
@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import queue
 import threading
+import tempfile
 import wave
 from datetime import datetime
 from pathlib import Path
@@ -29,11 +31,11 @@ from typing import Optional
 
 import numpy as np
 
-from .config import SAMPLE_RATE
+from .config import SAMPLE_RATE, DATA_DIR
 
 logger = logging.getLogger(__name__)
 
-RECORDINGS_DIR = Path.home() / ".local" / "share" / "stave-synth" / "recordings"
+RECORDINGS_DIR = DATA_DIR / "recordings"
 MAX_QUEUE = 400  # ~2 s of 256-sample blocks at 48 kHz
 MAX_TAKE_SECONDS = 30 * 60  # hard cap to prevent runaway disk fills
 # Total-size cap for the recordings dir — an appliance SD card must not
@@ -106,14 +108,36 @@ class Recorder:
                 self._stop_locked()
 
             ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            wav_path = RECORDINGS_DIR / f"{ts}.wav"
-            state_path = RECORDINGS_DIR / f"{ts}.state.json"
+            # Reserve a unique file even for simultaneous/same-second starts.
+            # Only this invocation owns this path; never overwrite an old take.
+            fd, filename = tempfile.mkstemp(prefix=f"{ts}_", suffix=".wav", dir=RECORDINGS_DIR)
+            os.close(fd)
+            wav_path = Path(filename)
+            state_path = wav_path.with_suffix(".state.json")
 
-            # Open wav first — raises if dir is missing / perms wrong
-            self._wav = wave.open(str(wav_path), "wb")
-            self._wav.setnchannels(2)
-            self._wav.setsampwidth(2)          # int16
-            self._wav.setframerate(self.sample_rate)
+            # Publish the handle only after its format is initialized. An
+            # open/header failure must not leave a broken take in the library.
+            wav_file = None
+            try:
+                wav_file = wave.open(str(wav_path), "wb")
+                wav_file.setnchannels(2)
+                wav_file.setsampwidth(2)          # int16
+                wav_file.setframerate(self.sample_rate)
+            except Exception:
+                if wav_file is not None:
+                    try:
+                        wav_file.close()
+                    except Exception as e:
+                        logger.warning("Incomplete recording close failed: %s", e)
+                self._wav = None
+                try:
+                    # mkstemp reserved this exact new path for this start;
+                    # never search for or remove any other recording.
+                    wav_path.unlink(missing_ok=True)
+                except OSError as e:
+                    logger.warning("Incomplete recording cleanup failed for %s: %s", wav_path.name, e)
+                raise
+            self._wav = wav_file
 
             # Save state snapshot (best-effort; failure shouldn't kill the take)
             if state_snapshot is not None:

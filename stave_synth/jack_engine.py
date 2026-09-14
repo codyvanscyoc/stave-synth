@@ -19,7 +19,7 @@ from .synth_engine import (SynthEngine, BiquadLowpass, BiquadHighpass,
                            BiquadPeakingEQ, BiquadLowShelf, OnePole6dBHighpass,
                            BusCompressor,
                            fader_to_amplitude, blend_to_amplitude)
-from .config import SAMPLE_RATE, BTL_MODE, LOW_RAM_MODE
+from .config import SAMPLE_RATE, BTL_MODE, LOW_RAM_MODE, ISOLATED, JACK_CLIENT_NAME
 
 # MIDI poll interval: 0.5ms on the full profile. On the small-Pi profile the
 # wakeup itself is a measurable slice of a slower core (~11% of profile
@@ -611,6 +611,9 @@ class JackEngine:
     def _setup_bridge_types(self):
         b = self._bridge
         b.bridge_start.restype = ctypes.c_int
+        if hasattr(b, "bridge_start_named"):
+            b.bridge_start_named.argtypes = [ctypes.c_char_p, ctypes.c_int]
+            b.bridge_start_named.restype = ctypes.c_int
         b.bridge_stop.restype = None
         b.bridge_write_stereo.argtypes = [
             ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_float), ctypes.c_int
@@ -639,7 +642,11 @@ class JackEngine:
 
     def start(self):
         """Start the C bridge JACK client."""
-        ret = self._bridge.bridge_start()
+        if not hasattr(self._bridge, "bridge_start_named"):
+            raise RuntimeError("JACK bridge is outdated: rebuild jack_bridge.so on the target before starting")
+        ret = self._bridge.bridge_start_named(
+            JACK_CLIENT_NAME.encode("ascii"), 0 if ISOLATED else 1
+        )
         if ret != 0:
             raise RuntimeError(f"bridge_start() failed with code {ret}")
 
@@ -1315,23 +1322,30 @@ class JackEngine:
                         else:
                             osc1_w = osc2_w = shim_w = instrument_w = 1.0
 
-                        # If re-triggering with different transpose, release old note first
+                        # Retire each old destination independently. A piano-only
+                        # octave change leaves the pad pitch unchanged, but the
+                        # old piano pitch must still receive its note-off before
+                        # this raw key's ownership is replaced.
                         if raw_note in self._note_map:
                             old_pad, old_piano = self._note_map[raw_note]
                             if old_pad != transposed:
                                 self.synth.note_off(old_pad)
+                                self._pad_notes_active.discard(old_pad)
+                            if old_piano != piano_note:
                                 if self.piano_callback:
                                     self.piano_callback("note_off", old_piano, 0)
+                                self._piano_notes_active.discard(old_piano)
 
                         self._physically_held.add(raw_note)
+                        self._sustained_notes.discard(raw_note)
                         self._note_map[raw_note] = (transposed, piano_note)
 
                         # Skip pad note_on entirely if all pad sources are silenced
                         # in this zone — saves a voice slot for actually-audible notes.
                         if osc1_w > 0.0 or osc2_w > 0.0 or shim_w > 0.0:
                             self.synth.note_on(transposed, vel_float, osc1_w, osc2_w, shim_w)
+                            self._pad_notes_active.add(transposed)
                         self._midi_notes_triggered += 1
-                        self._pad_notes_active.add(transposed)
 
                         # Retrigger BPM sidechain on note-on so the first pump
                         # lands on the first note instead of running free-phase.
@@ -1360,9 +1374,9 @@ class JackEngine:
                         if self._sustain_on:
                             self._sustained_notes.add(raw_note)
                         elif self._sostenuto_on and raw_note in self._sostenuto_held:
-                            # Held by sostenuto — leave the voice alone, but
-                            # remove from physically_held so a later sustain
-                            # press doesn't re-capture it.
+                            # Held by captured sostenuto. Its pedal-up path
+                            # will release the voice or transfer the hold to
+                            # sustain if that pedal is still down.
                             pass
                         else:
                             self._note_map.pop(raw_note)
@@ -1382,7 +1396,9 @@ class JackEngine:
                         else:
                             self._sustain_on = False
                             for raw in list(self._sustained_notes):
-                                if raw not in self._physically_held and raw in self._note_map:
+                                if (raw not in self._physically_held
+                                        and not (self._sostenuto_on and raw in self._sostenuto_held)
+                                        and raw in self._note_map):
                                     pad_n, piano_n = self._note_map.pop(raw)
                                     self.synth.note_off(pad_n)
                                     self._pad_notes_active.discard(pad_n)
@@ -1397,12 +1413,23 @@ class JackEngine:
                         # later notes pass through as normal. Pianists use
                         # this for a held bass under moving voicings.
                         if velocity >= 64:
-                            self._sostenuto_on = True
-                            self._sostenuto_held = set(self._physically_held)
+                            # Capture on the pedal's rising edge only. Some
+                            # controllers repeat high CC values while held;
+                            # those must not recapture later-played notes.
+                            if not self._sostenuto_on:
+                                self._sostenuto_on = True
+                                self._sostenuto_held = set(self._physically_held)
                         else:
                             self._sostenuto_on = False
                             for raw in list(self._sostenuto_held):
                                 if raw not in self._physically_held and raw in self._note_map:
+                                    if self._sustain_on:
+                                        # Pedals hold the union of their notes.
+                                        # Transfer ownership so releasing sustain
+                                        # later delivers the final note-off even
+                                        # if this key was released before CC64 down.
+                                        self._sustained_notes.add(raw)
+                                        continue
                                     pad_n, piano_n = self._note_map.pop(raw)
                                     self.synth.note_off(pad_n)
                                     self._pad_notes_active.discard(pad_n)
@@ -1507,13 +1534,15 @@ class JackEngine:
         )
 
     def panic(self):
-        """Clear sustain pedal, note-maps, active-note sets, and master-chain
+        """Clear both pedals, note-maps, active-note sets, and master-chain
         transient state so no ghost state bleeds into the next note. Also
         flush the C bridge ring so the ~80ms of pre-rendered audio doesn't
         keep playing the pre-panic howl after the user mashed STOP."""
         self._sustain_on = False
+        self._sostenuto_on = False
         self._physically_held.clear()
         self._sustained_notes.clear()
+        self._sostenuto_held.clear()
         self._note_map.clear()
         self._pad_notes_active.clear()
         self._piano_notes_active.clear()

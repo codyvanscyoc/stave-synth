@@ -1077,6 +1077,16 @@ class SamplePlayer:
             # Rise envelope drives volume directly via _rise_t — start from 0.
             self.env = 0.0
 
+    def hard_stop(self):
+        """Render-owner emergency reset; retain the loaded WAV for next trigger."""
+        self.active = False
+        self.env = self.env_target = 0.0
+        self.read_pos = 0.0
+        self._rise_active = self._rise_filter_engaged = False
+        self._rise_t_samples = 0
+        self._rise_lp_l.reset()
+        self._rise_lp_r.reset()
+
     def release(self):
         """Begin fade-out. Voice deactivates when envelope hits ~0."""
         self.env_target = 0.0
@@ -2140,6 +2150,11 @@ class SynthEngine:
         # keyboard mid-bend) otherwise leaves the pad detuned with no MIDI
         # event coming to clear it — only STOP gets you out.
         self._pitch_bend_semitones = 0.0
+        for player in self._pad_samples.values():
+            player.hard_stop()
+        self._pad_mellow_lp_l.reset()
+        self._pad_mellow_lp_r.reset()
+        self._drone_fade_scale = 1.0
         for v in self.voices:
             v.adsr_osc1.stage = ADSREnvelope.OFF
             v.adsr_osc1.level = 0.0
@@ -2552,7 +2567,8 @@ class SynthEngine:
         Creates the directory if it doesn't exist so users can drop files in."""
         from pathlib import Path
         if pad_dir is None:
-            pad_dir = Path.home() / ".local" / "share" / "stave-synth" / "pad_samples"
+            from .config import DATA_DIR
+            pad_dir = DATA_DIR / "pad_samples"
         pad_dir = Path(pad_dir)
         pad_dir.mkdir(parents=True, exist_ok=True)
         self._pad_samples_dir = pad_dir
@@ -4258,4 +4274,3 @@ class SynthEngine:
                 self._pad_mellow_lp_r.reset()
         if "pad_mellow_cutoff_hz" in params:
             self.pad_mellow_cutoff_hz = max(100.0, min(8000.0, float(params["pad_mellow_cutoff_hz"])))
-

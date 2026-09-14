@@ -220,15 +220,23 @@ static void shutdown_callback(void *arg) {
 
 /* ── Public API ── */
 
-int bridge_start(void) {
+int bridge_start_named(const char *name, int auto_connect) {
+    if (!name || !name[0]) return -4;
+    if (client) return -5;
+    port_out_l = port_out_r = port_midi = NULL;
     jack_status_t status;
-    client = jack_client_open("StaveSynth", JackNoStartServer, &status);
+    client = jack_client_open(name, JackNoStartServer | JackUseExactName, &status);
     if (!client) return -1;
 
     port_out_l = jack_port_register(client, "out_L",  JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
     port_out_r = jack_port_register(client, "out_R",  JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
     port_midi  = jack_port_register(client, "midi_in", JACK_DEFAULT_MIDI_TYPE,  JackPortIsInput, 0);
-    if (!port_out_l || !port_out_r || !port_midi) return -2;
+    if (!port_out_l || !port_out_r || !port_midi) {
+        jack_client_close(client);
+        client = NULL;
+        port_out_l = port_out_r = port_midi = NULL;
+        return -2;
+    }
 
     ring_block_size = jack_get_buffer_size(client);
 
@@ -241,11 +249,16 @@ int bridge_start(void) {
     jack_set_xrun_callback(client, xrun_callback, NULL);
     jack_on_shutdown(client, shutdown_callback, NULL);
 
-    if (jack_activate(client) != 0) return -3;
+    if (jack_activate(client) != 0) {
+        jack_client_close(client);
+        client = NULL;
+        port_out_l = port_out_r = port_midi = NULL;
+        return -3;
+    }
 
     /* Auto-connect audio */
-    const char **playback = jack_get_ports(client, NULL, JACK_DEFAULT_AUDIO_TYPE,
-                                           JackPortIsPhysical | JackPortIsInput);
+    const char **playback = auto_connect ? jack_get_ports(client, NULL, JACK_DEFAULT_AUDIO_TYPE,
+                                           JackPortIsPhysical | JackPortIsInput) : NULL;
     if (playback) {
         if (playback[0]) jack_connect(client, jack_port_name(port_out_l), playback[0]);
         if (playback[1]) jack_connect(client, jack_port_name(port_out_r), playback[1]);
@@ -255,11 +268,17 @@ int bridge_start(void) {
     return 0;
 }
 
+/* Legacy callers retain the stage identity; duplicate names now fail closed. */
+int bridge_start(void) {
+    return bridge_start_named("StaveSynth", 1);
+}
+
 void bridge_stop(void) {
     if (client) {
         jack_deactivate(client);
         jack_client_close(client);
         client = NULL;
+        port_out_l = port_out_r = port_midi = NULL;
     }
 }
 

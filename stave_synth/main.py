@@ -15,7 +15,9 @@ from pathlib import Path
 from .config import (
     DEFAULT_STATE, AUTOSAVE_INTERVAL, HTTP_PORT, LOW_RAM_MODE,
     ensure_dirs, load_state, save_state, _deep_merge,
+    DATA_DIR, ISOLATED, JACK_CLIENT_NAME, RUNTIME,
 )
+from .runtime import InstanceLock
 from .synth_engine import SynthEngine
 from .jack_engine import JackEngine
 from .midi_handler import MidiHandler
@@ -219,19 +221,14 @@ class StaveSynth:
             # Piano diagnostics
             piano_info = {}
             if self.piano:
-                import numpy as np
                 piano_info["exists"] = True
                 piano_info["enabled"] = self.piano.enabled
                 piano_info["volume"] = self.piano.volume
                 piano_info["fs_alive"] = self.piano.fs is not None
                 piano_info["sfid"] = self.piano.sfid
-                # Quick render test — does FluidSynth produce any audio?
+                # Diagnostics must never advance/discard the live audio stream.
                 try:
-                    test_block = self.piano.fs.get_samples(64) if self.piano.fs else None
-                    if test_block is not None:
-                        piano_info["test_peak"] = float(np.abs(test_block.astype(np.float64)).max())
-                    else:
-                        piano_info["test_peak"] = -1
+                    piano_info["test_peak"] = None
                     piano_info["note_on_count"] = self.piano._note_on_count
                     piano_info["render_count"] = self.piano._render_count
                     piano_info["last_raw_peak"] = self.piano._last_raw_peak
@@ -803,7 +800,7 @@ class StaveSynth:
     }
 
     def _pad_dir(self):
-        p = Path.home() / ".local" / "share" / "stave-synth" / "pad_samples"
+        p = DATA_DIR / "pad_samples"
         p.mkdir(parents=True, exist_ok=True)
         return p
 
@@ -837,7 +834,7 @@ class StaveSynth:
         # Path safety
         if "/" in source_filename or "\\" in source_filename or ".." in source_filename:
             return {"type": "error", "message": "bad source filename"}
-        src = Path.home() / ".local" / "share" / "stave-synth" / "recordings" / source_filename
+        src = DATA_DIR / "recordings" / source_filename
         if not src.exists():
             return {"type": "error", "message": f"source not found: {source_filename}"}
         dst = self._pad_dir() / self._PAD_NOTE_FILENAMES[note]
@@ -1110,17 +1107,25 @@ class StaveSynth:
 
     def _handle_panic(self) -> dict:
         """Hard-silence everything: voices, piano, organ, freeze, drone, sympathetic, sustain."""
+        self._crossfade_cancel.set()
+        drone_cancel = getattr(self, "_drone_fade_cancel", None)
+        if drone_cancel is not None:
+            drone_cancel.set()
         self.synth.panic()
         if self.piano:
             self.piano.all_notes_off()
         if self.organ:
-            self.organ.all_notes_off()
+            if hasattr(self.organ, "hard_panic"):
+                self.organ.hard_panic()
+            else:
+                self.organ.all_notes_off()
         if self.jack:
             self.jack.panic()
             self.jack.fade_reset()
         self.midi.all_notes_off()
         self.state["synth_pad"]["freeze_enabled"] = False
         self.state["synth_pad"]["drone_enabled"] = False
+        self.state["synth_pad"]["drone_key"] = None
         logger.info("PANIC — all notes off, freeze/drone cleared, buffers flushed")
         return {"type": "panic_ack", "fade_reset": True}
 
@@ -1169,7 +1174,7 @@ class StaveSynth:
                 line = line.strip()
                 if ":playback_FL" in line:
                     name = line.split(":playback_FL")[0]
-                    if name != "StaveSynth":
+                    if name != JACK_CLIENT_NAME:
                         sinks.add(name)
             # Check current connections
             result2 = _run_with_hard_timeout(
@@ -1179,7 +1184,7 @@ class StaveSynth:
             if result2 is not None:
                 conn_lines = result2.stdout.strip().split("\n")
                 for i, line in enumerate(conn_lines):
-                    if line.strip() == "StaveSynth:out_L" and i + 1 < len(conn_lines):
+                    if line.strip() == f"{JACK_CLIENT_NAME}:out_L" and i + 1 < len(conn_lines):
                         connected_to = conn_lines[i + 1].strip()
                         current = connected_to.split(":playback_FL")[0]
                         break
@@ -1197,6 +1202,10 @@ class StaveSynth:
         working one from the user's side (no audio but UI says OK).
         """
         target = msg.get("name", "")
+        if ISOLATED:
+            return {"type": "audio_output_set", "name": target,
+                    "success": False,
+                    "error": "Automatic output routing is disabled for isolated instances"}
         error_msg = None
         try:
             # Disconnect all current output connections
@@ -1210,7 +1219,7 @@ class StaveSynth:
             lines = result.stdout.strip().split("\n")
             for i, line in enumerate(lines):
                 stripped = line.strip()
-                if stripped in ("StaveSynth:out_L", "StaveSynth:out_R"):
+                if stripped in (f"{JACK_CLIENT_NAME}:out_L", f"{JACK_CLIENT_NAME}:out_R"):
                     # Walk every consecutive indented line — a port can have
                     # multiple connections and each shows as its own indented row.
                     j = i + 1
@@ -1232,8 +1241,8 @@ class StaveSynth:
                         j += 1
             # Connect to new target — these MUST succeed or the user gets no audio.
             for src, dst in (
-                ("StaveSynth:out_L", f"{target}:playback_FL"),
-                ("StaveSynth:out_R", f"{target}:playback_FR"),
+                (f"{JACK_CLIENT_NAME}:out_L", f"{target}:playback_FL"),
+                (f"{JACK_CLIENT_NAME}:out_R", f"{target}:playback_FR"),
             ):
                 c_res = _run_with_hard_timeout(
                     ["pw-jack", "jack_connect", src, dst],
@@ -1378,6 +1387,8 @@ class StaveSynth:
             _eq_match = _EQ_BAND_RE.match(param) if param else None
             if _eq_match:
                 idx = int(_eq_match.group(1))
+                if not 0 <= idx < 4:
+                    return {"type": "error", "message": "piano EQ band must be between 0 and 3"}
                 field_map = {"freq": "freq_hz", "gain": "gain_db",
                              "q": "q", "enabled": "enabled"}
                 field = field_map[_eq_match.group(2)]
@@ -1408,7 +1419,12 @@ class StaveSynth:
                 "eq_low_gain": (0, "gain_db"), "eq_mid_gain": (1, "gain_db"), "eq_high_gain": (2, "gain_db"),
                 "eq_low_freq": (0, "freq_hz"), "eq_mid_freq": (1, "freq_hz"), "eq_high_freq": (2, "freq_hz"),
             }
-            if param in ("eq_lowcut_enabled", "eq_lowcut_hz", "eq_lowcut_slope"):
+            if param == "piano_octave":
+                value = max(-3, min(3, int(value)))
+                self.state["master"][param] = value
+                if self.jack:
+                    self.jack.piano_octave = value
+            elif param in ("eq_lowcut_enabled", "eq_lowcut_hz", "eq_lowcut_slope"):
                 self.state["master"][param] = value
                 if self.jack:
                     self.jack.set_master_hp(
@@ -1959,8 +1975,8 @@ class StaveSynth:
         self.ws_server = WebSocketServer(message_handler=self._handle_ws_message)
         self.ws_server.start()
 
-        # Load pad samples (per-note WAVs) — any slot without a file falls
-        # back to the live synth drone automatically.
+        # Load per-key recorded pads. Empty slots remain silent; there is no
+        # automatic live-synth drone fallback.
         try:
             self.synth.load_pad_samples()
         except Exception as e:
@@ -2002,6 +2018,8 @@ class StaveSynth:
         wedges, the timestamp stops advancing and we stop pinging, so systemd
         kills + restarts us per `Restart=on-failure`.
         """
+        if ISOLATED:
+            return  # Never notify a parent/production unit from a test process.
         notify_socket = os.environ.get("NOTIFY_SOCKET")
         watchdog_usec = os.environ.get("WATCHDOG_USEC")
         if not notify_socket:
@@ -2077,6 +2095,9 @@ class StaveSynth:
         old a2jmidid is usually killed by the cgroup cleanup anyway — but
         the gate is cheap belt-and-suspenders if not.
         """
+        if ISOLATED:
+            logger.info("Isolated instance: automatic MIDI/audio routing disabled")
+            return
         try:
             # pgrep returns 0 if any process matches — skip spawn if so.
             existing = subprocess.run(
@@ -2182,20 +2203,27 @@ class StaveSynth:
         """Find unconnected MIDI capture ports and wire them to StaveSynth.
         Returns True if at least one MIDI capture port is currently connected
         to our input — used by the watch loop to drive the UI status pip."""
+        midi_input = f"{JACK_CLIENT_NAME}:midi_in"
+        if ISOLATED:
+            return bool(self._get_port_connections(midi_input))
         ports = self._get_midi_capture_ports()
         any_connected = False
         for port in ports:
             connections = self._get_port_connections(port)
-            if "StaveSynth:midi_in" in connections:
+            if midi_input in connections:
                 any_connected = True
                 continue
             try:
-                subprocess.run(
-                    ["jack_connect", port, "StaveSynth:midi_in"],
+                result = subprocess.run(
+                    ["jack_connect", port, midi_input],
                     capture_output=True, timeout=5,
                 )
-                logger.info("Auto-connected MIDI: %s", port)
-                any_connected = True
+                # Re-query on failure: another connector may have won the race.
+                if result.returncode == 0 or midi_input in self._get_port_connections(port):
+                    logger.info("Auto-connected MIDI: %s", port)
+                    any_connected = True
+                else:
+                    logger.warning("MIDI connection failed (rc=%d): %s", result.returncode, port)
             except Exception as e:
                 logger.warning("Failed to connect MIDI port %s: %s", port, e)
         return any_connected
@@ -2227,7 +2255,7 @@ class StaveSynth:
                 # Check current connections — if either of our outs is NOT
                 # connected to the preferred sink's playback ports, reroute.
                 conns = _run_with_hard_timeout(
-                    ["pw-jack", "jack_lsp", "-c", "StaveSynth:"],
+                    ["pw-jack", "jack_lsp", "-c", f"{JACK_CLIENT_NAME}:"],
                     timeout_s=2.0, hard_timeout_s=3.0,
                 )
                 if conns is None:
@@ -2258,17 +2286,18 @@ class StaveSynth:
             except Exception:
                 pass
 
-    def stop(self):
+    def stop(self, *, save_final_state=True):
         """Gracefully shut down all components."""
         logger.info("Shutting down Stave Synth...")
         self._running = False
         self._crossfade_cancel.set()
 
         # Save final state
-        try:
-            save_state(self.state)
-        except Exception:
-            pass
+        if save_final_state:
+            try:
+                save_state(self.state)
+            except Exception:
+                pass
 
         if self.jack:
             self.jack.stop()
@@ -2282,54 +2311,70 @@ class StaveSynth:
         logger.info("Stave Synth stopped.")
 
 
-def main():
+def _run_application():
     """Entry point."""
     app = StaveSynth()
+    started = False
 
     def signal_handler(sig, frame):
-        app.stop()
-        sys.exit(0)
+        # The finally block owns cleanup, including interruption during start.
+        raise SystemExit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    app.start()
+    try:
+        app.start()
+        started = True
 
-    # Check if we have a display for native window
-    has_display = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
-    use_gui = has_display and "--no-gui" not in sys.argv
-    if use_gui and LOW_RAM_MODE:
-        # Small-Pi profile: the WebKit webview costs ~400 MB — refuse the
-        # auto-GUI on <3 GB boxes; control from a browser/tablet instead.
-        logger.info("LOW_RAM_MODE: skipping native window — "
-                    "open http://<this-pi>:%d from a browser", HTTP_PORT)
-        use_gui = False
-
-    if use_gui:
-        try:
-            import webview
-
-            window = webview.create_window(
-                "Stave Synth",
-                f"http://localhost:{HTTP_PORT}",
-                fullscreen=True,
-                frameless=True,
-            )
-            webview.start()
-        except Exception as e:
-            logger.warning("Could not start native window: %s", e)
-            logger.info("Running headless — open http://localhost:%d", HTTP_PORT)
+        # Check if we have a display for native window
+        has_display = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+        use_gui = has_display and "--no-gui" not in sys.argv
+        if use_gui and LOW_RAM_MODE:
+            # Keep the small-Pi profile headless.
+            logger.info("LOW_RAM_MODE: skipping native window — "
+                        "open http://<this-pi>:%d from a browser", HTTP_PORT)
             use_gui = False
 
-    if not use_gui:
-        logger.info("Running in headless mode — UI at http://0.0.0.0:%d", HTTP_PORT)
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            pass
+        if use_gui:
+            try:
+                import webview
 
-    app.stop()
+                webview.create_window(
+                    "Stave Synth",
+                    f"http://localhost:{HTTP_PORT}",
+                    fullscreen=True,
+                    frameless=True,
+                )
+                webview.start()
+            except Exception as e:
+                logger.warning("Could not start native window: %s", e)
+                logger.info("Running headless — open http://localhost:%d", HTTP_PORT)
+                use_gui = False
+
+        if not use_gui:
+            logger.info("Running headless — UI at http://%s:%d", RUNTIME.host, HTTP_PORT)
+            try:
+                while True:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                pass
+    finally:
+        # A listener/native-start failure must release already-started
+        # components, without persisting a partially initialized state.
+        failure_in_flight = sys.exc_info()[0] is not None
+        try:
+            app.stop(save_final_state=started)
+        except Exception:
+            logger.exception("Application cleanup failed")
+            if not failure_in_flight:
+                raise
+
+
+def main():
+    """Hold one process owner before loading or changing this instance's data."""
+    with InstanceLock(RUNTIME):
+        _run_application()
 
 
 if __name__ == "__main__":

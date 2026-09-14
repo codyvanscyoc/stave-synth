@@ -1,9 +1,21 @@
 #!/bin/bash
-# Stave Synth launcher — sets USB audio to max, starts synth.
-# Portable: locates the repo relative to this script; auto-detects USB card.
+# Stave Synth launcher. Never kills another instance or changes a global mixer.
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
+
+if [[ "${1:-}" == "--stage" ]]; then
+    export STAVE_INSTANCE=stage
+    shift
+elif [[ "${STAVE_INSTANCE:-stage}" == "stage" ]]; then
+    echo "Choose --stage explicitly, or configure a non-stage STAVE_INSTANCE for isolated testing." >&2
+    exit 2
+fi
+
+STAVE_PYTHON="${STAVE_PYTHON:-./venv/bin/python}"
+# Validate identity and paths before any application or device activity.
+"$STAVE_PYTHON" -m stave_synth.runtime --describe
 
 # Faust DSP backends. Mirrors systemd/stave-synth.service.d/faust.conf so the
 # casual launcher and the systemd path enable the same modules. Pre-set in
@@ -15,26 +27,11 @@ cd "$SCRIPT_DIR"
 : "${STAVE_FAUST_MASTER_FX:=1}"
 : "${STAVE_FAUST_BUS_COMP:=1}"
 : "${STAVE_FAUST_ORGAN:=1}"
+: "${STAVE_FAUST_PAD_BUS:=1}"
+: "${STAVE_FAUST_PIANO_CHAIN:=1}"
+: "${STAVE_FAUST_MERGED:=1}"
 export STAVE_FAUST_REVERB STAVE_FAUST_PING_PONG STAVE_FAUST_OSC_BANK \
        STAVE_FAUST_SYMPATHETIC STAVE_FAUST_MASTER_FX STAVE_FAUST_BUS_COMP \
-       STAVE_FAUST_ORGAN
+       STAVE_FAUST_ORGAN STAVE_FAUST_PAD_BUS STAVE_FAUST_PIANO_CHAIN STAVE_FAUST_MERGED
 
-# Kill any existing instance
-pkill -f "stave_synth.main" 2>/dev/null || true
-sleep 1
-
-# Set PCM to max on whichever USB audio card is present (card number varies).
-# Some class-compliant USB DACs only expose Master (no PCM control), so we
-# probe with sget first and skip silently if the control isn't present.
-for c in /proc/asound/card*/id; do
-    n=$(dirname "$c" | grep -o "[0-9]*")
-    if grep -qi usb "$c" 2>/dev/null; then
-        if amixer -c "$n" sget PCM >/dev/null 2>&1; then
-            amixer -c "$n" set PCM 100% >/dev/null 2>&1 || true
-        elif amixer -c "$n" sget Master >/dev/null 2>&1; then
-            amixer -c "$n" set Master 100% >/dev/null 2>&1 || true
-        fi
-    fi
-done
-
-exec pw-jack ./venv/bin/python -m stave_synth.main --no-gui
+exec pw-jack "$STAVE_PYTHON" -m stave_synth.main --no-gui "$@"

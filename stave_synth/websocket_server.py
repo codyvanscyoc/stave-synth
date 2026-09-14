@@ -11,12 +11,12 @@ from pathlib import Path
 
 import websockets
 
-from .config import WEBSOCKET_HOST, WEBSOCKET_PORT, HTTP_PORT
+from .config import DATA_DIR, HTTP_PORT, INSTANCE_NAME, WEBSOCKET_HOST, WEBSOCKET_PORT
 
 logger = logging.getLogger(__name__)
 
 UI_DIR = Path(__file__).parent.parent / "ui"
-RECORDINGS_DIR = Path.home() / ".local" / "share" / "stave-synth" / "recordings"
+RECORDINGS_DIR = DATA_DIR / "recordings"
 
 # Acks that are per-client request/response only — no point broadcasting them.
 # (Most _ack messages reflect a state change worth syncing; these are the
@@ -36,8 +36,14 @@ class WebSocketServer:
         self.message_handler = message_handler  # Callback: (msg_dict) -> response_dict
         self.clients: set = set()
         self._ws_server = None
+        self._ws_thread = None
         self._http_thread = None
+        self._http_server = None
         self._loop = None
+        self._ws_ready = threading.Event()
+        self._ws_start_error = None
+        self._stop_requested = threading.Event()
+        self._stopped = False
         # Handlers run in ONE worker thread, not inline on the event loop:
         # some (set_audio_output, get_state's MIDI probe) run subprocess
         # chains with 5s timeouts that would otherwise stall every client's
@@ -58,6 +64,14 @@ class WebSocketServer:
                     msg = json.loads(message)
                 except json.JSONDecodeError:
                     logger.warning("Invalid JSON from client: %s", message[:100])
+                    continue
+
+                if not isinstance(msg, dict):
+                    await websocket.send(json.dumps({
+                        "type": "error",
+                        "for": None,
+                        "message": "message must be a JSON object",
+                    }))
                     continue
 
                 logger.debug("WS received: %s", msg)
@@ -120,20 +134,42 @@ class WebSocketServer:
             WEBSOCKET_HOST,
             WEBSOCKET_PORT,
         )
+        self._ws_ready.set()
         logger.info("WebSocket server listening on ws://%s:%d", WEBSOCKET_HOST, WEBSOCKET_PORT)
+        if self._stop_requested.is_set():
+            self._ws_server.close()
         await self._ws_server.wait_closed()
 
-    def _run_http(self):
-        """Run a simple HTTP server to serve the UI files + recordings dir."""
-
+    def _make_http_server(self):
+        """Bind and return the HTTP server used for UI and recording files."""
         recordings_dir = RECORDINGS_DIR
         recordings_dir.mkdir(parents=True, exist_ok=True)
         ui_dir = UI_DIR
+        runtime_config = (
+            "window.STAVE_RUNTIME = "
+            + json.dumps({
+                "websocket_port": WEBSOCKET_PORT,
+                "instance": INSTANCE_NAME,
+            }, separators=(",", ":"))
+            + ";\n"
+        ).encode("utf-8")
 
         class Handler(SimpleHTTPRequestHandler):
             def __init__(self, *args, **kwargs):
                 # default directory = UI; /recordings/* is rerouted in translate_path
                 super().__init__(*args, directory=str(ui_dir), **kwargs)
+
+            def do_GET(self):
+                request_path = self.path.split("?", 1)[0].split("#", 1)[0]
+                if request_path == "/runtime-config.js":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/javascript; charset=utf-8")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Content-Length", str(len(runtime_config)))
+                    self.end_headers()
+                    self.wfile.write(runtime_config)
+                    return
+                super().do_GET()
 
             def translate_path(self, path):
                 # Serve WAVs from recordings dir under the /recordings/ prefix
@@ -150,28 +186,88 @@ class WebSocketServer:
         class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
             daemon_threads = True
 
-        server = ThreadingHTTPServer(("0.0.0.0", HTTP_PORT), Handler)
-        logger.info("HTTP server serving UI on http://0.0.0.0:%d", HTTP_PORT)
-        server.serve_forever()
+        return ThreadingHTTPServer((WEBSOCKET_HOST, HTTP_PORT), Handler)
 
-    def start(self):
-        """Start both WebSocket and HTTP servers."""
-        # Start HTTP server in a daemon thread
+    def _run_http(self):
+        """Serve requests on the HTTP listener already bound by start()."""
+        server = self._http_server
+        if server is None:
+            return
+        logger.info("HTTP server serving UI on http://%s:%d", WEBSOCKET_HOST, HTTP_PORT)
+        server.timeout = 0.1
+        try:
+            # handle_request() honors server.timeout, so stop is controlled by
+            # our event and never waits inside HTTPServer.shutdown(). This also
+            # handles stop-before-thread-entry deterministically.
+            while not self._stop_requested.is_set():
+                server.handle_request()
+        finally:
+            server.server_close()
+
+    def start(self, timeout: float = 5.0):
+        """Start both listeners, raising unless both binds succeed."""
+        if self._stopped:
+            raise RuntimeError("WebSocketServer cannot be restarted after stop")
+        if ((self._http_thread and self._http_thread.is_alive())
+                or (self._ws_thread and self._ws_thread.is_alive())):
+            raise RuntimeError("WebSocketServer is already running")
+
+        self._stop_requested.clear()
+        # Bind HTTP synchronously so a conflict cannot be hidden in a daemon
+        # thread while the main service reports ready.
+        self._http_server = self._make_http_server()
         self._http_thread = threading.Thread(target=self._run_http, daemon=True)
         self._http_thread.start()
 
-        # Start WebSocket server in its own event loop (also daemon thread)
+        self._ws_ready.clear()
+        self._ws_start_error = None
+
+        # WebSocket binding is asynchronous, so its thread reports the bind
+        # result through _ws_ready before start() is allowed to return.
         def run_ws_loop():
-            self._loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._loop)
-            self._loop.run_until_complete(self._run_ws())
+            loop = asyncio.new_event_loop()
+            self._loop = loop
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(self._run_ws())
+            except BaseException as exc:
+                self._ws_start_error = exc
+                self._ws_ready.set()
+            finally:
+                try:
+                    loop.run_until_complete(loop.shutdown_asyncgens())
+                finally:
+                    loop.close()
+                    if self._loop is loop:
+                        self._loop = None
 
         self._ws_thread = threading.Thread(target=run_ws_loop, daemon=True)
         self._ws_thread.start()
 
+        if not self._ws_ready.wait(timeout=max(0.1, float(timeout))):
+            self.stop()
+            raise TimeoutError("WebSocket listener did not become ready")
+        if self._ws_start_error is not None:
+            error = self._ws_start_error
+            self.stop()
+            raise RuntimeError("Failed to start WebSocket listener") from error
+
     def stop(self):
         """Stop servers. Called from a foreign thread — the server object
         must be closed on its own event loop."""
+        self._stop_requested.set()
+        self._stopped = True
+        http_server = self._http_server
+        http_thread = self._http_thread
+        if http_thread and http_thread.is_alive():
+            http_thread.join(timeout=2.0)
+        if http_server is not None:
+            try:
+                http_server.server_close()
+            except OSError:
+                pass
+        self._http_server = None
+
         if self._ws_server and self._loop and self._loop.is_running():
             try:
                 self._loop.call_soon_threadsafe(self._ws_server.close)
@@ -179,5 +275,8 @@ class WebSocketServer:
                 pass  # loop shut down between check and call
         elif self._ws_server:
             self._ws_server.close()
+        if self._ws_thread and self._ws_thread.is_alive():
+            self._ws_thread.join(timeout=2.0)
+        self._ws_server = None
         self._handler_pool.shutdown(wait=False)
         logger.info("WebSocket server stopped")

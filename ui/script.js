@@ -3,7 +3,10 @@
 (function () {
     "use strict";
 
-    const WS_URL = "ws://" + window.location.hostname + ":8765";
+    const runtimeWsPort = window.STAVE_RUNTIME && window.STAVE_RUNTIME.websocket_port;
+    const wsPort = Number.isInteger(runtimeWsPort) && runtimeWsPort >= 1 && runtimeWsPort <= 65535
+        ? runtimeWsPort : 8765;
+    const WS_URL = "ws://" + window.location.hostname + ":" + wsPort;
     // Exponential reconnect with ±20% jitter — fragile networks (tablet wifi)
     // get progressively backed off instead of hammering every 2s forever.
     const RECONNECT_DELAYS_MS = [1000, 2000, 4000, 8000, 15000];
@@ -102,9 +105,24 @@
 
     // ═══ WebSocket ═══
     function connectWS() {
-        ws = new WebSocket(WS_URL);
+        const socket = new WebSocket(WS_URL);
+        let hydrated = false;
+        ws = socket;
 
-        ws.onopen = function () {
+        socket.onopen = function () {
+            // A manual retry can replace a still-connecting socket. Late
+            // callbacks from that retired socket must never update status or
+            // send hydration requests through the new authoritative socket.
+            if (ws !== socket) {
+                try { socket.close(); } catch (e) { /* already closed */ }
+                return;
+            }
+            if (hydrated) return;
+            hydrated = true;
+            if (wsReconnectTimer) {
+                clearTimeout(wsReconnectTimer);
+                wsReconnectTimer = null;
+            }
             wsReconnectAttempt = 0;
             if (wsCountdownTimer) { clearInterval(wsCountdownTimer); wsCountdownTimer = null; }
             // Reset audio-engine heartbeat so a stale pre-disconnect timestamp
@@ -119,13 +137,14 @@
             // control with pre-disconnect values while the engine holds the
             // newer flushed ones (UI↔engine drift until the next touch).
             flushPendingQueue();
-            ws.send(JSON.stringify({ type: "get_state" }));
+            socket.send(JSON.stringify({ type: "get_state" }));
             // Re-hydrate MIDI CC map — otherwise a mid-set reconnect leaves
             // ccMap frozen at whatever it was when the socket dropped.
-            ws.send(JSON.stringify({ type: "get_cc_map" }));
+            socket.send(JSON.stringify({ type: "get_cc_map" }));
         };
 
-        ws.onmessage = function (event) {
+        socket.onmessage = function (event) {
+            if (ws !== socket) return;
             let msg;
             try {
                 msg = JSON.parse(event.data);
@@ -142,12 +161,16 @@
             }
         };
 
-        ws.onclose = function () {
+        socket.onclose = function () {
+            if (ws !== socket) return;
+            ws = null;
             scheduleReconnect();
         };
 
-        ws.onerror = function () {
-            ws.close();
+        socket.onerror = function () {
+            // Close the socket that raised the error, never whichever socket
+            // happens to be stored globally by the time this callback runs.
+            try { socket.close(); } catch (e) { /* close is best-effort */ }
         };
     }
 
@@ -181,6 +204,14 @@
         if (wsCountdownTimer) clearInterval(wsCountdownTimer);
         wsReconnectTimer = null;
         wsCountdownTimer = null;
+        // Invalidate first: close() may synchronously dispatch onclose in test
+        // doubles and some embedded WebViews. The retired callback will see it
+        // is no longer authoritative and cannot schedule a duplicate retry.
+        const oldSocket = ws;
+        ws = null;
+        if (oldSocket) {
+            try { oldSocket.close(); } catch (e) { /* already closed */ }
+        }
         connectWS();
     }
 

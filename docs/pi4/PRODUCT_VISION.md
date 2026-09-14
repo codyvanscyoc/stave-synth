@@ -13,7 +13,8 @@ Stave is a headless worship instrument: play an expressive piano, blend two osci
 - “Pad underneath” can mean the oscillators following the played piano notes, or an independent tonic-and-fifth drone, depending on the song.
 - The existing 12-key sampled pad player, a held synth/frozen reverb layer, and combinations of these are all part of the intended song-dependent workflow.
 - MIDI keyboards vary, mostly Yamaha and Dexibell. Browser controllers are mostly Apple products.
-- The USB hub may be Peavey; its exact identity, power arrangement, and audio interface still need to be inventoried.
+- The first test rig will use the Peavey USB audio interface and Yamaha keyboard; exact models, USB hub and power arrangement still need to be inventoried. The player can connect that rig when software is ready for hardware tests.
+- Device support must not be hard-coded to those brands. Discover compatible USB MIDI/audio devices exposed by the Pi's OS, provide clear selection/status, and recover intended connections. The first test rig is a reference configuration, not a promise that every possible device has been qualified.
 - This work targets Raspberry Pi 4. Pi5 work will be handled later. Development and GitHub publishing use `pi4-stage-pro`.
 
 ## The musical contract
