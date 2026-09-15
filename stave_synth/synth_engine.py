@@ -63,6 +63,29 @@ def blend_to_amplitude(fader: float) -> float:
         return 0.0
     return 10.0 ** ((fader - 1.0) * BLEND_DB_RANGE / 20.0)
 
+
+def _osc_modulation_needs_split(*, use_faust: bool,
+                                lfo1_depth: float, lfo1_target: str,
+                                lfo1_poly: bool, lfo1_received: bool,
+                                lfo2_depth: float, lfo2_target: str,
+                                lfo2_poly: bool, lfo2_received: bool) -> bool:
+    """Whether selective OSC receive routing can alter this audio block.
+
+    The per-OSC magnitude split is an identity operation when neither LFO can
+    apply amp/pan modulation through the Python bus path.  In particular,
+    filter/bus targets and Faust-owned poly amp modulation do not consume that
+    split, even when the four receive flags differ.
+    """
+    lfo1_active = (lfo1_received and lfo1_depth > 0.001
+                   and (lfo1_target == "pan"
+                        or (lfo1_target == "amp"
+                            and not (use_faust and lfo1_poly))))
+    lfo2_active = (lfo2_received and lfo2_depth > 0.001
+                   and (lfo2_target == "pan"
+                        or (lfo2_target == "amp"
+                            and not (use_faust and lfo2_poly))))
+    return lfo1_active or lfo2_active
+
 def _poly_blep(t: np.ndarray, dt) -> np.ndarray:
     """Vectorised polyBLEP correction at a phase wrap (0/1 boundary).
 
@@ -3760,7 +3783,14 @@ class SynthEngine:
                 if pan_mod_l_add is not None:
                     output_l *= (1.0 + pan_mod_l_add)
                     output_r *= (1.0 + pan_mod_r_add)
-        else:
+        elif _osc_modulation_needs_split(
+                use_faust=use_faust,
+                lfo1_depth=lfo1_d, lfo1_target=self.lfo_target,
+                lfo1_poly=self.lfo_poly,
+                lfo1_received=(self.osc1_recv_lfo1 or self.osc2_recv_lfo1),
+                lfo2_depth=lfo2_d, lfo2_target=self.lfo2_target,
+                lfo2_poly=self.lfo2_poly,
+                lfo2_received=(self.osc1_recv_lfo2 or self.osc2_recv_lfo2)):
             # Per-OSC split path. Ratio from pre-filter magnitudes; if both
             # OSCs are silent, ratios fall back to 0.5/0.5 (mod has nothing
             # to act on so the value is moot).

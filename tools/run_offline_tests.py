@@ -60,6 +60,7 @@ SAFE_TESTS = (
     "test_reverb_diagnostics.py",
     "test_drone_fade.py",
     "test_feature_probe.py",
+    "test_osc_modulation_identity.py",
 )
 
 
