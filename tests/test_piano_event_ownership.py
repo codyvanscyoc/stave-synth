@@ -218,8 +218,45 @@ class PianoEventOwnershipTests(unittest.TestCase):
         player.render_block(512)
         kinds = [call[0] for call in player.fs.calls]
         self.assertNotIn("noteon", kinds)
-        self.assertEqual(kinds.count("noteoff"), 128)
+        self.assertEqual(kinds.count("noteoff"), 0)
+        self.assertEqual([call[2:] for call in player.fs.calls if call[0] == "cc"],
+                         [(0, 64, 0), (0, 66, 0), (0, 123, 0)])
         self.assertEqual(player.midi_render_status()["discarded"], 2)
+
+    def test_native_release_is_four_ordered_calls_without_hard_sound_off(self):
+        player = make_player()
+        self.assertTrue(player._release_all_native_locked())
+        calls = [(c[0], *c[2:]) for c in player.fs.calls]
+        self.assertEqual(calls, [('cc', 0, 64, 0), ('cc', 0, 66, 0),
+                                 ('cc', 0, 123, 0), ('pitch_bend', 0, 0)])
+
+    def test_release_failure_still_attempts_remaining_calls(self):
+        for bad_controller in (64, 66, 123):
+            with self.subTest(controller=bad_controller):
+                player = make_player()
+                original = player.fs.cc
+                def cc(channel, controller, value):
+                    original(channel, controller, value)
+                    return -1 if controller == bad_controller else 0
+                player.fs.cc = cc
+                self.assertFalse(player._release_all_native_locked())
+                self.assertEqual(len(player.fs.calls), 4)
+                self.assertEqual(player.fs.calls[-1][0], 'pitch_bend')
+                self.assertEqual(player._midi_native_errors, 1)
+
+    def test_release_exception_still_resets_pitch_and_latches_failure(self):
+        player = make_player(active_notes=3)
+        original = player.fs.cc
+        def cc(channel, controller, value):
+            original(channel, controller, value)
+            if controller == 123:
+                raise RuntimeError('injected channel release exception')
+        player.fs.cc = cc
+        with self.assertRaisesRegex(RuntimeError, 'all-notes-off was incomplete'):
+            player.all_notes_off()
+        self.assertEqual(player.fs.calls[-1][0], 'pitch_bend')
+        self.assertTrue(player._midi_recovery_failed_latched)
+        self.assertEqual(player._active_notes, 3)
 
     def test_incomplete_synchronous_release_raises_and_latches(self):
         player = make_player(active_notes=2)

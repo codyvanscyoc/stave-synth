@@ -2,6 +2,12 @@
 
 Status: proposed release gates, 2026-09-14. These are acceptance criteria and planned tests, not completed test results. Keep sound-affecting work behind the product review in [PRODUCT_VISION.md](PRODUCT_VISION.md).
 
+September 15 scope decision: the player declined the eight-hour soak for this
+release effort. Do not run it or treat its absence as a pending user task.
+Use bounded automated musical/recovery tests and the actual player rehearsal;
+record their real duration. The historical eight-hour target below remains a
+future production-qualification reference, not a passed gate or current demand.
+
 ## Qualification setup
 
 Use a dedicated instance with separate configuration/data directories, ports, JACK client identity, process/service ownership, and output routing. A separate Git worktree alone does not isolate runtime: current code still uses the same home-directory state and fixed ports. Before running an integration test, it must identify its own instance explicitly and refuse the production one. Preserve settings even on interruption; use disposable data for malformed-input and power-loss tests.

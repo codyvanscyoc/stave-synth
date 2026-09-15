@@ -819,11 +819,11 @@ class FluidSynthPlayer:
                                        0, 64, 0) and ok
         ok = self._native_call_checked("sostenuto release", self.fs.cc,
                                        0, 66, 0) and ok
-        for note in range(128):
-            ok = self._native_call_checked(
-                f"note-off {note}", self.fs.noteoff, 0, note,
-                unmatched_noteoff_ok=True,
-            ) and ok
+        # Channel-wide note release preserves envelopes, unlike CC120's hard
+        # sound-off. Clear both pedals first, then release under the same native
+        # ownership without 128 Python/ctypes crossings against the render lock.
+        ok = self._native_call_checked("all-notes-off", self.fs.cc,
+                                       0, 123, 0) and ok
         ok = self._native_call_checked("pitch-bend reset", self.fs.pitch_bend,
                                        0, 0) and ok
         return ok
