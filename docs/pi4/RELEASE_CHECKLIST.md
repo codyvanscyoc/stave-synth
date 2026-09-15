@@ -1,5 +1,14 @@
 # Pi4 pre-show release checkpoint
 
+**September 15 current state:** corrected app `bd6a517` is installed as the
+reversible rehearsal candidate. 546 Mac/Pi Python tests passed; normal startup,
+software rollback and 120-second idle checks passed. Short musical tests have
+clean core continuity but retain over-budget-cycle findings. See
+[current runtime and limits](REHEARSAL_CHECKPOINT.md). The player waived the
+eight-hour soak for this release effort; hardware/latency/player checks remain.
+The numbered review matrix below is historical finding detail, not a claim
+that every design item or production-qualification gate is finished.
+
 Status: **open checkpoint, not a release approval**. Updated 2026-09-14 for the
 `pi4-stage-pro` repair line through `fd5cfd6`, plus the release-preparation batch:
 corrected `get_state` recorder owner, A08 native-organ exact-zero endpoint,

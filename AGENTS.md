@@ -15,10 +15,13 @@ Keep reliability fixes separate from intentional tonal changes. Verify which nat
 
 Publish scoped Pi4 commits with their verification. Rebuild native components on the target architecture before deployment; copying Python source alone does not update compiled DSP. Keep private runtime/settings archives and credentials out of the repository. Use the release plan to determine when live deployment, hardware interruption, and whole-device recovery testing are appropriate.
 
-Operational checkpoint, 2026-09-14: the Pi's normal `stave-synth.service` now
-uses `/home/codyvanscyoc/stave-synth-pi4-stage` through the removable
-`90-pi4-stage-candidate.conf` user-service drop-in. The original checkout is
-preserved for rollback. Do not assume the Pi4 development checkout is idle:
+Operational checkpoint, 2026-09-15: the Pi's normal `stave-synth.service` now
+uses `/home/codyvanscyoc/stave-synth-pi4-rehearsal` through the removable
+`95-pi4-continuity-candidate.conf` user-service drop-in. The existing 90 override
+and clean `ce15cfb` stage checkout remain the tested immediate rollback;
+the original checkout is also preserved. See `docs/pi4/REHEARSAL_CHECKPOINT.md`.
+The player declined an eight-hour soak for this release effort. Do not run it
+or claim long-duration qualification. Do not assume a checkout is idle:
 verify actual service ownership before modifying/syncing runtime files there,
 and use an authorized maintenance window or a separate isolated candidate.
 See `docs/pi4/STARTUP_CHECKPOINT.md` and `docs/pi4/RELEASE_CHECKLIST.md` for

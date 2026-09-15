@@ -4,7 +4,48 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
-## Latest remote continuation — read before historical PIDs below
+## September 15 — current rehearsal runtime, supersedes all older entries
+
+The corrected application **`bd6a517` is now active** in the normal service,
+from `/home/codyvanscyoc/stave-synth-pi4-rehearsal`, through removable user
+drop-in `95-pi4-continuity-candidate.conf`. The existing 90 override, clean
+`ce15cfb` stage checkout and original checkout are preserved. Actual software
+rollback to ce15cfb was exercised, then the corrected build was selected again.
+Read [REHEARSAL_CHECKPOINT.md](REHEARSAL_CHECKPOINT.md) before remote work.
+
+Verified PID **374463**, invocation `c09b79d7548f4acc87bc81b92d7205fc`, active,
+zero restarts. Final 120-second normal-service observation had zero new
+underruns/xruns/over-budget cycles, with advancing render/callback counts.
+Stage HTTP/WS, native/audio/control/UI health passed. Normal saved-state SHA256
+remains `ed8566e5ef128f6546dfdb1182f0271b08ada0f4aecbb066c0154495ab58cb3e`.
+No generated test pads or private preset fixtures were copied to normal data.
+
+Latest small correction replaces 128 native piano note-off crossings with a
+pedal-safe channel release. Twelve actual native comparisons have sample-exact
+release tails, at much lower release CPU cost. **546 Python tests pass on Mac
+and Pi, zero skips**, plus Mac Node checks. See
+[PIANO_RELEASE_BOUNDS.md](PIANO_RELEASE_BOUNDS.md).
+
+Performance5/6 completed with zero piano misses throughout and zero pre-panic
+bridge underruns; strict totals retain 68/68 over-budget cycles and 1/2 terminal-
+window bridge underruns. Core rehearsal2 completed 600 musical seconds with
+zero bridge/source/event/invalid/zero-music-block failures, but 25 musical and
+one later over-budget cycle. Strict failures remain recorded. Organ headroom
+and hardware latency are still unqualified; no sound/voice/buffer reductions.
+
+**The player explicitly declined the eight-hour soak.** It is no longer a task
+for this release effort; do not call it passed or start it unattended. Continue
+with bounded tests and real keyboard/interface/Safari/player rehearsal. No
+test, capture or compiler is left running at this checkpoint. The remaining
+organ/headroom work is not certified complete by these software successes.
+
+Old private capture wrappers hard-code the normal ce15cfb checkout and must
+NOT be reused unchanged now that the 95 override selects rehearsal. Their
+restoration source/PID/commit guards must be updated/reviewed before another
+test. Documentation-only save commits may follow application bd6a517; verify
+the actual checkout and service ownership rather than guessing from branch HEAD.
+
+## September 14 remote continuation — historical, superseded above
 
 Latest application repair is `f89f127`, with tools/evidence through `ba8b68a`;
 both are published on Pi4 only. Neither is deployed to normal stage. The
