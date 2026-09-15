@@ -198,19 +198,52 @@ def _normal_name(value):
     return re.sub(r"\s+", " ", value.strip()).casefold()
 
 
-def midi_capture_selection(records):
-    """Deduplicate unambiguous bridge aliases, not all PipeWire devices.
+def _port_properties(rows):
+    """Read jack_lsp -p's named flags; None means metadata was absent."""
+    properties = None
+    for row in rows:
+        key, separator, value = row.partition(":")
+        if separator and key.strip().casefold() == "properties":
+            if properties is None:
+                properties = set()
+            properties.update(flag for flag in re.split(r"[,\s]+", value.casefold()) if flag)
+    return properties
+
+
+def midi_capture_selection(records, *, client=None):
+    """Select typed hardware/bridge MIDI sources without guessing devices.
 
     Port names do not prove hardware identity for two identically named
     devices. Ambiguous aliases are retained instead of dropping a controller.
     Per-port matching preserves multi-port keyboards/interfaces.
+
+    Unrecognized clients require explicit output+physical flags. Recognized
+    bridge capture names retain legacy support when the properties row is
+    absent, and do not require physical (some bridges omit it). Whenever a
+    properties row is present it must prove an unambiguous output direction.
+    No arbitrary software MIDI source is auto-connected. The caller supplies
+    its exact client identity so even a malformed own port is excluded.
     """
     a2j = {}
     pipewire = {}
+    physical = []
     for name, rows in records.items():
-        if "midi through" in name.casefold() or not any("midi" in row.casefold() for row in rows):
+        if client and name.startswith(f"{client}:"):
             continue
-        if name.startswith("a2j:") and "(capture)" in name.casefold():
+        if "midi through" in name.casefold() or not any(
+                row.strip().casefold() == "8 bit raw midi" for row in rows):
+            continue
+        is_a2j = name.startswith("a2j:") and "(capture)" in name.casefold()
+        is_pipewire = (name.startswith("Midi-Bridge:")
+                       and re.search(r"\(capture(?:_\d+)?\)", name, re.I))
+        properties = _port_properties(rows)
+        if properties is not None and ("output" not in properties or "input" in properties):
+            continue
+        if not (is_a2j or is_pipewire):
+            if properties is not None and "physical" in properties and ":" in name:
+                physical.append(name)
+            continue
+        if is_a2j:
             body = name[4:]
             match = re.match(r"^(.*?)\s*(?:\[(\d+)\])?\s*\(capture\)\s*:\s*(.+)$", body, re.I)
             if match:
@@ -218,7 +251,7 @@ def midi_capture_selection(records):
                 a2j[name] = (_normal_name(device), identity, _normal_name(port))
             else:
                 a2j[name] = (_normal_name(body), None, _normal_name(body))
-        elif name.startswith("Midi-Bridge:") and re.search(r"\(capture(?:_\d+)?\)", name, re.I):
+        elif is_pipewire:
             body = name[len("Midi-Bridge:"):]
             match = re.match(r"^(.*?)\s*:\s*\(capture(?:_\d+)?\)\s*(.+)$", body, re.I)
             if match:
@@ -240,7 +273,7 @@ def midi_capture_selection(records):
         if sum(legacy in values for values in matches.values()) == 1:
             duplicates.setdefault(legacy, []).append(pw)
     redundant = {name for values in duplicates.values() for name in values}
-    return list(a2j) + [name for name in pipewire if name not in redundant], duplicates
+    return list(a2j) + [name for name in pipewire if name not in redundant] + physical, duplicates
 
 
 def connect_midi_sources(run, client, ports, duplicates, should_stop=lambda: False):

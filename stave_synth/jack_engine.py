@@ -21,6 +21,7 @@ from .synth_engine import (SynthEngine, BiquadLowpass, BiquadHighpass,
                            fader_to_amplitude, blend_to_amplitude)
 from .config import SAMPLE_RATE, BTL_MODE, LOW_RAM_MODE, ISOLATED, JACK_CLIENT_NAME
 from .render_metrics import RenderMetrics
+from .render_diagnostics import RenderDiagnostics
 
 # MIDI poll interval: 0.5ms on the full profile. On the small-Pi profile the
 # wakeup itself is a measurable slice of a slower core (~11% of profile
@@ -679,6 +680,8 @@ class JackEngine:
         # whole-cycle telemetry before any render/MIDI/GC worker can start.
         self._sat_scratch = np.empty((2, bs), dtype=np.float64)
         self.render_metrics = RenderMetrics(bs / sr)
+        self.render_diagnostics = (RenderDiagnostics(round(bs / sr * 1_000_000_000))
+                                   if os.environ.get("STAVE_DIAGNOSTICS") == "1" else None)
 
         self._push_master_to_bridge()
         self._bridge.bridge_set_btl_mode(1 if BTL_MODE else 0)
@@ -751,6 +754,7 @@ class JackEngine:
                 logger.info("CPU pin skipped (%s) — fine if isolcpus not set", e)
 
         _last_iter_ts = time.perf_counter()
+        _diagnostics = self.render_diagnostics
         # Mirror to instance attr so the systemd-watchdog heartbeat thread in
         # main.py can detect a wedged render loop (no update for >Xs ⇒ no ping
         # to systemd ⇒ systemd restarts us).
@@ -796,6 +800,9 @@ class JackEngine:
 
                 if fill < self.ring_threshold:
                     _cycle_t0 = time.perf_counter()
+                    if _diagnostics is not None:
+                        _diag_t0 = time.monotonic_ns()
+                        _diag_cpu_t0 = time.thread_time_ns()
                     # Snapshot note sets — the MIDI thread mutates these
                     # concurrently, and iterating live sets would raise a
                     # RuntimeError mid-render that gets swallowed silently.
@@ -885,6 +892,8 @@ class JackEngine:
                     # If bus comp's FX-bypass mode is on, ask synth for dry + fx
                     # separately so we can route fx around the comp.
                     _render_t0 = time.perf_counter()
+                    if _diagnostics is not None:
+                        _diag_piano_end = time.monotonic_ns()
                     fx_bus = None
                     if self.bus_comp.enabled and self.bus_comp_fx_bypass:
                         stereo, fx_bus = self.synth.render(
@@ -899,6 +908,8 @@ class JackEngine:
                             external_delay_send=delay_send_ext,
                         )
                     _render_dt = time.perf_counter() - _render_t0
+                    if _diagnostics is not None:
+                        _diag_synth_end = time.monotonic_ns()
                     if _render_dt > _slow_threshold_s:
                         logger.warning("slow render %.1fms (budget %.1fms) fill=%d at %.3f",
                                        _render_dt * 1000, block_time * 1000, fill, time.time())
@@ -1123,10 +1134,17 @@ class JackEngine:
                         bs
                     )
                     _cycle_dt = time.perf_counter() - _cycle_t0
+                    if _diagnostics is not None:
+                        _diag_cpu = time.thread_time_ns() - _diag_cpu_t0
+                        _diag_end = time.monotonic_ns()
                     post_write_fill = self._bridge.bridge_get_ring_fill()
                     self.render_metrics.record(
                         _cycle_dt, post_write_fill, written=(write_result == 1),
                     )
+                    if _diagnostics is not None:
+                        _diagnostics.record(_diag_t0, _diag_end, _diag_cpu,
+                                            _diag_piano_end, _diag_synth_end,
+                                            fill, post_write_fill)
                     if write_result < 0:
                         raise RuntimeError("native bridge rejected render block: graph changed")
                     if write_result == 1:

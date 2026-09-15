@@ -33,6 +33,7 @@
     let shimmerEnabled = false;
     let shimmerHigh = false;
     let fadedOut = false;  // master FADE button state
+    let padFadedOut = false;  // authoritative bed-fade target, including mid-ramp
     let freezeEnabled = false;
     let droneEnabled = false;
     let instrumentMode = "piano"; // "piano", "organ", "off"
@@ -394,6 +395,7 @@
                 fadedOut = msg.faded_out;
                 updateFadeDisplay();
             }
+            if (typeof msg.drone_faded_out === "boolean") syncPadFade(msg.drone_faded_out);
             // Small-Pi profile: backend pins unison_voices to 3 (the Faust
             // fast path — other counts fall back to the Python skeleton,
             // which a Pi 4 can't render in real time). Grey out the slider.
@@ -437,7 +439,7 @@
             updateShimmerDisplay();
             padActiveNote = null;
             if (typeof updatePadKeyVisuals === "function") updatePadKeyVisuals();
-            if (padFadeBtn) padFadeBtn.classList.remove("fading-out");
+            syncPadFade(false);
         } else if (msg.type === "preset_saved") {
             markPresetSaved(msg.slot);
         } else if (msg.type === "preset_transition") {
@@ -626,7 +628,7 @@
             padActiveNote = (msg.enabled && typeof msg.note === "number") ? msg.note : null;
             if (typeof updatePadKeyVisuals === "function") updatePadKeyVisuals();
         } else if (msg.type === "drone_fade_ack") {
-            if (padFadeBtn) padFadeBtn.classList.toggle("fading-out", !!msg.faded_out);
+            syncPadFade(!!msg.faded_out);
         } else if (msg.type === "macro_assign_ack") {
             if (state && state.macros && state.macros[msg.idx]) {
                 state.macros[msg.idx].assignments = msg.assignments || [];
@@ -2447,12 +2449,18 @@
         });
     }
 
-    if (padFadeBtn) {
-        padFadeBtn.addEventListener("click", function () {
-            padFadeBtn.classList.toggle("fading-out");
-            send({ type: "drone_fade" });
-        });
+    function syncPadFade(faded) {
+        padFadedOut = !!faded;
+        if (padFadeBtn) padFadeBtn.classList.toggle("fading-out", padFadedOut);
     }
+
+    function togglePadFade() {
+        // The server toggles its intended endpoint under control ownership.
+        // Do not derive a new command from an older in-flight acknowledgement.
+        send({ type: "drone_fade" });
+    }
+
+    if (padFadeBtn) padFadeBtn.addEventListener("click", togglePadFade);
 
     // ═══ Recorder (record button + takes list) ═══
     var recordBtn = document.getElementById("record-btn");

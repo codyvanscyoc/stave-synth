@@ -55,6 +55,10 @@ SAFE_TESTS = (
     "test_analyze_audition.py",
     "test_piano_event_ownership.py",
     "test_native_render_preparation.py",
+    "test_render_diagnostics.py",
+    "test_piano_lock_diagnostics.py",
+    "test_reverb_diagnostics.py",
+    "test_drone_fade.py",
 )
 
 

@@ -128,6 +128,29 @@ function messages(socket) {
 }
 
 {
+    let visual = false;
+    const sent = [];
+    const context = vm.createContext({
+        padFadedOut: false,
+        padFadeBtn: {classList: {toggle(name, value) { visual = value; }}},
+        send(message) { sent.push(message); },
+    });
+    vm.runInContext(extractFunction("syncPadFade") + extractFunction("togglePadFade"), context);
+    vm.runInContext("syncPadFade(true)", context);
+    assert.equal(visual, true, "reconnect displays hidden bed fade target");
+    vm.runInContext("togglePadFade(); togglePadFade(); syncPadFade(true); togglePadFade()", context);
+    assert.equal(JSON.stringify(sent), JSON.stringify([
+        {type: "drone_fade"}, {type: "drone_fade"}, {type: "drone_fade"}
+    ]), "interleaved older acknowledgements cannot overwrite later toggle intent");
+    vm.runInContext("syncPadFade(false)", context);
+    assert.equal(context.padFadedOut, false);
+    assert.equal(visual, false);
+    assert.match(source, /typeof msg\.drone_faded_out === "boolean"\) syncPadFade\(msg\.drone_faded_out\)/);
+    assert.match(source, /msg\.type === "drone_fade_ack"[\s\S]{0,100}syncPadFade/);
+    assert.match(source, /msg\.type === "panic_ack"[\s\S]{0,650}syncPadFade\(false\)/);
+}
+
+{
     const h = harness();
     vm.runInContext("connectWS()", h.context);
     const oldSocket = h.FakeWebSocket.instances[0];

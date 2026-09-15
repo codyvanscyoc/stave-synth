@@ -10,7 +10,9 @@ The engine uses float64 internally, so we convert at the edges.
 from __future__ import annotations
 
 import logging
+import os
 import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -22,14 +24,161 @@ _HERE = Path(__file__).parent.parent / "faust"
 _LIB = _HERE / "libstave_reverb.so"
 
 
+_DIAGNOSTIC_OPERATIONS = (
+    "__del__", "panic", "_restore_normal_controls", "_mirror_zone",
+    "set_decay", "set_low_cut", "set_high_cut", "set_damp",
+    "set_shimmer_feedback", "set_noise_mod", "set_predelay", "set_type",
+    "set_freeze", "process",
+)
+_DIAGNOSTIC_OUTLIER_CAPACITY = 128
+_DIAGNOSTIC_WAIT_THRESHOLD_NS = 1_000_000
+# Reference diagnostic threshold only, not a measured/qualified latency.
+_DIAGNOSTIC_HELD_THRESHOLD_NS = 10_666_667  # ceil(512 / 48000 seconds in ns)
+
+
+class _ReverbDiagnostics:
+    """Bounded optional observations, independent of the native audio lock.
+
+    Writers and readers both try the short diagnostic lock without waiting.
+    CPU time measures only the calling thread while it holds native ownership;
+    it excludes waiting and other threads, including native helper threads.
+    Decorated calls may nest through the RLock: their durations are inclusive,
+    so adding different operations' durations would double-count nested work.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._operations = {
+            name: {
+                "calls": 0, "failures": 0,
+                "wait_ns": 0, "held_wall_ns": 0, "thread_cpu_ns": 0,
+                "wait_max_ns": 0, "held_wall_max_ns": 0,
+                "thread_cpu_max_ns": 0,
+            } for name in _DIAGNOSTIC_OPERATIONS
+        }
+        self._outliers = [None] * _DIAGNOSTIC_OUTLIER_CAPACITY
+        self._outlier_total = 0
+        self._missed_records = 0
+        self._invalid_records = 0
+        self._diagnostic_errors = 0
+
+    def clock(self, name):
+        # Diagnostic clock failure must not change an audio call's semantics.
+        try:
+            return getattr(time, name)()
+        except Exception:
+            self._diagnostic_errors += 1
+            return None
+
+    def record(self, operation, started_ns, acquired_ns, ended_ns,
+               cpu_started_ns, cpu_ended_ns, failed):
+        values = (started_ns, acquired_ns, ended_ns, cpu_started_ns, cpu_ended_ns)
+        if (operation not in self._operations
+                or any(type(value) is not int or value < 0 for value in values)
+                or acquired_ns < started_ns or ended_ns < acquired_ns
+                or cpu_ended_ns < cpu_started_ns):
+            self._invalid_records += 1
+            return
+        if not self._lock.acquire(blocking=False):
+            self._missed_records += 1
+            return
+        try:
+            wait = acquired_ns - started_ns
+            held = ended_ns - acquired_ns
+            cpu = cpu_ended_ns - cpu_started_ns
+            stats = self._operations[operation]
+            stats["calls"] += 1
+            stats["failures"] += int(failed)
+            stats["wait_ns"] += wait
+            stats["held_wall_ns"] += held
+            stats["thread_cpu_ns"] += cpu
+            stats["wait_max_ns"] = max(stats["wait_max_ns"], wait)
+            stats["held_wall_max_ns"] = max(stats["held_wall_max_ns"], held)
+            stats["thread_cpu_max_ns"] = max(stats["thread_cpu_max_ns"], cpu)
+            if (wait >= _DIAGNOSTIC_WAIT_THRESHOLD_NS
+                    or held >= _DIAGNOSTIC_HELD_THRESHOLD_NS or failed):
+                sequence = self._outlier_total
+                self._outliers[sequence % _DIAGNOSTIC_OUTLIER_CAPACITY] = {
+                    "sequence": sequence, "operation": operation,
+                    "started_monotonic_ns": started_ns,
+                    "acquired_monotonic_ns": acquired_ns,
+                    "ended_monotonic_ns": ended_ns,
+                    "wait_ns": wait, "held_wall_ns": held,
+                    "thread_cpu_ns": cpu, "failed": bool(failed),
+                }
+                self._outlier_total += 1
+        finally:
+            self._lock.release()
+
+    def snapshot(self):
+        if not self._lock.acquire(blocking=False):
+            return {"enabled": True, "available": False, "lock_contended": True,
+                    "missed_records": self._missed_records,
+                    "invalid_records": self._invalid_records,
+                    "diagnostic_errors": self._diagnostic_errors}
+        try:
+            total = self._outlier_total
+            first = max(0, total - _DIAGNOSTIC_OUTLIER_CAPACITY)
+            return {
+                "enabled": True, "available": True, "lock_contended": False,
+                "clock": "time.monotonic_ns",
+                "cpu_clock": "time.thread_time_ns",
+                "cpu_scope": "calling_thread_while_native_lock_held_excludes_helpers",
+                "nested_operations": "inclusive_do_not_sum_across_operations",
+                "wait_threshold_ns": _DIAGNOSTIC_WAIT_THRESHOLD_NS,
+                "held_wall_threshold_ns": _DIAGNOSTIC_HELD_THRESHOLD_NS,
+                "outlier_capacity": _DIAGNOSTIC_OUTLIER_CAPACITY,
+                "outlier_total": total, "outlier_evicted": first,
+                "missed_records": self._missed_records,
+                "invalid_records": self._invalid_records,
+                "diagnostic_errors": self._diagnostic_errors,
+                "operations": {name: stats.copy()
+                               for name, stats in self._operations.items()},
+                "outliers": [self._outliers[index % _DIAGNOSTIC_OUTLIER_CAPACITY].copy()
+                             for index in range(first, total)],
+            }
+        finally:
+            self._lock.release()
+
+
 def _native_owned(method):
     """Serialize native control/reset operations with native compute."""
+    operation = method.__name__
+
     def owned(self, *args, **kwargs):
         lock = getattr(self, "_native_lock", None)
         if lock is None:
             return method(self, *args, **kwargs)
-        with lock:
-            return method(self, *args, **kwargs)
+        diagnostics = getattr(self, "_diagnostics", None)
+        if diagnostics is None:
+            # Default path keeps the existing locking and has no clock reads,
+            # diagnostic lock, statistics allocation or logging.
+            with lock:
+                return method(self, *args, **kwargs)
+        started = diagnostics.clock("monotonic_ns")
+        acquired = ended = cpu_started = cpu_ended = None
+        failed = True
+        try:
+            with lock:
+                acquired = diagnostics.clock("monotonic_ns")
+                cpu_started = diagnostics.clock("thread_time_ns")
+                try:
+                    result = method(self, *args, **kwargs)
+                    failed = False
+                    return result
+                finally:
+                    cpu_ended = diagnostics.clock("thread_time_ns")
+                    ended = diagnostics.clock("monotonic_ns")
+        finally:
+            # Record after relinquishing this call's native-lock acquisition.
+            # An outer re-entrant operation can still own it; record never
+            # waits on another thread or performs I/O in either case.
+            try:
+                diagnostics.record(operation, started, acquired, ended,
+                                   cpu_started, cpu_ended, failed)
+            except Exception:
+                # Do not mask the method's original return or exception.
+                diagnostics._diagnostic_errors += 1
     return owned
 
 
@@ -134,6 +283,8 @@ class FaustReverb:
 
     def __init__(self, decay_seconds: float = 6.0, sample_rate: int = 48000):
         self._native_lock = threading.RLock()
+        self._diagnostics = (_ReverbDiagnostics()
+                             if os.environ.get("STAVE_DIAGNOSTICS") == "1" else None)
         self.sample_rate = int(sample_rate)
         self._dsp = _lib.newStaveReverb()
         if self._dsp == _ffi.NULL:
@@ -208,6 +359,13 @@ class FaustReverb:
         self.set_low_cut(self.low_cut_hz)
         self.set_high_cut(self.high_cut_hz)
         self.set_predelay(self.predelay_ms)
+
+    def get_diagnostics_status(self) -> dict:
+        """Snapshot optional telemetry without taking the native audio lock."""
+        diagnostics = getattr(self, "_diagnostics", None)
+        if diagnostics is None:
+            return {"enabled": False, "available": True}
+        return diagnostics.snapshot()
 
     def available_types(self) -> dict[str, bool]:
         """Return availability map for every reverb type. main.py broadcasts

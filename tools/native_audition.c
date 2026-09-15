@@ -39,6 +39,7 @@ static size_t g_event_count, g_next_event;
 static float *g_audio_l, *g_audio_r;
 static uint64_t g_frame_limit;
 static atomic_uint_fast64_t g_frames, g_midi_frames, g_midi_sent;
+static atomic_uint_fast64_t g_midi_first_ns, g_capture_first_ns;
 static jack_nframes_t g_block_size;
 static double g_peak;
 static uint64_t g_nonfinite;
@@ -46,6 +47,12 @@ static atomic_int g_armed, g_callback_errors, g_midi_failures, g_xruns;
 static volatile sig_atomic_t g_interrupted;
 
 static void on_signal(int signum) { (void)signum; g_interrupted = 1; }
+
+static uint64_t monotonic_ns(void) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return 0;
+    return (uint64_t)now.tv_sec * 1000000000u + (uint64_t)now.tv_nsec;
+}
 
 static int midi_process(jack_nframes_t nframes, void *arg) {
     (void)arg;
@@ -59,6 +66,11 @@ static int midi_process(jack_nframes_t nframes, void *arg) {
 
     uint64_t start = atomic_load_explicit(&g_midi_frames, memory_order_relaxed);
     if (start >= g_frame_limit) return 0;
+    if (start == 0) {
+        uint64_t stamp = monotonic_ns();
+        atomic_store_explicit(&g_midi_first_ns, stamp, memory_order_release);
+        if (!stamp) atomic_fetch_add_explicit(&g_callback_errors, 1, memory_order_relaxed);
+    }
     uint64_t stop = start + nframes;
     while (g_next_event < g_event_count && g_events[g_next_event].frame < stop) {
         MidiEvent *event = &g_events[g_next_event];
@@ -87,6 +99,11 @@ static int capture_process(jack_nframes_t nframes, void *arg) {
     }
     uint64_t start = atomic_load_explicit(&g_frames, memory_order_relaxed);
     if (start >= g_frame_limit) return 0;
+    if (start == 0) {
+        uint64_t stamp = monotonic_ns();
+        atomic_store_explicit(&g_capture_first_ns, stamp, memory_order_release);
+        if (!stamp) atomic_fetch_add_explicit(&g_callback_errors, 1, memory_order_relaxed);
+    }
 
     float *left = (float *)jack_port_get_buffer(g_capture_l, nframes);
     float *right = (float *)jack_port_get_buffer(g_capture_r, nframes);
@@ -299,6 +316,8 @@ int main(int argc, char **argv) {
         free(g_events); return 0;
     }
     if (!wav_path[0]) { fprintf(stderr, "empty output path\n"); free(g_events); return 2; }
+    /* Resolve/fault in the clock path before the armed callback's first use. */
+    if (!monotonic_ns()) { snprintf(error, sizeof(error), "monotonic_clock_unavailable"); goto fail; }
     struct stat output_stat;
     if (lstat(wav_path, &output_stat) == 0 || errno != ENOENT) {
         fprintf(stderr, "output_exists_or_uncheckable\n"); free(g_events); return 2;
@@ -432,10 +451,14 @@ int main(int argc, char **argv) {
     jack_client_close(g_capture_client); g_capture_client = NULL;
     printf("{\"event\":\"capture_complete\",\"sample_rate_hz\":%u,\"block_frames\":%u,"
            "\"frames\":%llu,\"midi_events\":%zu,\"peak\":%.9g,\"nonfinite\":%llu,"
-           "\"xruns\":%d,\"errors\":%d}\n", rate, g_block_size,
+           "\"xruns\":%d,\"errors\":%d,\"clock\":\"CLOCK_MONOTONIC\","
+           "\"midi_first_callback_monotonic_ns\":%llu,"
+           "\"capture_first_callback_monotonic_ns\":%llu}\n", rate, g_block_size,
            (unsigned long long)captured_frames, (size_t)atomic_load(&g_midi_sent), g_peak,
            (unsigned long long)g_nonfinite, atomic_load(&g_xruns),
-           atomic_load(&g_callback_errors) + atomic_load(&g_midi_failures));
+           atomic_load(&g_callback_errors) + atomic_load(&g_midi_failures),
+           (unsigned long long)atomic_load(&g_midi_first_ns),
+           (unsigned long long)atomic_load(&g_capture_first_ns));
     free(g_audio_l); free(g_audio_r); free(g_events); return 0;
 
 fail:
@@ -445,10 +468,14 @@ fail:
     fprintf(stderr, "%s\n", error);
     printf("{\"event\":\"capture_failed\",\"error\":\"%s\",\"frames\":%llu,"
            "\"midi_events_sent\":%zu,\"peak\":%.9g,\"nonfinite\":%llu,"
-           "\"xruns\":%d,\"errors\":%d}\n",
+           "\"xruns\":%d,\"errors\":%d,\"clock\":\"CLOCK_MONOTONIC\","
+           "\"midi_first_callback_monotonic_ns\":%llu,"
+           "\"capture_first_callback_monotonic_ns\":%llu}\n",
            error, (unsigned long long)atomic_load(&g_frames),
            (size_t)atomic_load(&g_midi_sent), g_peak,
            (unsigned long long)g_nonfinite, atomic_load(&g_xruns),
-           atomic_load(&g_callback_errors) + atomic_load(&g_midi_failures));
+           atomic_load(&g_callback_errors) + atomic_load(&g_midi_failures),
+           (unsigned long long)atomic_load(&g_midi_first_ns),
+           (unsigned long long)atomic_load(&g_capture_first_ns));
     free(g_audio_l); free(g_audio_r); free(g_events); return 1;
 }

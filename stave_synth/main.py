@@ -112,6 +112,7 @@ class StaveSynth:
         # Preset crossfade (ramps numeric params; discrete params snap)
         self._crossfade_thread = None
         self._crossfade_cancel = threading.Event()
+        self._drone_fade_target = 1.0
 
         # MIDI CC learn mode (accessed from MIDI thread + WS thread, needs lock)
         self._midi_learn_lock = threading.Lock()
@@ -253,6 +254,7 @@ class StaveSynth:
                                       else {"recording": False, "writer_pending": False,
                                             "status": "idle", "complete": None}),
                     "faded_out": faded_out,
+                    "drone_faded_out": getattr(self, "_drone_fade_target", 1.0) < 0.5,
                     "soundfonts_available": sf_list,
                     # Small-Pi profile pins unison_voices to 3 (the Faust
                     # fast path); the UI greys out the slider when true.
@@ -893,10 +895,15 @@ class StaveSynth:
         if not self.synth:
             return {"type": "drone_fade_ack", "faded_out": False}
         duration = float(msg.get("duration_s", 5.0))
-        # Decide target: if currently faded (scale < 0.5), fade back in; else fade out
-        current = getattr(self.synth, "_drone_fade_scale", 1.0)
-        target = 1.0 if current < 0.5 else 0.0
+        # Toggle the intended endpoint, not the in-flight gain. Otherwise a
+        # second press early in a fade repeats it instead of reversing it.
+        # Absolute requests also keep two controllers' intended state explicit.
+        if msg.get("faded_out") is not None:
+            target = 0.0 if msg["faded_out"] else 1.0
+        else:
+            target = 1.0 if getattr(self, "_drone_fade_target", 1.0) < 0.5 else 0.0
         self._start_drone_fade_ramp(target, duration)
+        self._drone_fade_target = target
         return {"type": "drone_fade_ack", "faded_out": target < 0.5}
 
     def _start_drone_fade_ramp(self, target: float, duration_s: float):
@@ -1104,6 +1111,7 @@ class StaveSynth:
         if drone_cancel is not None:
             drone_cancel.set()
         self.synth.panic()
+        self._drone_fade_target = 1.0
         piano_error = None
         if self.piano:
             try:
@@ -2040,6 +2048,21 @@ class StaveSynth:
                     status["audio"]["render_metrics"] = snapshot()
                 except Exception as exc:
                     logger.debug("Render metrics snapshot unavailable: %s", exc)
+            diagnostics = getattr(self.jack, "render_diagnostics", None)
+            if diagnostics is not None:
+                try:
+                    status["audio"]["render_diagnostics"] = diagnostics.snapshot()
+                except Exception as exc:
+                    status["audio"]["render_diagnostics"] = {"available": False}
+                    logger.debug("Render diagnostics unavailable: %s", exc)
+            reverb = getattr(getattr(self, "synth", None), "reverb", None)
+            reverb_status = getattr(reverb, "get_diagnostics_status", None)
+            if callable(reverb_status):
+                try:
+                    status["audio"]["reverb_diagnostics"] = reverb_status()
+                except Exception as exc:
+                    status["audio"]["reverb_diagnostics"] = {"available": False}
+                    logger.debug("Reverb diagnostics unavailable: %s", exc)
             piano_status = getattr(getattr(self, "piano", None),
                                    "midi_render_status", None)
             if callable(piano_status):
@@ -2215,7 +2238,8 @@ class StaveSynth:
         from .routing import read_ports, midi_capture_selection
         with self._control_lock:
             try:
-                ports, duplicates = midi_capture_selection(read_ports(_run_with_hard_timeout))
+                ports, duplicates = midi_capture_selection(
+                    read_ports(_run_with_hard_timeout), client=JACK_CLIENT_NAME)
                 self._midi_capture_duplicates = duplicates
                 self._midi_discovery_error = None
                 return ports

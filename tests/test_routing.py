@@ -259,6 +259,7 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(self.app.state["master"]["audio_output_pref"], "new DAC")
 
     def test_isolated_and_stopping_instances_never_mutate_routes(self):
+        self.midi("Unknown physical controller:output")
         self.main["ISOLATED"] = True
         self.assertFalse(self.route()["success"])
         self.app._connect_midi_ports()
@@ -274,6 +275,122 @@ class RoutingTests(unittest.TestCase):
     def midi(self, *names):
         for name in names:
             self.jack.add(name, "midi", "output")
+
+    def test_generic_physical_outputs_use_typed_property_listing_without_brand_names(self):
+        generic = ("system:midi_capture_1", "Unknown Vendor USB:Port 1",
+                   "Unknown Vendor USB:Port 2")
+        self.midi(*generic)
+        ports = self.app._get_midi_capture_ports()
+        self.assertEqual(set(ports), set(generic))
+        self.assertIn(("pw-jack", "jack_lsp", "-t", "-p"), self.jack.commands)
+        self.assertTrue(self.app._connect_midi_ports())
+        self.assertEqual(self.jack.graph[f"{CLIENT}:midi_in"], set(generic))
+        self.assertEqual(self.app._midi_capture_duplicates, {})
+
+    def test_generic_sources_require_exact_type_output_and_physical_metadata(self):
+        valid = "Typed hardware:output"
+        records = {
+            valid: ["8 bit raw midi", "properties: output, physical, terminal,"],
+            "Software sequencer:output": ["8 bit raw midi", "properties: output,"],
+            "Missing flags:output": ["8 bit raw midi"],
+            "Missing type:output": ["properties: output, physical,"],
+            "Wrong type:output": ["audio containing midi in a label",
+                                  "properties: output, physical,"],
+            "Hardware:input": ["8 bit raw midi", "properties: input, physical,"],
+            "Hardware:ambiguous": ["8 bit raw midi", "properties: input, output, physical,"],
+            "Hardware:missing direction": ["8 bit raw midi", "properties: physical,"],
+            "Hardware:near flags": ["8 bit raw midi", "properties: output, nonphysical,"],
+            "Midi Through:output": ["8 bit raw midi", "properties: output, physical,"],
+            f"{CLIENT}:midi_output": ["8 bit raw midi", "properties: output, physical,"],
+        }
+        selected, duplicates = self.routing["midi_capture_selection"](records, client=CLIENT)
+        self.assertEqual(selected, [valid])
+        self.assertEqual(duplicates, {})
+
+    def test_recognized_bridges_keep_legacy_missing_physical_or_properties_support(self):
+        records = {
+            A2J_KEYS: ["8 bit raw midi", "properties: output, terminal,"],
+            PW_KEYS: ["8 bit raw midi", "properties: output,"],
+            PW_FOOT: ["8 bit raw midi"],
+        }
+        selected, duplicates = self.routing["midi_capture_selection"](records, client=CLIENT)
+        self.assertEqual(set(selected), {A2J_KEYS, PW_FOOT})
+        self.assertEqual(duplicates, {A2J_KEYS: [PW_KEYS]})
+
+    def test_recognized_capture_names_never_override_missing_type_or_wrong_direction(self):
+        for rows in (["8 bit raw midi", "properties: input, physical,"],
+                     ["8 bit raw midi", "properties: input, output,"],
+                     ["8 bit raw midi", "properties: terminal,"],
+                     ["8 bit raw midi", "properties:"],
+                     ["properties: output, physical,"],
+                     ["32 bit float mono audio", "properties: output, physical,"]):
+            with self.subTest(rows=rows):
+                selected, duplicates = self.routing["midi_capture_selection"](
+                    {A2J_KEYS: rows, PW_KEYS: rows}, client=CLIENT
+                )
+                self.assertEqual(selected, [])
+                self.assertEqual(duplicates, {})
+
+    def test_own_client_exclusion_precedes_bridge_alias_matching(self):
+        self.midi(A2J_KEYS, PW_KEYS, "Other physical:output")
+        selected, duplicates = self.routing["midi_capture_selection"](
+            self.jack.records, client="a2j"
+        )
+        self.assertEqual(set(selected), {PW_KEYS, "Other physical:output"})
+        self.assertEqual(duplicates, {})
+
+    def test_main_discovery_passes_own_identity_and_never_self_connects(self):
+        own, hardware = f"{CLIENT}:midi_output", "Other physical:output"
+        self.midi(own, hardware)
+        self.assertEqual(self.app._get_midi_capture_ports(), [hardware])
+        self.assertTrue(self.app._connect_midi_ports())
+        self.assertEqual(self.jack.graph[f"{CLIENT}:midi_in"], {hardware})
+        self.assertFalse(any(command[1] == "jack_connect" and command[2] == own
+                             for command in self.jack.commands))
+
+    def test_generic_sources_coexist_with_bridge_aliases_without_duplicate_rewiring(self):
+        generic = ("Other keys:output", "Other keys:second output", "Pedal:output")
+        self.midi(A2J_KEYS, PW_KEYS, *generic)
+        self.jack.connect(PW_KEYS, f"{CLIENT}:midi_in")
+        self.assertTrue(self.app._connect_midi_ports())
+        self.assertEqual(self.jack.graph[f"{CLIENT}:midi_in"], {PW_KEYS, *generic})
+        self.assertEqual(self.app._midi_capture_duplicates, {A2J_KEYS: [PW_KEYS]})
+        self.assertFalse(any(command[1] == "jack_disconnect" for command in self.jack.commands))
+        self.assertFalse(any(command[1] == "jack_connect" and command[2] == A2J_KEYS
+                             for command in self.jack.commands))
+
+    def test_one_generic_connection_failure_does_not_drop_other_controller_and_recovers(self):
+        unavailable, working = "First controller:output", "Second controller:output"
+        self.midi(unavailable, working)
+        self.jack.hook = lambda command: (
+            self.jack.result(1, stderr="device disappeared")
+            if command[1:] == ["jack_connect", unavailable, f"{CLIENT}:midi_in"]
+            else NotImplemented
+        )
+        self.assertTrue(self.app._connect_midi_ports())
+        self.assertEqual(self.jack.graph[f"{CLIENT}:midi_in"], {working})
+        self.jack.hook = None
+        self.assertTrue(self.app._connect_midi_ports())
+        self.assertEqual(self.jack.graph[f"{CLIENT}:midi_in"], {unavailable, working})
+        self.assertFalse(any(command[1] == "jack_disconnect" for command in self.jack.commands))
+
+    def test_generic_discovery_failure_is_visible_keeps_existing_links_and_recovers(self):
+        generic = "Independent controller:output"
+        self.midi(generic)
+        self.assertTrue(self.app._connect_midi_ports())
+        mutations = list(self.jack.mutations())
+        self.jack.hook = lambda command: (
+            self.jack.result(1, stderr="temporary graph failure")
+            if command[1] == "jack_lsp" else NotImplemented
+        )
+        self.assertFalse(self.app._connect_midi_ports())
+        self.assertIn("temporary graph failure", self.app._midi_discovery_error)
+        self.assertEqual(self.jack.graph[f"{CLIENT}:midi_in"], {generic})
+        self.assertEqual(self.jack.mutations(), mutations)
+        self.jack.hook = None
+        self.assertTrue(self.app._connect_midi_ports())
+        self.assertIsNone(self.app._midi_discovery_error)
+        self.assertEqual(self.jack.mutations(), mutations)
 
     def test_midi_bridge_pairs_dedupe_without_dropping_a_different_device(self):
         self.midi(A2J_KEYS, PW_KEYS, PW_FOOT, "a2j:Midi Through [14] (capture): Midi Through Port-0")

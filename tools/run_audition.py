@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import time
 from urllib.request import urlopen
 
 import websockets
@@ -523,9 +524,12 @@ async def run_sweeps(ws, case: str, anchor: float) -> list[dict]:
     for desired, command in sweep_plan(case):
         await asyncio.sleep(max(0.0, anchor + desired - loop.time()))
         sent = loop.time() - anchor
+        sent_ns = time.monotonic_ns()
         await send_command(ws, command)  # one and only one command is outstanding
+        ack_ns = time.monotonic_ns()
         timeline.append({"desired_seconds": desired, "sent_seconds": round(sent, 6),
-                         "ack_seconds": round(loop.time() - anchor, 6), "command": command})
+                         "ack_seconds": round(loop.time() - anchor, 6), "command": command,
+                         "sent_monotonic_ns": sent_ns, "ack_monotonic_ns": ack_ns})
     return timeline
 
 
@@ -569,6 +573,10 @@ async def run_driver(driver: Path, schedule_path: Path, wav_path: Path, ws, case
     stderr, stderr_truncated = await stderr_task
     report = {"returncode": process.returncode, "stdout": stdout,
               "stdout_truncated": stdout_truncated, "stderr": stderr,
+              "automation_anchor_kind": "stdout_receive_loop_monotonic",
+              "automation_anchor_monotonic_ns": (
+                  round(anchors["started_monotonic"] * 1_000_000_000)
+                  if "started_monotonic" in anchors else None),
               "stderr_truncated": stderr_truncated, "events": {
                   key: value for key, value in anchors.items()
                   if key in ("capture_started", "capture_complete", "capture_failed")},

@@ -2,7 +2,9 @@
 
 import logging
 import math
+import os
 import threading
+import time
 from collections import deque
 
 try:
@@ -21,6 +23,10 @@ logger = logging.getLogger(__name__)
 
 _MIDI_EVENT_QUEUE_CAPACITY = 256
 _MIDI_EVENT_RENDER_BATCH_MAX = 64
+_LOCK_DIAGNOSTIC_CAPACITY = 64
+_LOCK_DIAGNOSTIC_OPERATIONS = {
+    "sfload", "program_change", "all_notes_off", "shutdown",
+}
 
 # Soundfont presets: what the UI dropdown actually lists. Each preset maps
 # a user-facing name → the underlying .sf2/.sf3 file stem + optional tremolo
@@ -201,6 +207,17 @@ class FluidSynthPlayer:
         self._midi_native_errors = 0
         self._midi_recovery_failures = 0
         self._midi_noteoff_unmatched = 0
+        self._diagnostics_enabled = os.environ.get("STAVE_DIAGNOSTICS") == "1"
+        self._diagnostic_lock = threading.Lock()
+        self._diagnostic_native_owner = None
+        self._diagnostic_owner_generation = 0
+        self._diagnostic_render_block_index = 0
+        self._diagnostic_lock_misses = (
+            deque(maxlen=_LOCK_DIAGNOSTIC_CAPACITY)
+            if self._diagnostics_enabled else None
+        )
+        self._diagnostic_records_overwritten = 0
+        self._diagnostic_records_dropped = 0
         self._piano_room_lock = threading.RLock()
         self._preload_stop = threading.Event()
         self._preload_thread = None
@@ -313,6 +330,93 @@ class FluidSynthPlayer:
                                "path stays: %s", e)
                 self._faust_chain = None
 
+    def _diagnostic_owner_enter(self, operation: str):
+        """Publish native ownership only after the real lock is acquired."""
+        if not getattr(self, "_diagnostics_enabled", False):
+            return None
+        self._diagnostic_owner_generation += 1
+        token = (
+            operation if operation in _LOCK_DIAGNOSTIC_OPERATIONS else "unknown",
+            time.monotonic_ns(),
+            self._diagnostic_owner_generation,
+        )
+        previous = self._diagnostic_native_owner
+        self._diagnostic_native_owner = token
+        return token, previous
+
+    def _diagnostic_owner_exit(self, context) -> None:
+        """Clear/restore only the owner token installed by this context."""
+        if context is None:
+            return
+        token, previous = context
+        if self._diagnostic_native_owner is token:
+            self._diagnostic_native_owner = previous
+
+    def _record_native_lock_miss(self, block_index: int, owner_before) -> None:
+        """Record one conservative attribution without waiting on diagnostics."""
+        if not getattr(self, "_diagnostics_enabled", False):
+            return
+        owner_after = self._diagnostic_native_owner
+        now_ns = time.monotonic_ns()
+        if owner_before is not None and owner_before is owner_after:
+            operation, acquired_ns, generation = owner_before
+        else:
+            operation, acquired_ns, generation = "unknown", None, None
+        record = (now_ns, block_index, operation, acquired_ns, generation)
+        if not self._diagnostic_lock.acquire(blocking=False):
+            self._diagnostic_records_dropped += 1
+            return
+        try:
+            records = self._diagnostic_lock_misses
+            if len(records) == records.maxlen:
+                self._diagnostic_records_overwritten += 1
+            records.append(record)
+        finally:
+            self._diagnostic_lock.release()
+
+    def _diagnostic_snapshot(self) -> dict:
+        """Copy bounded diagnostic state; render only ever try-locks this."""
+        if not getattr(self, "_diagnostics_enabled", False):
+            return {
+                "enabled": False,
+                "capacity": 64,
+                "records": [],
+                "overwritten": 0,
+                "dropped": 0,
+                "current_owner": None,
+            }
+        with self._diagnostic_lock:
+            records = list(self._diagnostic_lock_misses)
+            overwritten = self._diagnostic_records_overwritten
+            dropped = self._diagnostic_records_dropped
+        owner_before = self._diagnostic_native_owner
+        owner_after = self._diagnostic_native_owner
+        owner = owner_before if owner_before is owner_after else None
+        current_owner = None
+        if owner is not None:
+            current_owner = {
+                "operation": owner[0],
+                "acquired_monotonic_ns": owner[1],
+                "generation": owner[2],
+            }
+        return {
+            "enabled": True,
+            "capacity": self._diagnostic_lock_misses.maxlen,
+            "records": [
+                {
+                    "monotonic_ns": record[0],
+                    "render_block_index": record[1],
+                    "native_owner_operation": record[2],
+                    "owner_acquired_monotonic_ns": record[3],
+                    "owner_generation": record[4],
+                }
+                for record in records
+            ],
+            "overwritten": overwritten,
+            "dropped": dropped,
+            "current_owner": current_owner,
+        }
+
     def start(self, soundfont_name: str = "Salamander"):
         """Initialize FluidSynth and PRE-LOAD every available soundfont so
         mid-set preset switching never blocks the audio render thread.
@@ -403,23 +507,33 @@ class FluidSynthPlayer:
                 return
             path_str = str(sf_path)
             with self._lock:
-                if self._closing or self._preload_stop.is_set() or self.fs is None:
-                    return
-                if file_key in self._sfid_by_file:
-                    return
-                if path_str in _sfid_by_path:
-                    self._sfid_by_file[file_key] = _sfid_by_path[path_str]
-                    return
+                diagnostic_enter = getattr(self, "_diagnostic_owner_enter", None)
+                diagnostic_owner = (
+                    diagnostic_enter("sfload") if diagnostic_enter else None
+                )
                 try:
-                    sfid = self.fs.sfload(path_str)
-                except Exception as e:
-                    logger.error("sfload crashed for %s: %s", path_str, e)
-                    return
-                if sfid < 0:
-                    logger.warning("sfload returned %d for %s", sfid, path_str)
-                    return
-                self._sfid_by_file[file_key] = sfid
-                _sfid_by_path[path_str] = sfid
+                    if (self._closing or self._preload_stop.is_set()
+                            or self.fs is None):
+                        return
+                    if file_key in self._sfid_by_file:
+                        return
+                    if path_str in _sfid_by_path:
+                        self._sfid_by_file[file_key] = _sfid_by_path[path_str]
+                        return
+                    try:
+                        sfid = self.fs.sfload(path_str)
+                    except Exception as e:
+                        logger.error("sfload crashed for %s: %s", path_str, e)
+                        return
+                    if sfid < 0:
+                        logger.warning("sfload returned %d for %s", sfid, path_str)
+                        return
+                    self._sfid_by_file[file_key] = sfid
+                    _sfid_by_path[path_str] = sfid
+                finally:
+                    diagnostic_exit = getattr(self, "_diagnostic_owner_exit", None)
+                    if diagnostic_exit:
+                        diagnostic_exit(diagnostic_owner)
             logger.info("Preloaded soundfont file='%s' path='%s' sfid=%d",
                          file_key, path_str, sfid)
 
@@ -803,6 +917,7 @@ class FluidSynthPlayer:
             "native_errors": self._midi_native_errors,
             "recovery_failures": self._midi_recovery_failures,
             "noteoff_unmatched": self._midi_noteoff_unmatched,
+            "diagnostics": self._diagnostic_snapshot(),
         }
 
     def all_notes_off(self):
@@ -810,23 +925,32 @@ class FluidSynthPlayer:
         if self.fs is None:
             return
         with self._lock:
-            # Panic/instrument switching remains synchronous.  Cancel queued
-            # events under the same native ownership so a pre-panic batch can
-            # never be resurrected after the release and JACK ring clear.
-            with self._midi_event_lock:
-                self._midi_events_discarded += len(self._midi_events)
-                self._midi_events.clear()
-                self._midi_recovery_pending = False
-                self._midi_recovery_failed_latched = False
-            release_ok = self._release_all_native_locked()
-            if release_ok:
-                self._active_notes = 0
-            else:
-                # Publish the unsafe latch before native ownership is released;
-                # the next render must not observe a falsely clean boundary.
-                self._midi_recovery_failures += 1
-                self._midi_recovery_failed_latched = True
-                logger.error("FluidSynth all-notes-off was incomplete")
+            diagnostic_enter = getattr(self, "_diagnostic_owner_enter", None)
+            diagnostic_owner = (
+                diagnostic_enter("all_notes_off") if diagnostic_enter else None
+            )
+            try:
+                # Panic/instrument switching remains synchronous.  Cancel queued
+                # events under the same native ownership so a pre-panic batch can
+                # never be resurrected after the release and JACK ring clear.
+                with self._midi_event_lock:
+                    self._midi_events_discarded += len(self._midi_events)
+                    self._midi_events.clear()
+                    self._midi_recovery_pending = False
+                    self._midi_recovery_failed_latched = False
+                release_ok = self._release_all_native_locked()
+                if release_ok:
+                    self._active_notes = 0
+                else:
+                    # Publish the unsafe latch before native ownership is released;
+                    # the next render must not observe a falsely clean boundary.
+                    self._midi_recovery_failures += 1
+                    self._midi_recovery_failed_latched = True
+                    logger.error("FluidSynth all-notes-off was incomplete")
+            finally:
+                diagnostic_exit = getattr(self, "_diagnostic_owner_exit", None)
+                if diagnostic_exit:
+                    diagnostic_exit(diagnostic_owner)
         # Reset comp state so the first hard chord after silence doesn't
         # ramp from a stale gain (LA-2A linear-interp between blocks would
         # otherwise pop). Cheap; only fires on panic / instrument-cycle.
@@ -894,8 +1018,19 @@ class FluidSynthPlayer:
         # A cold background sfload can own FluidSynth for hundreds of ms.
         # Never make the render producer wait that long: emit a complete
         # silent block while startup preload owns the native instance.
+        diagnostic_owner_before = None
+        diagnostic_block_index = 0
+        if getattr(self, "_diagnostics_enabled", False):
+            self._diagnostic_render_block_index += 1
+            diagnostic_block_index = self._diagnostic_render_block_index
+            # This read belongs immediately before the real try-acquire.  A
+            # stable identical token after failure is required for attribution.
+            diagnostic_owner_before = self._diagnostic_native_owner
         if not self._lock.acquire(blocking=False):
             self._native_render_lock_misses += 1
+            self._record_native_lock_miss(
+                diagnostic_block_index, diagnostic_owner_before
+            )
             return np.zeros((2, n_samples), dtype=np.float64)
         try:
             if self.fs is None:
@@ -1240,33 +1375,42 @@ class FluidSynthPlayer:
         # voices + reverb tail in one block, popping the preset crossfade.
         try:
             with self._lock:
-                if self._closing or self.fs is None:
-                    raise RuntimeError("FluidSynth is closing; preset switch rejected")
-                new_sfid = getattr(self, "_sfid_by_file", {}).get(target_file)
-                if new_sfid is None:
-                    # Background preload owns all slow sfload calls. Never put
-                    # cold disk I/O on a UI/control operation competing with
-                    # the audio renderer.
-                    logger.warning("Preset '%s' file='%s' is not preloaded yet; keeping %s",
-                                   name, target_file, self.current_soundfont)
-                    raise RuntimeError(
-                        f"Soundfont preset '{name}' is unavailable or still preloading"
-                    )
-                # Preserve the old lock-defined boundary: musical events that
-                # arrived before this switch sound with the old program.
-                batch, recovery = self._take_midi_batch_locked(
-                    blocking=True, limit=None
+                diagnostic_enter = getattr(self, "_diagnostic_owner_enter", None)
+                diagnostic_owner = (
+                    diagnostic_enter("program_change") if diagnostic_enter else None
                 )
-                if not self._apply_midi_batch_locked(batch, recovery):
-                    raise RuntimeError(
-                        "FluidSynth MIDI recovery failed before preset switch"
+                try:
+                    if self._closing or self.fs is None:
+                        raise RuntimeError("FluidSynth is closing; preset switch rejected")
+                    new_sfid = getattr(self, "_sfid_by_file", {}).get(target_file)
+                    if new_sfid is None:
+                        # Background preload owns all slow sfload calls. Never put
+                        # cold disk I/O on a UI/control operation competing with
+                        # the audio renderer.
+                        logger.warning("Preset '%s' file='%s' is not preloaded yet; keeping %s",
+                                       name, target_file, self.current_soundfont)
+                        raise RuntimeError(
+                            f"Soundfont preset '{name}' is unavailable or still preloading"
+                        )
+                    # Preserve the old lock-defined boundary: musical events that
+                    # arrived before this switch sound with the old program.
+                    batch, recovery = self._take_midi_batch_locked(
+                        blocking=True, limit=None
                     )
-                # (No set_reverb_level here — FluidSynth's reverb is
-                # permanently disabled at start(); piano room colour comes
-                # from the Faust Dattorro in our pipeline.)
-                self._program_select_checked(
-                    new_sfid, target_program, f"preset '{name}'"
-                )
+                    if not self._apply_midi_batch_locked(batch, recovery):
+                        raise RuntimeError(
+                            "FluidSynth MIDI recovery failed before preset switch"
+                        )
+                    # (No set_reverb_level here — FluidSynth's reverb is
+                    # permanently disabled at start(); piano room colour comes
+                    # from the Faust Dattorro in our pipeline.)
+                    self._program_select_checked(
+                        new_sfid, target_program, f"preset '{name}'"
+                    )
+                finally:
+                    diagnostic_exit = getattr(self, "_diagnostic_owner_exit", None)
+                    if diagnostic_exit:
+                        diagnostic_exit(diagnostic_owner)
         except Exception as e:
             logger.warning("program_select %d failed on preset switch: %s",
                            target_program, e)
@@ -1406,11 +1550,20 @@ class FluidSynthPlayer:
 
         self.all_notes_off()
         with self._lock:
-            if self.fs:
-                try:
-                    self.fs.delete()
-                except Exception as e:
-                    logger.warning("Error stopping FluidSynth: %s", e)
-                self.fs = None
+            diagnostic_enter = getattr(self, "_diagnostic_owner_enter", None)
+            diagnostic_owner = (
+                diagnostic_enter("shutdown") if diagnostic_enter else None
+            )
+            try:
+                if self.fs:
+                    try:
+                        self.fs.delete()
+                    except Exception as e:
+                        logger.warning("Error stopping FluidSynth: %s", e)
+                    self.fs = None
+            finally:
+                diagnostic_exit = getattr(self, "_diagnostic_owner_exit", None)
+                if diagnostic_exit:
+                    diagnostic_exit(diagnostic_owner)
         logger.info("FluidSynth stopped")
         return True

@@ -107,6 +107,33 @@ class RenderMetricsIntegrationTests(unittest.TestCase):
         app.piano.midi_render_status = unavailable
         self.assertEqual(health(app)["audio"]["piano_midi"], {"available": False})
 
+        app.jack.render_diagnostics = SimpleNamespace(snapshot=lambda: {"enabled": True, "count": 9})
+        app.synth = SimpleNamespace(reverb=SimpleNamespace(
+            get_diagnostics_status=lambda: {"enabled": True, "missed": 0}))
+        self.assertEqual(health(app)["audio"]["render_diagnostics"]["count"], 9)
+        self.assertEqual(health(app)["audio"]["reverb_diagnostics"]["missed"], 0)
+        app.jack.render_diagnostics.snapshot = unavailable
+        app.synth.reverb.get_diagnostics_status = unavailable
+        self.assertEqual(health(app)["audio"]["render_diagnostics"], {"available": False})
+        self.assertEqual(health(app)["audio"]["reverb_diagnostics"], {"available": False})
+
+    def test_opt_in_diagnostics_clock_calls_are_guarded(self):
+        source = ast.unparse(self._method("start"))
+        self.assertIn("os.environ.get('STAVE_DIAGNOSTICS') == '1' else None", source)
+        render = self._method("_render_loop")
+        parents = {child: node for node in ast.walk(render) for child in ast.iter_child_nodes(node)}
+        calls = [node for node in ast.walk(render) if isinstance(node, ast.Call)
+                 and ast.unparse(node.func) in {"time.monotonic_ns", "time.thread_time_ns"}]
+        self.assertEqual(len(calls), 6)
+        for node in calls:
+            ancestors = []
+            while node in parents:
+                node = parents[node]
+                ancestors.append(node)
+            self.assertTrue(any(isinstance(parent, ast.If)
+                                and ast.unparse(parent.test) == "_diagnostics is not None"
+                                for parent in ancestors))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,6 +4,15 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
+## Remote continuation underway
+
+The player is away tonight and requires all existing functions tomorrow night.
+Follow [OVERNIGHT_REPAIR.md](OVERNIGHT_REPAIR.md) for the subsequent focused
+generic-MIDI/bed-fade repairs and opt-in timing attribution. No features or
+sound quality are being removed. Physical qualification remains unavailable
+tonight; that does not block software work. The older checkpoint below is
+preserved as evidence, not a claim that this newer batch has already run.
+
 ## Continuation after the save
 
 The focused batch **`27522fd`** is saved and tested as a separate candidate:
