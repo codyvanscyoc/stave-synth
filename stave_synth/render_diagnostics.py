@@ -21,17 +21,26 @@ class RenderDiagnostics:
         self._wall_sum = self._cpu_sum = self._wall_max = self._cpu_max = 0
         self._stage_sums = [0, 0, 0]
         self._stage_maxima = [0, 0, 0]
+        self._stage_cpu_sums = [0, 0, 0]
+        self._stage_cpu_maxima = [0, 0, 0]
+        self._stage_cpu_count = 0
+        self._gap_count = self._gap_sum = self._gap_max = self._long_gaps = 0
         self._cpu_bins = [0] * (self.BINS + 1)
         self._records = deque(maxlen=self.CAPACITY)
         self._previous_end = None
         self._minimum_pre_fill = None
 
     def record(self, started_ns, ended_ns, cpu_ns, piano_end_ns, synth_end_ns,
-               pre_fill, post_fill):
+               pre_fill, post_fill, *, stage_cpu_ns=None):
         values = (started_ns, ended_ns, cpu_ns, piano_end_ns, synth_end_ns,
                   pre_fill, post_fill)
         if (any(type(value) is not int or value < 0 for value in values)
-                or not started_ns <= piano_end_ns <= synth_end_ns <= ended_ns):
+                or not started_ns <= piano_end_ns <= synth_end_ns <= ended_ns
+                or (stage_cpu_ns is not None and (
+                    not isinstance(stage_cpu_ns, (tuple, list))
+                    or len(stage_cpu_ns) != 3
+                    or any(type(value) is not int or value < 0 for value in stage_cpu_ns)
+                    or sum(stage_cpu_ns) != cpu_ns))):
             self._invalid += 1
             return False
         # Single-writer cursor advances even when a snapshot rejects this
@@ -56,14 +65,27 @@ class RenderDiagnostics:
             for index in range(3):
                 self._stage_sums[index] += stages[index]
                 self._stage_maxima[index] = max(self._stage_maxima[index], stages[index])
+            if stage_cpu_ns is not None:
+                self._stage_cpu_count += 1
+                for index in range(3):
+                    self._stage_cpu_sums[index] += stage_cpu_ns[index]
+                    self._stage_cpu_maxima[index] = max(self._stage_cpu_maxima[index], stage_cpu_ns[index])
+            if gap_ns is not None:
+                self._gap_count += 1
+                self._gap_sum += gap_ns
+                self._gap_max = max(self._gap_max, gap_ns)
+                self._long_gaps += int(gap_ns > self.period_ns)
             self._cpu_bins[min(self.BINS, cpu_ns * 100 // self.period_ns)] += 1
             if self._minimum_pre_fill is None or pre_fill < self._minimum_pre_fill:
                 self._minimum_pre_fill = pre_fill
-            if wall_ns > self.period_ns or (gap_ns is not None and gap_ns > self.period_ns):
+            # Intentional ring-fill sleeps must not evict real render overruns.
+            # Gap totals/max remain visible separately, without attributing cause.
+            if wall_ns > self.period_ns:
                 if len(self._records) == self.CAPACITY:
                     self._overwritten += 1
                 self._records.append((self._count, started_ns, ended_ns, cpu_ns,
-                                      *stages, gap_ns, pre_fill, post_fill))
+                                      *stages, gap_ns, pre_fill, post_fill,
+                                      *(stage_cpu_ns if stage_cpu_ns is not None else (None, None, None))))
             return True
         finally:
             self._lock.release()
@@ -72,12 +94,18 @@ class RenderDiagnostics:
         with self._lock:
             rows = tuple(self._records)
             result = {
-                "enabled": True, "clock": "monotonic_ns", "period_ns": self.period_ns,
+                "enabled": True, "format": 2, "clock": "monotonic_ns", "period_ns": self.period_ns,
+                "record_policy": "wall_over_period_only",
                 "count": self._count, "missed": self._missed, "invalid": self._invalid,
                 "wall_sum_ns": self._wall_sum, "thread_cpu_sum_ns": self._cpu_sum,
                 "wall_max_ns": self._wall_max, "thread_cpu_max_ns": self._cpu_max,
                 "stage_sum_ns": list(self._stage_sums),
                 "stage_max_ns": list(self._stage_maxima),
+                "stage_thread_cpu_count": self._stage_cpu_count,
+                "stage_thread_cpu_sum_ns": list(self._stage_cpu_sums),
+                "stage_thread_cpu_max_ns": list(self._stage_cpu_maxima),
+                "gap_count": self._gap_count, "gap_sum_ns": self._gap_sum,
+                "gap_max_ns": self._gap_max, "gap_over_period_count": self._long_gaps,
                 "thread_cpu_histogram_counts": list(self._cpu_bins),
                 "min_pre_ring_fill_blocks": self._minimum_pre_fill,
                 "capacity": self.CAPACITY, "overwritten": self._overwritten,
@@ -88,6 +116,7 @@ class RenderDiagnostics:
             "sample", "started_monotonic_ns", "ended_monotonic_ns", "thread_cpu_ns",
             "piano_and_sends_ns", "synth_ns", "master_and_write_ns",
             "gap_since_previous_render_attempt_ns", "pre_ring_fill_blocks", "post_ring_fill_blocks",
+            "piano_and_sends_thread_cpu_ns", "synth_thread_cpu_ns", "master_and_write_thread_cpu_ns",
         ]
         result["records"] = [list(row) for row in rows]
         return result

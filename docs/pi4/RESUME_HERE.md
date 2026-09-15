@@ -4,14 +4,22 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
-## Remote continuation underway
+## Latest remote continuation — read before historical PIDs below
 
 The player is away tonight and requires all existing functions tomorrow night.
 Follow [OVERNIGHT_REPAIR.md](OVERNIGHT_REPAIR.md) for the subsequent focused
 generic-MIDI/bed-fade repairs and opt-in timing attribution. No features or
 sound quality are being removed. Physical qualification remains unavailable
 tonight; that does not block software work. The older checkpoint below is
-preserved as evidence, not a claim that this newer batch has already run.
+preserved as evidence. The newer batch has now completed seven diagnostic
+captures on0272c3d and two filter captures plus actual recorder/bed integration
+on829a3c0.413 tests passed on both Mac and Pi (Node UI on Mac only).
+Functional recorder→sampled bed→fade/reconnect/panic sequence completed;
+strict timing still FAILS. Normal service restored atce15cfb, PID170746,
+invocation8855c114ca2a42c9ad0590e98b85a68d, zero restarts; state hash unchanged.
+No soak or stage qualification has passed. Finer timing attribution and
+organ STOP correction are subsequent work in progress; consult the overnight
+document and private INDEX before modifying any source or starting a service.
 
 ## Continuation after the save
 

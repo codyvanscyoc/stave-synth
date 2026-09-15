@@ -61,6 +61,8 @@ SAFE_TESTS = (
     "test_drone_fade.py",
     "test_feature_probe.py",
     "test_osc_modulation_identity.py",
+    "test_organ_leslie_stop.py",
+    "test_synth_diagnostics.py",
 )
 
 

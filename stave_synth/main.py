@@ -2055,6 +2055,13 @@ class StaveSynth:
                 except Exception as exc:
                     status["audio"]["render_diagnostics"] = {"available": False}
                     logger.debug("Render diagnostics unavailable: %s", exc)
+            synth_status = getattr(getattr(self, "synth", None), "synth_diagnostics_status", None)
+            if callable(synth_status):
+                try:
+                    status["audio"]["synth_diagnostics"] = synth_status()
+                except Exception as exc:
+                    status["audio"]["synth_diagnostics"] = {"available": False}
+                    logger.debug("Synth diagnostics unavailable: %s", exc)
             reverb = getattr(getattr(self, "synth", None), "reverb", None)
             reverb_status = getattr(reverb, "get_diagnostics_status", None)
             if callable(reverb_status):

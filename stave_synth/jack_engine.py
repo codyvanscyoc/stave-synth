@@ -894,6 +894,7 @@ class JackEngine:
                     _render_t0 = time.perf_counter()
                     if _diagnostics is not None:
                         _diag_piano_end = time.monotonic_ns()
+                        _diag_piano_cpu = time.thread_time_ns() - _diag_cpu_t0
                     fx_bus = None
                     if self.bus_comp.enabled and self.bus_comp_fx_bypass:
                         stereo, fx_bus = self.synth.render(
@@ -910,6 +911,7 @@ class JackEngine:
                     _render_dt = time.perf_counter() - _render_t0
                     if _diagnostics is not None:
                         _diag_synth_end = time.monotonic_ns()
+                        _diag_synth_cpu = time.thread_time_ns() - _diag_cpu_t0
                     if _render_dt > _slow_threshold_s:
                         logger.warning("slow render %.1fms (budget %.1fms) fill=%d at %.3f",
                                        _render_dt * 1000, block_time * 1000, fill, time.time())
@@ -1144,7 +1146,11 @@ class JackEngine:
                     if _diagnostics is not None:
                         _diagnostics.record(_diag_t0, _diag_end, _diag_cpu,
                                             _diag_piano_end, _diag_synth_end,
-                                            fill, post_write_fill)
+                                            fill, post_write_fill,
+                                            stage_cpu_ns=(
+                                                _diag_piano_cpu,
+                                                _diag_synth_cpu - _diag_piano_cpu,
+                                                _diag_cpu - _diag_synth_cpu))
                     if write_result < 0:
                         raise RuntimeError("native bridge rejected render block: graph changed")
                     if write_result == 1:

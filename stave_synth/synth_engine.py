@@ -6,6 +6,7 @@ Performance-critical: all audio processing uses vectorized NumPy.
 import ctypes
 import logging
 import math
+import os
 import threading
 import numpy as np
 from dataclasses import dataclass, field
@@ -2048,6 +2049,11 @@ class SynthEngine:
         self._filter_cutoff_last_set = -1.0
         self._filter_res_last_set = -1.0
 
+        self._synth_diagnostics = None
+        if os.environ.get("STAVE_DIAGNOSTICS") == "1":
+            from .synth_diagnostics import SynthDiagnostics
+            self._synth_diagnostics = SynthDiagnostics(int(sample_rate))
+
     def _ensure_buffers(self, n_samples: int):
         """Resize pre-allocated buffers if block size changed."""
         if n_samples > self._buf_size:
@@ -2889,8 +2895,24 @@ class SynthEngine:
         can't race with iteration over `self.voices` / `_sympathetic_state`
         or with multi-step state transitions that render reads."""
         with self._render_lock:
-            return self._render_locked(n_samples, separate_fx,
-                                       external_reverb_send, external_delay_send)
+            diagnostics = self._synth_diagnostics
+            if diagnostics is not None:
+                if n_samples == 0:
+                    diagnostics.record_zero_length()
+                else:
+                    diagnostics.begin(n_samples)
+            try:
+                return self._render_locked(n_samples, separate_fx,
+                                           external_reverb_send, external_delay_send)
+            except BaseException:
+                if diagnostics is not None:
+                    diagnostics.abort()
+                raise
+
+    def synth_diagnostics_status(self):
+        diagnostics = self._synth_diagnostics
+        return ({"enabled": False} if diagnostics is None
+                else diagnostics.snapshot())
 
     def _render_locked(self, n_samples: int, separate_fx: bool,
                        external_reverb_send, external_delay_send):
@@ -3590,7 +3612,11 @@ class SynthEngine:
                     st2_a=self._lfo2_smooth_a_state,
                     st2_b=self._lfo2_smooth_b_state,
                 )
+                if self._synth_diagnostics is not None:
+                    self._synth_diagnostics.mark_merged_start()
                 pad_out, osc_out = self._faust_merged.process(n_samples)
+                if self._synth_diagnostics is not None:
+                    self._synth_diagnostics.mark_merged_end()
                 # Sync smoother states for exactly the LFOs Faust ramped
                 # (mirrors which _smooth_one_pole calls Python would make).
                 if faust_lfo1:
@@ -4079,7 +4105,11 @@ class SynthEngine:
         # Main reverb — stereo in, stereo out (reuse _stereo_out as temp)
         self._stereo_out[0, :n_samples] = reverb_in_l
         self._stereo_out[1, :n_samples] = reverb_in_r
+        if self._synth_diagnostics is not None:
+            self._synth_diagnostics.mark_reverb_start()
         reverb_out = self.reverb.process(self._stereo_out[:, :n_samples])
+        if self._synth_diagnostics is not None:
+            self._synth_diagnostics.mark_reverb_end()
 
         # Upstream NaN trap. A feedback-net reverb (FDN, drone resonators)
         # that somehow ingests a NaN will propagate NaN forever through its
@@ -4190,6 +4220,8 @@ class SynthEngine:
             # the FX-bypass routing stays in sync with the unified path.
             dry_bus *= 0.85
             fx_bus *= 0.85
+            if self._synth_diagnostics is not None:
+                self._synth_diagnostics.complete()
             return dry_bus, fx_bus
 
         # Pad bus headroom trim — ~1.4dB to give the master limiter clearance
@@ -4197,6 +4229,8 @@ class SynthEngine:
         # Calibrated against the post-system-volume-honoring chain (ART USB
         # DI fix made everything ~6dB hotter than original tuning).
         stereo_out *= 0.85
+        if self._synth_diagnostics is not None:
+            self._synth_diagnostics.complete()
         return stereo_out  # (2, n)
 
     def update_params(self, params: dict):

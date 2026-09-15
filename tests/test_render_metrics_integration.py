@@ -112,10 +112,14 @@ class RenderMetricsIntegrationTests(unittest.TestCase):
             get_diagnostics_status=lambda: {"enabled": True, "missed": 0}))
         self.assertEqual(health(app)["audio"]["render_diagnostics"]["count"], 9)
         self.assertEqual(health(app)["audio"]["reverb_diagnostics"]["missed"], 0)
+        app.synth.synth_diagnostics_status = lambda: {"enabled": True, "count": 7}
+        self.assertEqual(health(app)["audio"]["synth_diagnostics"]["count"], 7)
         app.jack.render_diagnostics.snapshot = unavailable
         app.synth.reverb.get_diagnostics_status = unavailable
+        app.synth.synth_diagnostics_status = unavailable
         self.assertEqual(health(app)["audio"]["render_diagnostics"], {"available": False})
         self.assertEqual(health(app)["audio"]["reverb_diagnostics"], {"available": False})
+        self.assertEqual(health(app)["audio"]["synth_diagnostics"], {"available": False})
 
     def test_opt_in_diagnostics_clock_calls_are_guarded(self):
         source = ast.unparse(self._method("start"))
@@ -124,7 +128,7 @@ class RenderMetricsIntegrationTests(unittest.TestCase):
         parents = {child: node for node in ast.walk(render) for child in ast.iter_child_nodes(node)}
         calls = [node for node in ast.walk(render) if isinstance(node, ast.Call)
                  and ast.unparse(node.func) in {"time.monotonic_ns", "time.thread_time_ns"}]
-        self.assertEqual(len(calls), 6)
+        self.assertEqual(len(calls), 8)
         for node in calls:
             ancestors = []
             while node in parents:
