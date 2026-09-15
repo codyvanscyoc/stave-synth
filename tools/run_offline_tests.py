@@ -71,6 +71,7 @@ SAFE_TESTS = (
     "test_control_diagnostics.py",
     "test_piano_program_owner.py",
     "test_organ_variants.py",
+    "test_extended_probe.py",
 )
 
 

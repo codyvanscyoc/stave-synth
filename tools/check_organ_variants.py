@@ -437,6 +437,7 @@ def new_report():
 
 def check_variants(scalar_path, variant_path, report):
     opened = []
+    parity_failures = []
     try:
         for path in (scalar_path, scalar_path, variant_path, variant_path):
             opened.append(NativeOrgan(path))
@@ -459,7 +460,10 @@ def check_variants(scalar_path, variant_path, report):
         report["comparisons"] = comparisons
         report["all_compared_samples_finite"] = True
         for label, metrics in comparisons.items():
-            enforce_parity(metrics, label)
+            try:
+                enforce_parity(metrics, label)
+            except RuntimeError as exc:
+                parity_failures.append(str(exc))
         # Whole-timeline metrics cannot conceal a local onset, mode-transition,
         # release, or tail discrepancy.  Enforce the same gates independently
         # in every interval between controls, including the final three seconds.
@@ -473,7 +477,11 @@ def check_variants(scalar_path, variant_path, report):
             report["scalar_variant_segments"].append(
                 {"name": EVENT_NAMES[index], "start_frame": start, "end_frame": end, **segment}
             )
-            enforce_parity(segment, f"scalar_vs_variant segment {EVENT_NAMES[index]}")
+            try:
+                enforce_parity(segment, f"scalar_vs_variant segment {EVENT_NAMES[index]}")
+            except RuntimeError as exc:
+                parity_failures.append(str(exc))
+        report["parity_failures"] = parity_failures
         report["render_chunks"] = {"scalar_production": scalar_chunks,
                                    "scalar_remainder": scalar_remainder_chunks,
                                    "variant_production": variant_chunks,
@@ -488,6 +496,7 @@ def check_variants(scalar_path, variant_path, report):
         report["benchmark"] = benchmark_pair(*benchmark_organs)
         require(report["benchmark"]["gate"]["passed"],
                 "variant compute speedup is not material at median and p95")
+        require(not parity_failures, "; ".join(parity_failures))
     finally:
         for organ in reversed(benchmark_organs):
             organ.close()

@@ -134,6 +134,28 @@ class FakeLibrary:
 
 
 class OrganVariantTests(unittest.TestCase):
+    def test_failed_parity_retains_segment_and_speed_evidence_and_closes_handles(self):
+        organs = []
+        def factory(path):
+            organ = FakeOrgan(delta=0.01 if path == "variant" else 0)
+            organs.append(organ)
+            return organ
+        report = checker.new_report()
+        with patch.object(checker, "NativeOrgan", side_effect=factory), \
+                patch.object(checker, "SCENARIO_FRAMES", 256), \
+                patch.object(checker, "EVENT_FRAMES", (0, 32, 64, 96, 128, 160, 192, 224, 240)), \
+                patch.object(checker, "BLOCK_FRAMES", 64), \
+                patch.object(checker, "benchmark_pair", return_value={"gate": {"passed": True}}) as benchmark:
+            with self.assertRaisesRegex(RuntimeError, "absolute error"):
+                checker.check_variants("scalar", "variant", report)
+        self.assertEqual(len(report["scalar_variant_segments"]), 9)
+        self.assertTrue(report["parity_failures"])
+        self.assertTrue(report["benchmark"]["gate"]["passed"])
+        self.assertEqual(report["status"], "FAIL")
+        benchmark.assert_called_once()
+        self.assertEqual(len(organs), 6)
+        self.assertTrue(all(organ.closed for organ in organs))
+
     def test_zone_inventory_is_exact_and_metadata_must_agree(self):
         self.assertEqual(len(checker.expected_zone_names()), 80)
         old, new = zone_metadata(), zone_metadata()
