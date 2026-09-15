@@ -53,6 +53,8 @@ SAFE_TESTS = (
     "test_native_audition.py",
     "test_audition_plan.py",
     "test_analyze_audition.py",
+    "test_piano_event_ownership.py",
+    "test_native_render_preparation.py",
 )
 
 

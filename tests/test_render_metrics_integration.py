@@ -91,6 +91,22 @@ class RenderMetricsIntegrationTests(unittest.TestCase):
         ))
         self.assertNotIn("render_metrics", health(old_mock)["audio"])
 
+        # Instrument-source continuity is independent of bridge underruns.
+        # Expose its counters without requiring an optional/native app import.
+        app.piano = SimpleNamespace(midi_render_status=lambda: {
+            "pending": 0, "native_render_lock_misses": 3,
+        })
+        self.assertEqual(health(app)["audio"]["piano_midi"], {
+            "pending": 0, "native_render_lock_misses": 3,
+        })
+        self.assertNotIn("piano_midi", health(old_mock)["audio"])
+
+        def unavailable():
+            raise RuntimeError("mock snapshot unavailable")
+
+        app.piano.midi_render_status = unavailable
+        self.assertEqual(health(app)["audio"]["piano_midi"], {"available": False})
+
 
 if __name__ == "__main__":
     unittest.main()

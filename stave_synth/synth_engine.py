@@ -2946,39 +2946,6 @@ class SynthEngine:
         osc2_accum_r = self._osc2_accum_r[:n_samples]
         osc2_accum_r[:] = 0
 
-        # ── Per-unison values, precomputed once per block (same for every voice) ──
-        # Detune multipliers and stereo spread offsets
-        if n_uni > 1:
-            u_arr = np.arange(n_uni, dtype=np.float64)
-            detune_factor = 2.0 * u_arr / (n_uni - 1) - 1.0  # -1 .. +1
-            detune_mult = 2.0 ** (self.unison_detune * detune_factor / 12.0)
-            uni_pan_arr = detune_factor * spread
-        else:
-            detune_mult = np.ones(1, dtype=np.float64)
-            uni_pan_arr = np.zeros(1, dtype=np.float64)
-
-        # Per-unison equal-power pan gains for OSC1
-        _pan1 = np.clip(o1_pan + uni_pan_arr, -1.0, 1.0)
-        _pan1_shaped = np.sign(_pan1) * np.abs(_pan1) ** 0.7
-        _angle1 = (_pan1_shaped + 1.0) * 0.25 * np.pi
-        o1_gl_arr = np.cos(_angle1) * 1.4142135623730951
-        o1_gr_arr = np.sin(_angle1) * 1.4142135623730951
-        # Per-unison equal-power pan gains for OSC2
-        _pan2 = np.clip(o2_pan + uni_pan_arr, -1.0, 1.0)
-        _pan2_shaped = np.sign(_pan2) * np.abs(_pan2) ** 0.7
-        _angle2 = (_pan2_shaped + 1.0) * 0.25 * np.pi
-        o2_gl_arr = np.cos(_angle2) * 1.4142135623730951
-        o2_gr_arr = np.sin(_angle2) * 1.4142135623730951
-
-        osc1_oct_mult = 2.0 ** self.osc1_octave
-        osc2_oct_mult = 2.0 ** self.osc2_octave
-
-        # ── Faust path: write per-block global osc params once ──
-        # Per-voice freq+gate get written inside the voice loop below.
-        # NOTE: osc1_b/osc2_b are the -24dB-curved amplitudes, NOT raw fader
-        # positions — Faust expects linear amplitude (it multiplies the wave
-        # by the passed value directly). Passing raw faders here would over-
-        # gain by ~2x (fader 0.6 = 0.331 linear on the dB curve).
         # Faust osc_bank.dsp hardcodes UNI=3 — route to Python path for any
         # other unison count so users picking 1 or 5 don't silently get 3.
         unison_ok = True
@@ -2990,6 +2957,42 @@ class SynthEngine:
         use_pad_bus = use_faust and (self._faust_pad_bus is not None)
         # Phase 4: single-call bank→pad_bus shim (subset of pad-bus blocks).
         use_merged = use_pad_bus and (self._faust_merged is not None)
+
+        if not use_faust:
+            # Python-only oscillator preparation. The native bank receives
+            # scalar params below and computes its own detune/pan; these
+            # temporary arrays are not inputs to any native stage.
+            if n_uni > 1:
+                u_arr = np.arange(n_uni, dtype=np.float64)
+                detune_factor = 2.0 * u_arr / (n_uni - 1) - 1.0  # -1 .. +1
+                detune_mult = 2.0 ** (self.unison_detune * detune_factor / 12.0)
+                uni_pan_arr = detune_factor * spread
+            else:
+                detune_mult = np.ones(1, dtype=np.float64)
+                uni_pan_arr = np.zeros(1, dtype=np.float64)
+
+            # Per-unison equal-power pan gains for OSC1
+            _pan1 = np.clip(o1_pan + uni_pan_arr, -1.0, 1.0)
+            _pan1_shaped = np.sign(_pan1) * np.abs(_pan1) ** 0.7
+            _angle1 = (_pan1_shaped + 1.0) * 0.25 * np.pi
+            o1_gl_arr = np.cos(_angle1) * 1.4142135623730951
+            o1_gr_arr = np.sin(_angle1) * 1.4142135623730951
+            # Per-unison equal-power pan gains for OSC2
+            _pan2 = np.clip(o2_pan + uni_pan_arr, -1.0, 1.0)
+            _pan2_shaped = np.sign(_pan2) * np.abs(_pan2) ** 0.7
+            _angle2 = (_pan2_shaped + 1.0) * 0.25 * np.pi
+            o2_gl_arr = np.cos(_angle2) * 1.4142135623730951
+            o2_gr_arr = np.sin(_angle2) * 1.4142135623730951
+
+            osc1_oct_mult = 2.0 ** self.osc1_octave
+            osc2_oct_mult = 2.0 ** self.osc2_octave
+
+        # ── Faust path: write per-block global osc params once ──
+        # Per-voice freq+gate get written inside the voice loop below.
+        # NOTE: osc1_b/osc2_b are the -24dB-curved amplitudes, NOT raw fader
+        # positions — Faust expects linear amplitude (it multiplies the wave
+        # by the passed value directly). Passing raw faders here would over-
+        # gain by ~2x (fader 0.6 = 0.331 linear on the dB curve).
         if use_faust:
             self._faust_osc_bank.set_osc_params(
                 osc1_wf=osc1_wf, osc2_wf=osc2_wf,
@@ -3073,16 +3076,17 @@ class SynthEngine:
                 elif voice.drift_val < -1.0:
                     voice.drift_val = -1.0
                 base_freq *= 2.0 ** (self.analog_drift_cents * voice.drift_val / 1200.0)
-            base_inc = TWO_PI * base_freq / self.sample_rate
-            voice_shimmer = self._voice_shimmer[voice_idx, :n_samples]
-            voice_shimmer[:] = 0
+            if not use_faust:
+                base_inc = TWO_PI * base_freq / self.sample_rate
+                voice_shimmer = self._voice_shimmer[voice_idx, :n_samples]
+                voice_shimmer[:] = 0
 
-            # Per-unison phase increments for this voice (n_uni,)
-            osc1_inc_per_u = base_inc * detune_mult * osc1_oct_mult
-            osc2_inc_per_u = base_inc * detune_mult * osc2_oct_mult
-            # Shimmer: octave-up (+12 = 2x) or two octaves up (+24 = 4x) when shimmer_high
-            shim_mult = 4.0 if self.shimmer_high else 2.0
-            shim_inc_per_u = base_inc * shim_mult * detune_mult
+                # Per-unison phase increments for this voice (n_uni,)
+                osc1_inc_per_u = base_inc * detune_mult * osc1_oct_mult
+                osc2_inc_per_u = base_inc * detune_mult * osc2_oct_mult
+                # Shimmer: octave-up (+12 = 2x) or two octaves up (+24 = 4x) when shimmer_high
+                shim_mult = 4.0 if self.shimmer_high else 2.0
+                shim_inc_per_u = base_inc * shim_mult * detune_mult
 
             # ── Oscillator generation: Faust writes slot, Python fills buffers ──
             if use_faust:
@@ -3141,12 +3145,13 @@ class SynthEngine:
                 for u in range(n_uni):
                     voice.shimmer_phases[u] = float(new_phases[u])
 
-            # Unison gain-normalization common factor (envelope applied per-OSC below)
-            scale_common = (1.0 / max(n_uni, 1)) * (1.0 + 0.15 * (n_uni - 1)) * voice.velocity
-            # LAYER weights fold into the per-OSC scale on the Python fallback
-            # path (Faust path multiplies them into g1/g2 above).
-            scale1 = scale_common * env1 * voice.osc1_weight
-            scale2 = scale_common * env2 * voice.osc2_weight
+            if not use_faust:
+                # Unison gain-normalization common factor (envelope applied per-OSC below)
+                scale_common = (1.0 / max(n_uni, 1)) * (1.0 + 0.15 * (n_uni - 1)) * voice.velocity
+                # LAYER weights fold into the per-OSC scale on the Python fallback
+                # path (Faust path multiplies them into g1/g2 above).
+                scale1 = scale_common * env1 * voice.osc1_weight
+                scale2 = scale_common * env2 * voice.osc2_weight
 
             if render_shimmer and not use_faust:
                 # Shimmer tracks the voice lifetime (louder of the two envelopes)

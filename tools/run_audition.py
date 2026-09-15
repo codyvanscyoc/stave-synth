@@ -31,6 +31,8 @@ MUSIC_START_SECONDS = 2.0
 MUSIC_END_SECONDS = 47.0
 STREAM_CAPTURE_LIMIT = 64 * 1024
 STREAM_LINE_LIMIT = 8192
+PIANO_FAILURE_COUNTERS = ("overflows", "recoveries", "native_errors",
+                          "native_render_lock_misses", "recovery_failures", "discarded")
 CASES = (
     "01-piano-reference",
     "02-warm-layers",
@@ -401,6 +403,22 @@ def health_failures(response: dict) -> list[str]:
     for key in ("error", "graph_error"):
         if audio.get(key):
             failures.append(f"audio.{key}: {audio[key]}")
+    piano = audio.get("piano_midi")
+    if not isinstance(piano, dict) or piano.get("available") is False:
+        failures.append("piano MIDI telemetry is unavailable")
+    else:
+        if type(piano.get("recovery_pending")) is not bool:
+            failures.append("piano MIDI recovery status is unavailable")
+        elif piano["recovery_pending"]:
+            failures.append("piano MIDI recovery is pending")
+        for key in ("pending", "queued"):
+            value = piano.get(key)
+            if type(value) is not int or value != 0:
+                failures.append(f"piano MIDI {key} is not verified empty")
+        for key in PIANO_FAILURE_COUNTERS:
+            value = piano.get(key)
+            if type(value) is not int or value < 0:
+                failures.append(f"piano.{key} counter unavailable")
     ui = health.get("ui") or {}
     if ui and ui.get("healthy") is False:
         failures.append("UI listener reports unhealthy")
@@ -435,6 +453,19 @@ def counter_growth(before_state: dict, after_state: dict,
     for name, before, after in pairs:
         if isinstance(before, (int, float)) and isinstance(after, (int, float)) and after > before:
             failures.append(f"{name} grew from {before} to {after}")
+    # Source-side interruptions are independent of bridge xruns. This tool
+    # requires the repaired candidate's telemetry; use the saved older tool
+    # for legacy-baseline captures, not implicit zero-valued missing evidence.
+    before_piano = before_audio.get("piano_midi")
+    after_piano = after_audio.get("piano_midi")
+    for key in PIANO_FAILURE_COUNTERS:
+        before = before_piano.get(key) if isinstance(before_piano, dict) else None
+        after = after_piano.get(key) if isinstance(after_piano, dict) else None
+        if (type(before) is not int or type(after) is not int
+                or before < 0 or after < before):
+            failures.append(f"piano.{key} counter unavailable or reset")
+        elif after > before:
+            failures.append(f"piano.{key} grew from {before} to {after}")
     return failures
 
 
@@ -627,6 +658,10 @@ async def run(args) -> int:
                                   max_size=4 * 1024 * 1024, max_queue=16) as raw_ws:
         ws = await CommandSocket(raw_ws).start()
         original_response = await send_command(ws, {"type": "get_state"})
+        initial_failures = health_failures(original_response)
+        if initial_failures:
+            await ws.stop()
+            raise RuntimeError("audition preflight failed: " + "; ".join(initial_failures))
         original = copy.deepcopy(original_response["state"])
         # Validate all state paths and plan commands before the first panic.
         restore = restore_commands(original)
@@ -643,7 +678,8 @@ async def run(args) -> int:
             handle.write(schedule_text)
         _write_json_exclusive(output_dir / "00-original-state.json", original_response)
 
-        manifest = {"format": 1, "instance": INSTANCE, "runtime": runtime,
+        manifest = {"format": 2, "instance": INSTANCE, "runtime": runtime,
+                    "piano_telemetry_required": True,
                     "websocket_url": WS_URL, "duration_seconds": DURATION_SECONDS,
                     "music_seconds": [MUSIC_START_SECONDS, MUSIC_END_SECONDS],
                     "schedule_sha256": hashlib.sha256(schedule_text.encode("ascii")).hexdigest(),

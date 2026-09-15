@@ -3,6 +3,7 @@
 import logging
 import math
 import threading
+from collections import deque
 
 try:
     import fluidsynth
@@ -17,6 +18,9 @@ from .config import SOUNDFONT_DIR, SAMPLE_RATE, LOW_RAM_MODE
 from .config import USE_FAUST_PIANO_CHAIN
 
 logger = logging.getLogger(__name__)
+
+_MIDI_EVENT_QUEUE_CAPACITY = 256
+_MIDI_EVENT_RENDER_BATCH_MAX = 64
 
 # Soundfont presets: what the UI dropdown actually lists. Each preset maps
 # a user-facing name → the underlying .sf2/.sf3 file stem + optional tremolo
@@ -178,6 +182,25 @@ class FluidSynthPlayer:
         self.current_soundfont = ""
         self.reverb_dry_wet = 0.4
         self._lock = threading.RLock()
+        # Musical FluidSynth calls are owned by the render thread.  The JACK
+        # MIDI reader only appends small commands here, so a chord cannot hold
+        # _lock while render_block() is trying to produce the next audio block.
+        # The event lock is never waited on by the render thread.
+        self._midi_event_lock = threading.Lock()
+        self._midi_events = deque()
+        self._midi_recovery_pending = False
+        self._midi_recovery_failed_latched = False
+        self._midi_events_enqueued = 0
+        self._midi_events_applied = 0
+        self._midi_event_overflows = 0
+        self._midi_event_recoveries = 0
+        self._midi_events_discarded = 0
+        self._midi_queue_lock_deferrals = 0
+        self._midi_status_lock_deferrals = 0
+        self._native_render_lock_misses = 0
+        self._midi_native_errors = 0
+        self._midi_recovery_failures = 0
+        self._midi_noteoff_unmatched = 0
         self._piano_room_lock = threading.RLock()
         self._preload_stop = threading.Event()
         self._preload_thread = None
@@ -566,43 +589,244 @@ class FluidSynthPlayer:
         # and max velocity still maps to 1.0 (no clipping, no "always slam").
         vel_shaped = velocity ** (1.0 / max(1.0, self.velocity_curve))
         vel_midi = max(1, min(127, int(vel_shaped * 127)))
-        with self._lock:
-            if self._closing or self.fs is None:
-                return
-            self.fs.noteon(0, note, vel_midi)
-            self._note_on_count += 1
-            self._active_notes += 1
-            self._silent_blocks = 0
-            # Velocity-brightness tracker: fast attack, slow-ish blend so a
-            # run of soft notes reads as soft after one loud accent.
-            self._vel_tracker = 0.6 * self._vel_tracker + 0.4 * float(velocity)
-            logger.debug("PIANO note_on: note=%d vel=%d (count=%d)",
-                         note, vel_midi, self._note_on_count)
+        self._queue_midi_event("note_on", int(note), vel_midi, float(velocity))
 
     def note_off(self, note: int):
         """Release a note."""
         if self._closing or self.fs is None:
             return
-        with self._lock:
+        self._queue_midi_event("note_off", int(note), 0, 0.0)
+
+    def _queue_midi_event(self, kind: str, note: int, value: int,
+                          velocity: float) -> bool:
+        """Append one bounded musical command for the render owner.
+
+        Once overflow makes the batch ambiguous, all later commands are
+        rejected until render applies a fail-safe release.  This prevents a
+        stale note-on from surviving after its matching note-off was lost.
+        """
+        if self._closing or self.fs is None:
+            return False
+        with self._midi_event_lock:
             if self._closing or self.fs is None:
-                return
-            self.fs.noteoff(0, note)
-            self._active_notes = max(0, self._active_notes - 1)
+                return False
+            if kind != "note_off" and not self.enabled:
+                return False
+            if (self._midi_recovery_pending
+                    or self._midi_recovery_failed_latched):
+                self._midi_events_discarded += 1
+                return False
+            if len(self._midi_events) >= _MIDI_EVENT_QUEUE_CAPACITY:
+                self._midi_events_discarded += len(self._midi_events) + 1
+                self._midi_events.clear()
+                self._midi_recovery_pending = True
+                self._midi_event_overflows += 1
+                return False
+            self._midi_events.append((kind, note, value, velocity))
+            self._midi_events_enqueued += 1
+            return True
+
+    def _take_midi_batch_locked(self, *, blocking: bool = False,
+                                limit: int | None = _MIDI_EVENT_RENDER_BATCH_MAX):
+        """Take pending commands while the caller owns the native lock."""
+        if not self._midi_event_lock.acquire(blocking=blocking):
+            self._midi_queue_lock_deferrals += 1
+            return None, False
+        try:
+            recovery = (self._midi_recovery_pending
+                        or self._midi_recovery_failed_latched)
+            self._midi_recovery_pending = False
+            if recovery:
+                self._midi_events_discarded += len(self._midi_events)
+                self._midi_events.clear()
+                return (), True
+            take = len(self._midi_events) if limit is None else min(
+                len(self._midi_events), limit
+            )
+            batch = tuple(self._midi_events.popleft() for _ in range(take))
+            return batch, False
+        finally:
+            self._midi_event_lock.release()
+
+    def _native_call_checked(self, label: str, function, *args,
+                             unmatched_noteoff_ok: bool = False) -> bool:
+        """Call one FluidSynth API and account for exceptions/status errors."""
+        try:
+            status = function(*args)
+            if status not in (None, 0):
+                # FluidSynth reports FLUID_FAILED when noteoff finds no
+                # matching voice. Duplicate releases and a 128-note panic
+                # legitimately hit that case; it is not native corruption.
+                if unmatched_noteoff_ok:
+                    self._midi_noteoff_unmatched += 1
+                    return True
+                raise RuntimeError(f"status {status}")
+            return True
+        except Exception as exc:
+            self._midi_native_errors += 1
+            errors = self._midi_native_errors
+            # A persistent native fault retries fail-silent every render.
+            # Log the first few and powers of two; counters retain every
+            # failure without turning diagnostics into an audio-thread flood.
+            if errors <= 4 or (errors & (errors - 1)) == 0:
+                logger.error("FluidSynth %s failed (#%d): %s",
+                             label, errors, exc)
+            return False
+
+    def _release_all_native_locked(self) -> bool:
+        """Best-effort complete native release; never stop at the first fault."""
+        ok = True
+        ok = self._native_call_checked("sustain release", self.fs.cc,
+                                       0, 64, 0) and ok
+        ok = self._native_call_checked("sostenuto release", self.fs.cc,
+                                       0, 66, 0) and ok
+        for note in range(128):
+            ok = self._native_call_checked(
+                f"note-off {note}", self.fs.noteoff, 0, note,
+                unmatched_noteoff_ok=True,
+            ) and ok
+        ok = self._native_call_checked("pitch-bend reset", self.fs.pitch_bend,
+                                       0, 0) and ok
+        return ok
+
+    def _recover_midi_native_locked(self) -> bool:
+        """Apply one compact fail-safe release, retrying on later renders."""
+        ok = True
+        for label, controller in (("sustain release", 64),
+                                  ("sostenuto release", 66),
+                                  ("all-notes-off", 123)):
+            ok = self._native_call_checked(
+                label, self.fs.cc, 0, controller, 0
+            ) and ok
+        ok = self._native_call_checked(
+            "pitch-bend reset", self.fs.pitch_bend, 0, 0
+        ) and ok
+        if ok:
+            self._active_notes = 0
+            self._midi_event_recoveries += 1
+            self._midi_recovery_failed_latched = False
+            return True
+
+        self._midi_recovery_failures += 1
+        # This render-owned latch closes admission and keeps output fail-silent
+        # without ever waiting for a producer that holds the event lock.
+        self._midi_recovery_failed_latched = True
+        if self._midi_event_lock.acquire(blocking=False):
+            try:
+                self._midi_events_discarded += len(self._midi_events)
+                self._midi_events.clear()
+                self._midi_recovery_pending = True
+            finally:
+                self._midi_event_lock.release()
+        else:
+            self._midi_queue_lock_deferrals += 1
+        return False
+
+    def _apply_midi_batch_locked(self, batch, recovery: bool) -> bool:
+        """Apply commands on the render owner immediately before sampling."""
+        if recovery:
+            return self._recover_midi_native_locked()
+
+        for index, (kind, note, value, velocity) in enumerate(batch):
+            if kind == "note_on":
+                ok = self._native_call_checked(
+                    "note-on", self.fs.noteon, 0, note, value
+                )
+                if ok:
+                    self._note_on_count += 1
+                    self._active_notes += 1
+                    self._silent_blocks = 0
+                    self._vel_tracker = (
+                        0.6 * self._vel_tracker + 0.4 * float(velocity)
+                    )
+                    logger.debug("PIANO note_on: note=%d vel=%d (count=%d)",
+                                 note, value, self._note_on_count)
+            elif kind == "note_off":
+                ok = self._native_call_checked(
+                    "note-off", self.fs.noteoff, 0, note,
+                    unmatched_noteoff_ok=True,
+                )
+                if ok:
+                    self._active_notes = max(0, self._active_notes - 1)
+            elif kind == "pitch_bend":
+                ok = self._native_call_checked(
+                    "pitch bend", self.fs.pitch_bend, 0, value
+                )
+            else:
+                self._midi_native_errors += 1
+                logger.error("Unknown FluidSynth MIDI event: %s", kind)
+                ok = False
+            if ok:
+                self._midi_events_applied += 1
+                continue
+
+            # A failed note-off makes native ownership ambiguous.  Do not
+            # continue playing the rest of this detached batch; release every
+            # possible voice and make the loss visible in cumulative health.
+            self._midi_events_discarded += len(batch) - index
+            return self._recover_midi_native_locked()
+        return True
+
+    def midi_render_status(self) -> dict:
+        """Return cumulative bounded-queue telemetry for health reporting."""
+        status_lock_contended = not self._midi_event_lock.acquire(blocking=False)
+        if status_lock_contended:
+            # CPython's deque length and object-reference reads occur under the
+            # GIL.  They are a diagnostic approximation for this one snapshot;
+            # never wedge a health request behind a failed producer.
+            self._midi_status_lock_deferrals += 1
+            queued = len(self._midi_events)
+            recovery_pending = (self._midi_recovery_pending
+                                or self._midi_recovery_failed_latched)
+        else:
+            try:
+                queued = len(self._midi_events)
+                recovery_pending = (self._midi_recovery_pending
+                                    or self._midi_recovery_failed_latched)
+            finally:
+                self._midi_event_lock.release()
+        return {
+            "queue_capacity": _MIDI_EVENT_QUEUE_CAPACITY,
+            "render_batch_max": _MIDI_EVENT_RENDER_BATCH_MAX,
+            "queued": queued,
+            "pending": queued + int(recovery_pending),
+            "recovery_pending": recovery_pending,
+            "enqueued": self._midi_events_enqueued,
+            "applied": self._midi_events_applied,
+            "overflows": self._midi_event_overflows,
+            "recoveries": self._midi_event_recoveries,
+            "discarded": self._midi_events_discarded,
+            "queue_lock_deferrals": self._midi_queue_lock_deferrals,
+            "status_lock_deferrals": self._midi_status_lock_deferrals,
+            "status_lock_contended": status_lock_contended,
+            "native_render_lock_misses": self._native_render_lock_misses,
+            "native_errors": self._midi_native_errors,
+            "recovery_failures": self._midi_recovery_failures,
+            "noteoff_unmatched": self._midi_noteoff_unmatched,
+        }
 
     def all_notes_off(self):
         """Silence all notes."""
         if self.fs is None:
             return
-        self._active_notes = 0
         with self._lock:
-            for note in range(128):
-                self.fs.noteoff(0, note)
-            # Reset pitch bend to center. pyFluidSynth's pitch_bend takes a
-            # SIGNED offset from center, so 0 = center (NOT 8192).
-            try:
-                self.fs.pitch_bend(0, 0)
-            except Exception:
-                pass
+            # Panic/instrument switching remains synchronous.  Cancel queued
+            # events under the same native ownership so a pre-panic batch can
+            # never be resurrected after the release and JACK ring clear.
+            with self._midi_event_lock:
+                self._midi_events_discarded += len(self._midi_events)
+                self._midi_events.clear()
+                self._midi_recovery_pending = False
+                self._midi_recovery_failed_latched = False
+            release_ok = self._release_all_native_locked()
+            if release_ok:
+                self._active_notes = 0
+            else:
+                # Publish the unsafe latch before native ownership is released;
+                # the next render must not observe a falsely clean boundary.
+                self._midi_recovery_failures += 1
+                self._midi_recovery_failed_latched = True
+                logger.error("FluidSynth all-notes-off was incomplete")
         # Reset comp state so the first hard chord after silence doesn't
         # ramp from a stale gain (LA-2A linear-interp between blocks would
         # otherwise pop). Cheap; only fires on panic / instrument-cycle.
@@ -614,6 +838,9 @@ class FluidSynthPlayer:
         if self._piano_room is not None:
             with self._piano_room_lock:
                 self._piano_room.clear()
+        if not release_ok:
+            raise RuntimeError("FluidSynth all-notes-off was incomplete")
+        return True
 
     def midi_callback(self, event_type: str, note: int, velocity: float):
         """Callback to be registered with JackEngine for MIDI forwarding."""
@@ -632,12 +859,9 @@ class FluidSynthPlayer:
             # up (+2 semis with our default range), which is the "piano plays D
             # when I hit C" bug.
             if not self._closing and self.fs is not None:
-                try:
-                    with self._lock:
-                        if not self._closing and self.fs is not None:
-                            self.fs.pitch_bend(0, int(note) - 8192)
-                except Exception as e:
-                    logger.debug("FluidSynth pitch_bend failed: %s", e)
+                self._queue_midi_event(
+                    "pitch_bend", 0, int(note) - 8192, 0.0
+                )
 
     def set_volume(self, volume: float):
         """Set piano volume (0.0-1.0). Applied in render_block()."""
@@ -667,21 +891,34 @@ class FluidSynthPlayer:
         if self._closing or self.fs is None or not self.enabled:
             return np.zeros((2, n_samples), dtype=np.float64)
 
-        # Skip rendering when piano is silent (no active notes + release tail finished)
-        # ~2s of blocks at 48kHz/256 = ~375 blocks for release tails to decay
-        if self._active_notes == 0:
-            self._silent_blocks += 1
-            if self._silent_blocks > 400:
-                return np.zeros((2, n_samples), dtype=np.float64)
-
         # A cold background sfload can own FluidSynth for hundreds of ms.
         # Never make the render producer wait that long: emit a complete
         # silent block while startup preload owns the native instance.
         if not self._lock.acquire(blocking=False):
+            self._native_render_lock_misses += 1
             return np.zeros((2, n_samples), dtype=np.float64)
         try:
             if self.fs is None:
                 return np.zeros((2, n_samples), dtype=np.float64)
+            batch, recovery = self._take_midi_batch_locked()
+            events_deferred = batch is None
+            if events_deferred and self._midi_recovery_failed_latched:
+                return np.zeros((2, n_samples), dtype=np.float64)
+            if not events_deferred:
+                recovery_safe = self._apply_midi_batch_locked(batch, recovery)
+                if not recovery_safe:
+                    # Recovery failed and is latched for retry.  Do not emit
+                    # potentially stuck native voices as apparently valid audio.
+                    return np.zeros((2, n_samples), dtype=np.float64)
+
+            # Drain commands before considering the idle optimization.  If a
+            # producer temporarily owns the event lock, sample normally so a
+            # newly queued note after long silence cannot lose a whole block.
+            # At 48k/512, 400 blocks retain about 4.27s of release tail.
+            if self._active_notes == 0 and not events_deferred:
+                self._silent_blocks += 1
+                if self._silent_blocks > 400:
+                    return np.zeros((2, n_samples), dtype=np.float64)
             # get_samples returns interleaved stereo int16, length = 2 * n_samples
             raw = self.fs.get_samples(n_samples)
         finally:
@@ -1014,6 +1251,15 @@ class FluidSynthPlayer:
                                    name, target_file, self.current_soundfont)
                     raise RuntimeError(
                         f"Soundfont preset '{name}' is unavailable or still preloading"
+                    )
+                # Preserve the old lock-defined boundary: musical events that
+                # arrived before this switch sound with the old program.
+                batch, recovery = self._take_midi_batch_locked(
+                    blocking=True, limit=None
+                )
+                if not self._apply_midi_batch_locked(batch, recovery):
+                    raise RuntimeError(
+                        "FluidSynth MIDI recovery failed before preset switch"
                     )
                 # (No set_reverb_level here — FluidSynth's reverb is
                 # permanently disabled at start(); piano room colour comes

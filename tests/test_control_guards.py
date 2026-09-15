@@ -28,8 +28,8 @@ def _handlers():
                          for target in node.targets))
     methods = [node for node in owner.body
                if isinstance(node, ast.FunctionDef)
-               and node.name in ("_handle_setting", "_handle_ws_message", "_apply_setting", "_dispatch_ws_message")]
-    assert len(methods) == 4
+               and node.name in ("_handle_setting", "_handle_ws_message", "_apply_setting", "_dispatch_ws_message", "_handle_panic")]
+    assert len(methods) == 5
     namespace = {"_re": re, "logger": logging.getLogger(__name__), "copy": copy,
                  "ValidationError": ValidationError, "validate_message": validate_message,
                  "validate_setting": validate_setting}
@@ -45,6 +45,7 @@ class Controller:
     _handle_ws_message = _HANDLERS["_handle_ws_message"]
     _apply_setting = _HANDLERS["_apply_setting"]
     _dispatch_ws_message = _HANDLERS["_dispatch_ws_message"]
+    _handle_panic = _HANDLERS["_handle_panic"]
 
     def __init__(self):
         self._control_lock = threading.RLock()
@@ -65,6 +66,29 @@ class Controller:
         self.piano = SimpleNamespace(update_params=Mock())
         self.organ = None
         self.ws_server = None
+
+
+class PianoPanicFailureTests(unittest.TestCase):
+    def test_piano_failure_still_clears_other_layers_and_never_acknowledges_success(self):
+        for release in (Mock(return_value=False), Mock(side_effect=RuntimeError("native fault"))):
+            with self.subTest(release=release):
+                app = Controller()
+                app.piano = SimpleNamespace(all_notes_off=release)
+                app.organ = SimpleNamespace(hard_panic=Mock())
+                app.jack = SimpleNamespace(panic=Mock(), fade_reset=Mock())
+                app.midi = SimpleNamespace(all_notes_off=Mock())
+                app._controls = SimpleNamespace(clear=Mock())
+                with self.assertRaisesRegex(RuntimeError, "Piano panic failed"):
+                    app._handle_panic()
+                app._controls.clear.assert_called_once_with()
+                app.synth.panic.assert_called_once_with()
+                app.organ.hard_panic.assert_called_once_with()
+                app.jack.panic.assert_called_once_with()
+                app.jack.fade_reset.assert_called_once_with()
+                app.midi.all_notes_off.assert_called_once_with()
+                self.assertFalse(app.state["synth_pad"]["freeze_enabled"])
+                self.assertFalse(app.state["synth_pad"]["drone_enabled"])
+                self.assertIsNone(app.state["synth_pad"]["drone_key"])
 
 
 class SettingGuardTests(unittest.TestCase):

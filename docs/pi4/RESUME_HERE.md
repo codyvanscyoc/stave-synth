@@ -4,6 +4,20 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
+## Continuation after the save
+
+The next focused batch is [CONTINUITY_REPAIR.md](CONTINUITY_REPAIR.md): a bounded
+piano MIDI/render ownership fix plus removal of unused native-path preparation.
+It changes Python application code and adds source-side continuity telemetry;
+it is not merely audition tooling. Until the target result and deployment are
+recorded there, the normal Pi service remains on the saved `ce15cfb` checkout
+(application/DSP source `483d953`). Do not deploy this batch over that live
+checkout just because GitHub contains newer commits. Use an isolated candidate.
+
+The latest Mac allowlisted suite now passes **350 tests, zero skips**, plus
+Node UI/syntax checks. The 325/294 counts below describe the earlier saved build.
+They do not establish target or physical qualification of this new batch.
+
 ## Scope and current ownership
 
 - Work only on `pi4-stage-pro`. Do not merge/push/deploy onto Pi5 `main` or

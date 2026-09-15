@@ -1104,8 +1104,16 @@ class StaveSynth:
         if drone_cancel is not None:
             drone_cancel.set()
         self.synth.panic()
+        piano_error = None
         if self.piano:
-            self.piano.all_notes_off()
+            try:
+                if self.piano.all_notes_off() is False:
+                    raise RuntimeError("Piano release was incomplete")
+            except Exception as exc:
+                # A piano fault must not prevent the other layers, MIDI
+                # ownership and queued JACK audio from being cleared. Finish
+                # those releases, then report failure instead of panic_ack.
+                piano_error = exc
         if self.organ:
             if hasattr(self.organ, "hard_panic"):
                 self.organ.hard_panic()
@@ -1118,6 +1126,8 @@ class StaveSynth:
         self.state["synth_pad"]["freeze_enabled"] = False
         self.state["synth_pad"]["drone_enabled"] = False
         self.state["synth_pad"]["drone_key"] = None
+        if piano_error is not None:
+            raise RuntimeError("Piano panic failed; remaining cleanup completed") from piano_error
         logger.info("PANIC — all notes off, freeze/drone cleared, buffers flushed")
         return {"type": "panic_ack", "fade_reset": True}
 
@@ -2030,6 +2040,14 @@ class StaveSynth:
                     status["audio"]["render_metrics"] = snapshot()
                 except Exception as exc:
                     logger.debug("Render metrics snapshot unavailable: %s", exc)
+            piano_status = getattr(getattr(self, "piano", None),
+                                   "midi_render_status", None)
+            if callable(piano_status):
+                try:
+                    status["audio"]["piano_midi"] = piano_status()
+                except Exception as exc:
+                    status["audio"]["piano_midi"] = {"available": False}
+                    logger.debug("Piano MIDI snapshot unavailable: %s", exc)
         return status
 
     def _ui_watch_loop(self):

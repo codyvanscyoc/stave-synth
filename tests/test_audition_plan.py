@@ -168,6 +168,8 @@ class AuditionPlanTests(unittest.TestCase):
         def state(midi, controls, over_budget):
             return {"health": {"native_profile": {"ready": True},
                                "audio": {"midi_dropped": midi,
+                                         "piano_midi": dict.fromkeys(AUDITION.PIANO_FAILURE_COUNTERS, 0)
+                                                       | {"recovery_pending": False, "pending": 0, "queued": 0},
                                          "render_metrics": {"over_budget_count": over_budget}},
                                "controls": {"dropped": controls}}}
         before = state(4, 3, 2)
@@ -192,6 +194,34 @@ class AuditionPlanTests(unittest.TestCase):
         self.assertEqual(max(values), 6500.0)
         # The midpoint is multiplicative (log-frequency), not a linear-Hz ramp.
         self.assertLess(values[len(values) // 4], (800 + 6500) / 2)
+
+    def test_piano_source_failures_are_not_hidden_by_zero_bridge_underruns(self):
+        import copy
+        counters = dict.fromkeys(AUDITION.PIANO_FAILURE_COUNTERS, 0)
+        counters.update(native_render_lock_misses=4, recovery_pending=False, pending=0, queued=0)
+        before = {"health": {"native_profile": {"ready": True},
+                             "audio": {"piano_midi": counters}}}
+        self.assertEqual(AUDITION.health_failures(before), [])
+        self.assertEqual(AUDITION.counter_growth(before, before, {}, {}), [])
+        for key in AUDITION.PIANO_FAILURE_COUNTERS:
+            after = copy.deepcopy(before)
+            after["health"]["audio"]["piano_midi"][key] += 1
+            failures = AUDITION.counter_growth(before, after, {}, {})
+            self.assertTrue(any(f"piano.{key} grew" in item for item in failures))
+        for bad in (None, {}, {"available": False}):
+            after = copy.deepcopy(before)
+            after["health"]["audio"]["piano_midi"] = bad
+            self.assertTrue(AUDITION.counter_growth(before, after, {}, {}))
+            self.assertTrue(AUDITION.counter_growth(after, after, {}, {}))
+            self.assertTrue(AUDITION.health_failures(after))
+        after = copy.deepcopy(before)
+        after["health"]["audio"]["piano_midi"]["recovery_pending"] = True
+        self.assertIn("piano MIDI recovery is pending", AUDITION.health_failures(after))
+        del after["health"]["audio"]["piano_midi"]["recovery_pending"]
+        self.assertIn("piano MIDI recovery status is unavailable", AUDITION.health_failures(after))
+        after = copy.deepcopy(before)
+        after["health"]["audio"]["piano_midi"]["pending"] = 1
+        self.assertIn("piano MIDI pending is not verified empty", AUDITION.health_failures(after))
 
     def test_shimmer_build_is_enabled_before_capture_and_uses_absolutes(self):
         commands = AUDITION.case_commands("04-shimmer-build", baseline())
