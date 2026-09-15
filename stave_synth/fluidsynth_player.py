@@ -194,6 +194,8 @@ class FluidSynthPlayer:
         # The event lock is never waited on by the render thread.
         self._midi_event_lock = threading.Lock()
         self._midi_events = deque()
+        self._render_owner_attached = False
+        self._program_request = None
         self._midi_recovery_pending = False
         self._midi_recovery_failed_latched = False
         self._midi_events_enqueued = 0
@@ -717,9 +719,9 @@ class FluidSynthPlayer:
         # velocity notes into a soundfont's hard/top layer without clipping
         # at 127. At curve=1.0 this is identity; curve=1.5 maps vel 0.5 → 0.63,
         # and max velocity still maps to 1.0 (no clipping, no "always slam").
-        vel_shaped = velocity ** (1.0 / max(1.0, self.velocity_curve))
-        vel_midi = max(1, min(127, int(vel_shaped * 127)))
-        self._queue_midi_event("note_on", int(note), vel_midi, float(velocity))
+        # Shape on the owner, so notes after a queued program boundary use
+        # that program's curve even while its UI acknowledgement is pending.
+        self._queue_midi_event("note_on", int(note), 0, float(velocity))
 
     def note_off(self, note: int):
         """Release a note."""
@@ -747,6 +749,7 @@ class FluidSynthPlayer:
                 self._midi_events_discarded += 1
                 return False
             if len(self._midi_events) >= _MIDI_EVENT_QUEUE_CAPACITY:
+                self._finish_program_requests(self._midi_events, "MIDI overflow cancelled program switch")
                 self._midi_events_discarded += len(self._midi_events) + 1
                 self._midi_events.clear()
                 self._midi_recovery_pending = True
@@ -767,6 +770,7 @@ class FluidSynthPlayer:
                         or self._midi_recovery_failed_latched)
             self._midi_recovery_pending = False
             if recovery:
+                self._finish_program_requests(self._midi_events, "MIDI recovery cancelled program switch")
                 self._midi_events_discarded += len(self._midi_events)
                 self._midi_events.clear()
                 return (), True
@@ -774,6 +778,11 @@ class FluidSynthPlayer:
                 len(self._midi_events), limit
             )
             batch = tuple(self._midi_events.popleft() for _ in range(take))
+            # Claim while holding the same admission/cancellation lock. Once
+            # detached, a native operation cannot be cancelled by a timeout.
+            for kind, request, _value, _velocity in batch:
+                if kind == "program" and request["state"] == "pending":
+                    request["state"] = "claimed"
             return batch, False
         finally:
             self._midi_event_lock.release()
@@ -843,6 +852,7 @@ class FluidSynthPlayer:
         self._midi_recovery_failed_latched = True
         if self._midi_event_lock.acquire(blocking=False):
             try:
+                self._finish_program_requests(self._midi_events, "Native MIDI recovery failed")
                 self._midi_events_discarded += len(self._midi_events)
                 self._midi_events.clear()
                 self._midi_recovery_pending = True
@@ -854,11 +864,21 @@ class FluidSynthPlayer:
 
     def _apply_midi_batch_locked(self, batch, recovery: bool) -> bool:
         """Apply commands on the render owner immediately before sampling."""
+        try:
+            return self._apply_midi_batch_impl_locked(batch, recovery)
+        finally:
+            # Even an unexpected Python failure before a detached marker must
+            # resolve its waiter; a still-ticking render watchdog cannot do so.
+            self._finish_program_requests(batch, "MIDI batch interrupted before program completion")
+
+    def _apply_midi_batch_impl_locked(self, batch, recovery: bool) -> bool:
         if recovery:
             return self._recover_midi_native_locked()
 
         for index, (kind, note, value, velocity) in enumerate(batch):
             if kind == "note_on":
+                shaped = velocity ** (1.0 / max(1.0, self.velocity_curve))
+                value = max(1, min(127, int(shaped * 127)))
                 ok = self._native_call_checked(
                     "note-on", self.fs.noteon, 0, note, value
                 )
@@ -882,6 +902,8 @@ class FluidSynthPlayer:
                 ok = self._native_call_checked(
                     "pitch bend", self.fs.pitch_bend, 0, value
                 )
+            elif kind == "program":
+                ok = self._apply_program_request_locked(note)
             else:
                 self._midi_native_errors += 1
                 logger.error("Unknown FluidSynth MIDI event: %s", kind)
@@ -894,8 +916,110 @@ class FluidSynthPlayer:
             # continue playing the rest of this detached batch; release every
             # possible voice and make the loss visible in cumulative health.
             self._midi_events_discarded += len(batch) - index
+            self._finish_program_requests(batch[index:], "MIDI batch failed before program switch")
             return self._recover_midi_native_locked()
         return True
+
+    @staticmethod
+    def _finish_program_requests(events, message):
+        """Resolve discarded markers; caller owns their queue or detached batch."""
+        for kind, request, _value, _velocity in events:
+            if kind == "program" and request["state"] not in {"done", "cancelled"}:
+                request["error"] = RuntimeError(message)
+                request["state"] = "cancelled"
+                request["done"].set()
+
+    def set_render_owner_attached(self, attached):
+        """Called only before producer start or after proven producer join."""
+        with self._lock:
+            self._render_owner_attached = bool(attached)
+            if not attached:
+                with self._midi_event_lock:
+                    self._finish_program_requests(self._midi_events, "Audio owner stopped")
+                    remaining = deque(event for event in self._midi_events if event[0] != "program")
+                    self._midi_events_discarded += len(self._midi_events) - len(remaining)
+                    self._midi_events = remaining
+
+    def pump_render_controls(self):
+        """Service piano program boundaries when organ/off owns routed audio.
+
+        Only JACK's render thread calls this. Never wait for another native
+        owner or queue producer; retry at the next render cycle instead.
+        """
+        request = getattr(self, "_program_request", None)
+        if request is None or request["done"].is_set() or self._closing:
+            return
+        if not self._lock.acquire(blocking=False):
+            return
+        try:
+            if self.fs is not None:
+                batch, recovery = self._take_midi_batch_locked()
+                if batch is not None:
+                    self._apply_midi_batch_locked(batch, recovery)
+        finally:
+            self._lock.release()
+
+    def _apply_program_metadata(self, name, preset, sfid):
+        self.tremolo_hz = float(preset.get("tremolo_hz", 0.0))
+        self.tremolo_depth = float(preset.get("tremolo_depth", 0.0))
+        if self.tremolo_depth <= 1e-4:
+            self._tremolo_phase = 0.0
+        self.velocity_curve = float(preset.get("velocity_curve", 1.0))
+        self.sfid = sfid
+        self.current_soundfont = name
+        self._loaded_file = preset["file"]
+
+    def _apply_program_request_locked(self, request):
+        request["error"] = RuntimeError("Program owner stopped before completion")
+        try:
+            if request["state"] != "claimed" or self._closing or self.fs is None:
+                raise RuntimeError("Program switch has no active audio owner")
+            self._program_select_checked(request["sfid"], request["program"],
+                                         f"preset '{request['name']}'")
+            self._apply_program_metadata(request["name"], request["preset"], request["sfid"])
+            request["error"] = None
+            return True
+        except Exception as exc:
+            request["error"] = exc
+            self._midi_native_errors += 1
+            return False
+        finally:
+            request["state"] = "done"
+            request["done"].set()
+
+    def _request_program_switch(self, name, preset):
+        """Synchronous acknowledgement of a FIFO, render-owned program change.
+
+        A pending request has a one-second admission deadline. A claimed C
+        call cannot be cancelled: await its definite result, leaving a wedged
+        render to the existing service watchdog. Never return a rollback-able
+        timeout while that native call could still change the sound later.
+        """
+        request = {"name": name, "preset": dict(preset), "program": int(preset.get("program", 0)),
+                   "sfid": getattr(self, "_sfid_by_file", {}).get(preset["file"]),
+                   "state": "pending", "done": threading.Event(), "error": None}
+        if request["sfid"] is None:
+            raise RuntimeError(f"Soundfont preset '{name}' is unavailable or still preloading")
+        marker = ("program", request, 0, 0.0)
+        with self._midi_event_lock:
+            prior = getattr(self, "_program_request", None)
+            if (self._closing or not self._render_owner_attached or self.fs is None
+                    or self._midi_recovery_pending or self._midi_recovery_failed_latched
+                    or len(self._midi_events) >= _MIDI_EVENT_QUEUE_CAPACITY
+                    or (prior is not None and not prior["done"].is_set())):
+                raise RuntimeError("Program switch rejected: audio owner is unavailable or busy")
+            self._program_request = request
+            self._midi_events.append(marker)
+            self._midi_events_enqueued += 1
+        if not request["done"].wait(1.0):
+            with self._midi_event_lock:
+                if request["state"] == "pending":
+                    self._midi_events.remove(marker)
+                    self._midi_events_discarded += 1
+                    self._finish_program_requests((marker,), "Audio owner did not accept program switch")
+            request["done"].wait()
+        if request["error"] is not None:
+            raise RuntimeError(f"Program switch to '{name}' failed: {request['error']}") from request["error"]
 
     def midi_render_status(self) -> dict:
         """Return cumulative bounded-queue telemetry for health reporting."""
@@ -915,11 +1039,15 @@ class FluidSynthPlayer:
                                     or self._midi_recovery_failed_latched)
             finally:
                 self._midi_event_lock.release()
+        request = getattr(self, "_program_request", None)
+        program_state = request["state"] if request is not None else None
         return {
             "queue_capacity": _MIDI_EVENT_QUEUE_CAPACITY,
             "render_batch_max": _MIDI_EVENT_RENDER_BATCH_MAX,
             "queued": queued,
-            "pending": queued + int(recovery_pending),
+            "pending": queued + int(recovery_pending) + int(program_state == "claimed"),
+            "program_state": program_state,
+            "render_owner_attached": getattr(self, "_render_owner_attached", False),
             "recovery_pending": recovery_pending,
             "enqueued": self._midi_events_enqueued,
             "applied": self._midi_events_applied,
@@ -950,6 +1078,7 @@ class FluidSynthPlayer:
                 # events under the same native ownership so a pre-panic batch can
                 # never be resurrected after the release and JACK ring clear.
                 with self._midi_event_lock:
+                    self._finish_program_requests(self._midi_events, "All-notes-off cancelled program switch")
                     self._midi_events_discarded += len(self._midi_events)
                     self._midi_events.clear()
                     self._midi_recovery_pending = False
@@ -1028,7 +1157,11 @@ class FluidSynthPlayer:
     def render_block(self, n_samples: int) -> np.ndarray:
         """Render FluidSynth audio and apply our DSP chain.
         Returns stereo (2, n) float64 array, ready to mix with synth pad."""
-        if self._closing or self.fs is None or not self.enabled:
+        if self._closing or self.fs is None:
+            return np.zeros((2, n_samples), dtype=np.float64)
+        if not self.enabled:
+            if getattr(self, "_render_owner_attached", False):
+                self.pump_render_controls()
             return np.zeros((2, n_samples), dtype=np.float64)
 
         # A cold background sfload can own FluidSynth for hundreds of ms.
@@ -1386,6 +1519,11 @@ class FluidSynthPlayer:
             self._loaded_file = target_file
             return
 
+        if getattr(self, "_render_owner_attached", False):
+            self._request_program_switch(name, preset)
+            logger.info("Soundfont switched on audio owner: %s", name)
+            return
+
         # Smooth handoff: `program_select` swaps the channel's program; existing
         # voices ring out naturally through their ADSR while new noteOns use the
         # target patch. `system_reset` is intentionally NOT called — it flushed
@@ -1439,14 +1577,7 @@ class FluidSynthPlayer:
 
         # Apply preset-specific post-processing only after the native program
         # switch succeeds, so a preload miss cannot leave a hybrid preset.
-        self.tremolo_hz = float(preset.get("tremolo_hz", 0.0))
-        self.tremolo_depth = float(preset.get("tremolo_depth", 0.0))
-        if self.tremolo_depth <= 1e-4:
-            self._tremolo_phase = 0.0
-        self.velocity_curve = float(preset.get("velocity_curve", 1.0))
-        self.sfid = new_sfid
-        self.current_soundfont = name
-        self._loaded_file = target_file
+        self._apply_program_metadata(name, preset, new_sfid)
         logger.info("Soundfont switched: %s (file=%s prog=%d id=%d, trem=%.1fHz/%.2f vel^(1/%.2f))",
                     name, target_file, target_program, new_sfid,
                     self.tremolo_hz, self.tremolo_depth, self.velocity_curve)

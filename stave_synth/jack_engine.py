@@ -197,6 +197,8 @@ class JackEngine:
         # to load that index from the active setlist (footswitch advance).
         self.program_change_callback = program_change_callback
         self.piano_player = piano_player  # FluidSynthPlayer for rendered mixing
+        # Stable control owner survives routing piano -> organ -> off.
+        self._piano_control_player = piano_player
         self.running = False
         self._stop_event = threading.Event()
         self._render_thread = None
@@ -695,6 +697,9 @@ class JackEngine:
         self._warm_dsp_state()
 
         # Start render thread — pushes audio blocks to the C bridge
+        attach = getattr(getattr(self, "_piano_control_player", None), "set_render_owner_attached", None)
+        if callable(attach):
+            attach(True)
         self._render_thread = threading.Thread(target=self._render_loop, daemon=True)
         self._render_thread.start()
 
@@ -817,8 +822,12 @@ class JackEngine:
                     # can be tapped into the synth's reverb bus via the
                     # external_reverb_send path.
                     piano_pre = None
-                    if self.piano_player:
-                        piano_pre = self.piano_player.render_block(bs)
+                    instrument_player = self.piano_player
+                    control_player = getattr(self, "_piano_control_player", None)
+                    if control_player is not None and control_player is not instrument_player:
+                        control_player.pump_render_controls()
+                    if instrument_player:
+                        piano_pre = instrument_player.render_block(bs)
                         self._piano_renders += 1
                         # Piano bus level (for meter)
                         pkp = float(np.abs(piano_pre).max()) if piano_pre.size else 0.0
@@ -1714,6 +1723,9 @@ class JackEngine:
             logger.critical("JACK stop could not quiesce %s thread(s); bridge retained",
                             ", ".join(alive))
             return False
+        detach = getattr(getattr(self, "_piano_control_player", None), "set_render_owner_attached", None)
+        if callable(detach):
+            detach(False)
         self._bridge.bridge_stop()
         logger.info("JACK engine stopped")
         return True
