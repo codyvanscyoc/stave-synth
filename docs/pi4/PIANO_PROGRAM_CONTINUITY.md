@@ -29,7 +29,8 @@ The repair passed 15 focused ownership regressions and the full 530-test suite
 on Mac and Pi (zero skips); Mac Node UI/syntax checks also passed. Test-tool
 additions subsequently passed 541 Mac tests, 19 focused Pi tests, and the
 telemetry compatibility fix passed 30 core/extended tests on both machines.
-These counts are separate runs, not a claim of a full 542-test Pi run.
+The final tools/evidence checkout `ba8b68a` subsequently passed all 543 Python
+tests on both machines, zero skips (Pi 57.203 seconds). Node ran on Mac only.
 
 Two 55-second native Pi performance recordings used `f89f127`, 48 kHz,
 512 frames, six ring slots and the full native profile. The only native

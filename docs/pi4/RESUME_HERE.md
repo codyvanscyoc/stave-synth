@@ -6,27 +6,70 @@ Read this first; earlier review/deployment notes describe historical checkpoints
 
 ## Latest remote continuation — read before historical PIDs below
 
-Newest published software candidate is `c231f16`, not deployed to normal
-stage. Full-bank residency (`ca62b8f`) reduced actual Fluid→Rhodes switching
-from 225.798 to 3.714ms and removed its 21 source-lock misses. Return to Fluid
-still produced one program-change source miss; do not mark continuity fixed.
-The repeated performance sequence completed/restored every functional step,
-but strict FAIL remains: 74 deadline increases, two bridge underruns, one
-piano miss. Organ-plus-synth costs ~9.903ms wall/9.846ms thread CPU per
-10.667ms period. No quality, voice, sample-rate or buffer reduction was made.
+Latest application repair is `f89f127`, with tools/evidence through `ba8b68a`;
+both are published on Pi4 only. Neither is deployed to normal stage. The
+render-owned preloaded piano program handoff passed two actual captures with
+zero pre-panic piano misses or bridge underruns. All musical operations and
+state restoration completed. Strict total deadline growth remains86/78;
+take4 has one terminal `all_notes_off` source miss. See
+[PIANO_PROGRAM_CONTINUITY.md](PIANO_PROGRAM_CONTINUITY.md).
 
-507 Mac tests plus Node passed; Pi passed 489 tests on `e3d74c7` and the next
-18 control-attribution tests on `c231f16`. Four isolated interpreter-handoff
-A/B/B/A captures completed (5000/1000/1000/5000us). All strict results FAIL:
-deadline increases 38/33/40/43, no new bridge underruns, source misses 1/0/1/0.
-This does not establish a useful improvement; detailed attribution is pending.
-Normal stage restored active, PID197443, invocation
-`b78c3129f6da4f78873822c4b25bb2ab`, zero restarts, state hash unchanged.
-No capture or soak remains running. No permanent handoff change or core-soak
-run is claimed. The core driver has only compiled on target.
-Organ scalar/vector and extended-feature test tools are under development on
-Mac; uncommitted tools are not target validation. Normal stage remains clean
-`ce15cfb`, with its saved-state hash unchanged after completed experiments.
+Full 543 Python tests passed on both Mac and Pi, zero skips. The final Pi run
+on `ba8b68a` completed in 57.203 seconds. Mac Node UI/syntax checks also passed;
+Node is not installed on the Pi.
+No voice, unison, sample-rate, buffer or effect-quality reduction was made.
+
+The actual combined-core20s smoke and600s rehearsal now completed. Ten-minute
+music: zero underruns/xruns/source misses/dropped events/invalid or zero music
+blocks, but27 render-deadline increases, hence strict FAIL. Mean render6.546ms,
+p99 upper histogram bound8.747ms against10.667ms period for this fixture.
+RSS313484→314272KiB, sampledmax314396KiB, no swap/throttle,68.653–69.627C.
+This is not physical latency, eight-hour memory or player qualification.
+
+Owned supervisor SIGKILL recovery restored normal service with verified health
+and unchanged normal state. Coordinator could not restore its private scene
+while the whole group stopped; failures were retained, interrupted private
+bytes backed up and the stopped disposable state recovered from verified
+original evidence. Normal saved settings were not replaced.
+
+Extended preset/macro/hall/plate/wash sequence completed and restored, including
+two-peer convergence and current/library byte preservation. Musical window:
+zero bridge/source misses,8 deadlines. Total strict FAIL retains2 terminal
+underruns,2 source misses,9 deadlines. Autosave history legitimately advanced
+and its original bytes were backed up; no false all-history-bytes claim.
+
+Scheduling A/B/B/A experiments completed on private source `ba8b68a`.
+Background CPU0–3 versus CPU0–2 (render CPU3/FIFO80, unchanged5ms interpreter
+interval) produced deadline increases52/32/50/39 and piano misses1/0/1/0;
+bridge underrun growth was zero. No consistent improvement was established,
+so neither affinity nor interpreter changes were adopted. Most earlier stalls
+do not overlap retained autosave/control spans; causality remains unresolved.
+
+Organ-heavy workloads still cost about9.9ms/block. Algebra, triple-only and
+exact-zero guard variants failed the predeclared numerical-parity gates;
+vector compiles timed out. A reference rebuild of unchanged source is sample
+exact, validating the comparison baseline. The zero guard's three-active-voice
+microbenchmark is promising (~74% faster), but is NOT an accepted optimization,
+full-polyphony result or installed library. No sound-preservation gate was relaxed.
+
+Private `CORE_REHEARSAL_EVIDENCE.md`, `EVENING_RESULTS.md` and INDEX record
+evidence paths and recovery details. Core batch1 and the extended/affinity/organ
+archive are complete, hash-verified on Mac/Pi. Later archive SHA256:
+`55ccf1399d5741f7a7025e4a093ad550bdc8ce7c958cdcbea520656f1b003d5a`.
+Mac extraction: `Documents/stave-synth-pi4-backups/evening-evidence-20260914.x1vHxy`.
+
+At 23:04 CDT, normal service was active, PID219776, invocation
+`43fdcaa4e27241ebbd71886c69bcab0e`, zero restarts. Stage HTTP/WS, native profile,
+audio/control/UI health rechecked; pending/dropped controls and MIDI drops zero.
+Normal source is clean `ce15cfb`, saved-state SHA remainsed8566e5…58cb3e.
+No capture, soak or compiler is left running. Recheck owners before resuming.
+
+Next work is bounded timing/continuity repair and repeat evidence, then a
+reversible candidate activation for hardware rehearsal. Latest repairs are
+NOT the current normal-stage runtime. Do not silently promote failed numerical
+organ experiments or promise stage readiness. Eight-hour soak, analogue
+latency, actual USB/Safari/rehearsal gates remain open. No eight-hour job is
+running unattended and no full-project completion is claimed.
 
 ### Earlier same-evening checkpoint (superseded by the paragraph above)
 
