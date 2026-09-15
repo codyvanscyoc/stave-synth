@@ -41,7 +41,7 @@ TOTAL_RAM_MB = _total_ram_mb()
 # Small-Pi profile (e.g. Pi 4 / 2 GB): the full profile preloads Salamander
 # (1.2 GB resident) and runs a tight ring — neither fits a 2 GB box. When
 # LOW_RAM_MODE is on: Salamander is dropped from the soundfont presets,
-# FluidSynth uses dynamic-sample-loading, low_latency_mode defaults OFF,
+# the smaller supported bank stays resident, low_latency_mode defaults OFF,
 # and the auto-GUI (WebKit, ~400 MB) is refused. Override for testing with
 # STAVE_LOW_RAM=1/0.
 _low_ram_env = os.environ.get("STAVE_LOW_RAM", "")

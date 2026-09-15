@@ -6,6 +6,30 @@ Read this first; earlier review/deployment notes describe historical checkpoints
 
 ## Latest remote continuation — read before historical PIDs below
 
+Newest published software candidate is `c231f16`, not deployed to normal
+stage. Full-bank residency (`ca62b8f`) reduced actual Fluid→Rhodes switching
+from 225.798 to 3.714ms and removed its 21 source-lock misses. Return to Fluid
+still produced one program-change source miss; do not mark continuity fixed.
+The repeated performance sequence completed/restored every functional step,
+but strict FAIL remains: 74 deadline increases, two bridge underruns, one
+piano miss. Organ-plus-synth costs ~9.903ms wall/9.846ms thread CPU per
+10.667ms period. No quality, voice, sample-rate or buffer reduction was made.
+
+507 Mac tests plus Node passed; Pi passed 489 tests on `e3d74c7` and the next
+18 control-attribution tests on `c231f16`. Four isolated interpreter-handoff
+A/B/B/A captures completed (5000/1000/1000/5000us). All strict results FAIL:
+deadline increases 38/33/40/43, no new bridge underruns, source misses 1/0/1/0.
+This does not establish a useful improvement; detailed attribution is pending.
+Normal stage restored active, PID197443, invocation
+`b78c3129f6da4f78873822c4b25bb2ab`, zero restarts, state hash unchanged.
+No capture or soak remains running. No permanent handoff change or core-soak
+run is claimed. The core driver has only compiled on target.
+Organ scalar/vector and extended-feature test tools are under development on
+Mac; uncommitted tools are not target validation. Normal stage remains clean
+`ce15cfb`, with its saved-state hash unchanged after completed experiments.
+
+### Earlier same-evening checkpoint (superseded by the paragraph above)
+
 The player is away tonight and requires all existing functions tomorrow night.
 Follow [OVERNIGHT_REPAIR.md](OVERNIGHT_REPAIR.md) for the subsequent focused
 generic-MIDI/bed-fade repairs and opt-in timing attribution. No features or
