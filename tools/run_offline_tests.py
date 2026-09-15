@@ -63,6 +63,7 @@ SAFE_TESTS = (
     "test_osc_modulation_identity.py",
     "test_organ_leslie_stop.py",
     "test_synth_diagnostics.py",
+    "test_organ_stop_check.py",
 )
 
 
