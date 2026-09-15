@@ -90,6 +90,14 @@ class StaveSynth:
         self.state = load_state()
         self._control_lock = threading.RLock()
         self._control_error = None
+        self._control_diagnostics = None
+        self._control_diagnostics_unavailable = False
+        if os.environ.get("STAVE_DIAGNOSTICS") == "1":
+            try:
+                from .control_diagnostics import ControlDiagnostics
+                self._control_diagnostics = ControlDiagnostics()
+            except Exception:
+                self._control_diagnostics_unavailable = True
         self._controls = ControlQueue(self._apply_queued_control)
         self._stop_event = threading.Event()
         self._stopping = False
@@ -141,13 +149,23 @@ class StaveSynth:
                 scene_control = command["type"] in {
                     "setting", "fader", "macro_value", "instrument_cycle", "transpose", "octave",
                     "shimmer_toggle", "shimmer_high_toggle", "freeze_toggle", "piano_comp_preset", "bus_comp_preset"}
-                previous = copy.deepcopy({key: self.state[key] for key in
-                                          ("synth_pad", "piano", "organ", "master", "macros")}) if scene_control else None
+                diagnostics = getattr(self, "_control_diagnostics", None)
+                if diagnostics is not None and scene_control:
+                    with diagnostics.span("control_snapshot"):
+                        previous = copy.deepcopy({key: self.state[key] for key in
+                                                  ("synth_pad", "piano", "organ", "master", "macros")})
+                else:
+                    previous = copy.deepcopy({key: self.state[key] for key in
+                                              ("synth_pad", "piano", "organ", "master", "macros")}) if scene_control else None
                 if scene_control or command["type"] == "recall_recording_params":
                     self._crossfade_cancel.set()
                     self.synth.sympathetic_set_suppress(False)
                 try:
-                    result = self._dispatch_ws_message(command)
+                    if diagnostics is None:
+                        result = self._dispatch_ws_message(command)
+                    else:
+                        with diagnostics.span("control_dispatch"):
+                            result = self._dispatch_ws_message(command)
                 except Exception as exc:
                     if previous is not None:
                         self._restore_failed_scene(previous, exc)
@@ -155,7 +173,10 @@ class StaveSynth:
                 if previous is not None and result and result.get("type") == "error":
                     self._restore_failed_scene(previous, result.get("message", "control rejected"))
                 # Detach while owned, before the websocket serializes it.
-                return copy.deepcopy(result)
+                if diagnostics is None:
+                    return copy.deepcopy(result)
+                with diagnostics.span("control_response_detach"):
+                    return copy.deepcopy(result)
         except (ValidationError, ValueError, TypeError) as exc:
             logger.warning("Rejected control message: %s", exc)
             return {"type": "error", "message": str(exc)}
@@ -1866,9 +1887,18 @@ class StaveSynth:
                         # were real SD-card write amplification for a synth
                         # that mostly sits at one setting all service.
                         with self._control_lock:
-                            snapshot = json.dumps(self.state, sort_keys=True, allow_nan=False)
+                            diagnostics = getattr(self, "_control_diagnostics", None)
+                            if diagnostics is None:
+                                snapshot = json.dumps(self.state, sort_keys=True, allow_nan=False)
+                            else:
+                                with diagnostics.span("autosave_snapshot"):
+                                    snapshot = json.dumps(self.state, sort_keys=True, allow_nan=False)
                             if snapshot != getattr(self, "_last_saved_snapshot", None):
-                                save_state(self.state)
+                                if diagnostics is None:
+                                    save_state(self.state)
+                                else:
+                                    with diagnostics.span("autosave_save"):
+                                        save_state(self.state)
                                 self._last_saved_snapshot = snapshot
                     except Exception as e:
                         logger.warning("Auto-save failed: %s", e)
@@ -2032,6 +2062,16 @@ class StaveSynth:
                   "native_profile": getattr(self, "_native_profile", None),
                   "controls": self._controls.status(), "ui_recovery": self._ui_recovery.status(),
                   "ui": self.ws_server.health_status() if self.ws_server else {"healthy": False}}
+        diagnostics = getattr(self, "_control_diagnostics", None)
+        if diagnostics is not None:
+            try:
+                status["control_diagnostics"] = diagnostics.snapshot()
+            except Exception:
+                status["control_diagnostics"] = {"enabled": True, "available": False,
+                                                  "diagnostic_errors": 1}
+        elif getattr(self, "_control_diagnostics_unavailable", False):
+            status["control_diagnostics"] = {"enabled": True, "available": False,
+                                              "diagnostic_errors": 1}
         if self.jack:
             bridge = self.jack._bridge
             status["audio"] = {"error": getattr(self.jack, "_last_error", None),

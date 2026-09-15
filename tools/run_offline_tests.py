@@ -68,6 +68,7 @@ SAFE_TESTS = (
     "test_native_soak.py",
     "test_core_soak.py",
     "test_soundfont_realtime_loading.py",
+    "test_control_diagnostics.py",
 )
 
 
