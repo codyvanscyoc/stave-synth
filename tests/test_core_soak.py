@@ -31,7 +31,7 @@ class CoreApplication(PerformanceApplication):
             producer_overflows=0, slow_client_disconnects=0)
         self.health["audio"].update(ring_slots=6, midi_dropped=0, midi_recoveries=0,
             render_metrics=dict(duration_count=100, duration_sum_seconds=0.6,
-                                duration_max_seconds=0.006, min_ring_fill_blocks=2,
+                                duration_max_seconds=0.006, min_ring_fill_blocks=2.0,
                                 histogram={"bin_width_seconds":512/48000/100,"cumulative_counts":[100]*161},
                                 **dict.fromkeys(probe.RENDER_COUNTERS, 0)))
         self.health["audio"]["piano_midi"].update(enqueued=0, applied=0, queue_capacity=256)
@@ -456,6 +456,20 @@ class CoreSoakTests(unittest.TestCase):
         broken["health"]["audio"]["render_metrics"]["histogram"]["cumulative_counts"][-1]=99
         with self.assertRaises(RuntimeError):
             probe.strict_snapshot(broken,app.debug)
+
+    def test_actual_render_metrics_float_ring_fill_contract(self):
+        from stave_synth.render_metrics import RenderMetrics
+        app = CoreApplication()
+        state = app.dispatch({"type": "get_state"}, 1)
+        metrics = RenderMetrics(512 / 48000)
+        metrics.record(.006, 2)
+        state["health"]["audio"]["render_metrics"] = metrics.snapshot()
+        self.assertIs(type(metrics.snapshot()["min_ring_fill_blocks"]), float)
+        probe.strict_snapshot(state, app.debug)
+        for value in (None, True, "2", -1, 6.1, 1.5, float("nan"), float("inf")):
+            state["health"]["audio"]["render_metrics"]["min_ring_fill_blocks"] = value
+            with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, "ring fill"):
+                probe.strict_snapshot(state, app.debug)
 
     def test_system_probes_fail_closed_on_temperature_reserve_throttle_and_missing_data(self):
         async def check(memory=b"MemAvailable: 700000 kB\n",temperature=b"51000",throttle=b"throttled=0x0\n"):

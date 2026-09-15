@@ -224,8 +224,12 @@ def strict_snapshot(state, debug):
     require(type(render.get("duration_max_seconds")) in (int, float)
             and math.isfinite(render["duration_max_seconds"])
             and render["duration_max_seconds"] >= 0, "render maximum unavailable")
-    require(integer(render.get("min_ring_fill_blocks"), "minimum ring fill") <= 6,
-            "minimum ring fill outside profile")
+    # RenderMetrics normalizes samples to float: JSON 0.0 is valid. Do not
+    # coerce missing, bool, nonfinite, fractional or out-of-profile values.
+    minimum_fill = render.get("min_ring_fill_blocks")
+    require(type(minimum_fill) in (int, float) and math.isfinite(minimum_fill)
+            and 0 <= minimum_fill <= 6 and minimum_fill == int(minimum_fill),
+            "minimum ring fill unavailable/outside profile")
     histogram = render.get("histogram", {})
     require(isinstance(histogram, dict), "render histogram unavailable")
     cumulative = histogram.get("cumulative_counts")
@@ -362,9 +366,16 @@ class Soak:
                 and all(states[0].get(key) == states[1].get(key) for key in ("faded_out", "drone_faded_out")),
                 "two peer states did not converge across control barrier")
         debug = await self.command(0, phase + "_debug", {"type": "debug"})
-        counters = strict_snapshot(states[0], debug)
-        strict_snapshot(states[1], debug)
-        system = await system_snapshot(self.args.pid, self.private, self.start_ticks)
+        try:
+            counters = strict_snapshot(states[0], debug)
+            strict_snapshot(states[1], debug)
+            system = await system_snapshot(self.args.pid, self.private, self.start_ticks)
+        except Exception as exc:
+            self.evidence.write("checkpoints.ndjson", {
+                "phase": phase, "elapsed_seconds": elapsed,
+                "primary_state": states[0], "peer_health": states[1]["health"],
+                "debug": debug, "validation_error": f"{type(exc).__name__}: {exc}"})
+            raise
         if self.start_ticks is None:
             self.start_ticks = system["start_ticks"]
         system["elapsed_seconds"] = elapsed
