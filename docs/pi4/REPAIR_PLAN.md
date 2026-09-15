@@ -8,6 +8,10 @@ current passing regression suite.
 
 ## Latest operational checkpoint
 
+For the current saved session state and resume order, start with
+[RESUME_HERE.md](RESUME_HERE.md). Later sections marked historical are retained
+as evidence of their original implementation/deployment boundaries.
+
 The tested Pi4 candidate is now deployed through a removable service drop-in,
 with the original source preserved. Full native application startup, normal
 HTTP/WS access, clean shutdown and software rollback were exercised off-stage.
@@ -120,7 +124,7 @@ new processes, not older deployed code or arbitrary other programs. A dedicated
 spare test device or an approved off-stage maintenance window is still required
 for full native/audio testing.
 
-## Second repair batch: implemented, not deployed
+## Second repair batch (historical: implemented, not yet deployed at that point)
 
 | Area | Implementation and evidence | Qualification boundary |
 | --- | --- | --- |
@@ -149,7 +153,7 @@ archive is unchanged. No stored preset/recorded-pad library was present in that
 snapshot, so synthetic legacy fixtures—not a populated personal library—cover
 those migrations.
 
-## Next gate: target checks, then hands-on qualification
+## Historical next gate after the second repair batch
 
 The separate Pi4 checkout has passed native rebuild/load checks for both slot
 profiles and all 257 Python regressions. Those checks did not start a second
@@ -175,7 +179,7 @@ output or claim every possible device has been qualified. Prior USB enumeration 
 recovery checks as well as application tests; a code repair cannot establish
 that a missing USB device is healthy.
 
-## Deployment boundary
+## Historical deployment boundary for that batch
 
 No running Pi service, installed configuration or Pi5/Mac branch was changed by
 this repair batch. GitHub publication of `pi4-stage-pro` is not deployment.

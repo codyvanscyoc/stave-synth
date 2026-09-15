@@ -1,5 +1,8 @@
 # Stave Synth Pi4 development
 
+Start resumed work with `docs/pi4/RESUME_HERE.md`; it records the latest saved
+operational state, evidence locations, user decisions and unresolved findings.
+
 This checkout is for the Pi4 stage edition. Use the `pi4-stage-pro` branch and the requirements in `docs/pi4/PRODUCT_VISION.md`. The Pi5 and Mac lines are separate; do not push, merge, or deploy these changes to `main` or `mac-port` unless the user explicitly expands the task.
 
 The preserved Pi4 baseline is tag `pi4-stage-baseline-2026-09-14` at `d0142f0b811baa4ba4fa216d55c6d5e4b0ac7dbd`. See `docs/pi4/BASELINE.md` for backup scope. The baseline has been used on stage, but it has not passed the new release gates.

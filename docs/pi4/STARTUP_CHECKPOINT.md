@@ -148,3 +148,25 @@ A measured 120-second idle window, 17:59:04–18:01:04 CDT, spans the original
 Peavey/Yamaha setup, verify selected routes, then play/listen/rehearse. This
 short idle success does not certify tomorrow's show, cold boots, hot-plug
 recovery, maximum layered load, or an eight-hour soak.
+
+## Latest authorized restart and saved handoff
+
+After the digital audition and listening discussion, the user explicitly
+confirmed off-stage restart safety. Normal `stave-synth.service` restarted to
+active/running at **18:59:08 CDT, 2026-09-14**, PID **140111**, invocation
+`20a85a4052d94260bfdd8f4a92e1d5a0`, zero automatic restarts. The runtime app/DSP
+source remains `483d953`; later commits are tooling/tests/evidence.
+
+Mac HTTP and Pi WebSocket checks succeeded. Native profile, Fluid piano,
+audio/control/UI health were good; 48 kHz / 512 frames / six slots remained
+unchanged. A startup-inclusive snapshot reported 3,052 callbacks, eight
+underruns and zero xruns; no new continuous-playing interval was qualified.
+Saved-state SHA256 stayed
+`ed8566e5ef128f6546dfdb1182f0271b08ada0f4aecbb066c0154495ab58cb3e`.
+Peavey/Yamaha remained absent. The piano-continuity and shimmer-timing findings
+from [DIGITAL_AUDITION.md](DIGITAL_AUDITION.md) are still open.
+
+The user has listened to the emailed MP3, considers the sound close, and plans
+physical tests September 15. Follow [RESUME_HERE.md](RESUME_HERE.md) for the saved
+handoff; do not interpret earlier historical PIDs or pre-deployment notes as
+the current running state. The save operation does not restart or retune Stave.
