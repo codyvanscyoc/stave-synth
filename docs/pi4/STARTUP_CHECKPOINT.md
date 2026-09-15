@@ -149,13 +149,14 @@ Peavey/Yamaha setup, verify selected routes, then play/listen/rehearse. This
 short idle success does not certify tomorrow's show, cold boots, hot-plug
 recovery, maximum layered load, or an eight-hour soak.
 
-## Latest authorized restart and saved handoff
+## Pre-continuity restart and saved handoff (historical)
 
 After the digital audition and listening discussion, the user explicitly
 confirmed off-stage restart safety. Normal `stave-synth.service` restarted to
 active/running at **18:59:08 CDT, 2026-09-14**, PID **140111**, invocation
 `20a85a4052d94260bfdd8f4a92e1d5a0`, zero automatic restarts. The runtime app/DSP
-source remains `483d953`; later commits are tooling/tests/evidence.
+source remained `483d953`; intervening commits at that checkpoint were
+tooling/tests/evidence. The later application candidate is recorded below.
 
 Mac HTTP and Pi WebSocket checks succeeded. Native profile, Fluid piano,
 audio/control/UI health were good; 48 kHz / 512 frames / six slots remained
@@ -170,3 +171,14 @@ The user has listened to the emailed MP3, considers the sound close, and plans
 physical tests September 15. Follow [RESUME_HERE.md](RESUME_HERE.md) for the saved
 handoff; do not interpret earlier historical PIDs or pre-deployment notes as
 the current running state. The save operation does not restart or retune Stave.
+
+## After continuity-candidate testing
+
+Normal stage service was restored at **19:37:04 CDT**, PID 151143, invocation
+`8dc33d08129f4b678d3572e0ff39e9e3`, active/running with zero restarts. Source is
+still `ce15cfb` / app `483d953`; the new `27522fd` repair was tested in a separate
+private worktree and **has not been promoted**. HTTP stage identity from Pi/Mac,
+WS native/audio/control/UI health, saved Fluid/master 1 and the unchanged state
+hash were verified. The isolated unit is stopped. Follow
+[CONTINUITY_REPAIR.md](CONTINUITY_REPAIR.md) for measured improvements and
+remaining timing/source/control failures; neither build is stage-qualified.

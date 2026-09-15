@@ -6,17 +6,27 @@ Read this first; earlier review/deployment notes describe historical checkpoints
 
 ## Continuation after the save
 
-The next focused batch is [CONTINUITY_REPAIR.md](CONTINUITY_REPAIR.md): a bounded
-piano MIDI/render ownership fix plus removal of unused native-path preparation.
-It changes Python application code and adds source-side continuity telemetry;
-it is not merely audition tooling. Until the target result and deployment are
-recorded there, the normal Pi service remains on the saved `ce15cfb` checkout
-(application/DSP source `483d953`). Do not deploy this batch over that live
-checkout just because GitHub contains newer commits. Use an isolated candidate.
+The focused batch **`27522fd`** is saved and tested as a separate candidate:
+[CONTINUITY_REPAIR.md](CONTINUITY_REPAIR.md). It adds bounded piano MIDI/render
+ownership and removes unused native-path preparation. Both piano-only recordings
+no longer show the prior internal silent blocks; layered mean render time
+improved about 12%. But every strict timing result still fails, one mixed take
+has an unlocalized piano source-lock miss, and a control sequence ran late.
+**Do not automatically promote it for tomorrow's live use.**
 
-The latest Mac allowlisted suite now passes **350 tests, zero skips**, plus
-Node UI/syntax checks. The 325/294 counts below describe the earlier saved build.
-They do not establish target or physical qualification of this new batch.
+Normal Pi service is restored on saved `ce15cfb` (app/DSP source `483d953`),
+active since **19:37:04 CDT**, PID 151143, invocation
+`8dc33d08129f4b678d3572e0ff39e9e3`, zero restarts; HTTP/WS/native/audio/UI healthy.
+Saved-state hash remains unchanged. The isolated audition is stopped; no repair
+or capture job is left running. Candidate source lives in the private Pi
+`continuity-20260914.bSKT8q/source` worktree, not the normal service checkout.
+
+Latest verification: **350 Mac tests, zero skips**, plus Node UI/syntax;
+**62 targeted Pi tests**, all 16 unchanged native hashes, five digital captures.
+The 325/294 counts below describe the earlier saved build. Physical playing,
+analogue latency, sustained headroom and release qualification remain open.
+Private new evidence/index:
+`/Users/codyvanscyoc/Documents/stave-synth-pi4-backups/continuity-20260914.MvFj78/INDEX.md`.
 
 ## Scope and current ownership
 
@@ -31,15 +41,16 @@ They do not establish target or physical qualification of this new batch.
 - Original `/home/codyvanscyoc/stave-synth` remains preserved; its existing
   `venv/bin/python` is also used by the candidate. Do not install dependencies
   or run the generic installer as a resume step.
-- Latest application/DSP source change is **`483d953`**. Later commits
+- Saved normal-stage application/DSP source change is **`483d953`**. Later commits
   `88c5a43`, `7a2f7dd`, and `e08175e` add audition tooling, tests and evidence,
-  not a new synth DSP build. This checkpoint commit updates documentation only.
+  not a new synth DSP build. Save commit `ce15cfb` updates documentation only;
+  the subsequent `27522fd` candidate changes application code as described above.
 - No repair/capture job is left running. The normal stage service is running;
   the disposable audition service is stopped. Recheck live ownership before
   new work. Previous restart permission was for off-stage maintenance, not
   blanket permission to interrupt a future performance.
 
-## Latest verified restart
+## Pre-continuity saved restart (historical)
 
 User authorized a restart after the audition discussion. Normal service reached
 active/running at **18:59:08 CDT on September 14**, PID **140111**, invocation
@@ -69,7 +80,7 @@ USB enumeration showed root hubs and a VIA hub only.
   cyclic pointer conversions, corrected in `483d953`, and retested through
   cleanup for 120 seconds with zero new underruns/xruns:
   [STARTUP_CHECKPOINT.md](STARTUP_CHECKPOINT.md).
-- Latest full Mac allowlisted suite: **325 tests, zero skips**, plus Node UI
+- At the pre-continuity checkpoint: **325 tests, zero skips**, plus Node UI
   regression/syntax. Pi passed the 294-test runtime suite, the 29 initial
   audition tests and revised 12-test orchestration module. Do not claim a
   single full 325-test/Node run on Pi; Node is unavailable there.
@@ -81,18 +92,21 @@ USB enumeration showed root hubs and a VIA hub only.
 
 ## Still open — do not mark these fixed
 
-1. **Piano continuity:** both final piano-only recordings have four exact
-   512-frame (10.667 ms) silent blocks near chord changes. Nonblocking
-   FluidSynth/native-lock contention is the leading explanation, **not yet
-   instrumented/proven**. Zero bridge underruns do not detect these source
-   gaps. Diagnose ownership, add regression evidence and recapture after a
-   targeted fix. Preserve tone and sustain semantics.
+1. **Piano continuity:** both earlier piano-only recordings have four exact
+   512-frame (10.667 ms) silent blocks near chord changes. The old recordings
+   did not prove each gap's cause; the nonblocking native-lock contention
+   failure path is now reproduced offline and repaired/tested in candidate
+   `27522fd`. Zero bridge underruns do not detect these source gaps. Both
+   new piano-only captures have no internal ≥128-frame stereo-zero runs. One
+   native transition-lock miss remains unlocalized in a mixed capture; see the
+   newer evidence before closing this finding. Preserve tone/sustain semantics.
 2. **Worst-case render reserve:** layered tests averaged 7.48–7.77 ms against
    a 10.667 ms period. Shimmer's p99 bucket upper bound was 11.733 ms, with
    112 over-budget cycles; buffering covered them in that short test. The
    desired 30–40% demanding-patch reserve is not demonstrated. These are
    elapsed audio-render timings, not whole-Pi CPU percentages or proof of
-   the hardware's absolute limit.
+   the hardware's absolute limit. Candidate layered means are now 6.55–6.81 ms;
+   shimmer p99 upper 10.347 ms with 33 overruns still does not establish reserve.
 3. **Actual latency:** sub-15 ms controller-to-line-output is an aspiration,
    not a measured result. One 512-frame period is 10.667 ms; the three-block
    refill threshold is 32 ms of sample duration, **not total latency**.

@@ -12,15 +12,16 @@ For the current saved session state and resume order, start with
 [RESUME_HERE.md](RESUME_HERE.md). Later sections marked historical are retained
 as evidence of their original implementation/deployment boundaries.
 
-The tested Pi4 candidate is now deployed through a removable service drop-in,
-with the original source preserved. Full native application startup, normal
+The normal Pi4 stage service runs the saved `ce15cfb` checkpoint (application
+source `483d953`) through a removable service drop-in, with the original source
+preserved. Full native application startup, normal
 HTTP/WS access, clean shutdown and software rollback were exercised off-stage.
 See [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) and
 [STARTUP_CHECKPOINT.md](STARTUP_CHECKPOINT.md) for current evidence and next steps.
 **Next gate: connect the Peavey interface/Yamaha keyboard and test the actual
 playing setup.** No physical-audio or full-stage qualification is yet claimed.
 
-Latest code `483d953`: 294 tests pass on Mac and Pi. Actual idle testing exposed
+Normal-stage code `483d953`: 294 tests passed on Mac and Pi. Actual idle testing exposed
 an 84.6 ms cleanup stall, traced to six per-call NumPy pointer conversions;
 the targeted correction passed a 120-second target retest through cleanup with
 zero new underruns/xruns. See the checkpoint for the measurements and limitations.
@@ -32,6 +33,16 @@ contention) and establish adequate shimmer/control timing reserve. These are
 new measured findings, not closed repairs. No application/DSP changes were made
 by the recording tools; the normal stage service and original settings are back.
 
+Subsequent continuity candidate **`27522fd` is saved/published and tested in a
+separate isolated worktree, not promoted to the normal stage service**. Its
+350 Mac and 62 targeted Pi regressions passed. Five new digital takes show no
+repeat of the earlier internal piano-only silent blocks and about 12% lower
+layered mean render time. All five still fail strict timing; one mixed take
+has an unlocalized piano source-lock miss and shimmer control-send lateness
+reached 69.507 ms. See [CONTINUITY_REPAIR.md](CONTINUITY_REPAIR.md) for the exact
+changes, comparative evidence and open promotion gates. The normal service was
+restored at 19:37:04 CDT with unchanged saved state; no capture job remains.
+
 ## Order of work
 
 | Order | Outcome | Current status |
@@ -39,7 +50,7 @@ by the recording tools; the normal stage service and original settings are back.
 | 1 | Protect the working instrument and establish safe regression tests | Baseline audit/backups preserved; Pi4 candidate deployed through a removable override. Original-source software rollback exercised. |
 | 2 | Correct held notes, STOP, state saves, recording and connection truth | Two software repair batches implemented with offline regression coverage; real devices and acoustic behavior still require qualification. |
 | 3 | Bound control and audio work; finish state, recorder and native ownership | Schema/transactions, bounded queues/pads, MIDI overflow, graph contract, native lifecycle and UI recovery implemented. Target timing and fault qualification remain open. |
-| 4 | Prove sound, latency and reserve on Pi4 | Five short digital MIDI takes measured; source-zero blocks and shimmer timing reserve remain open. Actual controller/interface latency, favorite sounds, optional recorded bed and full rehearsal still require qualification. |
+| 4 | Prove sound, latency and reserve on Pi4 | Baseline and continuity-candidate digital takes measured; piano-only continuity and layered mean timing improved, but a source-lock miss and strict timing/control failures remain open. Actual controller/interface latency, favorite sounds, optional recorded bed and full rehearsal still require qualification. |
 | 5 | Refine the Stage UI and pass release qualification | Software rollback passed; Safari/portrait, cold boots, hardware reconnects, fault tests, eight-hour soak, rehearsal and SD recovery remain open. |
 
 Do not lower unison, layer count, sample rate or sound quality merely to produce
