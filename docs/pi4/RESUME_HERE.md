@@ -11,15 +11,22 @@ Follow [OVERNIGHT_REPAIR.md](OVERNIGHT_REPAIR.md) for the subsequent focused
 generic-MIDI/bed-fade repairs and opt-in timing attribution. No features or
 sound quality are being removed. Physical qualification remains unavailable
 tonight; that does not block software work. The older checkpoint below is
-preserved as evidence. The newer batch has now completed seven diagnostic
-captures on0272c3d and two filter captures plus actual recorder/bed integration
-on829a3c0.413 tests passed on both Mac and Pi (Node UI on Mac only).
-Functional recorder→sampled bed→fade/reconnect/panic sequence completed;
-strict timing still FAILS. Normal service restored atce15cfb, PID170746,
-invocation8855c114ca2a42c9ad0590e98b85a68d, zero restarts; state hash unchanged.
-No soak or stage qualification has passed. Finer timing attribution and
-organ STOP correction are subsequent work in progress; consult the overnight
-document and private INDEX before modifying any source or starting a service.
+preserved as evidence. Candidate `133fe04` is published on Pi4 only and lives
+in the private profiling worktree, not normal stage. 460 Mac tests plus Node;
+445 Pi tests on prior `8ef73e7` plus 32 focused tests on `133fe04` passed.
+Recorder→sampled bed/fade/reconnect and performance-controls sequences both
+completed, but strict real-time results still fail. Leslie STOP native parity
+is verified; its rebuilt library is private only. Four fine diagnostics-on/off
+captures show remaining scheduling/contending work, not only DSP CPU load.
+Performance testing newly localized a ~226 ms Fluid→Rhodes program-change
+source interruption to LOW_RAM dynamic sample loading; repair is in progress.
+
+Latest normal restoration: clean `ce15cfb`, PID 185984, invocation
+`9811c1d89eef41b1bc96764930db6879`, active, zero restarts; saved-state hash
+unchanged; native/audio/control/UI health rechecked. No capture/soak is running
+at this checkpoint. Bounded soak tools and safer supervisor are in local
+development, not yet target-qualified. Consult overnight/private INDEX before
+source synchronization or launch. No stage release or latency goal is passed.
 
 ## Continuation after the save
 

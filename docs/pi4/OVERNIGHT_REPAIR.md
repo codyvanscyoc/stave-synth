@@ -112,11 +112,43 @@ invocation`8855c114ca2a42c9ad0590e98b85a68d`, zero restarts. Normal saved-state
 SHA256 remains`ed8566e5ef128f6546dfdb1182f0271b08ada0f4aecbb066c0154495ab58cb3e`.
 HTTP/WS recheck and newer work checkpoints may supersede this PID.
 
-## Subsequent work in progress — not deployed
+## Subsequent isolated verification — not deployed
 
-Investigating ignored organ Leslie STOP (both wrappers accepted only slow/fast)
-and finer opt-in CPU/wall attribution. STOP must use0Hz through unchanged rotor
-ramps, with declared native slider minimum0; it requires an organ-only target
-rebuild and native parity checks. Do not claim new organ binaries are tested
-until that rebuild completes. Source/library changes stay in the isolated
-candidate; normal ce15cfb source and production settings remain protected.
+The Leslie STOP correction and organ-only native rebuild are complete.
+[ORGAN_STOP.md](ORGAN_STOP.md) records exact target slow/fast sample parity,
+finite zero-speed target behavior, and the single native-manifest delta.
+Only the private audition source has the rebuilt organ; normal stage remains
+`ce15cfb` with its original native libraries and saved state.
+
+`8ef73e7` passed 445 Mac and 445 Pi Python tests, zero skips. Four subsequent
+55-second filter/shimmer captures compare diagnostics on/off. All fail only
+render-over-budget growth: on +1/+23, off +2/+29. Each take has zero new bridge
+underruns/xruns and no new reported piano source miss. Mean render-metric
+times were on 6.592/6.782 ms and off 6.432/6.625 ms; extra diagnostics are not
+the whole cause of remaining spikes. Fine spans indicate much smaller CPU
+than elapsed time on the worst blocks. No GIL/autosave cause is proven yet.
+Private `DETAILED_TIMING_EVIDENCE.md` preserves exact boundaries and caveats.
+
+`133fe04` adds the 55-second performance-controls probe and organ evidence.
+460 Mac tests plus Node UI/syntax and 32 focused Pi tests passed. Its actual
+Pi integration completed Fluid/Rhodes, piano/organ, Leslie slow/fast/stop,
+held-note transpose, raw-key splits, freeze and panic. Full state restoration
+succeeded. WAV: 2,640,000 finite stereo frames, peak 0.068927. **Strict FAIL:**
+84 over-budget cycles, two bridge underruns, 23 piano source-lock misses.
+Before the terminal panic: 80 over-budget cycles, no new bridge underrun,
+22 source-lock misses. All failures remain in the raw evidence.
+
+Twenty-one source misses are positively attributed to `program_change`
+during Fluid→Rhodes (225.798 ms command acknowledgement); one to the return
+to Fluid (21.338 ms). The remaining miss is `all_notes_off` at terminal CC123.
+The Pi4 LOW_RAM profile enables FluidSynth dynamic sample loading, which
+loads/unloads samples when changing programs. Its memory-allocation path is
+[documented as non-real-time-safe](https://github.com/FluidSynth/fluidsynth/blob/master/doc/fluidsettings.xml).
+Installed target FluidSynth is 2.4.4. Full-bank residency is the next narrowly
+scoped repair to verify; do not confuse a loaded bank index with resident
+program samples or claim seamless program switching from this failed take.
+
+After this take, normal stage restored active at PID 185984, invocation
+`9811c1d89eef41b1bc96764930db6879`, zero restarts, clean `ce15cfb`, saved-state
+hash unchanged. Its native/audio/control/UI health was rechecked successfully.
+Performance unit stopped. No eight-hour soak has started or passed yet.

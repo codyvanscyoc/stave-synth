@@ -65,6 +65,9 @@ SAFE_TESTS = (
     "test_synth_diagnostics.py",
     "test_organ_stop_check.py",
     "test_performance_probe.py",
+    "test_native_soak.py",
+    "test_core_soak.py",
+    "test_soundfont_realtime_loading.py",
 )
 
 
