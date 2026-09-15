@@ -533,7 +533,8 @@ async def run_sweeps(ws, case: str, anchor: float) -> list[dict]:
     return timeline
 
 
-async def run_driver(driver: Path, schedule_path: Path, wav_path: Path, ws, case: str) -> dict:
+async def run_driver(driver: Path, schedule_path: Path, wav_path: Path, ws, case: str,
+                     *, automation=None) -> dict:
     process = await asyncio.create_subprocess_exec(
         str(driver), str(schedule_path), str(wav_path), f"{DURATION_SECONDS:.1f}",
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, limit=65536)
@@ -547,7 +548,8 @@ async def run_driver(driver: Path, schedule_path: Path, wav_path: Path, ws, case
         await asyncio.wait_for(anchors["started"].wait(),
                                min(10, max(0.0, deadline - asyncio.get_running_loop().time())))
         anchor = anchors["started_monotonic"]
-        sweep_task = asyncio.create_task(run_sweeps(ws, case, anchor))
+        run_automation = run_sweeps if automation is None else automation
+        sweep_task = asyncio.create_task(run_automation(ws, case, anchor))
         wait_task = asyncio.create_task(process.wait())
         try:
             done, _ = await asyncio.wait(
