@@ -369,9 +369,11 @@ def _nearest_rank(values, fraction):
     return ordered[max(0, math.ceil(fraction * len(ordered)) - 1)]
 
 
-def benchmark_pair(scalar, variant, clock=time.thread_time_ns):
+def benchmark_pair(scalar, variant, clock=time.thread_time_ns, *, voices=16):
+    require(type(voices) is int and 1 <= voices <= 16, "benchmark voices must be 1..16")
     for organ in (scalar, variant):
         apply_event(organ, 1)
+        _set_voices(organ, voices, 0.63)  # Preserve event 1's original gate levels.
         # Correctness separately exercises click input. Keep the timed full
         # registration steady instead of replaying one onset every block.
         organ.prepare_input(BLOCK_FRAMES, BLOCK_FRAMES)
@@ -398,6 +400,7 @@ def benchmark_pair(scalar, variant, clock=time.thread_time_ns):
             run_totals[name].append(after_run - before_run)
             organs[name].output(BLOCK_FRAMES)  # finite-output check outside timed region
     result = {"clock": "time.thread_time_ns", "runs": BENCHMARK_RUNS,
+              "active_voices": voices, "available_voices": 16,
               "blocks_per_run": BENCHMARK_BLOCKS_PER_RUN, "warmup_blocks": BENCHMARK_WARMUP_BLOCKS,
               "alternating_order": order_trace, "quantile_method": "nearest_rank"}
     for name in ("scalar", "variant"):

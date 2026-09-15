@@ -218,6 +218,21 @@ class OrganVariantTests(unittest.TestCase):
             slower = checker.benchmark_pair(CostOrgan(clock, 100), CostOrgan(clock, 95), clock)
         self.assertFalse(slower["gate"]["passed"])
 
+    def test_voice_count_is_explicit_without_changing_default_capacity_gate(self):
+        clock = CostClock()
+        scalar, variant = CostOrgan(clock, 100), CostOrgan(clock, 70)
+        with patch.object(checker, "BENCHMARK_RUNS", 1), \
+                patch.object(checker, "BENCHMARK_BLOCKS_PER_RUN", 1), \
+                patch.object(checker, "BENCHMARK_WARMUP_BLOCKS", 0):
+            result = checker.benchmark_pair(scalar, variant, clock, voices=3)
+        self.assertEqual(result["active_voices"], 3)
+        self.assertEqual(result["available_voices"], 16)
+        self.assertEqual(sum(scalar.zones[f"gate_v{i}"] != 0 for i in range(16)), 3)
+        self.assertEqual(scalar.zones["gate_v0"], 0.63 * 0.55)
+        for value in (0, 17, True, 3.5):
+            with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, "voices"):
+                checker.benchmark_pair(scalar, variant, clock, voices=value)
+
     def test_native_api_uses_local_handles_and_fixed_buffers(self):
         library = FakeLibrary()
         with patch.object(checker.ctypes, "CDLL", return_value=library) as loader, \
