@@ -64,6 +64,7 @@ SAFE_TESTS = (
     "test_organ_leslie_stop.py",
     "test_synth_diagnostics.py",
     "test_organ_stop_check.py",
+    "test_performance_probe.py",
 )
 
 
