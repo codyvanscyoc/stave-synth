@@ -4,7 +4,7 @@ Faust owns tonewheel synthesis, drive, Leslie, tone shaping. Python owns:
 - Envelope (attack + release linear ramps) — written to gate_v%i per block
 - Click sample generation + mixing (passed to Faust as mono input)
 - Drawbar amps + crosstalk pre-mix (9 effective amps per block)
-- Leslie speed target (slow/fast → Hz)
+- Leslie speed target (stop/slow/fast → Hz)
 """
 from __future__ import annotations
 
@@ -404,7 +404,10 @@ class FaustOrganEngine:
             self._in_mono.fill(0.0)
 
         # Leslie speed target
-        target_hz = LESLIE_FAST_HZ if self.leslie_speed == "fast" else LESLIE_SLOW_HZ
+        # STOP coasts the existing rotors toward rest; keep depth, phase and
+        # the native horn/drum ramp constants unchanged (not a Leslie bypass).
+        target_hz = (0.0 if self.leslie_speed == "stop" else
+                     LESLIE_FAST_HZ if self.leslie_speed == "fast" else LESLIE_SLOW_HZ)
         self._zones["leslie_target_hz"][0] = float(target_hz)
         self._zones["leslie_depth"][0] = float(self.leslie_depth)
         self._zones["drive"][0] = float(self.drive)
@@ -529,7 +532,7 @@ class FaustOrganEngine:
                 self._push_drawbar_amps()
         if "leslie_speed" in params:
             speed = params["leslie_speed"]
-            if speed in ("slow", "fast"):
+            if speed in ("stop", "slow", "fast"):
                 self.leslie_speed = speed
         if "leslie_depth" in params:
             self.leslie_depth = max(0.0, min(1.0, float(params["leslie_depth"])))

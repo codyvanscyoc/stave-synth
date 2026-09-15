@@ -415,7 +415,9 @@ class OrganEngine:
 
         # ── Split Leslie speaker ──
         depth = self.leslie_depth
-        target_hz = LESLIE_FAST_HZ if self.leslie_speed == "fast" else LESLIE_SLOW_HZ
+        # STOP uses the same coast-down ramps and retains rotor position/depth.
+        target_hz = (0.0 if self.leslie_speed == "stop" else
+                     LESLIE_FAST_HZ if self.leslie_speed == "fast" else LESLIE_SLOW_HZ)
 
         # Horn ramp (fast — ~0.8s time constant)
         horn_smooth = 1.0 - np.exp(-n_samples / (HORN_RAMP_SEC * sr))
@@ -549,7 +551,7 @@ class OrganEngine:
                 self._drawbar_amps = self._compute_amps()
         if "leslie_speed" in params:
             speed = params["leslie_speed"]
-            if speed in ("slow", "fast"):
+            if speed in ("stop", "slow", "fast"):
                 self.leslie_speed = speed
         if "leslie_depth" in params:
             self.leslie_depth = max(0.0, min(1.0, float(params["leslie_depth"])))

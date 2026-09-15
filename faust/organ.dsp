@@ -97,7 +97,7 @@ tone_tilt_eq = fi.peak_eq_cq(low_gain_db, 250, 1.0)
 // so L and R have independent stateful chains (true stereo behavior).
 // ═══════════════════════════════════════════════════════════════════════
 leslie_depth     = hslider("leslie_depth", 0.3, 0, 1, 0.001) : si.smoo;
-leslie_target_hz = hslider("leslie_target_hz", 0.8, 0.1, 10.0, 0.001);
+leslie_target_hz = hslider("leslie_target_hz", 0.8, 0.0, 10.0, 0.001);
 
 horn_hz = leslie_target_hz                       : si.smooth(ba.tau2pole(HORN_RAMP_SEC));
 drum_hz = leslie_target_hz * DRUM_SPEED_RATIO    : si.smooth(ba.tau2pole(DRUM_RAMP_SEC));
