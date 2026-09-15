@@ -59,10 +59,10 @@ SOUNDFONT_PRESETS = {
 }
 
 # Small-Pi profile (see config.LOW_RAM_MODE): Salamander's 1.2 GB cannot be
-# resident on a 2 GB box, and dynamic-sample-loading doesn't help it (one
-# preset owns the whole bank). Drop it from the presets — this removes it
-# from the preload loop AND the UI dropdown in one place. config.load_state
-# remaps any saved "Salamander" selection to "Fluid" on these boxes.
+# resident on a 2 GB box. Drop it from the presets so the remaining FluidR3_GM
+# bank can stay fully resident without that cost. This removes Salamander from
+# the preload loop AND the UI dropdown in one place. config.load_state remaps
+# any saved "Salamander" selection to "Fluid" on these boxes.
 if LOW_RAM_MODE:
     SOUNDFONT_PRESETS = {k: v for k, v in SOUNDFONT_PRESETS.items()
                          if v["file"] != "Salamander"}
@@ -419,7 +419,7 @@ class FluidSynthPlayer:
 
     def start(self, soundfont_name: str = "Salamander"):
         """Initialize FluidSynth and PRE-LOAD every available soundfont so
-        mid-set preset switching never blocks the audio render thread.
+        mid-set preset switching performs no sample loading or unloading.
 
         Audio is rendered via render_block() — no JACK driver needed.
 
@@ -427,35 +427,26 @@ class FluidSynthPlayer:
         boot time for instant live switching. Previously `set_soundfont`
         called `sfunload` + `sfload` under the render lock — a Salamander
         reload is hundreds of ms of cold disk read and dropped audio mid-song.
-        With every preset's .sf2 resident in memory, a preset change is a
-        3-call `program_select` that takes microseconds.
+        With every supported preset's bank resident in memory, program changes
+        do not allocate or unload samples. The remaining program_select call is
+        still native work and must be qualified on the target.
 
-        Memory cost on the Pi 5 (8 GB): Salamander ~1.2 GB + FluidR3_GM
-        ~150 MB = ~1.35 GB resident. Fine.
+        The full profile may retain Salamander (~1.2 GB) plus FluidR3_GM
+        (~150 MB). LOW_RAM_MODE excludes Salamander and retains FluidR3_GM;
+        the target's actual resident-memory cost must be verified before release.
         """
         self._closing = False
         self._preload_stop.clear()
         self.fs = fluidsynth.Synth(samplerate=float(self.sample_rate))
 
-        # Configure — gain at 1.0 since our pipeline handles volume.
+        self._configure_native_settings()
+
+        # Configure pitch range after the core synth settings. Gain is 1.0
+        # because our pipeline handles volume.
         # FluidSynth's own 1990s Schroeder reverb is DISABLED — piano-room
         # colour now comes from our dedicated Faust Dattorro (self._piano_room)
         # which runs in our Python pipeline and mixes properly with the rest
         # of the chain. Chorus stays off.
-        if LOW_RAM_MODE:
-            # Small-Pi profile: load only the samples of the selected
-            # program instead of whole banks (FluidR3_GM 148 MB → ~10-30 MB
-            # resident). Must be set BEFORE the first sfload. First
-            # program-select per font pays a short disk read — acceptable.
-            try:
-                self.fs.setting("synth.dynamic-sample-loading", 1)
-                logger.info("LOW_RAM_MODE: FluidSynth dynamic-sample-loading on")
-            except Exception as e:
-                logger.warning("dynamic-sample-loading unavailable: %s", e)
-        self.fs.setting("synth.polyphony", 32 if LOW_RAM_MODE else 64)
-        self.fs.setting("synth.gain", 1.0)
-        self.fs.setting("synth.reverb.active", 0)
-        self.fs.setting("synth.chorus.active", 0)
         # Pin pitch bend range to ±2 semitones via RPN so it matches the pad.
         # Default range varies by soundfont; without this the piano can bend
         # a different amount than the pad → user hears "out of tune" between
@@ -481,13 +472,13 @@ class FluidSynthPlayer:
             logger.warning("Piano-room reverb unavailable: %s", e)
             self._piano_room = None
 
-        # ─── Pre-load the STARTUP preset only; defer the rest ─────────
+        # ─── Load the STARTUP bank first; preload the rest before READY ───
         # Salamander is 1.2GB and dominates cold-boot time (~3-6s of disk
         # read). Loading only the startup preset up-front and lazy-loading
         # the others on a background thread cuts boot to first-note from
-        # ~25s → ~17-20s for typical worship use. Mid-set preset switches
-        # may briefly stall (≤500ms) the first time a not-yet-loaded preset
-        # is selected — acceptable given how rare song-mid font swaps are.
+        # ~25s → ~17-20s for typical worship use. Startup waits for the bounded
+        # background preload before JACK starts, so no supported bank remains
+        # pending once the instrument advertises readiness.
         self._sfid_by_file = {}         # preset["file"] → sfid
         _sfid_by_path = {}              # resolved abs path → sfid (dedup)
         # Resolve the startup file_key first so we know which one to preload
@@ -628,6 +619,31 @@ class FluidSynthPlayer:
         # Start asynchronous loads only after the startup program has been
         # selected. All native calls share _lock with render and shutdown.
         self._preload_thread.start()
+
+    def _configure_native_settings(self) -> None:
+        """Set allocation-sensitive FluidSynth policy before the first sfload."""
+        try:
+            # FluidSynth documents dynamic sample loading as unsuitable for
+            # real-time program changes: selecting a program can allocate and
+            # unload samples. Keep the supported bank resident on every profile.
+            # Zero is also FluidSynth's normal default, made explicit here so a
+            # system/user configuration cannot silently change the live policy.
+            self.fs.setting("synth.dynamic-sample-loading", 0)
+            dynamic_loading = self.fs.get_setting(
+                "synth.dynamic-sample-loading"
+            )
+            if type(dynamic_loading) is not int or dynamic_loading != 0:
+                raise RuntimeError(
+                    "FluidSynth dynamic-sample-loading readback is not disabled"
+                )
+        except Exception as exc:
+            raise RuntimeError(
+                "FluidSynth full-bank residency could not be configured"
+            ) from exc
+        self.fs.setting("synth.polyphony", 32 if LOW_RAM_MODE else 64)
+        self.fs.setting("synth.gain", 1.0)
+        self.fs.setting("synth.reverb.active", 0)
+        self.fs.setting("synth.chorus.active", 0)
 
     def wait_for_preload(self, timeout: float = 30.0) -> bool:
         """Wait a bounded time for all background soundfont loads to finish.
@@ -1361,8 +1377,9 @@ class FluidSynthPlayer:
         target_program = int(preset.get("program", 0))
 
         # Every preset's .sf2 is pre-loaded at start(); switching is just a
-        # program_select on the already-resident sfid. No sfload/sfunload on
-        # the audio path → no dropped audio mid-song.
+        # program_select on the already-resident sfid. No sfload/sfunload or
+        # dynamic sample allocation occurs on the live path; the remaining
+        # native program-select duration is still measured during qualification.
         if self.fs is None:
             # Pre-start state update (set_soundfont called before start())
             self.current_soundfont = name
