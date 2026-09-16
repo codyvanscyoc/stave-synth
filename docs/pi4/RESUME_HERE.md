@@ -4,6 +4,25 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
+## Tonight's freeze and deferred architecture question
+
+User deferred further optimization until AFTER the September16 worship
+session. Leave512 and the saved Yamaha output tuning alone; no further
+deployment, buffer changes or restarts during the session.
+
+Saved user question for afterward: How do dedicated keyboards such as the
+user's Dexibell or a Nord achieve their responsiveness and instrument quality
+within their hardware resources? Do samples cost less than synthesis, and did
+we choose the right Stave architecture/languages (Faust, Python, native code,
+FluidSynth) for a software instrument on available Pi4 hardware?
+
+Research and discuss later, not tonight. Verify model-specific public facts;
+do not assume these keyboards actually use little CPU/RAM or invent proprietary
+internals. Compare sampling/streaming, DSP/voice/effect costs, real-time audio
+scheduling and Stave's measured bottlenecks. Distinguish appropriate language
+choices from implementation/queue overhead. No redesign is authorized solely
+by saving this question; preserve the loved sound and revisit after feedback.
+
 ## September 16 afternoon — 256 trial rejected, 512 restored
 
 Player reported "Already crackles everywhere. Can't handle it." A fresh
