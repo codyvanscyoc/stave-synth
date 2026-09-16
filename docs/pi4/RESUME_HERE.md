@@ -4,6 +4,66 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
+## September 16 — Yamaha latency profile is now persistent
+
+The player approved the quicker response and requested persistence. Installed
+`config/pi4/51-stave-yamaha-mx-latency.conf` into the Pi user's WirePlumber
+configuration. It matches only the observed Yamaha MX stereo output and sets
+period-size128; no generic-device, sound, voice or Stave buffer changes.
+See [YAMAHA_LATENCY_PROFILE.md](YAMAHA_LATENCY_PROFILE.md) for scope and rollback.
+
+Verified a stopped-Stave WirePlumber restart recreated the output and reapplied
+hardware period64/headroom64. Normal Stave PID33382, zero automatic restarts,
+correct stereo links and volume1.00. State bytes unchanged. A subsequent
+60-second IDLE check had zero new underruns/xruns/late renders/piano misses/MIDI
+drops; callbacks+5628/renders+5627. No notes played during this check, so it is
+not a full-load playing pass. Physical power-cycle/replug remains untested.
+Mac offline suite:549 Python tests, zero skips, plus Node checks. Runtime
+application remains f600c7e/bd6a517; only the external audio policy was deployed.
+
+Private stopped-runtime backup `before-persistence.tar` is on both Mac and Pi
+in the latency-20260916 directories below. Monitors have ended. Oscillator
+click repair is still pending; do not infer it was included in this change.
+
+## September 16 — historical temporary Yamaha trial (superseded above)
+
+Latest runtime application is still unchanged f600c7e/bd6a517 in the rehearsal
+checkout; do not assume newer local notes imply a deployed source change.
+After the player reported subtle piano delay even through Yamaha headphones,
+they authorized muted/off-stage changes. A runtime-only PipeWire setting for
+the verified Yamaha output changes api.alsa.period-size from automatic0 to128;
+after a stopped-Stave output suspend/reopen this gives hardware period64 and
+headroom64 instead of256/256. Graph48000/512 and Stave low-latency6/refill3,
+voices, effects and saved settings remain unchanged. This is TEMPORARY and
+may reset on output recreation/session-manager restart/reboot. Await player
+comparison and longer playing before deciding persistence; no permanent rule.
+Player subsequently confirmed: "It feels just right now." This is subjective
+acceptance of the trial response, not full-load qualification or permission to
+claim measured end-to-end latency. Keep this target; busiest-patch continuity
+and a reversible persistent Yamaha-only rule remain next steps.
+
+At 10:33 CDT, active PID28914, invocation71fec46c941b4ca6b050f018a7d4fba6,
+zero restarts, Yamaha stereo routed at volume1.00. A120-second check saw300
+MIDI note-count increments (playing only in the latter part), zero new bridge
+underruns/xruns/piano misses/MIDI drops, but15 late renders. Driver delay sample
+mean22.97ms before versus18.86ms after is NOT calibrated MIDI-to-analogue latency.
+See REHEARSAL_CHECKPOINT.md for player findings, caveats and rollback details.
+No monitor/compiler/test process remains running after this readiness check.
+
+Mac private backup/evidence:
+`Documents/stave-synth-pi4-backups/latency-20260916.jH9NwW/INDEX.md`.
+Pi archive: `stave-synth-pi4-backups/latency-20260916.bDF3jl/runtime-before.tar`.
+Original stage95/90 overrides are untouched. The previous documentation's
+service PIDs and saved-state hashes are historical, not current handles.
+
+New player issues: oscillator-toggle pops/clicks (short fade acceptable), OSC2
+alternate-control discoverability, and interface-level UI/recall. ART USB DI
+still fails OS enumeration; no root cause proven. Required in-process piano
+FluidSynth remains; separate packaged daemon is an unremoved cleanup candidate.
+No oscillator-click fix has been implemented or deployed. Eight-hour soak
+remains waived. The player continues testing; never infer maintenance permission
+for a later performance from today's authorized window.
+
 ## September 15 — current rehearsal runtime, supersedes all older entries
 
 The corrected application **`bd6a517` is now active** in the normal service,

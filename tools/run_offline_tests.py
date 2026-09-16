@@ -19,6 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SAFE_TESTS = (
+    "test_yamaha_latency_profile.py",
     "test_runtime.py",
     "test_state_store.py",
     "test_instance_integration.py",
