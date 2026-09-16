@@ -342,3 +342,25 @@ restart does not clear it. Rollback: stop Stave, set clock.force-quantum0,
 restart Stave and verify512/native/audio/UI/route/volume. Existing Yamaha rule
 and95/90 overrides stay. No new full offline-suite claim for this runtime-only
 trial; prior549-test run remains historical at the preceding checkpoint.
+
+### Trial rejected and rolled back after real playing
+
+Player requested a repeat check, then reported "Already crackles everywhere.
+Can't handle it." Repeat60.03sec began without new MIDI notes for20sec, then
+received106 note-count increments. Bridge underruns28->72 (+44), late
+renders345->1479 (+1134), xruns0, piano misses0, MIDI drops0. This is a failed
+mixed idle/playing continuity test, not a successful idle run. Player feedback
+confirms audible problems; exact musical workload was not captured as a fixture.
+
+Restored original clock.force-quantum0 with Stave stopped and restarted it.
+Actual health confirms48000/512, ring6; Yamaha tuning and output volume1.00
+remain. ServicePID185009, invocation4e958aafdb1341d7958af803acd8ae4d, zero
+automatic restarts. No source/native/preset/effect edits. Do not promote256
+to a supported mode; profile the limiting work before another experiment.
+Private recheck-readiness.json preserves all four snapshots and driver samples'
+summary. No calibrated end-to-end latency measurement or causal CPU diagnosis.
+
+Rollback-readiness.json:30.06sec at actual512,50 note-count increments in
+first10sec then none, underruns5->5, xruns0, piano misses/MIDI drops0,
+late renders12->18 (+6), callbacks/renders+2812, healthy native/audio/UI.
+Short mixed idle/playing verification only; monitor completed.

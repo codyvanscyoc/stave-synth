@@ -4,7 +4,28 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
-## September 16 afternoon — 256-frame playing trial is active
+## September 16 afternoon — 256 trial rejected, 512 restored
+
+Player reported "Already crackles everywhere. Can't handle it." A fresh
+60.03-second observation initially had no new notes, then received106 MIDI
+note-count increments. Underruns28->72 (+44), late renders345->1479 (+1134),
+xruns0, piano misses0, MIDI drops0. This mixed idle/playing result FAILS audio
+continuity; first idle-only success did not predict playable stability.
+
+Restored clock.force-quantum0 with Stave stopped, then restarted normally;
+default512 remains configured. Yamaha output improvement remains installed,
+volume1.00. PID185009, invocation4e958aafdb1341d7958af803acd8ae4d, zero restarts.
+No presets, effects, voices, source/native code or persistent files changed.
+Do not re-enable256 or add it as a supported UI mode based on these tests.
+Further latency work needs profiling/optimization and separately qualified
+profiles; this test does not prove which component is the limiting cause.
+Private evidence: quantum256-20260916.W4UHIL/recheck-readiness.json.
+Rollback check30.06sec:50 new MIDI note counts (first10sec), zero new
+underruns/xruns/piano misses/MIDI drops,6 late renders, callbacks/renders+2812.
+Actual512/native/audio/UI healthy. Monitor finished; no diagnostic loop left.
+This short mixed playing/idle check is not a full rehearsal qualification.
+
+## September 16 afternoon — historical 256-frame trial (rolled back above)
 
 Player requested faster response after more playing and explicitly authorized
 the256 trial/restart. Stave now runs48000Hz/256frames, unchanged six-slot/refill3
