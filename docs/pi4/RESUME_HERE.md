@@ -4,7 +4,31 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
-## September 16 — Yamaha latency profile is now persistent
+## September 16 afternoon — 256-frame playing trial is active
+
+Player requested faster response after more playing and explicitly authorized
+the256 trial/restart. Stave now runs48000Hz/256frames, unchanged six-slot/refill3
+queue and Yamaha output tuning. Only runtime PipeWire clock.force-quantum=256
+changed from0, with Stave stopped before the change. Persistent default512
+configuration is untouched; PipeWire restart/reboot returns to its default.
+Application remains f600c7e/bd6a517; no new DSP/UI/source deployment.
+
+PID180575, invocation69818ed02ffd45c6af5b4009319f7668, active/zero restarts.
+60.11-second idle check: underruns15->15, xruns0->0, late renders68->108 (+40),
+callbacks/renders each+11258; no notes played, no piano misses or MIDI drops,
+native/audio/UI healthy. This is NOT full-load qualification or a strict
+timing pass. Leave only for the requested listening test, pending feedback;
+do not silently approve tonight's performance on the strength of idle results.
+
+Stopped-runtime backup before-256.tar is SHA256
+3af8dd38f8010a84811f810fd4a225df68726075bc0d5bc1ec3b696cb5715480,
+verified on Pi in stave-synth-pi4-backups/quantum256-20260916.e6YKWV and Mac
+Documents/stave-synth-pi4-backups/quantum256-20260916.W4UHIL (INDEX/readiness).
+Rollback in a muted authorized window: stop Stave, set clock.force-quantum0
+with pw-metadata, start Stave, verify actual512 and route/health. Keep Yamaha
+rule and95/90 overrides. Never change quantum while Stave is running.
+
+## September 16 morning — Yamaha latency profile is persistent
 
 The player approved the quicker response and requested persistence. Installed
 `config/pi4/51-stave-yamaha-mx-latency.conf` into the Pi user's WirePlumber

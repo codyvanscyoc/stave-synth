@@ -311,3 +311,34 @@ WirePlumber restart verified persistence; no physical power-cycle/replug was
 performed. Rollback must now remove only the owned persistent rule before
 the authorized stopped-Stave WirePlumber restart, not merely set a temporary
 node parameter. No oscillator-click correction is included.
+## September 16 afternoon: authorized 256-frame trial
+
+Supersedes earlier512 runtime descriptions, but not Yamaha persistence.
+The player requested faster response after further testing and approved the
+reversible256 trial. Stopped Stave and backed up state/service/audio config;
+set runtime PipeWire clock.force-quantum from0 to256, then restarted Stave.
+No persistent graph config, app/native code, voice/effect settings or UI edits.
+Normal service PID180575, invocation69818ed02ffd45c6af5b4009319f7668, zero
+automatic restarts; actual health48000Hz/256frames, six-slot low-latency ring.
+Yamaha44100Hz24-bit stereo, period64, correct stereo links, volume1.00.
+Saved state unchanged across restart:
+8bf9a8b4c966029bcdb546d25a5b0999e108ae69929a57c9c22ba7df67f483a5.
+
+Read-only readiness60.11seconds, no MIDI notes: underruns15->15, xruns0->0,
+late renders68->108 (+40), callbacks/renders+11258, piano misses/MIDI drops0,
+no graph/audio error, native/UI healthy. Startup-inclusive counters retained.
+No new output underruns during idle observation, but the late-render growth
+means this is NOT a strict timing pass or full-load qualification. No musical
+probe was run: existing probes assert512 and must not be reused unmodified.
+Monitor ended; user playing feedback is next. Oscillator clicks remain unfixed.
+
+593 driver delay samples340–618frames, mean489.0337frames (~11.09ms at44100Hz).
+Not calibrated end-to-end latency; not a matched-load A/B. Do not present the
+block duration5.33ms or driver delay as measured key-to-sound response.
+
+Mac/Pi private backup roots and checksum are in RESUME_HERE. Persistent graph
+default remains512, so PipeWire restart/reboot clears this trial. Service-only
+restart does not clear it. Rollback: stop Stave, set clock.force-quantum0,
+restart Stave and verify512/native/audio/UI/route/volume. Existing Yamaha rule
+and95/90 overrides stay. No new full offline-suite claim for this runtime-only
+trial; prior549-test run remains historical at the preceding checkpoint.
