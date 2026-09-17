@@ -6,6 +6,19 @@ Read this first; earlier review/deployment notes describe historical checkpoints
 
 ## September16 post-worship: native-v2 implementation authorized
 
+September17 latest priority: user deferred independent drone/recorded-pad/
+recording until AFTER the morning audio test. See
+[NATIVE_V2_AUDITION.md](NATIVE_V2_AUDITION.md). Implemented a bounded whole-block
+control/MIDI adapter, opt-in isolated JACK host and temporary private-IP listening
+UI (not full production UI/preset parity). Offline real-graph adapter PCM exact
+at512/256, UBSan/session/fake-JACK lifecycle guards and562 reviewed tests plus
+Node pass. Starts muted, explicit routes, production-client refusal, truthful
+callback-progress health. No core sound change: high-gain parity/piano headroom
+findings remain open. Read-only Pi check: service activePID683040, same rehearsal
+checkout; no restart/build/deployment. Await current muted/connected maintenance
+confirmation, then target build/guards and temporary512 audition with restoration.
+Do NOT resume drone/recording migration first or claim field-test readiness yet.
+
 September17 latest Pi result: [NATIVE_V2_PI_PROBE.md](NATIVE_V2_PI_PROBE.md).
 User authorized isolated build/testing with PA off, then explicitly authorized
 pause/restore of Stave. First build hit our80°C guard. Bounded cooling restored

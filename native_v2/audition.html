@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Stave • Native audition</title>
+<style>
+body{font:17px system-ui;background:#10151a;color:#e8edea;max-width:960px;margin:auto;padding:24px}h1{font-size:26px}p{line-height:1.5;color:#b5c2c0}.panel{background:#1c252b;border:1px solid #34464a;border-radius:12px;padding:18px;margin:16px 0}#mixer,#edit{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:22px}label{display:block}input,select,button{width:100%;min-height:48px;font:inherit;accent-color:#70d9b0}input:disabled{opacity:.35}output{float:right;font-variant-numeric:tabular-nums}button{background:#31464b;color:white;border:1px solid #597378;border-radius:8px;cursor:pointer}#health{white-space:pre-wrap;line-height:1.6}#notice{color:#f5cc82}.small{font-size:14px}summary{cursor:pointer;min-height:44px}
+</style>
+<h1>Stave / Native audio audition</h1>
+<p>Piano + OSC1/OSC2 • temporary test build • starts muted.<br>Raise Master gradually with monitoring low. This is not the normal Stave application or your saved patch.</p>
+<div class="panel" id="health">Waiting for native audio owner…</div><p id="notice" role="status"></p>
+<div class="panel" id="mixer"></div>
+<details class="panel"><summary>Sound controls</summary><div id="edit"></div></details>
+<button id="release" disabled>Release notes and pedals — effects tails continue</button>
+<p class="small">Deferred: recorded pads, independent drone and recording. Not in this audition: organ, presets/MIDI maps, pitch bend, macros, scenes, program changes or device recovery. MIDI channels share one keyboard; MIDI offsets are block-quantized. Loss of the selected device stops this audition. Closing this browser does not stop audio.</p>
+<p class="small">512 frames is the first listening profile. No buffer switch is exposed. Timing here measures the native callback, not physical keyboard-to-speaker latency. Full-scale piano counts are a headroom warning, not proof of audible clipping.</p>
+<script>
+'use strict';
+const labels={piano:'Piano',osc1:'OSC1',osc2:'OSC2',cutoff:'Filter cutoff · Hz',wet:'Synth reverb mix',master:'Master',wave1:'OSC1 waveform',wave2:'OSC2 waveform',attack:'Oscillator attack · ms',release:'Oscillator release · ms',resonance:'Filter resonance',piano_room:'Piano room',piano_reverb:'Piano → shared reverb',delay_wet:'Delay mix',delay_feedback:'Delay feedback',shimmer:'Shimmer enabled',shimmer_mix:'Shimmer mix',reverb:'Reverb type',freeze:'Reverb freeze'};
+const choices={wave1:['Sine','Square','Saw','Triangle','Saturated'],wave2:['Sine','Square','Saw','Triangle','Saturated'],reverb:['Wash','Hall','Room','Plate','Bloom','Drone effect','Ghost'],shimmer:['Off','On'],freeze:['Released','Frozen']};
+const fields={},pending=new Map();let ready=false,busy=false;
+const notice=document.getElementById('notice');
+async function send(key,value){
+  if(!ready)return;
+  pending.set(key,value); if(busy)return; busy=true;
+  try{
+    while(pending.size&&ready){
+      const [k,v]=pending.entries().next().value;pending.delete(k);
+      const r=await fetch('/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k,value:v}),signal:AbortSignal.timeout(2000)});
+      const response=await r.json();if(!r.ok)throw Error(response.error||'Control rejected');
+    }
+  }catch(e){pending.clear();notice.textContent=e.message+' — no automatic replay';}
+  finally{busy=false;}
+}
+async function setup(){
+  const definitions=await (await fetch('/controls')).json();
+  for(const [key,[min,max,step,value]] of Object.entries(definitions)){
+    if(key==='release_all')continue;
+    const label=document.createElement('label');label.textContent=labels[key];
+    const out=document.createElement('output');out.textContent=value;label.append(out);
+    const input=document.createElement(choices[key]?'select':'input');
+    if(choices[key])choices[key].forEach((name,i)=>{const o=document.createElement('option');o.value=i;o.textContent=name;input.append(o)});
+    else{input.type='range';input.min=min;input.max=max;input.step=step;}
+    input.value=value;input.disabled=true;input.setAttribute('aria-label',labels[key]);
+    input.addEventListener('input',()=>{out.textContent=input.value;if(!choices[key])send(key,Number(input.value));});
+    // One request in flight; pending absolute values coalesce by parameter.
+    // Reconnect never replays one-shot actions or stale gestures.
+    input.addEventListener('change',()=>send(key,Number(input.value)));
+    label.append(input);document.getElementById(['piano','osc1','osc2','cutoff','wet','master'].includes(key)?'mixer':'edit').append(label);fields[key]={input,out};
+  }
+  document.getElementById('release').onclick=()=>send('release_all',1);
+  poll();
+}
+async function poll(){
+  try{
+    const r=await fetch('/status',{signal:AbortSignal.timeout(2000)});if(!r.ok)throw Error('Status unavailable');
+    const d=await r.json(),s=d.status;ready=!d.stale&&d.exited===null&&s.fault===0&&s.routed===true;
+    document.getElementById('health').textContent=(ready?'Audio owner active':'NOT READY — do not assume audible output')+'\n'+
+      (s.frames||'?')+' frames / 48 kHz · played notes '+(s.notes||0)+' · callbacks '+(s.blocks||0)+'\n'+
+      'Xruns '+(s.xruns||0)+' · over-budget callbacks '+(s.over_budget||0)+' · worst '+Number(s.max_callback_ms||0).toFixed(2)+' ms\n'+
+      'Piano full-scale samples '+(s.piano_full_scale||0)+' · unsupported MIDI '+(s.unsupported_midi||0)+' · pending controls '+d.pending;
+    if(d.error)notice.textContent=d.error;else if(!ready)notice.textContent='Control/audio connection is stale or stopped. No commands will be replayed.';
+    else notice.textContent=d.pending?'Waiting for audio-owner acknowledgment…':'Values below are acknowledged by the audio owner.';
+    if(!ready)pending.clear();
+    for(const [key,{input,out}] of Object.entries(fields)){
+      input.disabled=!ready;
+      if(document.activeElement!==input&&!pending.has(key)&&!d.pending){input.value=d.values[key];out.textContent=d.values[key];}
+    }
+    document.getElementById('release').disabled=!ready;
+  }catch(e){ready=false;pending.clear();notice.textContent='Disconnected — audio may still be playing. No control replay.';for(const f of Object.values(fields))f.input.disabled=true;document.getElementById('release').disabled=true;}
+  setTimeout(poll,750);
+}
+setup().catch(e=>{notice.textContent='Audition setup failed: '+e.message;});
+</script></html>

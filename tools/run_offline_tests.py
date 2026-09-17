@@ -74,6 +74,7 @@ SAFE_TESTS = (
     "test_organ_variants.py",
     "test_extended_probe.py",
     "test_native_instrument_benchmark.py",
+    "test_native_v2_audition.py",
 )
 
 

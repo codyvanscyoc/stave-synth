@@ -36,6 +36,7 @@ def main():
     parser.add_argument("--blocks",type=int,default=400)
     parser.add_argument("--source-commit",required=True)
     parser.add_argument("--reuse-dsp-dir",type=Path,help="Prior private report directory; reuse only hash/version-matched DSP objects")
+    parser.add_argument("--build-audition",action="store_true",help="Also build/test isolated audition adapter and compile JACK host; never start it")
     args=parser.parse_args()
     if not args.soundfont.is_file() or not 100<=args.blocks<=2000: parser.error("Existing SF2 and100..2000 blocks required")
     out=args.output_dir.resolve(); out.mkdir(mode=0o700,exist_ok=False)
@@ -78,6 +79,8 @@ def main():
         paths=[*sorted((ROOT/"native_v2/include").rglob("*.hpp")),*[ROOT/f"native_v2/src/{x}.cpp" for x in SOURCES],
                ROOT/"native_v2/tests/benchmark_stage_instrument.cpp",ROOT/"native_v2/tests/test_stage_instrument.cpp",
                Path(__file__),ROOT/"faust/faust_cprelude.h",*[ROOT/f"faust/{x}.dsp" for x,_,_ in MODULES]]
+        if args.build_audition:
+            paths += [ROOT/"native_v2/src/audition_jack.cpp",ROOT/"native_v2/tests/test_audition_session.cpp",ROOT/"native_v2/tests/test_audition_jack.cpp"]
         hashes=lambda:{str(p.relative_to(ROOT)):hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
         report["source_sha256"]=hashes(); report["soundfont_sha256"]=hashlib.sha256(args.soundfont.read_bytes()).hexdigest()
         cc,cxx,faust,pkg=(shutil.which(x) for x in ("cc","c++","faust","pkg-config"))
@@ -125,6 +128,16 @@ def main():
         guard=out/"guard"; bench=out/"benchmark"
         run([*common,"-fsanitize=undefined","-fno-sanitize-recover=all",ROOT/"native_v2/tests/test_stage_instrument.cpp",*objects,*fluid,"-o",guard])
         report["guards"]=run([guard,args.soundfont],timeout=120)
+        if args.build_audition:
+            audition_guard=out/"audition-guard"
+            run([*common,"-pthread","-fsanitize=undefined","-fno-sanitize-recover=all",ROOT/"native_v2/tests/test_audition_session.cpp",*objects,*fluid,"-o",audition_guard])
+            report["audition_guards"]=run([audition_guard,args.soundfont],timeout=120)
+            jack=shlex.split(run([pkg,"--cflags","--libs","jack"]))
+            jack_headers=shlex.split(run([pkg,"--cflags","jack"]))
+            jack_guard=out/"audition-jack-guard"
+            run([*common,"-pthread","-fsanitize=undefined","-fno-sanitize-recover=all",ROOT/"native_v2/tests/test_audition_jack.cpp",*objects,*fluid,*jack_headers,"-o",jack_guard])
+            report["audition_jack_guards"]=run([jack_guard,args.soundfont],timeout=120)
+            run([*common,"-pthread",ROOT/"native_v2/src/audition_jack.cpp",*objects,*fluid,*jack,"-o",out/"audition-jack"])
         run([*common,ROOT/"native_v2/tests/benchmark_stage_instrument.cpp",*objects,*fluid,"-o",bench])
         for size in (512,256):
             for scenario in range(4):

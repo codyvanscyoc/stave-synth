@@ -7,6 +7,14 @@ See [the implementation plan](../docs/pi4/NATIVE_V2_PLAN.md) for promotion gates
 See [the saved checkpoint](../docs/pi4/NATIVE_V2_CHECKPOINT.md) for actual test
 results, artifact locations and the unresolved sanitizer check.
 
+September17: the player deferred independent drone/pad/recording until the first
+listening test. An opt-in isolated JACK host, bounded whole-block audition
+adapter and temporary browser controls are now implemented and offline-tested.
+They are **not deployed or target-qualified**, and do not replace the familiar
+UI/preset path. See [limited audition scope and next gate](../docs/pi4/NATIVE_V2_AUDITION.md).
+The default tools below remain device-free. Only the separate audition host/UI
+has an explicit `--allow-live-audition` path; do not invoke it on a playing Pi.
+
 ## Run only offline
 
 From this checkout, using already-installed dependencies:

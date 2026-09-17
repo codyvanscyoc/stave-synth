@@ -4,6 +4,12 @@ Decision: September 16, 2026, explicitly authorized by the player after a
 successful worship session with light playing and few control changes.
 Status: implementation in a separate branch; NOT a replacement stage build.
 
+September17 sequencing override from the player: defer independent drone,
+recorded-pad and recording migration until after the morning listening test.
+Prepare a limited piano/OSC/filter/effects audition first; do not pretend that
+passing that slice completes M3/M5/M6 or permits removal of other existing
+functions. See [NATIVE_V2_AUDITION.md](NATIVE_V2_AUDITION.md) for exact scope.
+
 ## What we decided
 
 Preserve the current working instrument as a v1.2 **stage snapshot**, then

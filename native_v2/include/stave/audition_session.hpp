@@ -1,0 +1,176 @@
+#pragma once
+#include "stave/stage_instrument.hpp"
+#include <atomic>
+#include <cstring>
+
+namespace stave {
+// Deliberately small audition protocol, NOT the saved-preset/UI schema. Only
+// absolute controls cross this SPSC queue; MIDI stays on the audio owner.
+enum class AuditionControl : unsigned {
+    Piano, Osc1, Osc2, Cutoff, Wet, Master, Wave1, Wave2, Attack, Release,
+    Resonance, PianoRoom, PianoReverb, DelayWet, DelayFeedback, Shimmer,
+    ShimmerMix, Reverb, Freeze, ReleaseAll, Count
+};
+inline constexpr std::array<const char*,unsigned(AuditionControl::Count)> audition_names{
+    "piano","osc1","osc2","cutoff","wet","master","wave1","wave2","attack","release",
+    "resonance","piano_room","piano_reverb","delay_wet","delay_feedback","shimmer",
+    "shimmer_mix","reverb","freeze","release_all"};
+inline bool audition_value_valid(AuditionControl c,double v) noexcept {
+    if(!std::isfinite(v)) return false;
+    switch(c) {
+    case AuditionControl::Cutoff: return v>=20&&v<=20000;
+    case AuditionControl::Attack: return v>=0&&v<=10000;
+    case AuditionControl::Release: return v>=0&&v<=30000;
+    case AuditionControl::Resonance: return v>=.5&&v<=10;
+    case AuditionControl::Wave1: case AuditionControl::Wave2: return v>=0&&v<=4&&v==std::floor(v);
+    case AuditionControl::Reverb: return v>=0&&v<=6&&v==std::floor(v);
+    case AuditionControl::Shimmer: case AuditionControl::Freeze: case AuditionControl::ReleaseAll:
+        return v==0||v==1;
+    case AuditionControl::DelayFeedback: return v>=0&&v<=.99;
+    case AuditionControl::Count: return false;
+    default: return unsigned(c)<unsigned(AuditionControl::Count)&&v>=0&&v<=1;
+    }
+}
+enum class AuditionFault : unsigned { None, Stop, GraphContract, MidiOverflow, InvalidMidi, Engine };
+struct AuditionCommand { std::uint64_t id{}; AuditionControl control{}; double value{}; };
+struct AuditionMidi { unsigned offset{},size{}; std::array<unsigned char,3> bytes{}; };
+
+// Fixed whole-block audition owner. No sample slicing, render-ahead queue,
+// persistence, ports, drivers or HTTP. Every callback's MIDI is applied in
+// order at that block's start; offsets are counted but NOT sample-accurate.
+// This intentional audition timing policy can advance events by <one block
+// on the render timeline. It is not end-to-end keyboard/DAC latency evidence.
+class AuditionSession final {
+public:
+    static constexpr unsigned capacity=128, controls_per_block=32, midi_limit=256;
+    explicit AuditionSession(StageInstrument& instrument):graph_(instrument) {
+        config_.owned_motion=true;
+        config_.fader1=config_.fader2=0; // start piano-only; no saved patch imported
+        config_.output.volume=0; // always silent until explicitly raised
+        if(!graph_.configure(config_)) request_stop(AuditionFault::Engine);
+    }
+    // One non-audio producer. Full/invalid controls are rejected, never
+    // acknowledged as applied; no MIDI note-off can be lost in this queue.
+    bool enqueue(AuditionCommand c) noexcept {
+        if(fault()!=AuditionFault::None||!c.id||c.id<=previous_id_||!audition_value_valid(c.control,c.value)) return false;
+        const auto h=head_.load(std::memory_order_relaxed),t=tail_.load(std::memory_order_acquire);
+        if(h-t>=capacity) return false;
+        commands_[h%capacity]=c; previous_id_=c.id;
+        head_.store(h+1,std::memory_order_release); return true;
+    }
+    void request_stop(AuditionFault why=AuditionFault::Stop) noexcept {
+        auto expected=AuditionFault::None;
+        fault_.compare_exchange_strong(expected,why,std::memory_order_release,std::memory_order_relaxed);
+    }
+    AuditionFault fault() const noexcept { return fault_.load(std::memory_order_acquire); }
+    std::uint64_t applied() const noexcept { return applied_.load(std::memory_order_acquire); }
+    std::uint64_t blocks() const noexcept { return blocks_.load(std::memory_order_relaxed); }
+    std::uint64_t notes() const noexcept { return notes_.load(std::memory_order_relaxed); }
+    std::uint64_t unsupported_midi() const noexcept { return unsupported_.load(std::memory_order_relaxed); }
+    std::uint64_t quantized_midi() const noexcept { return quantized_.load(std::memory_order_relaxed); }
+    std::uint64_t piano_full_scale() const noexcept { return full_scale_.load(std::memory_order_relaxed); }
+    // Invalid output pointers leave memory untouched. Driver must obtain valid
+    // JACK buffers and silence them on graph-size/rate mismatch itself.
+    bool process(float* l,float* r,unsigned frames,const AuditionMidi* events,unsigned count) noexcept {
+        if(!l||!r||l==r||frames!=graph_.block_frames()) { request_stop(AuditionFault::GraphContract); return false; }
+        const auto a=reinterpret_cast<std::uintptr_t>(l),b=reinterpret_cast<std::uintptr_t>(r);
+        if((a<b?b-a:a-b)<frames*sizeof(float)) { request_stop(AuditionFault::GraphContract); return false; }
+        if(count>midi_limit) request_stop(AuditionFault::MidiOverflow);
+        if(count&&!events) request_stop(AuditionFault::InvalidMidi);
+        if(fault()!=AuditionFault::None) return silence(l,r,frames);
+        // Validate the whole MIDI batch before mutating notes. Truncated data
+        // could contain a lost release, so malformed packets fault closed.
+        unsigned previous=0;
+        for(unsigned i=0;i<count;++i) {
+            const auto& e=events[i];
+            if(!valid_midi(e,frames)||e.offset<previous) { request_stop(AuditionFault::InvalidMidi); return silence(l,r,frames); }
+            previous=e.offset;
+        }
+        const auto h=head_.load(std::memory_order_acquire);
+        auto t=tail_.load(std::memory_order_relaxed);
+        for(unsigned n=0;t!=h&&n<controls_per_block;++n) {
+            const auto c=commands_[t%capacity];
+            if(!apply(c)) { request_stop(AuditionFault::Engine); return silence(l,r,frames); }
+            ++t; tail_.store(t,std::memory_order_release);
+            applied_.store(c.id,std::memory_order_release);
+        }
+        for(unsigned i=0;i<count;++i) {
+            if(!midi(events[i])) { request_stop(AuditionFault::Engine); return silence(l,r,frames); }
+            if(events[i].offset) quantized_.fetch_add(1,std::memory_order_relaxed);
+        }
+        if(fault()!=AuditionFault::None||!graph_.render_block()) {
+            request_stop(AuditionFault::Engine); return silence(l,r,frames);
+        }
+        full_scale_.store(graph_.stats().full_scale_piano_samples,std::memory_order_relaxed);
+        std::copy_n(graph_.pcm(0),frames,l); std::copy_n(graph_.pcm(1),frames,r);
+        // Legacy output smoothing starts at .85; setting its target to zero
+        // is not an immediate mute. Separate startup gate prevents even dither
+        // escaping before the player's first explicit nonzero master command.
+        if(!audition_unmuted_) { std::fill_n(l,frames,0); std::fill_n(r,frames,0); }
+        if(fault()!=AuditionFault::None) return silence(l,r,frames);
+        blocks_.fetch_add(1,std::memory_order_relaxed); return true;
+    }
+private:
+    static bool valid_midi(const AuditionMidi& e,unsigned n) noexcept {
+        if(!e.size||e.offset>=n||e.bytes[0]<0x80) return false;
+        const unsigned type=e.bytes[0]&0xf0;
+        if(type==0xf0) return true; // system/SysEx: ignored, no data dereference
+        const unsigned needed=(type==0xc0||type==0xd0)?2:3;
+        return e.size==needed&&e.bytes[1]<128&&(needed==2||e.bytes[2]<128);
+    }
+    bool midi(const AuditionMidi& e) noexcept {
+        const unsigned type=e.bytes[0]&0xf0;
+        if(type==0xf0) return true; // clock/sensing/system messages not controls
+        const int note=e.bytes[1],v=e.bytes[2];
+        auto send=[&](StageAction a,int key,int value) { return graph_.key_command(graph_.frame_position(),a,key,value); };
+        if(type==0x90) { if(v) notes_.fetch_add(1,std::memory_order_relaxed); return send(StageAction::NoteOn,note,v); }
+        if(type==0x80) return send(StageAction::NoteOff,note,0);
+        if(type==0xb0) {
+            if(note==64||note==66) return send(note==64?StageAction::Sustain:StageAction::Sostenuto,0,v>=64);
+            if(note==123) return send(StageAction::ReleaseAll,0,0);
+            if(note==120) { request_stop(); return true; }
+        }
+        unsupported_.fetch_add(1,std::memory_order_relaxed); return true;
+    }
+    bool apply(const AuditionCommand& c) noexcept {
+        using C=AuditionControl; const double v=c.value;
+        switch(c.control) {
+        case C::Reverb: return graph_.reverb_type(static_cast<ReverbType>(unsigned(v)));
+        case C::Freeze: return graph_.freeze(v!=0);
+        case C::ReleaseAll: return v==0||graph_.key_command(graph_.frame_position(),StageAction::ReleaseAll,0,0);
+        case C::Piano: config_.piano.volume=v; break;
+        case C::Osc1: config_.fader1=v; break;
+        case C::Osc2: config_.fader2=v; break;
+        case C::Cutoff: config_.buses.pad.cutoff=v; break;
+        case C::Wet: config_.wet=v; break;
+        case C::Master: config_.output.volume=v; if(v>0) audition_unmuted_=true; break;
+        case C::Wave1: config_.wave1=int(v); break;
+        case C::Wave2: config_.wave2=int(v); break;
+        case C::Attack: config_.env1.attack_ms=config_.env2.attack_ms=v; break;
+        case C::Release: config_.env1.release_ms=config_.env2.release_ms=v; break;
+        case C::Resonance: config_.buses.pad.resonance=v; break;
+        case C::PianoRoom: config_.buses.room.wet=v; break;
+        case C::PianoReverb: config_.piano_reverb_send=v; break;
+        case C::DelayWet: config_.delay.wet=v; config_.delay.enabled=v>0; break;
+        case C::DelayFeedback: config_.delay.feedback=v; break;
+        case C::Shimmer: config_.buses.pad.shimmer=v!=0; break;
+        case C::ShimmerMix: config_.buses.pad.shimmer_mix=v; break;
+        case C::Count: return false;
+        }
+        return graph_.configure(config_);
+    }
+    bool silence(float* l,float* r,unsigned n) noexcept {
+        graph_.stop(); std::fill_n(l,n,0); std::fill_n(r,n,0); return false;
+    }
+    static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
+    static_assert(std::atomic<AuditionFault>::is_always_lock_free);
+    StageInstrument& graph_;
+    StageInstrumentConfig config_{};
+    std::array<AuditionCommand,capacity> commands_{};
+    alignas(64) std::atomic<std::uint64_t> head_{0},tail_{0};
+    std::uint64_t previous_id_{};
+    bool audition_unmuted_{}; // audio owner only; not a live mute toggle
+    std::atomic<AuditionFault> fault_{AuditionFault::None};
+    std::atomic<std::uint64_t> applied_{0},blocks_{0},notes_{0},unsupported_{0},quantized_{0},full_scale_{0};
+};
+} // namespace stave
