@@ -180,3 +180,9 @@ class AuditionControlTests(unittest.TestCase):
         source = (ROOT / "tools/native_v2_audition.py").read_text()
         for forbidden in ("systemctl", "pw-metadata", "current_state.json", "shell=True"):
             self.assertNotIn(forbidden, source)
+
+    def test_bed_frontend_loaded_keys_actions_and_stale_recovery(self):
+        result = subprocess.run(["node", str(ROOT / "tests/test_native_bed_ui.js")],
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("PASS:", result.stdout)
