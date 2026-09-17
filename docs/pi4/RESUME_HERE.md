@@ -4,6 +4,21 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
+## September17: home Clavinova route recovered and ready
+
+Wi-Fi-only real power-up passed: new boot IDb7c480c6-14b8-4248-8591-e5193ad082ab,
+nativePID1097,NRestarts0, Tailscale direct ping and SSH work with no Ethernet;
+home WLAN192.168.4.33. Initially the controller truthfully waited because saved
+stage Yamaha MX ports were absent. It discovered home `Clavinova MIDI 1` plus
+`Clavinova Analog Stereo` L/R. User was preparing to test, so exact detected
+routes were saved through guarded API. Native child started muted and restored
+all18 saved tone controls: piano.94,OSC1.13,OSC2.10,cutoff487,wet.74,
+piano_tone.54; master0. Healthy/routed48k/512, epoch
+f91232038c664e69935283ccce5b864a,1034 blocks,0 xruns/over-budget/full-scale,
+max callback5.09666ms, firmware0x0,53.5°C. No notes played during verification.
+The route selection persists. When returning to the stage Yamaha, select its
+exact ports in System; never silently choose an arbitrary attached device.
+
 ## September17: home Wi-Fi configured; moved-device boot verified
 
 After a clean shutdown/move, the first apparent startup failure was simply a
