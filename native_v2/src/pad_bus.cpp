@@ -1,4 +1,5 @@
 #include "stave/pad_bus.hpp"
+#include "stave/stage_motion.hpp"
 #define FAUSTFLOAT double
 #include <faust/gui/CInterface.h>
 #include <algorithm>
@@ -69,7 +70,7 @@ bool PadBusConfig::valid() const noexcept {
 struct PadBus::Impl {
     std::uint32_t frames;
     PadBusConfig config;
-    bool fault{};
+    bool fault{}, retuned{};
     std::unique_ptr<StavePadBus, decltype(&deleteStavePadBus)> dsp{nullptr, deleteStavePadBus};
     std::array<double*, ZoneCount> zones{};
     std::array<double*, 9> statics{};
@@ -97,8 +98,9 @@ struct PadBus::Impl {
     void push_static() noexcept { for (unsigned i = 0; i < statics.size(); ++i) *statics[i] = static_values[i]; }
     void silence() noexcept { for (auto& channel : output) channel.fill(0); }
     void clear() noexcept { initStavePadBus(dsp.get(), 48000); push_static(); silence(); }
-    bool process(const std::array<const double*, 5>& source, PadBlockFlags flags) noexcept {
+    bool process(const std::array<const double*, 5>& source, PadBlockFlags flags, StageMotion* motion, FilterMotion* filter) noexcept {
         for (const auto* p : source) if (!p) return false; // invalid call: leave state/output intact
+        if(motion&&(!filter||motion->block_frames()!=frames)) return false;
         if (fault) { silence(); return false; }
         for (unsigned c = 0; c < input.size(); ++c)
             for (unsigned i = 0; i < frames; ++i) {
@@ -110,8 +112,16 @@ struct PadBus::Impl {
         const auto& p = config;
         const double alpha = 1 - std::exp(-static_cast<double>(frames) / (.08 * 48000));
         cutoff_cur = smooth_log(cutoff_cur, p.cutoff, alpha);
-        const double effective = std::clamp(cutoff_cur, 20.0, 20000.0);
-        if (std::abs(effective - cutoff_set) > .1 || p.resonance != resonance_set) {
+        // One clock advance, then filter walks, preserving random draw order.
+        if(motion&&!motion->process(flags.native_active)) { fault=true; silence(); return false; }
+        double effective = std::clamp(cutoff_cur, 20.0, 20000.0);
+        if(filter) {
+            if(!filter->process(cutoff_cur,motion?motion->filter_modulation():0,p.resonance)) { fault=true; silence(); return false; }
+            effective=filter->state()[0];
+        }
+        const bool invalidated=motion&&motion->take_filter_retune();
+        retuned=invalidated||std::abs(effective-cutoff_set)>.1||p.resonance!=resonance_set;
+        if (retuned) {
             cutoff_set = effective; resonance_set = p.resonance;
         }
         if (!p.shared1) indep1_cur = smooth_log(indep1_cur, p.independent1, alpha);
@@ -148,15 +158,28 @@ struct PadBus::Impl {
         // Original merged-path approximation: magnitudes of PRE-Haas sources,
         // applied to the complete filtered bus, not exact independent stems.
         bypass_ratio = 0;
-        if (p.bypass1 || p.bypass2) {
-            std::array<double, 4> magnitudes{};
+        std::array<double, 4> magnitudes{};
+        double m1=0,m2=0,total=0;
+        if (p.bypass1 || p.bypass2 || (motion&&motion->split())) {
             for (unsigned c = 0; c < 4; ++c)
                 for (unsigned i = 0; i < frames; ++i) magnitudes[c] += std::abs(input[c][i]);
-            const double m1 = magnitudes[0] + magnitudes[1], m2 = magnitudes[2] + magnitudes[3], total = m1 + m2;
+            m1 = magnitudes[0] + magnitudes[1]; m2 = magnitudes[2] + magnitudes[3]; total = m1 + m2;
             if (!std::isfinite(total)) fault = true;
             if (total > 1e-6) bypass_ratio = ((p.bypass1 ? m1 : 0) + (p.bypass2 ? m2 : 0)) / total;
         }
         for (unsigned i = 0; i < frames; ++i) {
+            if(motion) for(unsigned c=0;c<2;++c) {
+                const double x=output[c][i];
+                if(motion->split()) {
+                    double a=x*(total>1e-6?m1/total:.5),b=x*(total>1e-6?m2/total:.5);
+                    a*=motion->oscillator(0,c)[i]; b*=motion->oscillator(1,c)[i];
+                    a*=1+motion->oscillator(0,c+2)[i]; b*=1+motion->oscillator(1,c+2)[i];
+                    output[c][i]=a+b;
+                } else {
+                    output[c][i]*=motion->oscillator(0,c)[i];
+                    output[c][i]*=1+motion->oscillator(0,c+2)[i];
+                }
+            }
             if (bypass_ratio > 1e-6) {
                 output[4][i] = output[0][i] * bypass_ratio; output[5][i] = output[1][i] * bypass_ratio;
                 output[0][i] *= 1 - bypass_ratio; output[1][i] *= 1 - bypass_ratio;
@@ -180,7 +203,8 @@ bool PadBus::configure(const PadBusConfig& config) noexcept {
     if (impl_->fault || !config.valid()) return false;
     impl_->config = config; return true;
 }
-bool PadBus::process_block(const std::array<const double*, 5>& source, PadBlockFlags flags) noexcept { return impl_->process(source, flags); }
+bool PadBus::process_block(const std::array<const double*, 5>& source, PadBlockFlags flags, StageMotion* motion, FilterMotion* filter) noexcept { return impl_->process(source, flags, motion, filter); }
+bool PadBus::filter_retuned() const noexcept { return impl_->retuned; }
 const double* PadBus::stem(unsigned c) const noexcept { return c < 9 ? impl_->output[c].data() : nullptr; }
 void PadBus::clear() noexcept { impl_->clear(); }
 bool PadBus::healthy() const noexcept { return !impl_->fault; }

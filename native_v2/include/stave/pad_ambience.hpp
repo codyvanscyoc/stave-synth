@@ -2,6 +2,7 @@
 #include "stave/pad_bus.hpp"
 #include "stave/shared_effects.hpp"
 #include "stave/stage_lowpass.hpp"
+#include "stave/stage_motion.hpp"
 #include <algorithm>
 #include <cmath>
 
@@ -17,8 +18,8 @@ struct PadAmbienceConfig {
     }
 };
 // Composed native pad/filter/delay/reverb return path. NOT a master output:
-// piano/organ dry, independent sample bed, sympathetic,
-// global modulation, master EQ/compressor/limiter are explicitly not here yet.
+// piano/organ dry, independent sample bed, sympathetic and master processing
+// are external. Optional motion gates FX before dry-bypass addback.
 // Only this audio owner calls methods, including reverb control operations.
 class PadAmbience final {
 public:
@@ -33,19 +34,19 @@ public:
     bool freeze(bool v) noexcept { return healthy()&&reverb_.freeze(v); }
     bool process(const std::array<const double*,5>& source,PadBlockFlags flags,
                  const std::array<const double*,2>* delay_send=nullptr,
-                 const std::array<const double*,2>* reverb_send=nullptr) noexcept {
+                 const std::array<const double*,2>* reverb_send=nullptr,
+                 StageMotion* motion=nullptr,FilterMotion* filter=nullptr) noexcept {
         // Refuse missing/aliased external buffers before changing any DSP.
         for(const auto* p:source) if(!acceptable(p)) return false;
         for(const auto* pair:{delay_send,reverb_send}) if(pair)
             for(const auto* p:*pair) if(!acceptable(p)) return false;
         if(!healthy()) { stop(); return false; }
-        const auto prior=pad_.state();
-        if(!pad_.process_block(source,flags)||!delay_.process({pad_.stem(0),pad_.stem(1)},delay_send)) { stop(); return false; }
+        if(!pad_.process_block(source,flags,motion,filter)||!delay_.process({pad_.stem(0),pad_.stem(1)},delay_send)) { stop(); return false; }
         const auto& p=config_.pad;
         const auto state=pad_.state();
         // Preserve v1's coefficient-update gate, including paused filters.
         // Enabling/changing slope alone does not force a retune in v1.
-        if(config_.wet_filter&&(prior[5]!=state[5]||prior[6]!=state[6])) {
+        if(config_.wet_filter&&pad_.filter_retuned()) {
             for(auto& f:wet_filters_) {
                 f[0].tune(state[5],p.resonance*(p.slope24?.5412/.707:1));
                 if(p.slope24) f[1].tune(state[5],p.resonance*(1.3066/.707));
@@ -79,6 +80,7 @@ public:
                 if(p.slope24) wet=wet_filters_[c][1].tick(wet);
             }
             double mixed=delay_.channel(c)[i]*dry_gain+wet*wet_gain;
+            if(motion) mixed*=motion->bus(c)[i];
             if(ratio>1e-6) mixed+=pad_.stem(4+c)[i];
             // Reconstruct pre-carve dry only for split routing; original dry
             // snapshot differs by at most rounding in this reconstruction.

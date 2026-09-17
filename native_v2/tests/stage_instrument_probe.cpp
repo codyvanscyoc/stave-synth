@@ -1,11 +1,40 @@
 #define STAVE_OFFLINE_TRACE
+#define STAVE_MOTION_PROBE
 #include "stave/stage_instrument.hpp"
 using ProbeGraph=stave::StageInstrument;
 using ProbeConfig=stave::StageInstrumentConfig;
 #include "source_graph_probe.hpp"
 #include "delay_fixture.hpp"
 #include "master_fixture.hpp"
+#include "motion_fixture.hpp"
 extern "C" {
+int instrument_motion_tape(void* h,const double* v,unsigned n) {
+    if(!h||!v||!n||n>1000000) return 0;
+    auto& o=*static_cast<CoreOwner*>(h);
+    if(o.graph->frame_position()||o.motion_cursor) return 0;
+    for(unsigned i=0;i<n;++i) if(!std::isfinite(v[i])||std::abs(v[i])>1) return 0;
+    o.motion_tape.assign(v,v+n); return 1;
+}
+int instrument_motion(void* h,const double* v,unsigned n,double drift,double wobble) {
+    if(!h) return 0;
+    auto& o=*static_cast<CoreOwner*>(h); auto p=o.config;
+    if(!stave_fixture::motion_configuration(v,n,p.motion)) return 0;
+    p.owned_motion=true; p.filter_motion={drift,wobble};
+    if(!o.graph->configure(p)) return 0;
+    o.config=p; return 1;
+}
+int instrument_motion_state(void* h,double* v) {
+    if(!h||!v) return 0;
+    auto& o=*static_cast<CoreOwner*>(h);
+    for(unsigned j=0;j<2;++j) {
+        const auto s=o.graph->motion_state(j);
+        const double a[]{s.phase,s.held_a,s.held_b,s.last_a,s.last_b,s.smooth_a,s.smooth_b};
+        for(unsigned i=0;i<7;++i) v[j*7+i]=a[i];
+    }
+    const auto f=o.graph->filter_motion_state();
+    for(unsigned i=0;i<3;++i) v[14+i]=f[i];
+    v[17]=o.motion_cursor; return 1;
+}
 int instrument_splits(void* h,const int* v,unsigned n) {
     if(!h||!v||n!=13||(v[0]!=0&&v[0]!=1)) return 0;
     auto& owner=*static_cast<CoreOwner*>(h); auto p=owner.config;

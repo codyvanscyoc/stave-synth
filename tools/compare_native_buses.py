@@ -57,7 +57,7 @@ def build(output):
     return refs,candidate,guard,base.run([cxx,"--version"]).stdout,base.run([faust,"--version"]).stdout
 
 
-def pad_oracle(library, fallback_types=None, with_delay=False):
+def pad_oracle(library, fallback_types=None, with_delay=False, motion_env=None, merged_motion=False):
     source=base.source_from_reference("stave_synth/faust_pad_bus.py")
     definitions=[n.value.args[0].value for n in ast.parse(source).body if isinstance(n,ast.Expr)
                  and isinstance(n.value,ast.Call) and ast.unparse(n.value.func)=="_ffi.cdef"]
@@ -120,6 +120,25 @@ self._osc2_pre_l=signal[2]
 self._osc2_pre_r=signal[3]
 """).body
     compute=ast.parse("pad_out=self._faust_pad_bus.process(np.ascontiguousarray(signal[:5]))").body
+    before_route=[]; after_route=[]
+    if motion_env is not None:
+        # Retain original clock/filter bodies above, and original dry modulation
+        # bodies below. Optional merged test exercises actual Faust pad LFO
+        # zones/state handoff on the SAME explicitly supplied source stems.
+        before_route=ast.parse("use_faust=native_active\nuse_merged=native_active and "+str(merged_motion)).body
+        before_route+=body[assignment(body,"all_recv"):assignment(body,"faust_lfo2")+1]
+        helpers=[n for n in body if isinstance(n,ast.FunctionDef) and n.name in ("_amp_gate","_fill_ramp","_smooth_one_pole","_osc_amp_pan")]
+        if len(helpers)!=4: raise RuntimeError("Motion helper boundary changed")
+        after_route=helpers+[body[condition(body,"all_recv")]]+body[assignment(body,"bus_amul_l"):assignment(body,"self._lfo2_mod_b_last")+1]
+        after_route+=ast.parse("self._bus_amul_l=bus_amul_l\nself._bus_amul_r=bus_amul_r\nself._effective_cutoff=effective_cutoff").body
+        if merged_motion:
+            mb=pad[merged].body
+            push=mb[:3]
+            if not (isinstance(push[2],ast.Expr) and ast.unparse(push[2].value.func)=="self._faust_pad_bus.push_lfo_block"):
+                raise RuntimeError("Merged LFO push boundary changed")
+            sync=[n for n in mb if isinstance(n,ast.If) and ast.unparse(n.test) in ("faust_lfo1","faust_lfo2")]
+            if len(sync)!=2: raise RuntimeError("Merged LFO sync boundary changed")
+            compute=push+compute+sync
     tail=ast.parse("""
 if bypass_l is None:
     bypass_l=np.zeros(n_samples)
@@ -135,8 +154,10 @@ return result,state
                  orelse=pad_candidates[0].orelse)
     capture=ast.parse("self._pre_fx_snapshot=np.array([output_l,output_r])").body if with_delay else []
     delay=ast.parse("self._process_ping_pong(output_l,output_r)").body if with_delay else []
-    fn.body=intro+scalar+[route]+capture+carve+delay+sends+[shimmer]+tail
+    fn.body=intro+scalar+before_route+[route]+after_route+capture+carve+delay+sends+[shimmer]+tail
     env={"np":np,"_Q24_S1_RATIO":.5412/.707,"_Q24_S2_RATIO":1.3066/.707}
+    if motion_env is not None:
+        env.update(motion_env)
     exec(compile(ast.fix_missing_locations(ast.Module(body=[fn],type_ignores=[])),"pinned-pad-scalar-routing", "exec"),env)
     def create():
         obj=SimpleNamespace(sample_rate=48000,_faust_pad_bus=ns["FaustPadBus"](48000),

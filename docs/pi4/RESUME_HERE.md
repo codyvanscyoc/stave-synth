@@ -6,7 +6,21 @@ Read this first; earlier review/deployment notes describe historical checkpoints
 
 ## September16 post-worship: native-v2 implementation authorized
 
-September17 latest: [NATIVE_V2_MOTION.md](NATIVE_V2_MOTION.md).
+September17 latest: [NATIVE_V2_MOTION_CONNECTED.md](NATIVE_V2_MOTION_CONNECTED.md).
+StageInstrument now owns global motion/filter drift, accepted-oscillator key-sync,
+poly rate/depth decisions and master sidechain. Four joined merged/nonmerged
+reference comparisons pass at512/256, worst4.613e-12, with exact random ownership.
+The prior ten runs remain unchanged: independent high-gain1e-6 gate STILL FAILS;
+full runner exits1 sound_difference_review_required. UBSan/scoped zero-new guards,
+standalone motion recheck and549legacytests plus Node pass. Read-only Pi SSH
+succeeded: stage service active,PID185009,NRestarts0,rehearsal checkout. No Pi
+write/restart/deployment/stress test. New build remains offline, NOT field-test
+ready. Next: recorded beds/drone and remaining functions, bounded live control/
+backend, sound acceptance, Pi4 timing and hardware qualification. Current
+off-stage permission for Pi compilation/stress was asked asynchronously; do
+not presume an unanswered question grants it.
+
+Previous standalone checkpoint: [NATIVE_V2_MOTION.md](NATIVE_V2_MOTION.md).
 Standalone StageMotion (two global LFOs/routing/ramps) and FilterMotion
 (drift/wobble) pass pinned-original NON-MERGED component comparisons:
 25,920 LFO blocks, worst synthetic-audio1.077e-14;6,000 filter blocks, cutoff

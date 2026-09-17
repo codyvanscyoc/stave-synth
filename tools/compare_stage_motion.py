@@ -94,9 +94,9 @@ def make_reference(size,ns,div):
     return obj
 
 
-def apply_reference(obj,ns,values):
+def apply_reference(obj,ns,values,reset_filter_marker=True):
     obj.motion_mix,obj.bpm,obj.haas_delay_ms=values[:3]
-    obj._filter_cutoff_last_set=8000.
+    if reset_filter_marker: obj._filter_cutoff_last_set=8000.
     ns["targets"](obj,{"lfo_target":TARGETS[int(values[11])],"lfo2_target":TARGETS[int(values[27])]})
     retune=obj._filter_cutoff_last_set==-1
     for j,prefix in enumerate(("lfo","lfo2")):

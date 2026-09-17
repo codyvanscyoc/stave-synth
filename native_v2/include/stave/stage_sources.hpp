@@ -13,6 +13,12 @@ public:
     virtual ~PhaseSource() = default;
     virtual bool next(VoicePhases&) noexcept = 0;
 };
+// Optional owner hook at an accepted oscillator note start, not raw MIDI.
+class KeyTrigger {
+public:
+    virtual ~KeyTrigger()=default;
+    virtual void oscillator_key_trigger() noexcept=0;
+};
 struct PolyLfo { bool active{}; double rate{1}, depth{}; int shape{}; };
 struct StagePatch {
     EnvelopeConfig env1{}, env2{};
@@ -52,7 +58,7 @@ struct StageSourceStats {
 class StageSources final {
 public:
     StageSources(const std::string& soundfont, PhaseSource& phases,
-                 std::uint32_t frames = 512, int piano_program = 0);
+                 std::uint32_t frames = 512, int piano_program = 0, KeyTrigger* trigger = nullptr);
     ~StageSources();
     StageSources(const StageSources&) = delete;
     StageSources& operator=(const StageSources&) = delete;

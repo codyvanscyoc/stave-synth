@@ -221,7 +221,10 @@ def compare(output, lib, refs, prefix, font, size, tape, integration=None):
     keys = Keys(); keys.min_velocity = 10; keys.split_enabled = True
     weights = np.ones(4, dtype=np.float64)
     class Synth:
-        def note_on(self,n,v,*w): vn["_note_on_locked"](voice,n,v,*w)
+        def note_on(self,n,v,*w):
+            if integration is not None and hasattr(integration,"oscillator_key_trigger"):
+                integration.oscillator_key_trigger()
+            vn["_note_on_locked"](voice,n,v,*w)
         def note_off(self,n): vn["note_off"](voice,n)
         def all_notes_off(self): vn["all_notes_off"](voice)
         def compute_split_weights(self,n): return tuple(weights[:3])

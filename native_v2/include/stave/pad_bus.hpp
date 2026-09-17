@@ -4,6 +4,8 @@
 #include <memory>
 
 namespace stave {
+class StageMotion;
+class FilterMotion;
 struct PadBusConfig {
     double cutoff{8000}, resonance{.707}, range_min{150}, range_max{20000};
     bool slope24{}, shared1{true}, shared2{true};
@@ -26,8 +28,9 @@ struct PadBlockFlags {
 };
 
 // Single-owner offline routing slice. Fixed48k/fixed256 or512 whole blocks.
-// No global LFO, filter drift/wobble, ping-pong, reverb or master. Those are
-// explicit integration gaps, NOT disabled controls in a replacement app.
+// Optional owner-supplied motion/filter components advance once here. No
+// ping-pong, reverb or master in this slice. Components must share this owner
+// and cadence; their lifetime extends through every processing call.
 // Five input stems: OSC1 L/R, OSC2 L/R, shimmer mono. Owned output channels:
 // 0/1 filtered dry (post bypass carve); 2/3 reverb input (including shimmer);
 // 4/5 dry FX-bypass; 6 shimmer mono; 7/8 cloud L/R diagnostics.
@@ -38,7 +41,9 @@ public:
     PadBus(const PadBus&) = delete;
     PadBus& operator=(const PadBus&) = delete;
     bool configure(const PadBusConfig&) noexcept;
-    bool process_block(const std::array<const double*, 5>& input, PadBlockFlags) noexcept;
+    bool process_block(const std::array<const double*, 5>& input, PadBlockFlags,
+                       StageMotion* motion=nullptr, FilterMotion* filter=nullptr) noexcept;
+    bool filter_retuned() const noexcept;
     const double* stem(unsigned channel) const noexcept;
     // Full DSP re-init flushes CLOUD table too; scalar smoothers survive,
     // as in v1. clear() does not recover a terminal numerical fault.

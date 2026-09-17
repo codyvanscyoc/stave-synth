@@ -20,6 +20,12 @@ struct MotionLfo {
         return range(rate,.05,20)&&range(multiplier,.1,10)&&range(depth,0,1)&&range(spread,0,1)&&
             range(offset_ms,-500,500)&&range(smooth,0,1)&&unsigned(division)<=8&&unsigned(shape)<=6&&unsigned(target)<=3;
     }
+    double effective_rate(double bpm) const noexcept {
+        constexpr std::array<double,9> beats{0,2,1.5,1,2./3,.75,.5,1./3,.25};
+        if(division==DelayDivision::Free) return rate;
+        double cycle=std::max(.05,(60./std::max(40.,bpm))*beats[unsigned(division)]);
+        cycle/=std::max(.1,multiplier); return 1./cycle;
+    }
 };
 struct MotionConfig {
     std::array<MotionLfo,2> lfo{};
@@ -135,12 +141,7 @@ private:
     bool advance(unsigned j) noexcept {
         const auto& p=config_.lfo[j]; auto& s=state_[j];
         if(p.depth*config_.mix<.001) { s.last_a=s.last_b=0; end_[j]={0,0}; return true; }
-        constexpr std::array<double,9> beats{0,2,1.5,1,2./3,.75,.5,1./3,.25};
-        double rate=p.rate;
-        if(p.division!=DelayDivision::Free) {
-            double cycle=std::max(.05,(60./std::max(40.,config_.bpm))*beats[unsigned(p.division)]);
-            cycle/=std::max(.1,p.multiplier); rate=1./cycle;
-        }
+        const double rate=p.effective_rate(config_.bpm);
         const double prior=s.phase; s.phase=wrap(prior+rate*(double(frames_)/48000));
         if(p.shape==MotionShape::SampleHold&&s.phase<prior)
             if(!draw(s.held_a)||!draw(s.held_b)) return false;

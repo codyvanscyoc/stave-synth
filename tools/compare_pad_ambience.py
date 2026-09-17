@@ -23,7 +23,7 @@ import compare_shared_effects as effects
 
 PD=effects.PD
 
-def mix_oracle():
+def mix_oracle(with_motion=False):
     source=base.source_from_reference("stave_synth/synth_engine.py")
     cls=next(n for n in ast.parse(source).body if isinstance(n,ast.ClassDef) and n.name=="SynthEngine")
     body=next(n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name=="_render_locked").body
@@ -54,6 +54,7 @@ _pre_fx_dry_r=self._pre_fx_snapshot[1]
 pad_l=pad_r=np.zeros(n_samples)
 pad_vol=0.0
 """).body
+    if with_motion: intro+=ast.parse("bus_amul_l=self._bus_amul_l\nbus_amul_r=self._bus_amul_r").body
     fn.body=intro+body[start:end+1]+split
     env={"np":np,"logger":logging.getLogger("offline-mix")}
     exec(compile(ast.fix_missing_locations(ast.Module(body=[fn],type_ignores=[])),"pinned-ambience-mix","exec"),env)

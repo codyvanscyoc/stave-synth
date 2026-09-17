@@ -62,6 +62,7 @@ struct StageSources::Impl final : StageNoteSink, StageVoiceSink {
     std::unique_ptr<fluid_settings_t, decltype(&delete_fluid_settings)> settings{nullptr, delete_fluid_settings};
     std::unique_ptr<fluid_synth_t, decltype(&delete_fluid_synth)> piano{nullptr, delete_fluid_synth};
     PhaseSource& phases;
+    KeyTrigger* trigger;
     StageVoices voices{*this};
     StageNotes notes{*this};
     PianoChain chain;
@@ -79,8 +80,8 @@ struct StageSources::Impl final : StageNoteSink, StageVoiceSink {
     double velocity_tracker{.7};
     bool fault{}, stopped{};
 
-    Impl(const std::string& font, PhaseSource& source, std::uint32_t size, int program)
-        : phases(source), chain(48000, size), frames(size) {
+    Impl(const std::string& font, PhaseSource& source, std::uint32_t size, int program, KeyTrigger* key)
+        : phases(source), trigger(key), chain(48000, size), frames(size) {
         static_assert(sizeof(short) == 2, "Fluid int16 acquisition requires16-bit short");
         if ((size != 256 && size != 512) || font.empty() || program < 0 || program > 127)
             throw std::invalid_argument("Stage source needs explicit SF2, fixed256/512, valid program");
@@ -162,7 +163,7 @@ struct StageSources::Impl final : StageNoteSink, StageVoiceSink {
         for (int cc : {64, 66, 123}) fluid_check(fluid_synth_cc(piano.get(), 0, cc, 0));
         fluid_check(fluid_synth_pitch_bend(piano.get(), 0, 8192));
     }
-    void key_trigger() noexcept override {} // global/key-sync LFOs not in this source slice
+    void key_trigger() noexcept override { if(trigger) trigger->oscillator_key_trigger(); }
     void start_slot(unsigned slot) noexcept override {
         VoicePhases p;
         if (!phases.next(p) || !range(p.osc1, 0, 1) || !range(p.osc2, 0, 1) ||
@@ -245,8 +246,8 @@ struct StageSources::Impl final : StageNoteSink, StageVoiceSink {
         return true;
     }
 };
-StageSources::StageSources(const std::string& font, PhaseSource& phases, std::uint32_t frames, int program)
-    : impl_(std::make_unique<Impl>(font, phases, frames, program)) {}
+StageSources::StageSources(const std::string& font, PhaseSource& phases, std::uint32_t frames, int program, KeyTrigger* trigger)
+    : impl_(std::make_unique<Impl>(font, phases, frames, program, trigger)) {}
 StageSources::~StageSources() = default;
 bool StageSources::configure(const StagePatch& p) noexcept { return impl_->configure(p); }
 bool StageSources::command(std::uint64_t b, const StageCommand& e) noexcept { return impl_->command(b, e); }

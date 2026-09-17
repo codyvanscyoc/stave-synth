@@ -2,9 +2,21 @@
 #include <cmath>
 #include <vector>
 #include "bus_fixture.hpp"
-struct CoreOwner final : stave::PhaseSource {
+struct CoreOwner final : stave::PhaseSource
+#ifdef STAVE_MOTION_PROBE
+    , stave::MotionRandom
+#endif
+{
     std::vector<stave::VoicePhases> tape;
     unsigned cursor{};
+#ifdef STAVE_MOTION_PROBE
+    std::vector<double> motion_tape;
+    unsigned motion_cursor{};
+    bool next(double& x) noexcept override {
+        if(motion_cursor==motion_tape.size()) return false;
+        x=motion_tape[motion_cursor++]; return true;
+    }
+#endif
     ProbeConfig config;
     std::unique_ptr<ProbeGraph> graph;
     CoreOwner(const char* font,unsigned frames,const double* data,unsigned count) {
@@ -14,7 +26,11 @@ struct CoreOwner final : stave::PhaseSource {
                 throw std::invalid_argument("Invalid phase");
             tape.push_back({data[4*i],data[4*i+1],data[4*i+2],data[4*i+3]});
         }
-        graph=std::make_unique<ProbeGraph>(font,*this,frames);
+        graph=std::make_unique<ProbeGraph>(font,*this,frames
+#ifdef STAVE_MOTION_PROBE
+            ,0,this
+#endif
+        );
     }
     bool next(stave::VoicePhases& p) noexcept override {
         if(cursor==tape.size()) return false;

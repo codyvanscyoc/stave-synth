@@ -2,8 +2,8 @@
 """Owned offline sources -> room/sends -> pad/ambience -> master comparison.
 
 Actual Faust/FluidSynth, explicit SF2, fixed48k/512/256. No app imports,
-devices, network, production state or Pi contact. Still no global modulation,
-independent beds/organ, driver or live command protocol. Output fader is included.
+devices, network, production state or Pi contact. Includes owned motion against
+merged/nonmerged references; no independent beds/organ, driver or live protocol.
 """
 from __future__ import annotations
 import argparse
@@ -29,6 +29,7 @@ import compare_pad_ambience as ambience
 import compare_stage_master as master
 import compare_stage_output as output_stage
 import compare_stage_splits as splits
+import compare_stage_motion as motion
 
 PD=sources.PD
 # Keep the original strict sound gate. Both independent and common-piano
@@ -197,6 +198,7 @@ class Integration(core.Integration):
                     "native_float":float(np.float32(a[c,i])),"reference_float":float(np.float32(b[c,i]))}
         self.trace_frame+=signal.shape[1]
         buses_out=np.vstack((self.pad._stereo_out*.85,dry,fx))
+        if hasattr(self,"before_master"): self.before_master()
         stereo=self.master.process(buses_out,piano)
         pcm,_=self.output_independent.process(stereo,self.volume,self.btl)
         self.output_independent_peak=max(self.output_independent_peak,float(np.max(np.abs(pcm-self.native_pcm))))
@@ -232,6 +234,81 @@ class SplitIntegration(Integration):
             self.silent_weights+=int(np.count_nonzero(weights==0))
         return self.lib.instrument_key(handle,frame,kind,note,value)
 
+class MotionIntegration(SplitIntegration):
+    def __init__(self,*args,motion_reference,**kwargs):
+        library,filters,merged=motion_reference
+        self.random_values=np.random.RandomState(917).uniform(-1,1,20000).astype(np.float64)
+        self.random=motion.Tape(self.random_values)
+        self.motion_ns,div,self.motion_hash=motion.oracle(self.random)
+        class NumpyProxy:
+            random=self.random
+            def __getattr__(self,name): return getattr(np,name)
+        env=dict(self.motion_ns,np=NumpyProxy())
+        pcreate,prender,_=buses.pad_oracle(library,filters,with_delay=True,motion_env=env,merged_motion=merged)
+        args=list(args); args[1:3]=[pcreate,prender]
+        super().__init__(*args,**kwargs)
+        size=args[9]
+        reference=motion.make_reference(size,self.motion_ns,div)
+        cutoff_marker=self.pad._filter_cutoff_last_set
+        self.pad.__dict__.update(reference.__dict__)
+        self.pad._filter_cutoff_last_set=cutoff_marker
+        self.pad._advance_lfo=lambda n,which:self.motion_ns["_advance_lfo"](self.pad,n,which)
+        self.pad._filter_drift_val=self.pad._filter_wobble_val=0.
+        self.render_mix=ambience.mix_oracle(with_motion=True)
+        self.motion_state_peak=np.zeros(17); self.key_triggers=0; self.poly_blocks=0; self.motion_rows=[]
+        self.merged_motion=merged
+    def oscillator_key_trigger(self):
+        self.motion_ns["key"](self.pad); self.key_triggers+=1
+    def prepare(self,handle,bank,values,frame,frames):
+        skip=super().prepare(handle,bank,values,frame,frames)
+        self.handle=handle
+        if frame==0 and not self.lib.instrument_motion_tape(handle,self.random_values.ctypes.data_as(PD),len(self.random_values)):
+            raise RuntimeError("Motion tape rejected")
+        tick=frame//512; k=tick//16
+        # All16 target pairs, selective/all receive, seven shapes, nine tempo
+        # modes, key-sync and poly. High and low prepared tempo rates explicit.
+        v=[1.,(40,120,240)[k%3],self.controls[14]/48.]
+        if k%3==1: v[2]=17.137 # LFO retains fractional ms; delay taps truncate
+        for j in range(2):
+            target=(k//4 if j==0 else k)%4
+            mask=15 if k%2==0 else k%16
+            v += [20, (.1,1,10)[k%3], .65 if tick%128>=8 else .00099,
+                  .7,(-123,57)[j],.25,(k+j)%9,(k+j)%7,target,
+                  int(k%7!=0),1,int(k%2),1,int(k%3!=1),int(bool(mask&(1<<(j*2)))),int(bool(mask&(2<<(j*2))))]
+        drift=(0,2,8)[k%3]; wobble=.15 if k%2 else 0.
+        data=np.array(v,dtype=np.float64)
+        if not self.lib.instrument_motion(handle,data.ctypes.data_as(PD),len(v),drift,wobble):
+            raise RuntimeError("Owned motion rejected")
+        motion.apply_reference(self.pad,self.motion_ns,v,reset_filter_marker=False)
+        self.pad._haas_delay_samples=int(v[2]*.001*48000)
+        self.pad.filter_drift_cents=drift; self.pad.filter_wobble_amount=wobble
+        self.delay.bpm=v[1]; self.delay.motion_mix=v[0]
+        # Independent pinned rate/gating statements, not candidate calculations.
+        for j,prefix in enumerate(("lfo","lfo2")):
+            p=lambda field:getattr(self.pad,prefix+"_"+field)
+            rate=p("rate_hz")
+            if p("rate_mode")!="FREE":
+                cycle=max(.05,(60/max(40,self.pad.bpm))*self.pad._DELAY_DIVISIONS[p("rate_mode")])
+                cycle/=max(.1,p("rate_multiplier")); rate=1/cycle
+            active=bool(p("active") and p("poly") and p("depth")*v[0]>.001 and p("target")=="amp")
+            bank.set_lfo_params(j+1,active=active,rate_hz=rate,depth=min(p("depth")*v[0],.7),shape=p("shape"))
+            self.poly_blocks+=active and not skip
+        self.motion_rows.append([frame,*v,drift,wobble])
+        return skip
+    def before_master(self):
+        self.master.synth.bpm=self.pad.bpm
+        self.master.synth.lfo_depth=self.pad.lfo_depth
+        self.master.synth._lfo_mod_a_last=self.pad._lfo_mod_a_last
+    def process(self,signal,voices):
+        result=super().process(signal,voices)
+        native=np.zeros(18)
+        if not self.lib.instrument_motion_state(self.handle,native.ctypes.data_as(PD)): raise RuntimeError("Motion state unavailable")
+        reference=np.array([getattr(self.pad,p+"_"+s) for p in ("_lfo","_lfo2") for s in motion.STATE]+
+            [self.pad._effective_cutoff,self.pad._filter_drift_val,self.pad._filter_wobble_val,self.random.index])
+        self.motion_state_peak=np.maximum(self.motion_state_peak,np.abs(native[:17]-reference[:17]))
+        if native[17]!=reference[17] or np.max(np.abs(native[:14]-reference[:14]))>2e-12 or np.max(np.abs(native[14:17]-reference[14:17]))>2e-8:
+            raise RuntimeError(f"Motion owner state mismatch: {native-reference}")
+        return result
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
@@ -243,7 +320,7 @@ def main():
     if args.output_dir: output=args.output_dir.expanduser().resolve(); output.mkdir(mode=0o700,exist_ok=False)
     else: output=Path(tempfile.mkdtemp(prefix="stave-instrument-"))
     print(f"Evidence: {output}",flush=True)
-    modules=(base,sources,core,buses,room,mix,effects,ambience,master,output_stage,splits)
+    modules=(base,sources,core,buses,room,mix,effects,ambience,master,output_stage,splits,motion)
     paths=[*sorted((base.ROOT/"native_v2").rglob("*.hpp")),*sorted((base.ROOT/"native_v2").rglob("*.cpp")),
            *[Path(m.__file__) for m in modules],Path(__file__),base.ROOT/"faust/faust_cprelude.h",font]
     hashes=lambda:{str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
@@ -283,6 +360,10 @@ def main():
         _,mcreate,report["master_oracle_sha256"]=master.oracles(dirs["master"],mr)
         _,report["piano_routing_sha256"]=piano_routing_oracle()
         lib=sources.native_api(candidate)
+        for name,params in (("instrument_motion_tape",[ct.c_void_p,PD,ct.c_uint]),
+                            ("instrument_motion",[ct.c_void_p,PD,ct.c_uint,ct.c_double,ct.c_double]),
+                            ("instrument_motion_state",[ct.c_void_p,PD])):
+            getattr(lib,name).argtypes=params; getattr(lib,name).restype=ct.c_int
         lib.instrument_splits.argtypes=[ct.c_void_p,ct.POINTER(ct.c_int),ct.c_uint]; lib.instrument_splits.restype=ct.c_int
         lib.instrument_key.argtypes=[ct.c_void_p,ct.c_uint64,ct.c_int,ct.c_int,ct.c_int]; lib.instrument_key.restype=ct.c_int
         lib.instrument_trace.argtypes=[ct.c_void_p,ct.c_uint]; lib.instrument_trace.restype=PD
@@ -296,12 +377,15 @@ def main():
         tape=np.random.RandomState(base.SEED).uniform(0,1,(512,4)).astype(np.float64)
         np.save(output/"phase-tape.npy",tape,allow_pickle=False)
         source_fixtures={}
-        for overload,common_piano,split_routing in ((False,False,False),(False,True,False),(True,False,False),(True,True,False),(False,False,True)):
+        for overload,common_piano,split_routing,motion_mode in ((False,False,False,None),(False,True,False,None),(True,False,False,None),(True,True,False,None),(False,False,True,None),
+                (False,False,True,False),(False,False,True,True)):
             label=("raw-key-splits" if split_routing else "overload" if overload else "original-source-fixture")+("-common-piano" if common_piano else "-independent")
+            if motion_mode is not None: label="owned-motion-"+("merged" if motion_mode else "nonmerged")
             run_dir=output/label; run_dir.mkdir()
             for size in (512,256):
-                integration_type=SplitIntegration if split_routing else Integration
-                integration=integration_type(lib,pcreate,prender,rcreate,rrender,advance,classes,mcreate,type(filters.lp[0][0]),size,output_reference,common_piano,overload)
+                integration_type=MotionIntegration if motion_mode is not None else SplitIntegration if split_routing else Integration
+                extra={"motion_reference":(br[0],(type(filters.lp[0][0]),type(filters.hp[0][0])),motion_mode)} if motion_mode is not None else {}
+                integration=integration_type(lib,pcreate,prender,rcreate,rrender,advance,classes,mcreate,type(filters.lp[0][0]),size,output_reference,common_piano,overload,**extra)
                 source_fixtures[label]=integration.fixture()
                 result=sources.compare(run_dir,lib,refs,args.fluidsynth_prefix,font,size,tape,integration)
                 result.update(muted_blocks=integration.muted,wet_filter_blocks=integration.wet_filter_blocks,
@@ -317,6 +401,11 @@ def main():
                                   silent_split_weights=integration.silent_weights)
                     if not all((integration.split_events,integration.partial_weights,integration.silent_weights)):
                         raise RuntimeError("Split routing fixture coverage missing")
+                if motion_mode is not None:
+                    result.update(motion_state_peak=integration.motion_state_peak.tolist(),motion_key_triggers=integration.key_triggers,
+                        poly_blocks=integration.poly_blocks,motion_random_draws=integration.random.index,merged_motion_reference=motion_mode)
+                    if not integration.key_triggers or not integration.poly_blocks: raise RuntimeError("Missing motion coverage")
+                    (run_dir/f"motion-{size}.json").write_text(json.dumps(integration.motion_rows)+"\n")
                 if not all((integration.muted,integration.wet_filter_blocks,integration.piano_filter_blocks,*integration.send_blocks)) or (overload and not integration.soft_clipped):
                     raise RuntimeError("Required integration branch not exercised")
                 report["runs"].append(result); print(f"MEASURED: {result}",flush=True)
@@ -327,6 +416,7 @@ def main():
         report["original_source_sound_gate_passed"]=all(r["error_metrics"]["original_1e_6_gate_passed"] for r in report["runs"] if not r["overload"] and r["error_metrics"]["mode"]=="independent-full-chain")
         report["common_piano_diagnostic_passed"]=all(r["error_metrics"]["original_1e_6_gate_passed"] for r in report["runs"] if r["error_metrics"]["mode"]=="common-prepared-piano-isolation")
         report["split_routing_sound_gate_passed"]=all(r["error_metrics"]["original_1e_6_gate_passed"] for r in report["runs"] if r["split_routing"])
+        report["owned_motion_sound_gate_passed"]=all(r["error_metrics"]["original_1e_6_gate_passed"] for r in report["runs"] if r["fixture"].startswith("owned-motion"))
         report["status"]=("passed_owned_instrument_pcm_only" if all(r["error_metrics"]["original_1e_6_gate_passed"] for r in report["runs"])
                           else "sound_difference_review_required")
     except Exception as error: report.update(status="failed",error=str(error))
