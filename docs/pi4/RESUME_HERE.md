@@ -4,6 +4,28 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
+## September 16 post-worship — preserved v1.2; successor is separate
+
+The player reports the 512-frame instrument played well tonight under light
+playing/few parameter changes. This is useful field evidence, not maximum-load
+or full stage qualification. Runtime remains f600c7e/bd6a517 in the rehearsal
+checkout, PID185009/invocation4e958aafdb1341d7958af803acd8ae4d, with the Yamaha
+output policy unchanged. No restart or native-v2 deployment occurred.
+
+The player then explicitly authorized an organized native successor. Preserve
+this working source snapshot as annotated tag
+`pi4-v1.2-stage-snapshot-20260916` at57bb94c; this label is not release approval.
+Post-worship config archive and complete source bundle are saved privately in
+Mac `Documents/stave-synth-pi4-backups/v1.2-worship-20260916.WfPhVY` with INDEX.
+This is not a bootable SD image or completed full-device recovery test.
+
+Continue successor implementation in the separate Mac worktree
+`Documents/stave-synth-pi4-native-v2`, branch `pi4-native-engine-v2`.
+Read that branch's `docs/pi4/NATIVE_V2_PLAN.md`, `native_v2/README.md` and current
+`RESUME_HERE.md` for milestone evidence. Do not confuse offline prototype
+success with deployed features, lower latency or Pi4 qualification. Keep
+stage/main/mac-port untouched by successor code. Later notes below are history.
+
 ## Tonight's freeze and deferred architecture question
 
 User deferred further optimization until AFTER the September16 worship
