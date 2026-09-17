@@ -39,7 +39,7 @@ def run(command: list[str], *, timeout: int = 180) -> str:
 
 def source_hashes() -> dict[str, str]:
     paths = sorted((ROOT / "native_v2").rglob("*.hpp")) + sorted((ROOT / "native_v2").rglob("*.cpp"))
-    paths += [ROOT / "faust/osc_bank.dsp", ROOT / "faust/faust_cprelude.h", Path(__file__)]
+    paths += [ROOT / "faust/osc_bank.dsp", ROOT / "faust/piano_chain.dsp", ROOT / "faust/faust_cprelude.h", Path(__file__)]
     return {str(p.relative_to(ROOT)): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
 
 
@@ -62,8 +62,11 @@ def main() -> int:
                         help="Installed prefix containing include/faust/gui/CInterface.h")
     parser.add_argument("--output-dir", type=Path,
                         help="New directory only; existing paths are refused")
-    parser.add_argument("--sanitize", action="store_true",
+    sanitizers = parser.add_mutually_exclusive_group()
+    sanitizers.add_argument("--sanitize", action="store_true",
                         help="Address/undefined sanitizers for core tests (not timing evidence)")
+    sanitizers.add_argument("--ubsan", action="store_true",
+                        help="Undefined-behavior sanitizer for core/component tests only")
     args = parser.parse_args()
     if args.soundfont and not args.with_sound:
         parser.error("--soundfont requires --with-sound")
@@ -79,22 +82,25 @@ def main() -> int:
     report: dict = {"status": "running", "prototype": True,
                     "live_driver": False, "pi4_qualified": False,
                     "v1_sound_parity": False, "piano_enabled": bool(font),
-                    "sanitized_core": args.sanitize, "checks": {},
+                    "sanitized_core": args.sanitize, "ubsan_core": args.ubsan, "checks": {},
                     "platform": platform.platform(), "commands": COMMANDS,
                     "source_sha256": source_hashes()}
     start = time.monotonic()
     try:
         cxx = executable("c++")
         report["compiler"] = run([cxx, "--version"])
-        flags = ["-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror", "-pthread",
+        flags = ["-std=c++17", "-O2", "-ffp-contract=off", "-Wall", "-Wextra", "-Werror", "-pthread",
                  "-I", str(ROOT / "native_v2/include")]
         core = output / "test_engine"
         sanitizer = (["-fsanitize=address,undefined", "-fno-omit-frame-pointer"]
-                     if args.sanitize else [])
+                     if args.sanitize else ["-fsanitize=undefined", "-fno-sanitize-recover=all"] if args.ubsan else [])
         report["checks"]["core_compile"] = run([
             cxx, *flags, *sanitizer, str(ROOT / "native_v2/tests/test_engine.cpp"),
             "-o", str(core)])
         report["checks"]["core"] = run([str(core)], timeout=30)
+        components = output / "test_components"
+        run([cxx, *flags, *sanitizer, str(ROOT / "native_v2/tests/test_components.cpp"), "-o", str(components)])
+        report["checks"]["components"] = run([str(components)], timeout=30)
         if args.with_sound:
             faust = executable("faust")
             report["faust"] = run([faust, "--version"])
@@ -140,6 +146,15 @@ def main() -> int:
                  str(ROOT / "native_v2/tests/test_sound_backend.cpp"), str(obj),
                  *link, "-o", str(sound_test)])
             report["checks"]["sound"] = run([str(sound_test), *([str(font)] if font else [])], timeout=60)
+            piano_c, piano_obj = output / "piano_chain.c", output / "piano_chain.o"
+            run([faust, "-double", "-lang", "c", "-cn", "StavePianoChain", "-o", str(piano_c),
+                 str(ROOT / "faust/piano_chain.dsp")])
+            run([cc, "-std=c11", "-O2", "-ffp-contract=off", "-DFAUSTFLOAT=double", "-I", str(prefix / "include"),
+                 "-include", str(ROOT / "faust/faust_cprelude.h"), "-c", str(piano_c), "-o", str(piano_obj)])
+            piano_test = output / "test_piano_chain"
+            run([cxx, *flags, "-I", str(prefix / "include"), str(ROOT / "native_v2/src/piano_chain.cpp"),
+                 str(ROOT / "native_v2/tests/test_piano_chain.cpp"), str(piano_obj), "-o", str(piano_test)])
+            report["checks"]["piano_chain_guards"] = run([str(piano_test)], timeout=30)
             demo = output / "render_demo"
             run([cxx, *flags, *includes, backend,
                  str(ROOT / "native_v2/src/render_demo.cpp"), str(obj),

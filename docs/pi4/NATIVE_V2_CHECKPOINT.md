@@ -1,4 +1,20 @@
-# Native-v2 M0/M1 checkpoint — September 16, 2026
+# Native-v2 checkpoint — September 16, 2026
+
+## Latest: M2 components implemented, integration pending
+
+See [NATIVE_V2_M2_COMPONENTS.md](NATIVE_V2_M2_COMPONENTS.md) for the overnight
+batch, persistent evidence and exact next work. Native envelopes, key/pedal
+ownership, voice/retrigger/stealing and dry piano processing pass pinned-v1.2
+component comparisons. Priority terminal STOP is implemented in the scheduler.
+UBSan-only passes for core/component guards; ASan remains unverified. All549
+legacy tests plus Node checks pass again. No Pi contact/deployment this batch.
+
+M2 is NOT complete: these components are not yet a combined sound-compatible
+instrument or integrated UI. The M1 render demo still uses its simplified
+backend. Full FX/bed and Pi4 timing/hardware gates remain open. The sections
+below are the preserved M0/M1 evidence, not the latest implementation status.
+
+## Historical M0/M1 checkpoint
 
 ## Outcome and limits
 

@@ -53,12 +53,15 @@ public:
     Engine* inject_engine = nullptr;
     bool injected = false;
     bool overflow_during_render = false;
+    bool stop_during_render = false;
 
     void render(float* left, float* right, std::uint32_t frames) noexcept override {
         ++renders;
         if (inject_engine != nullptr && !injected) {
             injected = true;
-            if (overflow_during_render) {
+            if (stop_during_render) {
+                inject_engine->request_stop();
+            } else if (overflow_during_render) {
                 for (std::size_t i = 0; i != Engine::queue_capacity; ++i) {
                     CHECK(inject_engine->enqueue({100000, EventType::NoteOff}));
                 }
@@ -315,6 +318,35 @@ void no_engine_heap_allocation() {
     CHECK(allocation_count.load(std::memory_order_relaxed) == 0);
 }
 
+void priority_stop_ignores_future_queue() {
+    Probe probe;
+    Engine engine(probe);
+    std::array<float, 512> left{}, right{};
+    probe.level = 5;
+    CHECK(engine.enqueue({100000, EventType::NoteOn, 0, 60, 100}));
+    engine.request_stop();
+    CHECK(engine.fault() == Fault::StopRequested);
+    CHECK(probe.panics == 0);
+    CHECK(!engine.process(left.data(), right.data(), 512));
+    CHECK(probe.panics == 1 && probe.count == 0);
+    CHECK(!engine.enqueue({100001, EventType::NoteOn, 0, 64, 100}));
+    engine.request_stop();
+    CHECK(!engine.process(left.data(), right.data(), 512));
+    CHECK(probe.panics == 1);
+    for (unsigned i = 0; i < 512; ++i) CHECK(left[i] == 0 && right[i] == 0);
+
+    Probe during;
+    Engine active(during);
+    during.inject_engine = &active;
+    during.stop_during_render = true;
+    CHECK(active.enqueue({5, EventType::NoteOn, 0, 60, 100}));
+    CHECK(!active.process(left.data(), right.data(), 512));
+    CHECK(during.count == 0); // Stop during pre-event render prevents note-on.
+    CHECK(during.panics == 1);
+    CHECK(active.frame_position() == 0);
+    for (unsigned i = 0; i < 512; ++i) CHECK(left[i] == 0 && right[i] == 0);
+}
+
 class ConcurrentProbe final : public stave::Backend {
 public:
     std::atomic<std::uint64_t> received{0};
@@ -388,6 +420,8 @@ int main() {
     frame_overflow_is_terminal();
     std::fputs("test: snapshot bounds\n", stderr);
     snapshot_work_and_mid_render_fault();
+    std::fputs("test: priority stop\n", stderr);
+    priority_stop_ignores_future_queue();
     std::fputs("test: heap allocation\n", stderr);
     no_engine_heap_allocation();
     std::fputs("test: concurrent SPSC\n", stderr);

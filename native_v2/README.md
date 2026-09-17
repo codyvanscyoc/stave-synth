@@ -14,8 +14,10 @@ From this checkout, using already-installed dependencies:
 ```sh
 python3 tools/run_native_v2.py
 python3 tools/run_native_v2.py --sanitize
+python3 tools/run_native_v2.py --ubsan
 python3 tools/run_native_v2.py --with-sound
 python3 tools/run_native_v2.py --with-sound --soundfont /absolute/path/to/existing.sf2
+python3 tools/compare_native_v2.py --soundfont /absolute/path/to/existing.sf2
 ```
 
 Core tests require a C++17 compiler and lock-free 64-bit atomics. Sound tests
@@ -31,7 +33,9 @@ Artifacts go into a new temporary directory (printed at startup), or a NEW
 `report.json` and its binaries/WAVs together. The report records commands,
 source hashes and host identity, and rejects source changes during the run.
 The two eight-second float WAVs are dry diagnostic fixtures, not v1.2 demos.
-`--sanitize` instruments core tests only, not generated Faust/FluidSynth.
+`--sanitize` and `--ubsan` instrument scheduler and envelope/note/voice tests
+only, not generated Faust/FluidSynth/piano-chain tests. They are mutually
+exclusive; UBSan-only has passed, ASan remains unverified.
 Never run these compilers/tests on a playing Pi: offline means no devices,
 not zero CPU or memory contention.
 
@@ -53,9 +57,11 @@ not zero CPU or memory contention.
   silences output; no unsafe concurrent reset or stale-event resume. Reconstruct
   only while stopped. Invalid process arguments return false without touching
   buffers; a future driver must implement its own invalid-call silence.
-- **Scheduled panic is not yet a live emergency STOP path.** It cannot jump
-  ahead of a previously queued future event. Live integration needs a separate
-  priority stop mechanism, plus safe release of every source and ambience tail.
+- Scheduled panic remains an ordered musical command. `request_stop()` is a
+  separate priority terminal fault latch which bypasses future event ordering;
+  only the audio owner touches the backend. It cannot preempt an executing
+  backend call. It requires stopped reconstruction, not live reset. Full-source
+  tail policy and the browser STOP adapter still need integration.
 - Engine telemetry is atomic but not a transactionally coherent snapshot.
   `SoundBackend::stats`, health and slot counts belong to the audio owner;
   future UI access needs an explicit telemetry transfer, not concurrent reads.
@@ -66,9 +72,10 @@ not zero CPU or memory contention.
 
 | Area | Implemented in this prototype | Not yet migrated or qualified |
 | --- | --- | --- |
-| Timing | Bounded event scheduling, boundary/fault tests, single audio owner | Live MIDI timestamps, priority STOP, control coalescing, driver/recovery |
-| Oscillators | Existing Faust 12-slot bank, separate generated stereo stems, fixed-capacity notes, sustain, blend | Full v1.2 ADSR/retrigger/unison/modulation, random phase behavior, click-free stealing/toggles, independent FX routing |
-| Piano | Explicitly loaded FluidSynth SF2, native float rendering, 32-voice cap, sustain | v1.2 gain/velocity/piano-chain match, sostenuto, program changes, library-internal real-time audit |
+| Timing | Bounded event scheduling, priority terminal stop, fault tests, single audio owner | Live MIDI timestamps, control coalescing, driver/recovery, whole-block postprocessing integration |
+| Oscillators | Existing Faust 12-slot M1 bank; separate tested v1.2 envelope and voice-owner components | Connect compatible voices to actual DSP; unison/modulation/random phases, click-free stealing/toggles, independent FX routing |
+| Piano | M1 native float FluidSynth; separate tested v1.2 dry piano-chain component | Integrated gain/velocity/precision/pedal match, room, program changes, library-internal real-time audit |
+| Stage keys | Separately tested v1.2 raw-key/transpose/sustain/sostenuto ownership | Actual piano/oscillator adapter, split-weight computation and MIDI protocol |
 | Output | Dry stereo mix, finite checks, counted emergency export clamp, WAV | Complete FX/filter/limiter graph, live backend, end-to-end latency |
 | Worship functions | None silently removed from the preserved working build | Independent sampled bed/drone, freeze, organ, recorder, splits, macros, scenes |
 | Browser/state | Existing implementation retained as reference | Versioned native protocol, preset conversion, five-fader UI integration |
@@ -78,6 +85,11 @@ The prototype uses deterministic oscillator phase, simplified gates, no v1.2
 effects, and different piano gain/precision. Do not compare its raw loudness or
 timbre with the stage instrument and call the difference an improvement.
 Reuse of DSP source alone does not preserve a complete sound.
+
+That paragraph describes the still-existing M1 `SoundBackend` / `render_demo`.
+New `BlockEnvelope`, `StageNotes`, `StageVoices` and `PianoChain` are separate
+M2 components, not wired into that demo. See the [M2 checkpoint](../docs/pi4/NATIVE_V2_M2_COMPONENTS.md)
+for measured comparison scope, compatibility quirks and remaining integration.
 
 ## What the tests establish
 
@@ -105,9 +117,10 @@ Do not discover/run arbitrary legacy stress tests. See
 
 ## Next: prove musical compatibility before adding breadth
 
-Freeze reference patch state, asset hashes, MIDI/pedal timestamps, seeds,
-sample rate, gain alignment and comparison tolerances. Port the existing
-voice/envelope and piano chain into the same owner, then verify dry and layered
-sound against those fixtures. Bring effects and beds across only with their
+Pinned component fixtures, native voice/envelope/pedal ownership and the dry
+piano-chain port now exist. Next integrate them into the same owner, freeze
+complete patch/phase/asset/MIDI fixtures, and verify actual dry and layered
+sound. Keep whole-block piano processing separate from MIDI event slicing;
+do not silently change the proven cadence semantics. Bring effects and beds across only with their
 tail/transition tests. Pi4 speed measurements and any deployment require a
 separate off-stage window; no claim here establishes that 256 frames will work.

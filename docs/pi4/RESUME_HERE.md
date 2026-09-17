@@ -6,6 +6,15 @@ Read this first; earlier review/deployment notes describe historical checkpoints
 
 ## September16 post-worship: native-v2 implementation authorized
 
+Latest overnight checkpoint: [NATIVE_V2_M2_COMPONENTS.md](NATIVE_V2_M2_COMPONENTS.md).
+M2 components now pass pinned-v1.2 comparisons: envelope11,340blocks,
+key/pedal10,652commands, voice7,101commands, dry piano524,288samples per
+cadence512/256. Scheduler priority terminal STOP implemented; UBSan-only core/
+components pass, ASan still unverified. Existing549tests and Node checks pass.
+No Pi contact/restart/deployment in that batch. M2 integration remains open:
+the new components are NOT yet wired into a complete native instrument.
+Start with the exact integration work in that checkpoint, not a live deployment.
+
 This worktree is `pi4-native-engine-v2`, separate from preserved pi4-stage-pro.
 The user reports tonight's512-frame build played well under a beginner/light
 workload, then explicitly authorized preserving v1.2 and implementing a unified
@@ -24,11 +33,11 @@ Implementation: native_v2 owns a bounded sample-position event scheduler and an
 offline piano/Faust oscillator slice. It does not replace existing voice/ADSR,
 full FX/bed/organ/scene behavior or the UI; follow milestone-specific evidence.
 
-M0/M1 checkpoint: [NATIVE_V2_CHECKPOINT.md](NATIVE_V2_CHECKPOINT.md). Core plus
+Earlier M0/M1 checkpoint: [NATIVE_V2_CHECKPOINT.md](NATIVE_V2_CHECKPOINT.md). Core plus
 actual Faust/FluidR3 offline tests and both diagnostic WAVs pass; fixtures are
 identical at512/256, NOT live Pi4 qualification. Existing549-test suite and
-Node checks pass. Sanitizers remain unverified due to pre-main startup stalls.
-M2-M6 remain open; next is pinned v1.2 musical fixtures and voice/piano parity.
+Node checks passed. Combined ASan/UBSan was unverified due to pre-main stalls;
+the later UBSan-only component pass is scoped above. M2-M6 remain open.
 
 ## Tonight's freeze and deferred architecture question
 

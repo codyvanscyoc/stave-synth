@@ -27,6 +27,7 @@ enum class Fault : std::uint8_t {
     InvalidConfiguration,
     QueueOverflow,
     FrameOverflow,
+    StopRequested,
 };
 
 struct Counters {
@@ -69,6 +70,12 @@ public:
 
     Engine(const Engine&) = delete;
     Engine& operator=(const Engine&) = delete;
+
+    // Priority emergency stop, independent of queue capacity/time ordering.
+    // May be requested by another thread; only process() touches the backend.
+    // Terminal by design: after owner acknowledgement, reconstruct while
+    // stopped. This is not a tail-preserving musical release or live reset.
+    void request_stop() noexcept { latch(Fault::StopRequested); }
 
     // Rejected invalid/out-of-order input has no effect on queue/timeline.
     // A full queue latches a fault even if the consumer frees a slot just after
@@ -146,6 +153,9 @@ public:
                 backend_.render(left + offset, right + offset,
                                 static_cast<std::uint32_t>(target - cursor));
                 cursor = target;
+            }
+            if (fault() != Fault::None) {
+                return silence_fault(left, right, frames);
             }
             if (event.type == EventType::Panic) {
                 backend_.panic();
