@@ -4,6 +4,73 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
+## September17: native build is now the DEFAULT; reboot/recovery passed
+
+Player explicitly authorized boot promotion, preserving v1.2, while away with
+the sound system off. **Current boot owner: `stave-native.service`, enabled**;
+old `stave-synth.service` disabled/inactive but preserved. Transient candidate
+is stopped. Stable native root `/home/codyvanscyoc/stave-native/current`;
+persistent state `/home/codyvanscyoc/.local/share/stave-native`. Native512,
+same player-accepted binary and tone, no DSP changes. Current URL remains
+**http://stavepi4.local:8082** (also192.168.1.203:8082 on this network).
+Final supervisorPID1556,NRestarts0,epochf45a701823674555af1124aba74c02e8.
+**Output is MUTED; raise Master deliberately before playing.** Every recovery
+restores saved tone, never notes/master/freeze/bed actions.
+
+Source26825db (controller/network helper), unit hardened inf90b698. Explicit
+private IPv4 listeners follow wlan0/eth0 addresses every2s, plus loopback;
+audio does not wait for Wi-Fi or HTTP binding. Existing Avahi, NetworkManager,
+linger and Wi-Fi fallback timer retained. No wildcard/public exposure. Exact
+Host/Origin/session checks and four shared HTTP workers retained. The30s
+systemd watchdog monitors controller progress, SIGKILL/no core dumps bounds
+termination; restart delay5s. Native stalled telemetry/route/fault also recovers.
+See [boot/recovery operation and rollback](NATIVE_V2_BOOT.md).
+
+Verified in this maintenance window:
+
+- 597 reviewed Mac tests, zero skips;15 controller/lifecycle tests on Pi pass.
+ Installed unit passes systemd verification. No native rebuild required:
+ source/binary DSP unchanged, SHA256
+ `2e48aa681bcc30219ce686a517cf90ba759af8d7895c8bbdcc280fe7ec4130d3`.
+- Actual muted native-child termination recovery4.534518s; stopped-child
+ recovery15.829603s; controller watchdog33.792473s, then final hardened policy
+ repeat34.106923s. Saved controls acknowledged, output0, frames512 after each.
+ These intentional failures interrupt audio; they are not uninterrupted-play tests.
+- One orderly **real reboot**: boot IDec5d4887-3808-4522-aaa6-20212e8dfc99.
+ Controller active33.814s after boot; healthy restored/routed audio observed
+ by58.68s uptime (not a precise audio-ready timing measurement). No login
+ required for launch. Yamaha MIDI/stereo automatically connected;0 restarts,
+ 0 xruns/over-budget/full-scale at postboot check, firmware0x0,68.6°C.
+ Mac and Pi both resolve/fetch the normal hostname.
+- Rollback rehearsal starts the preserved old servicePID1381 and verifies8080
+ runtime identity, then disables it and restores nativePID1556 at8082.
+ Both legacy JSON snapshots and native tone stayed byte-identical. Native
+ enabled/old disabled rechecked afterward; Wi-Fi fallback timer stays enabled.
+- Isolated missing-device startup at loopback8083 uses intentionally nonexistent
+ selections, no audio child: truthful missing-port status/UI remains available,
+ clean exit0, actual instrument epoch unchanged. This is not USB hotplug evidence.
+- Final idle status7890 blocks,0 xruns/over-budget/full-scale,max4.73054ms,
+ master0. No playing/MIDI injection in this batch. No test controller remains.
+
+Accepted native tone SHA256 remains
+`0bf5d9066b02c4a4e1bb1fab0c7293c2bc055e5c4ad6f7bcc17993c8c307bfc3`;
+legacy current/previous settings remain2f366d3c5dfad79e5a4e343e2c6800f7d598a1cd8c213b28ab16ef62dad93872.
+Private Pi backup `/home/codyvanscyoc/stave-native-boot-backup-20260917` contains
+pre-change units/state, target tests, recovery/postboot/rollback/missing-device
+reports. Release/runtime/evidence archive copied to Mac and hash matched:
+`/Users/codyvanscyoc/Documents/stave-synth-pi4-backups/native-v2-boot-20260917.15SW0S/stave-native-boot-evidence-20260917.tar.gz`,
+SHA256`3b3dc8dc5b1fa3573c21dfbbe28dd8a6ca02fec54a29750648360e5960fadd1b`.
+This is NOT a complete SD-card image.
+
+**Next:** player post-boot listening and physical device reconnect/power-cycle
+checks; UI recommendations may proceed without DSP changes. True cold boots,
+hard power interruption, actual Wi-Fi loss/hotspot/roam, arbitrary USB interfaces
+and iOS sleep/wake are NOT qualified by the above software tests. Use clean
+shutdown before removing power; atomic settings cannot guarantee SD survival.
+Recording/live-asset and remaining legacy feature parity are still open.
+The older sections below are historical; their transient-only boot advice is
+superseded by this explicit promotion. Pi5 and legacy source remain untouched.
+
 ## September17: player accepts core sound/response; familiar UI deployed
 
 Player reports extended playing with no issues, excellent sound and response,

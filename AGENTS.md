@@ -35,3 +35,12 @@ verify actual service ownership before modifying/syncing runtime files there,
 and use an authorized maintenance window or a separate isolated candidate.
 See `docs/pi4/STARTUP_CHECKPOINT.md` and `docs/pi4/RELEASE_CHECKLIST.md` for
 current evidence and the still-required physical playing/rehearsal gates.
+
+September17 superseding checkpoint: after player acceptance, the user explicitly
+authorized native boot promotion. `stave-native.service` is now enabled, using
+`/home/codyvanscyoc/stave-native/current` and separate persistent native state.
+Old `stave-synth.service` is disabled but preserved; rollback was exercised.
+An actual orderly reboot and muted fault-recovery checks passed. Read the newest
+RESUME_HERE section and NATIVE_V2_BOOT.md before touching either service. Current
+UI remains8082,48k/512, starts/restarts muted. This is not blanket authorization
+to interrupt future playing or to change DSP, Pi5, or saved tone.

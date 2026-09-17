@@ -65,3 +65,16 @@ match the player-accepted build. Target installation/recovery/reboot results are
 recorded in RESUME_HERE.md after execution, not inferred from unit tests.
 Physical unplug/replug, hard power cycles, no-network hotspot access, iOS
 sleep/wake and actual key-to-analogue latency still require their own evidence.
+
+### Installed and exercised
+
+Native is now enabled at boot; old service disabled, source/state retained.
+15 target controller tests and systemd unit verification pass. Real muted
+recovery: child exit4.535s, child stall15.830s, final controller watchdog34.107s.
+One orderly reboot automatically brought up native with Yamaha routes and saved
+tone; controller active33.814s after boot, healthy audio observed by58.68s uptime.
+Zero postboot xruns/over-budget/full-scale in the recorded interval. This is not
+a physical cold-power or worst-load musical test. Rollback to old8080 and back
+to native8082 passed with both saved-state hashes unchanged. Isolated absent
+device selections left the status UI alive and launched no audio child.
+Final state remains native enabled, old disabled, native output muted.
