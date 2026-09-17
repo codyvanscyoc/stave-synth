@@ -4,25 +4,34 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
-## September17: Tailscale installed; remote login verification pending
+## September17: private Tailscale SSH and UI tunnel VERIFIED
 
 User requested private remote SSH from home and authorized Tailscale on Pi/Mac.
 Pi Debian13/trixie ARM64 now has Tailscale1.102.4 from the official signed apt
 repository, tailscaled enabled at boot. No OS upgrades; added Tailscale and
 iptables libraries. Requested `--accept-dns=false --accept-routes=false --ssh=false`:
 retain existing OpenSSH, no exit-node/subnet advertisement or public exposure.
-Latest Pi state **NeedsLogin**, no Tailscale IP assigned; user must authorize the
-device in their existing Google-backed Tailscale account. Do not claim remote
-SSH works yet. Auth link and account details were kept out of the repository.
+User approved both devices in the intended Google-backed account. Both report
+Running/online with no health warnings. Actual SSH over the Pi's Tailscale IPv4
+and HTTP status through its SSH tunnel succeeded. This tests the overlay path
+while both devices are still on site, not a completed home-Wi-Fi field test.
+Auth links and account details were kept out of the repository.
 
 Mac official1.102.4 installer was downloaded and Apple signature/notarization
-verified; user subsequently installed `/Applications/Tailscale.app`. Last CLI
-check failed to load preferences, so Mac sign-in/extension setup and connection
-are not verified. Next: confirm both devices joined the intended account, then
-verify existing SSH via Pi Tailscale IP (validate host key against known Pi).
-For remote UI use SSH forwarding to Pi127.0.0.1:8082; native HTTP deliberately
+verified; user subsequently installed `/Applications/Tailscale.app`. Mac CLI
+requires execution outside the sandbox to read its preferences; it works there.
+Saved Mac SSH alias **`stavepi4-remote`** in `~/.ssh/config`, preserving existing
+settings. Uses Pi Tailscale address and `HostKeyAlias stavepi4.local` with strict
+checking against the existing, independently verified Pi ED25519 host key.
+No password saved in the config. Connect with `ssh stavepi4-remote`.
+For remote UI: `ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:8082:127.0.0.1:8082 stavepi4-remote`,
+then open http://127.0.0.1:8082 while the tunnel stays open. Native HTTP deliberately
 does not bind tailscale0/CGNAT addresses. Do not expose the UI or broaden routes.
-Pi native service stayedPID1556,NRestarts0 through package installation.
+Pi native service stayedPID1556,NRestarts0, same epoch through setup and tunnel
+verification;182143 blocks,0 xruns/over-budget/full-scale,max6.23025ms,master0.
+No playing load was generated. Temporary test tunnel expires after30s; reconnect
+as needed from home. Leave Tailscale connected on Mac and Pi Internet-connected.
+Current device keys report March16,2027 expiry; do not silently disable expiry.
 
 ## September17: native build is now the DEFAULT; reboot/recovery passed
 
