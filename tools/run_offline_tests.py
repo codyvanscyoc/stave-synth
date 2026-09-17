@@ -77,6 +77,7 @@ SAFE_TESTS = (
     "test_native_v2_audition.py",
     "test_native_v2_live_probe.py",
     "test_native_sampled_bed.py",
+    "test_native_recording_capture.py",
 )
 
 

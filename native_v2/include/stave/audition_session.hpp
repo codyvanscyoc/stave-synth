@@ -1,5 +1,6 @@
 #pragma once
 #include "stave/stage_instrument.hpp"
+#include "stave/recording_capture.hpp"
 #include <atomic>
 #include <cstring>
 
@@ -43,12 +44,14 @@ struct AuditionMidi { unsigned offset{},size{}; std::array<unsigned char,3> byte
 class AuditionSession final {
 public:
     static constexpr unsigned capacity=128, controls_per_block=32, midi_limit=256;
-    explicit AuditionSession(StageInstrument& instrument):graph_(instrument) {
+    // Optional one-take transport must outlive this session and its callback.
+    // Attaching is pre-activation only; file worker/start/stop UI is separate.
+    explicit AuditionSession(StageInstrument& instrument,RecordingCapture<>* capture=nullptr):graph_(instrument),capture_(capture) {
         config_.owned_motion=true;
         config_.fader1=config_.fader2=0; // start piano-only; no saved patch imported
         config_.output.volume=0; // always silent until explicitly raised
         config_.piano.highcut_smoothing_ms=80;
-        if(!graph_.configure(config_)) request_stop(AuditionFault::Engine);
+        if((capture_&&capture_->block_frames()!=graph_.block_frames())||!graph_.configure(config_)) request_stop(AuditionFault::Engine);
     }
     // One non-audio producer. Full/invalid controls are rejected, never
     // acknowledged as applied; no MIDI note-off can be lost in this queue.
@@ -103,6 +106,9 @@ public:
             request_stop(AuditionFault::Engine); return silence(l,r,frames);
         }
         full_scale_.store(graph_.stats().full_scale_piano_samples,std::memory_order_relaxed);
+        // Same pre-volume/BTL tap as v1. Recorder failures are separate from
+        // instrument faults: a stalled disk must never interrupt playing.
+        if(capture_) capture_->push(graph_.recording_tap(0),graph_.recording_tap(1),frames);
         std::copy_n(graph_.pcm(0),frames,l); std::copy_n(graph_.pcm(1),frames,r);
         // Legacy output smoothing starts at .85; setting its target to zero
         // is not an immediate mute. Separate startup gate prevents even dither
@@ -163,11 +169,13 @@ private:
         return graph_.configure(config_);
     }
     bool silence(float* l,float* r,unsigned n) noexcept {
+        if(capture_) capture_->finish(CaptureEnd::EngineStopped);
         graph_.stop(); std::fill_n(l,n,0); std::fill_n(r,n,0); return false;
     }
     static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
     static_assert(std::atomic<AuditionFault>::is_always_lock_free);
     StageInstrument& graph_;
+    RecordingCapture<>* capture_{};
     StageInstrumentConfig config_{};
     std::array<AuditionCommand,capacity> commands_{};
     alignas(64) std::atomic<std::uint64_t> head_{0},tail_{0};

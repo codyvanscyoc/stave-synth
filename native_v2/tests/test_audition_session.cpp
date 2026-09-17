@@ -18,6 +18,34 @@ using F=stave::AuditionFault;
 int main(int argc,char** argv) {
     check(argc==2);
     for(unsigned frames:{256u,512u}) {
+        {
+            // Actual graph tap stays pre-master: muted physical PCM does not
+            // mute a take. Disk overflow ends only capture, not the synth.
+            Random random;
+            stave::StageInstrument graph(argv[1],random,frames,0,&random);
+            auto capture=std::make_unique<stave::RecordingCapture<>>(frames);
+            stave::AuditionSession session(graph,capture.get());
+            stave::RecordingCapture<>::Block block;
+            std::array<float,512> l{},r{};
+            stave::AuditionMidi note{0,3,{0x90,60,100}};
+            bool captured_sound=false;
+            for(unsigned n=0;n<64;++n) {
+                check(session.process(l.data(),r.data(),frames,n?nullptr:&note,n?0:1));
+                check(capture->pop(block));
+                for(unsigned i=0;i<frames;++i) {
+                    check(l[i]==0&&r[i]==0);
+                    check(block.channel[0][i]==graph.recording_tap(0)[i]&&block.channel[1][i]==graph.recording_tap(1)[i]);
+                    captured_sound|=std::abs(block.channel[0][i])>1e-5;
+                }
+            }
+            check(captured_sound);
+            for(unsigned n=0;n<130;++n) check(session.process(l.data(),r.data(),frames,nullptr,0));
+            check(capture->end()==stave::CaptureEnd::Overflow&&session.fault()==F::None&&graph.healthy());
+            session.request_stop(); check(!session.process(l.data(),r.data(),frames,nullptr,0));
+            check(capture->end()==stave::CaptureEnd::Overflow);
+            unsigned count=0; while(capture->pop(block)) ++count;
+            check(count==128&&capture->drained());
+        }
         Random a,b; stave::StageInstrument actual(argv[1],a,frames,0,&a),expected(argv[1],b,frames,0,&b);
         stave::AuditionSession s(actual);
         stave::StageInstrumentConfig p; p.owned_motion=true; p.fader1=p.fader2=0; p.output.volume=0;
