@@ -28,6 +28,30 @@ cleanup. No audio process depends on a browser, SSH connection or Mac session.
 
 ## Networking
 
+### Preparation without devices (September 17 update)
+
+Keyboard and audio-device absence no longer prevent editing or saving tone.
+The controller exposes `runtime.preparation` when it has no audio child and is
+not processing a requested restart. Its authoritative in-memory prepared sound
+starts from the saved native snapshot. Validated non-performance edits update
+this state, and Save sound persists it with the existing atomic writer.
+Browser refreshes and multiple browser clients see the same prepared values.
+
+When the selected devices return, the child loads the prepared tone, including
+unsaved edits made in the same controller session, and waits for acknowledgment
+before enabling live controls. Device loss retains acknowledged tone but drops
+pending/unacknowledged requests. Epoch changes cancel old browser gestures.
+Failed startup cannot replace the prepared tone with child defaults. A full
+controller/Pi restart still restores the last explicitly saved snapshot.
+
+Master/output gain, freeze, key triggers and release/fade actions require live
+audio and are never queued during preparation. Empty-bed shaping can be edited
+and saved before the recordings exist; it does not create or trigger a sample.
+Device readiness and preparation availability are distinct UI facts. The native
+host still requires its selected MIDI and audio routes for rendering; this
+change enables setup with neither device, not headphone audition without MIDI.
+The DSP executable and 48k/512 profile are unchanged.
+
 `--listen auto --network-interface wlan0 --network-interface eth0` inventories
 RFC1918 IPv4 addresses every2s and binds explicit addresses plus loopback, never
 a wildcard/public listener. Hostname remains `stavepi4.local:8082`; numeric IP

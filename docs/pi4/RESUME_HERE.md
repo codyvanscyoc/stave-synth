@@ -4,6 +4,45 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
+## September 17: edit/save without keyboard or audio devices deployed
+
+The player explicitly requires travel/setup editing independent of MIDI input.
+The previous native readiness gate disabled every parameter whenever the saved
+keyboard was absent. The controller now owns a prepared tone state that starts
+from the saved native sound. `runtime.preparation` allows validated tone edits
+and Save without a child/audio device. Refresh and other browsers see the same
+state. Reconnect restores prepared tone, including unsaved changes in the current
+controller session, then waits for native acknowledgment. Full controller/Pi
+restart loads the last explicit Save. No deferred master, freeze, held-key,
+release or fade actions are replayed. Empty bed shaping may be prepared without
+assets; record-to-slot remains unfinished.
+
+Live endpoint installation verified with keyboard still absent, preserved saved
+controls/routes hashes and accepted DSP binary. The idle controller was reloaded;
+no active audio session was interrupted. Local-network SSH succeeded after one
+Tailscale SSH timeout. Backup/report:
+`/home/codyvanscyoc/stave-native-boot-backup-20260917/preparation-qmkmpwdk`.
+Controller SHA256 `ac6da7b6ce15a14db5e2387ec5581fd2d1c2261f9bdd4adde9b2250ca0fccd2a`;
+HTML SHA256 `a260804f9087e0d3cf5a91dbcc559fedebb5ad53dbc943cc432a172f3acb3d66`.
+Post-install epoch `f46aded5b6254740b9e5aaccc7a83f90`. A same-value piano POST
+returned `prepared:true`; no live Save or patch alteration was used for testing.
+
+Validation: 601 reviewed offline regression tests; real Chrome mouse fader and
+phone-touch knob edits against the actual isolated CandidateHub with empty device
+inventory; save/reload, output-action gating, no tap jumps and phone overflow.
+Isolated controller tests cover saved preparation→attach→ack, stale epochs,
+device loss retaining acknowledged unsaved tone (excluding pending actions),
+failed restore, failed disk save and empty-bed preparation. Physical replug with
+this change still needs player confirmation. DSP/frame settings are unchanged.
+Browser/test artifacts: `/private/tmp/stave-preparation.5NNiGy`.
+
+Open design request: the player found the first analog editor too simplified.
+They want the retro logo, substantially longer Stage faders, and paired OSC
+panels with recognizable full ADSR diagrams and controls. Native separate ADSR
+already exists, but live protocol only has shared attack/release. Those controls
+need a focused live-contract/persistence implementation and transition checks;
+the previous circular-style pass is not accepted as the finished UI.
+
 ## September 17: focused analog Sound editor deployed
 
 The accepted engine remains the authority: 48 kHz / 512 frames and the accepted

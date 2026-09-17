@@ -71,7 +71,7 @@ class NativeStageTests(unittest.TestCase):
         self.assertEqual(target.read_text(), "keep")
 
     def test_restore_waits_for_ack_and_omits_empty_bed_knobs(self):
-        self.hub.saved = dict(piano=.8, bed_level=.2)
+        self.hub.prepared = dict(piano=.8, bed_level=.2)
         c = self.attached(); epoch = self.hub.epoch
         self.hub.reconcile()
         self.assertTrue(self.hub.restoring)
@@ -94,6 +94,80 @@ class NativeStageTests(unittest.TestCase):
         self.hub.dispatch("/restart-audio", {}, self.hub.epoch)
         self.assertTrue(self.hub.take_restart())  # newer request survives consumption
         self.assertFalse(self.hub.take_restart())
+
+    def test_prepare_without_devices_save_reload_then_restore_muted(self):
+        self.hub.inventory({})
+        epoch = self.hub.epoch
+        self.assertTrue(self.hub.snapshot()['runtime']['preparation'])
+        for key, value in [('piano', .81), ('cutoff', 734), ('attack', 670), ('bed_level', .25)]:
+            result = self.hub.dispatch('/control', dict(key=key, value=value), epoch)
+            self.assertTrue(result['prepared'])
+            self.assertEqual(self.hub.snapshot()['values'][key], value)
+        self.assertFalse(self.store.path.exists(), 'edits do not implicitly overwrite saved sound')
+        for key in stage.storage.TRANSIENT:
+            with self.assertRaises(ValueError):
+                self.hub.dispatch('/control', dict(key=key, value=1), epoch)
+        with self.assertRaises(ValueError):
+            self.hub.dispatch('/control', dict(key='piano', value=float('nan')), epoch)
+        self.hub.dispatch('/save', {}, epoch)
+        self.hub = stage.CandidateHub(self.store, ROUTES)
+        self.assertEqual(self.hub.snapshot()['values']['piano'], .81)
+        self.assertEqual(self.hub.snapshot()['values']['master'], 0)
+        old_epoch = self.hub.epoch
+        control = self.attached()
+        with self.assertRaises(ValueError):
+            self.hub.dispatch('/control', dict(key='piano', value=.2), old_epoch)
+        self.hub.reconcile()
+        self.assertEqual(dict(control.pending.values()), dict(piano=.81, cutoff=734, attack=670))
+        sequence = control.sequence
+        control.receive(dict(type='status', instance='native-v2-stage', blocks=2, applied=sequence, routed=True, fault=0))
+        self.hub.reconcile()
+        self.assertFalse(self.hub.restoring)
+        self.assertEqual(self.hub.snapshot()['values']['piano'], .81)
+        self.assertEqual(self.hub.snapshot()['values']['bed_level'], .25)
+        self.assertEqual(control.values['master'], 0)
+
+    def test_device_loss_keeps_acknowledged_unsaved_tone_not_actions_or_pending(self):
+        control = self.attached()
+        self.hub.reconcile()
+        control.submit(dict(key='piano', value=.82))
+        control.submit(dict(key='master', value=.9))
+        control.receive(dict(type='status', instance='native-v2-stage', blocks=2, applied=2, routed=True, fault=0))
+        control.submit(dict(key='cutoff', value=200))  # never acknowledged
+        self.hub.detached('Keyboard disconnected')
+        self.assertEqual(self.hub.snapshot()['values']['piano'], .82)
+        self.assertEqual(self.hub.snapshot()['values']['cutoff'], 8000)
+        self.assertEqual(self.hub.snapshot()['values']['master'], 0)
+        self.assertFalse(self.store.path.exists())
+        self.hub.dispatch('/control', dict(key='piano', value=.63), self.hub.epoch)
+        control = self.attached()
+        self.hub.reconcile()
+        self.assertEqual(dict(control.pending.values())['piano'], .63)
+        self.assertFalse(stage.storage.TRANSIENT & dict(control.pending.values()).keys())
+        # A failed restore must keep the prepared sound, not reset it to defaults.
+        self.hub.detached('Startup failed')
+        self.assertEqual(self.hub.snapshot()['values']['piano'], .63)
+
+    def test_prepare_save_failure_preserves_previous_file_and_unsaved_draft(self):
+        self.hub.dispatch('/control', dict(key='piano', value=.4), self.hub.epoch)
+        self.hub.dispatch('/save', {}, self.hub.epoch)
+        self.hub.dispatch('/control', dict(key='piano', value=.9), self.hub.epoch)
+        with mock.patch.object(stage.storage.atomic, 'atomic_write_json', side_effect=OSError('full disk')):
+            with self.assertRaises(OSError): self.hub.dispatch('/save', {}, self.hub.epoch)
+        self.assertEqual(self.store.load()['piano'], .4)
+        self.assertEqual(self.hub.saved['piano'], .4)
+        self.assertEqual(self.hub.snapshot()['values']['piano'], .9)
+
+    def test_empty_bed_shaping_is_prepared_and_survives_save(self):
+        control = self.attached()
+        self.hub.reconcile()
+        self.hub.dispatch('/control', dict(key='bed_rise', value=7), self.hub.epoch)
+        self.assertEqual(control.sequence, 0)
+        self.assertEqual(self.hub.snapshot()['values']['bed_rise'], 7)
+        self.hub.dispatch('/save', {}, self.hub.epoch)
+        self.assertEqual(self.store.load()['bed_rise'], 7)
+        with self.assertRaises(ValueError):
+            self.hub.dispatch('/control', dict(key='bed_key', value=0), self.hub.epoch)
 
     def test_startup_timeout_includes_missing_telemetry(self):
         child = mock.Mock(); child.poll.return_value = None

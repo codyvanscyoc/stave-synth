@@ -71,6 +71,12 @@ Presets remain quick starting points and optional performance changes. Do not re
 
 ### Honest health and recovery
 
+September17 player requirement: sound preparation must work without a MIDI
+keyboard or audio interface connected. A powered, network-reachable Pi provides
+editable, saveable tone state; attaching the selected devices loads that state.
+MIDI supplies performance events and must not own the sound editor's availability.
+Keep preparation, audio readiness and physical MIDI connectivity distinct.
+
 Show four distinct facts: browser control connection; audio-engine progress; connected MIDI device/activity; and the selected physical output/route. Meter traffic alone does not prove that the DAC is connected or audible.
 
 A lost tablet connection must leave MIDI playing and existing audio unchanged. Reconnection obtains authoritative state and marks stale values clearly. Never replay an old panic, key trigger, toggle, or preset change unexpectedly after reconnecting. For absolute fader edits, define pending/acknowledged behavior and avoid jumps when a second controller moves the same parameter. Review MIDI soft-takeover behavior before changing existing mappings.

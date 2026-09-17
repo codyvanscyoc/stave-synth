@@ -104,6 +104,9 @@ class CandidateHub:
             self.state_warning = "Saved-state warning: " + str(error)
             self.save_message = self.state_warning + "; file preserved. Save only when the new sound is intentional."
         self.active = None
+        # Preparation belongs to the instrument, not to a connected keyboard.
+        # Only acknowledged tone values enter this draft; never performance actions.
+        self.prepared = self.saved.copy()
         self.epoch = uuid.uuid4().hex
         self.restoring = True
         self.restore_sequence = None
@@ -127,10 +130,21 @@ class CandidateHub:
 
     def detached(self, message):
         with self.lock:
+            self.remember_tone()
             self.active = None
             self.epoch = uuid.uuid4().hex
             self.restoring = True
             self.message = message
+
+    def remember_tone(self):
+        # Called under hub.lock. During startup, controller defaults must never
+        # replace a prepared sound before its restore transaction is acknowledged.
+        if self.active is None or self.restoring:
+            return
+        data = self.active.snapshot()
+        for key, value in data['values'].items():
+            if key not in storage.TRANSIENT and (not key.startswith('bed_') or data['status'].get('bed_mask')):
+                self.prepared[key] = value
 
     def inventory(self, ports):
         with self.lock:
@@ -160,7 +174,7 @@ class CandidateHub:
                 return
             if self.restore_sequence is None:
                 last = 0
-                for key, value in self.saved.items():
+                for key, value in self.prepared.items():
                     if key.startswith("bed_") and not data["status"].get("bed_mask"):
                         continue
                     last = self.active.submit({"key": key, "value": value})
@@ -173,11 +187,15 @@ class CandidateHub:
 
     def snapshot(self):
         with self.lock:
+            self.remember_tone()
             data = self.active.snapshot() if self.active else dict(instance="native-v2-stage", status={},
-                values={k: v[3] for k, v in audition.CONTROLS.items()}, pending=0, error=None, exited=None, stale=True)
+                values={**{k: v[3] for k, v in audition.CONTROLS.items()}, **self.prepared}, pending=0, error=None, exited=None, stale=True)
+            if not data['status'].get('bed_mask'):
+                data['values'].update({k: v for k, v in self.prepared.items() if k.startswith('bed_')})
             midi = [name for name, p in self.ports.items() if p["type"] == "8 bit raw midi" and "output" in p["flags"] and not name.startswith(("StaveSynth:", "stave-v2-"))]
             audio = [name for name, p in self.ports.items() if p["type"] == "32 bit float mono audio" and "input" in p["flags"] and not name.startswith(("StaveSynth:", "stave-v2-"))]
             data.update(epoch=self.epoch, runtime=dict(restoring=self.restoring, message=self.message,
+                preparation=self.active is None and not self.restart,
                 persistence=True, save_message=self.save_message, state_warning=self.state_warning, can_restart=True,
                 attempts=self.restarts, network=dict(self.network), devices={"midi": midi, "audio": audio}, **self.routes,
                 scope="Native512 candidate: selected-device recovery restarts MUTED with saved tone controls. Browser disconnect does not stop audio. No legacy preset/recording parity or stage-release approval yet."))
@@ -190,6 +208,7 @@ class CandidateHub:
             if path == "/restart-audio":
                 if data != {}:
                     raise ValueError("Empty restart request required")
+                self.remember_tone()
                 self.restart = True
                 self.restoring = True
                 self.epoch = uuid.uuid4().hex
@@ -199,14 +218,32 @@ class CandidateHub:
                 if self.route_file.is_symlink():
                     raise ValueError("Symlink route state refused")
                 storage.atomic.atomic_write_json(self.route_file, {"schema": 1, "routes": routes}, max_bytes=4096)
+                self.remember_tone()
                 self.routes = routes
                 self.restart = True
                 self.restoring = True
                 self.epoch = uuid.uuid4().hex
                 return {"message": "Selected routes saved; audio restarting muted."}
+            if self.active is None and not self.restart:
+                if path == '/control':
+                    key, value = audition.validate_control(data)
+                    if key in storage.TRANSIENT:
+                        raise ValueError('Output and performance actions require audio; tone controls can be prepared now')
+                    self.prepared[key] = value
+                    return {'prepared': True, 'applied': False}
+                if path == '/save' and data == {}:
+                    saved = self.store.save(self.prepared)
+                    self.saved = saved
+                    self.state_warning = None
+                    self.save_message = 'Prepared sound saved. It will load when the selected devices connect; output starts muted.'
+                    return {'saved': True, 'message': self.save_message}
             if not self.active or self.restoring:
                 raise ValueError("Audio is not ready; no queued performance actions")
             if path == "/control":
+                key, value = audition.validate_control(data)
+                if key.startswith('bed_') and key not in storage.TRANSIENT and not self.active.snapshot()['status'].get('bed_mask'):
+                    self.prepared[key] = value
+                    return {'prepared': True, 'applied': False}
                 return {"queued": self.active.submit(data), "applied": False}
             if path != "/save" or data != {}:
                 raise ValueError("Unknown or malformed native action")
@@ -216,10 +253,11 @@ class CandidateHub:
                 raise ValueError("Wait for healthy acknowledged controls before saving")
             values = {k: v for k, v in snapshot["values"].items() if k not in storage.TRANSIENT}
             if not snapshot["status"].get("bed_mask"):
-                for key, value in self.saved.items():
+                for key, value in self.prepared.items():
                     if key.startswith("bed_"):
                         values[key] = value
             self.saved = self.store.save(values)
+            self.prepared = self.saved.copy()
             self.state_warning = None
             self.save_message = "Native tone snapshot saved. Master, notes, freeze and bed actions excluded."
             return {"saved": True, "message": self.save_message}

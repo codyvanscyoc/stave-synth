@@ -106,7 +106,8 @@ Object.assign(labels,{bed_level:'Bed level',bed_rise:'Next trigger rise · secon
 choices.bed_mellow=['Off','On'];
 const keyNames=['C','C♯','D','E♭','E','F','F♯','G','A♭','A','B♭','B'];
 const bedKeys=[],bedActions=['bed-out','bed-in','bed-stop'];
-const fields={},pending=new Map();let ready=false,busy=false,epoch=null,lastValues={},lastRuntime={},actionBusy=false;
+const fields={},pending=new Map();let ready=false,audioReady=false,busy=false,epoch=null,lastValues={},lastRuntime={},actionBusy=false;
+const performanceActions=new Set(['master','freeze','release_all','bed_key','bed_fade','bed_release']);
 const performanceKeys=['osc1','osc2','piano','cutoff','wet','master'];
 const performanceLabels={osc1:'OSC 1',osc2:'OSC 2',piano:'PIANO',cutoff:'FILTER',wet:'FX',master:'MASTER'};
 const editGroups={wave1:'wave1',wave2:'wave2',attack:'osc',release:'osc',resonance:'osc',piano_room:'piano',piano_reverb:'piano',reverb:'reverb',shimmer:'reverb',shimmer_mix:'reverb',freeze:'reverb',delay_wet:'delay',delay_feedback:'delay'};
@@ -181,13 +182,14 @@ function formatted(key,value){
   return Math.round(Number(value)*100)+'%';
 }
 async function action(path,data={}){
+  if(path==='/save'&&(busy||pending.size)){notice.textContent='Wait for your last adjustment to finish, then save.';return;}
   if(actionBusy||!epoch)return;actionBusy=true;
   try{const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Stave-Epoch':epoch},body:JSON.stringify(data),signal:AbortSignal.timeout(3000)});
     const d=await r.json();if(!r.ok)throw Error(d.error||'Action refused');notice.textContent=d.message||'Action accepted';
   }catch(e){notice.textContent=e.message+' — no automatic retry';}finally{actionBusy=false;}
 }
 async function send(key,value){
-  if(!ready)return;
+  if(!ready||(!audioReady&&performanceActions.has(key)))return;
   pending.set(key,value); if(busy)return; busy=true;
   try{
     while(pending.size&&ready){
@@ -230,7 +232,7 @@ async function setup(){
   document.getElementById('freeze-toggle').onclick=()=>send('freeze',lastValues.freeze?0:1);
   document.getElementById('shimmer-toggle').onclick=()=>send('shimmer',lastValues.shimmer?0:1);
   document.getElementById('save').onclick=()=>action('/save');
-  document.getElementById('restart-audio').onclick=()=>{if(confirm('Restart audio? Sound will stop and return muted. Unsaved changes are not restored.'))action('/restart-audio');};
+  document.getElementById('restart-audio').onclick=()=>{if(confirm('Restart audio? Sound will stop and return muted. Your acknowledged tone settings are retained.'))action('/restart-audio');};
   document.getElementById('apply-routes').onclick=()=>{if(confirm('Change connections? Sound will stop and restart muted. Save your tone first if needed.'))action('/routes',Object.fromEntries(Object.entries(routeFields).map(([key,id])=>[key,document.getElementById(id).value])));};
   poll();
 }
@@ -239,31 +241,34 @@ async function poll(){
     const r=await fetch('/status',{signal:AbortSignal.timeout(2000)});if(!r.ok)throw Error('Status unavailable');
     const d=await r.json(),s=d.status;lastRuntime=d.runtime||{};lastValues=d.values;
     if(epoch!==null&&d.epoch!==epoch){pending.clear();cancelGestures();}epoch=d.epoch||null;
-    ready=!d.stale&&d.exited===null&&s.fault===0&&s.routed===true&&!lastRuntime.restoring;
-    document.getElementById('connection').textContent=ready?'Audio ready':'Not ready';
-    document.getElementById('profile').textContent=(s.frames||512)+' frames · '+(Number(d.values.master)>0?'Output enabled':'Output muted');
+    audioReady=!d.stale&&d.exited===null&&s.fault===0&&s.routed===true&&!lastRuntime.restoring;
+    const preparing=lastRuntime.preparation===true;
+    ready=audioReady||preparing;
+    document.getElementById('connection').textContent=audioReady?'Audio ready':preparing?'Prepare sound':'Connecting audio';
+    document.getElementById('profile').textContent=preparing?'Edit & save · devices not required':(s.frames||512)+' frames · '+(Number(d.values.master)>0?'Output enabled':'Output muted');
     const warnings=(s.xruns||0)+(s.over_budget||0);
     document.getElementById('warning-count').textContent=warnings?warnings+' audio timing warnings':'';
-    document.getElementById('health').textContent=(ready?'Audio owner active':'NOT READY — do not assume audible output')+'\n'+
+    document.getElementById('health').textContent=(audioReady?'Audio owner active':preparing?'Preparation mode — audio is not running':'Audio is connecting')+'\n'+
       (s.frames||'?')+' frames / 48 kHz · played notes '+(s.notes||0)+' · callbacks '+(s.blocks||0)+'\n'+
       'Xruns '+(s.xruns||0)+' · over-budget callbacks '+(s.over_budget||0)+' · worst '+Number(s.max_callback_ms||0).toFixed(2)+' ms\n'+
       'Piano full-scale samples '+(s.piano_full_scale||0)+' · unsupported MIDI '+(s.unsupported_midi||0)+' · pending controls '+d.pending;
-    if(d.error)notice.textContent=d.error;else if(!ready)notice.textContent=lastRuntime.message||'Control/audio connection is stale or stopped. No commands will be replayed.';
+    if(preparing)notice.textContent='Shape and save your sound now. It loads when the selected devices connect; then raise Master. '+(lastRuntime.message||'');
+    else if(d.error)notice.textContent=d.error;else if(!ready)notice.textContent=lastRuntime.message||'Control/audio connection is stale or stopped. No commands will be replayed.';
     else notice.textContent=d.pending?'Waiting for audio-owner acknowledgment…':'Values below are acknowledged by the audio owner.';
     if(!ready){pending.clear();cancelGestures();}
     for(const [key,{input,out}] of Object.entries(fields)){
-      input.disabled=!ready||(key.startsWith('bed_')&&!s.bed_mask);
+      input.disabled=!ready||(!audioReady&&performanceActions.has(key));
       if(!gestures.has(key)&&!busy&&!pending.has(key)&&!d.pending){input.value=toSlider(key,d.values[key]);paint(key,d.values[key]);}
     }
-    document.getElementById('release').disabled=!ready;
-    document.getElementById('mute').disabled=!ready;
-    document.getElementById('freeze-toggle').disabled=!ready;
+    document.getElementById('release').disabled=!audioReady;
+    document.getElementById('mute').disabled=!audioReady;
+    document.getElementById('freeze-toggle').disabled=!audioReady;
     document.getElementById('shimmer-toggle').disabled=!ready;
     document.getElementById('shimmer-toggle').setAttribute('aria-pressed',String(Boolean(d.values.shimmer)));
     document.getElementById('shimmer-toggle').textContent=d.values.shimmer?'Shimmer on':'Shimmer off';
     document.getElementById('freeze-toggle').setAttribute('aria-pressed',String(Boolean(d.values.freeze)));
     document.getElementById('freeze-toggle').textContent=d.values.freeze?'Release frozen ambience':'Freeze ambience';
-    document.getElementById('save').disabled=!ready||Boolean(d.pending)||!lastRuntime.persistence||actionBusy;
+    document.getElementById('save').disabled=!ready||busy||Boolean(pending.size)||Boolean(d.pending)||!lastRuntime.persistence||actionBusy;
     document.getElementById('restart-audio').disabled=!lastRuntime.can_restart||actionBusy;
     updateRoutes(lastRuntime);
     document.getElementById('save-status').textContent=lastRuntime.save_message||'Temporary audition — sound saving is not enabled. Starts muted.';
@@ -271,8 +276,8 @@ async function poll(){
       'MIDI: '+lastRuntime.midi_source+' · Output: '+lastRuntime.audio_left+' / '+lastRuntime.audio_right:
       'Explicit routes selected by the audition launcher. See the current audio-owner state below.';
     if(lastRuntime.scope)document.getElementById('runtime-scope').textContent=lastRuntime.scope;
-    bedKeys.forEach((button,key)=>{const loaded=Boolean((s.bed_mask||0)&(1<<key));button.disabled=!ready||!loaded;button.title=loaded?'Play recorded '+keyNames[key]:'No recording for '+keyNames[key];button.style.opacity=loaded?'1':'.35';button.setAttribute('aria-pressed',String(s.bed_key===key));button.style.outline=s.bed_key===key?'3px solid #70d9b0':'';});
-    for(const id of bedActions)document.getElementById(id).disabled=!ready||!s.bed_mask;
+    bedKeys.forEach((button,key)=>{const loaded=Boolean((s.bed_mask||0)&(1<<key));button.disabled=!audioReady||!loaded;button.title=loaded?'Play recorded '+keyNames[key]:'No recording for '+keyNames[key];button.style.opacity=loaded?'1':'.35';button.setAttribute('aria-pressed',String(s.bed_key===key));button.style.outline=s.bed_key===key?'3px solid #70d9b0':'';});
+    for(const id of bedActions)document.getElementById(id).disabled=!audioReady||!s.bed_mask;
     document.getElementById('bed-status').textContent=!s.bed_mask?'No recorded pads loaded. Piano and oscillators remain available.':
       'Selected '+(s.bed_key>=0?keyNames[s.bed_key]:'none')+' · '+(s.active_beds||0)+' sounding/releasing beds · '+(d.values.bed_fade?'fading/faded out':'fade target full');
   }catch(e){ready=false;pending.clear();cancelGestures();notice.textContent='Disconnected — audio may still be playing. No control replay.';document.getElementById('connection').textContent='Browser disconnected';for(const f of Object.values(fields))f.input.disabled=true;for(const id of ['release','mute','shimmer-toggle','freeze-toggle','save','restart-audio','apply-routes',...bedActions])document.getElementById(id).disabled=true;for(const b of bedKeys)b.disabled=true;}
