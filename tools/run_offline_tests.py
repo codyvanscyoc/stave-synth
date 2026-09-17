@@ -73,6 +73,7 @@ SAFE_TESTS = (
     "test_piano_program_owner.py",
     "test_organ_variants.py",
     "test_extended_probe.py",
+    "test_native_instrument_benchmark.py",
 )
 
 

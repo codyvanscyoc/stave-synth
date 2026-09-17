@@ -6,7 +6,21 @@ Read this first; earlier review/deployment notes describe historical checkpoints
 
 ## September16 post-worship: native-v2 implementation authorized
 
-September17 latest: [NATIVE_V2_MOTION_CONNECTED.md](NATIVE_V2_MOTION_CONNECTED.md).
+September17 latest Pi result: [NATIVE_V2_PI_PROBE.md](NATIVE_V2_PI_PROBE.md).
+User authorized isolated build/testing with PA off, then explicitly authorized
+pause/restore of Stave. First build hit our80°C guard. Bounded cooling restored
+service; verified DSP-object reuse reduced retry heat. Fixed GCC output-clamp
+format warning without math changes. Final Pi build/1,400-block UBSan guards and
+eight offline probes completed. Zero over-budget blocks among3,200 measured:
+dense transitions512 mean4.064/max5.436ms;256 mean2.027/max3.314ms. NOT live
+latency/complete-graph qualification. Dense raw piano full-scale counts4/8 need
+headroom review.555legacy/harness tests plus Node pass, output remains exact.
+Working stage restoredPID683040,NRestarts0,cleanf600c7e/rehearsal checkout;
+UI/native/audio state healthy,48k/512,ring6. Firmware flags0x0. No candidate
+deployment or audio routing change, and no test/compiler remains. Next remaining
+features/live integration, piano headroom, then expanded Pi qualification.
+
+Latest sound integration: [NATIVE_V2_MOTION_CONNECTED.md](NATIVE_V2_MOTION_CONNECTED.md).
 StageInstrument now owns global motion/filter drift, accepted-oscillator key-sync,
 poly rate/depth decisions and master sidechain. Four joined merged/nonmerged
 reference comparisons pass at512/256, worst4.613e-12, with exact random ownership.
@@ -16,9 +30,8 @@ standalone motion recheck and549legacytests plus Node pass. Read-only Pi SSH
 succeeded: stage service active,PID185009,NRestarts0,rehearsal checkout. No Pi
 write/restart/deployment/stress test. New build remains offline, NOT field-test
 ready. Next: recorded beds/drone and remaining functions, bounded live control/
-backend, sound acceptance, Pi4 timing and hardware qualification. Current
-off-stage permission for Pi compilation/stress was asked asynchronously; do
-not presume an unanswered question grants it.
+backend, sound acceptance, Pi4 timing and hardware qualification. The separate
+Pi build attempt above supersedes this checkpoint's pending maintenance question.
 
 Previous standalone checkpoint: [NATIVE_V2_MOTION.md](NATIVE_V2_MOTION.md).
 Standalone StageMotion (two global LFOs/routing/ramps) and FilterMotion

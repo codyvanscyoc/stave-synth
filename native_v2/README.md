@@ -85,6 +85,17 @@ its 25,920-LFO/6,000-filter-block comparisons.
 Never run these compilers/tests on a playing Pi: offline means no devices,
 not zero CPU or memory contention.
 
+An isolated build/throughput harness is now available as
+`tools/benchmark_native_instrument.py --soundfont /explicit/existing.sf2
+--output-dir /new/private/evidence --source-commit EXPLICIT_SOURCE_LABEL`.
+It additionally requires installed pkg-config/FluidSynth development metadata.
+Use only during an authorized maintenance window. It stops its own build/probe
+at80°C and supports explicit hash/toolchain-verified DSP reuse. The first Pi
+attempt stopped thermally; a later authorized paused-service retry completed
+3,200 measured blocks with none over budget. This is incomplete-graph offline
+throughput, **not live256 qualification**; dense piano headroom warnings remain.
+See [Pi evidence](../docs/pi4/NATIVE_V2_PI_PROBE.md).
+
 ## Command and ownership contract
 
 The following is the M1 `Engine` contract. New `StageSources` and `StageCore` admit
@@ -135,7 +146,7 @@ retain current-boundary admission. Do not dispatch one event through both.
 | Output | StageInstrument owns source/FX/master/final float32 output and original volume/BTL math; recorder tap; original-source fixture passes | High-gain sound acceptance, live backend/recorder transfer, end-to-end latency |
 | Worship functions | Shared-reverb freeze and raw-key splits above; nothing removed from preserved v1.2 | Independent sampled bed/drone, organ, recorder, macros, scenes and live control integration |
 | Browser/state | Existing implementation retained as reference | Versioned native protocol, preset conversion, five-fader UI integration |
-| Qualification | Offline tests and diagnostic render only | Pi4 build/timing, sound parity, actual hardware/rehearsal acceptance |
+| Qualification | Offline comparisons; Pi4 build/guards and short incomplete-graph throughput probe | Complete-workload Pi4 timing, sound parity, actual hardware/rehearsal acceptance |
 
 StageCore produces eleven internal channels, not a finished stereo master.
 Its bounded post-warmup exercise observes zero C++ `new`/`new[]` allocations;

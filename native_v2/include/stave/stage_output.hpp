@@ -45,8 +45,10 @@ public:
             tap_[0][i]=static_cast<float>(input[0][i]); tap_[1][i]=static_cast<float>(input[1][i]);
             volume_+=alpha*(target-volume_);
             float l=tap_[0][i]*volume_,r=tap_[1][i]*volume_;
-            if(l>1) l=1; if(l< -1) l=-1;
-            if(r>1) r=1; if(r< -1) r=-1;
+            if(l>1) l=1;
+            if(l< -1) l=-1;
+            if(r>1) r=1;
+            if(r< -1) r=-1;
             if(config_.btl) { const float mono=(l+r)*.5f; pcm_[0][i]=mono; pcm_[1][i]=-mono; }
             else { pcm_[0][i]=l; pcm_[1][i]=r; }
             const float a=l<0?-l:l,b=r<0?-r:r;
