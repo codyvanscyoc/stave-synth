@@ -19,6 +19,8 @@ struct StagePatch {
     PianoChainConfig piano{};
     int transpose{}, piano_octave{}, minimum_velocity{10};
     int wave1{}, wave2{1}, octave1{}, octave2{};
+    // Prepared LINEAR Faust amplitudes, NOT browser fader positions. A stage
+    // adapter must apply v1's5ms blend smoothing and -24dB fader curve first.
     double blend1{.6}, blend2{.4}, detune{.07}, spread{.85}, pan1{}, pan2{};
     double piano_velocity_curve{1}, osc_bend_semitones{};
     bool shimmer{}, shimmer_high{};

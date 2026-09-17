@@ -1,6 +1,15 @@
 # Native-v2 checkpoint — September 17, 2026
 
-## Latest: piano-room component passes, downstream composition pending
+## Latest: pad/filter and room buses composed and compared
+
+[NATIVE_V2_BUSES.md](NATIVE_V2_BUSES.md) records the11-channel downstream
+slice and pinned-reference comparisons. Main/independent filters, Haas,
+bypass/send/shimmer routing and room are verified together, without global
+modulation, ping-pong/shared reverb or master. Source fader/gating adapter,
+complete source-to-output ownership and field-test candidate remain pending.
+UBSan guards and549legacytests+Node pass. No Pi contact/deployment.
+
+## Earlier: piano-room component passes, downstream composition pending
 
 [NATIVE_V2_PIANO_ROOM.md](NATIVE_V2_PIANO_ROOM.md) records the native room port,
 exact output/control/tail comparisons at512/256 and UBSan guards. It remains a

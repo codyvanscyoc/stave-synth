@@ -6,12 +6,21 @@ Read this first; earlier review/deployment notes describe historical checkpoints
 
 ## September16 post-worship: native-v2 implementation authorized
 
-September17 latest: [NATIVE_V2_PIANO_ROOM.md](NATIVE_V2_PIANO_ROOM.md).
+September17 latest: [NATIVE_V2_BUSES.md](NATIVE_V2_BUSES.md).
+Native PadBus + PianoRoom now compose as StageBuses:11 internal channels,
+verified against pinned scalar/routing code and actual Faust at512/256.
+Saved source-stem results are exact; synthetic worst difference6.939e-18.
+UBSan guards and549legacytests+Node pass. No Pi contact/deployment. NOT a
+field-testable successor; no complete master/FX/control/browser/device path.
+Next: source fader-to-amplitude/mute control adapter and source/bus ownership
+integration. Read the new checkpoint's explicit gain and all-muted-path gap.
+
+Earlier room checkpoint: [NATIVE_V2_PIANO_ROOM.md](NATIVE_V2_PIANO_ROOM.md).
 The native piano-room downstream component passes exact pinned-reference
 output/smoother comparisons at512/256, including actual piano stems, controls,
 tails and clears. UBSan guards and549legacytests+Node pass. It is not yet wired
 into StageSources or a full effects/master graph. No Pi contact or deployment.
-Next: pad-bus/main-filter smoothing/routing, then downstream composition.
+The bus composition above supersedes this earlier next-step note.
 
 Earlier integrated-source checkpoint: [NATIVE_V2_SOURCE_GRAPH.md](NATIVE_V2_SOURCE_GRAPH.md).
 StageSources now integrates keys/pedals/voices, actual Faust and FluidSynth,
