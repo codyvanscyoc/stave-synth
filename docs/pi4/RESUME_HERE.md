@@ -4,6 +4,52 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
+## September17: player accepts core sound/response; familiar UI deployed
+
+Player reports extended playing with no issues, excellent sound and response,
+and saved a preferred tone. Read-only counters:422 note-ons,0 xruns,0 over-budget,
+0 raw-piano-full-scale, max callback5.56654ms. This is observed playing evidence,
+not measured physical latency or full release qualification. Keep48k/512.
+
+Familiar dark green/orange UI is now served at **http://stavepi4.local:8082**:
+six vertical faders (OSC1,OSC2,piano,filter,FX,master), independent piano brightness,
+Stage/Edit/System retained. Filter gesture is logarithmic; wire values remain Hz.
+OSC2 stays visible. All591 reviewed tests pass, zero skips; Node includes control
+ordering/mapping/no-write-on-render checks. Safari desktop,390x844 and768x1024
+simulated previews inspected; upward fader drag verified locally, not physical
+iPhone touch/sleep-wake qualification.
+
+User explicitly confirmed away, muted and sound system off. Deployed HTML only
+in existing `stave-v2-panel-20260917.HSb57u`, no restart or control POST. Verified
+same supervisorPID758911,NRestarts0,epoch4d9d2053aee74182b684e9f7bb5697bd,
+unchanged native binary and all live values/saved tone. At post-check:203206
+blocks,422 notes,0 xruns/over-budget/full-scale. UI SHA256:
+`83d0b577d159efebb05320d01190419d1ed3970e5292ba3b4f25df1edb8fa3d6`.
+Previous HTML retained as `HSb57u/audition-before-familiar-20260917.html`;
+guarded installer and `evidence/familiar-ui-deploy-20260917.json` retained there.
+
+Accepted tone: piano.94,OSC1.13,OSC2.10,cutoff487Hz,wet.74,piano_tone.54;
+full snapshot backed up privately, SHA256
+`0bf5d9066b02c4a4e1bb1fab0c7293c2bc055e5c4ad6f7bcc17993c8c307bfc3`.
+Mac evidence/snapshot directory:
+`/Users/codyvanscyoc/Documents/stave-synth-pi4-backups/native-v2-player-pass-20260917.fF9BDG`.
+Live master remains.44 (user's external system muted); this UI deploy does NOT
+set output mute. On audio restart the existing native recovery policy mutes.
+
+Sound provenance: tracked Faust files unchanged vs preservedv1.2 tag; native
+graph reuses oscillator/piano/effect modules and FluidSynth with the same
+FluidR3_GM.sf2 SHA74594e8f4250680adf590507a306655a299935343583256f3b722c48a1bc1cb0.
+This is not complete feature parity: native oscillator build specializes to12
+voices, piano FluidSynth polyphony32 and still uses write_s16. Architecture and
+ownership changed; loved synthesis building blocks were retained.
+
+**Next:** player checks revised surface; finish startup/network/physical-device
+qualification and explicit boot promotion plan. Recording/live asset workflow
+and remaining legacy feature migration stay open. Candidate is still transient:
+reboot returns old8080, NOT native8082. Do not alter boot policy silently.
+Previous section describes original launch; its initial tone/master values are
+historical and superseded above. Pi5 and preserved v1.2 remain untouched.
+
 ## September17: native512 Stage/Edit/System candidate RUNNING
 
 User deferred recording the slots and requested the UI/running core be finished.

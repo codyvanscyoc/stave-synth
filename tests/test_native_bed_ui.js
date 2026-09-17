@@ -4,7 +4,7 @@ const fs=require('node:fs');
 const path=require('node:path');
 const vm=require('node:vm');
 class Element {
-  constructor(){this.children=[];this.style={};this.attributes={};this.listeners={};this.disabled=true;}
+  constructor(){this.children=[];this.style={setProperty(key,value){this[key]=value;}};this.attributes={};this.listeners={};this.disabled=true;}
   append(child){this.children.push(child);}
   replaceChildren(){this.children=[];}
   setAttribute(key,value){this.attributes[key]=value;}
@@ -15,6 +15,7 @@ const document={activeElement:null,createElement:()=>new Element(),getElementByI
   if(!nodes.has(id))nodes.set(id,new Element());return nodes.get(id);
 }};
 const controls={piano:[0,1,.01,.5],piano_tone:[0,1,.01,1],master:[0,1,.01,0],
+  osc1:[0,1,.01,.13],osc2:[0,1,.01,.1],cutoff:[20,20000,1,487],wet:[0,1,.01,.74],
   bed_level:[0,1,.01,1],bed_key:[0,11,1,-1],bed_rise:[0,60,.5,0],bed_rise_cutoff:[200,20000,1,3000],
   bed_mellow:[0,1,1,0],bed_mellow_cutoff:[100,8000,1,400],bed_fade:[0,1,1,0],bed_release:[0,1,1,0]};
 let state={stale:false,exited:null,pending:0,error:null,values:Object.fromEntries(Object.entries(controls).map(([k,v])=>[k,v[3]])),
@@ -34,6 +35,15 @@ vm.runInContext(script,context);
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 (async()=>{
   await flush();await flush();
+  assert.deepEqual(nodes.get('mixer').children.map(n=>n.attributes['data-control']),['osc1','osc2','piano','cutoff','wet','master']);
+  for(const label of nodes.get('mixer').children){const input=label.children.at(-1);assert.equal(input.attributes['aria-orientation'],'vertical');assert.match(input.style['--fill'],/%$/);}
+  assert.equal(nodes.get('tone-controls').children[0].attributes['data-control'],'piano_tone');
+  assert.equal(sent.length,0); // Rendering saved levels never edits the sound.
+  for(const value of [20,100,487,8000,20000])assert.equal(vm.runInContext(`fromSlider('cutoff',toSlider('cutoff',${value}))`,context),value);
+  assert.equal(vm.runInContext("fromSlider('cutoff',0)",context),20);
+  assert.equal(vm.runInContext("fromSlider('cutoff',1000)",context),20000);
+  const filter=nodes.get('mixer').children[3].children.at(-1);filter.value=500;filter.listeners.input();await flush();
+  assert.deepEqual(sent.at(-1),{key:'cutoff',value:632});assert.equal(filter.attributes['aria-valuetext'],'632 Hz');
   const keys=nodes.get('bed-keys').children;
   assert.equal(keys.length,12);
   keys.forEach((button,key)=>assert.equal(button.disabled,![0,7].includes(key)));

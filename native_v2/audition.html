@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Stave · Stage</title>
-<meta name="theme-color" content="#111917">
+<meta name="theme-color" content="#0E0909">
 <style>
 :root{color-scheme:dark;--bg:#111917;--panel:#1a2521;--line:#34453c;--ink:#f0f3e9;--muted:#a8b9ae;--mint:#a7ddb7;--gold:#e5c586}
 *{box-sizing:border-box}body{font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--ink);max-width:1160px;margin:auto;padding:24px 24px 64px}[hidden]{display:none!important}
@@ -15,14 +15,38 @@ input,select,button{font:inherit;min-height:48px;width:100%;accent-color:var(--m
 @media(max-width:380px){#mixer,#edit,#bed-controls{grid-template-columns:1fr}header{align-items:flex-start}output{float:none;display:block}}
 @media(max-width:700px){output{float:none;display:block;margin-top:4px}.system-grid>.panel{min-width:0}select{max-width:100%}}
 select{appearance:none;height:48px;padding-right:28px;background-image:linear-gradient(45deg,transparent 50%,#a7ddb7 50%),linear-gradient(135deg,#a7ddb7 50%,transparent 50%);background-position:calc(100% - 17px) 21px,calc(100% - 12px) 21px;background-size:5px 5px;background-repeat:no-repeat}
+/* Original Stave visual language; only browser presentation/gesture mapping.
+   Native range inputs retain keyboard/accessibility behavior. No DSP changes. */
+:root{--bg:#0E0909;--panel:#120e0e;--line:#275039;--ink:#b5d9c2;--muted:#85a58f;--mint:#00BF63;--gold:#FF751F}
+body{font-family:'Menlo','Consolas','Courier New',monospace;font-size:14px;max-width:1280px;padding:20px 24px 48px}
+.brand{color:var(--mint);font-size:30px;letter-spacing:.24em}.eyebrow{font-size:10px}header{margin-bottom:12px}
+button,select,.panel,label.control,.pill{border-radius:2px}button{background:transparent;border-color:var(--mint);color:var(--mint);font-weight:500}nav{margin-bottom:10px;padding-bottom:10px}nav button[aria-pressed=true]{color:var(--bg)}
+.panel{padding:16px;margin:14px 0}label.control{background:transparent;padding:14px}.section-head{margin-bottom:14px}h1{font-size:18px;letter-spacing:.1em;text-transform:uppercase;color:var(--mint)}h2{font-size:16px;color:var(--mint)}.section-head p{font-size:12px}
+.pill{padding:4px 9px}#notice{font-size:12px;min-height:20px;color:var(--muted)}#warning-count{color:var(--gold)}
+#mixer{grid-template-columns:repeat(6,minmax(0,1fr));gap:14px}
+#mixer label.performance{--channel:var(--mint);display:flex;flex-direction:column;align-items:stretch;gap:8px;padding:0;border:0;background:transparent;grid-column:auto;text-align:center}
+#mixer .control-name{order:0;color:var(--channel);letter-spacing:.08em;font-size:14px;font-weight:650}
+#mixer output{order:2;float:none;display:block;margin:0;color:var(--channel);min-height:24px;font-size:14px}
+#mixer label[data-control=piano],#mixer label[data-control=master]{--channel:var(--gold)}
+#mixer input[type=range]{order:1;writing-mode:vertical-lr;direction:rtl;appearance:none;-webkit-appearance:none;touch-action:none;margin:0;min-height:120px;height:clamp(150px,30vh,310px);width:100%;min-width:44px;padding:0;border:1px solid var(--channel);border-radius:0;outline-offset:5px;background:linear-gradient(to top,color-mix(in srgb,var(--channel) 35%,var(--bg)) 0 var(--fill,0%),var(--bg) var(--fill,0%) 100%);cursor:ns-resize}
+#mixer input::-webkit-slider-runnable-track{width:100%;height:100%;background:transparent}
+#mixer input::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;width:44px;height:8px;background:var(--channel);border:1px solid var(--bg);border-radius:0}
+#mixer input::-moz-range-track{width:100%;height:100%;background:transparent}
+#mixer input::-moz-range-thumb{width:44px;height:8px;background:var(--channel);border:1px solid var(--bg);border-radius:0}
+#tone-controls{margin-top:14px}#tone-controls label{padding:8px 12px;border-color:#694124}#tone-controls .control-name,#tone-controls output{color:var(--gold)}#tone-controls input{accent-color:var(--gold);margin:0;min-height:44px}
+#mute{color:var(--gold);border-color:var(--gold);background:transparent}#freeze-toggle[aria-pressed=true]{color:var(--bg)}#bed-keys button[aria-pressed=true]{color:var(--bg)}#bed-keys button{border-color:var(--key-color,var(--mint));color:var(--key-color,var(--mint))}#bed-keys button[aria-pressed=true]{background:var(--key-color,var(--mint));color:var(--bg)}
+#bed-status{font-size:12px;margin-bottom:12px}.bed-actions{margin:12px 0 4px}#bed-keys button{min-height:48px}.system-grid>.panel{min-width:0}select{max-width:100%;background-color:var(--bg);color:var(--ink)}.footer-note{font-size:11px}
+@media(max-width:700px){body{padding:14px 12px 40px}.panel{padding:12px}#mixer{grid-template-columns:repeat(3,minmax(0,1fr));gap:16px 12px}#mixer input[type=range]{height:160px}#tone-controls output{float:right;display:inline;margin:0}#tone-controls .control-name{font-size:12px}#edit,#bed-controls{grid-template-columns:repeat(2,minmax(0,1fr))}.brand{font-size:25px}}
+@media(max-width:380px){#edit,#bed-controls{grid-template-columns:1fr}#mixer .control-name,#mixer output{font-size:12px}#mixer input[type=range]{height:140px}#tone-controls output{float:none;display:block}}
+@media(min-width:701px) and (max-height:600px){body{padding-top:12px}#mixer input[type=range]{height:130px}.section-head p{display:none}}
 </style>
-<header><div><div class="brand">STAVE</div><div class="eyebrow">An instrument for the moment</div></div><button id="save" disabled>Save sound</button></header>
+<header><div><div class="brand">STAVE</div><div class="eyebrow">SYNTH / NATIVE PI4</div></div><button id="save" disabled>Save sound</button></header>
 <nav aria-label="Work areas"><button id="nav-stage" aria-pressed="true">Stage</button><button id="nav-edit" aria-pressed="false">Edit</button><button id="nav-system" aria-pressed="false">System</button></nav>
 <div class="statusbar"><span class="pill" id="connection">Connecting</span><span id="profile" class="muted">Native candidate · starts muted</span><span id="warning-count"></span></div>
 <p id="notice" role="status"></p>
 <main>
 <section id="stage-panel" aria-label="Stage">
-<div class="panel"><div class="section-head"><div><h1>Play. Blend. Shape.</h1><p>Piano and two played layers, always within reach.</p></div></div><div id="mixer"></div></div>
+<div class="panel"><div class="section-head"><div><h1>Live mix</h1><p>The familiar Stave surface. Both oscillator layers always visible.</p></div></div><div id="mixer"></div><div id="tone-controls"></div></div>
 <div class="actions"><button id="freeze-toggle" disabled aria-pressed="false">Freeze ambience</button><button id="release" disabled>Release keys & pedals</button><button id="mute" disabled>Mute output</button></div>
 <section class="panel" aria-label="Recorded pad bed"><div class="section-head"><div><h2>Background bed</h2><p>Hold the song’s key underneath your playing.</p></div></div>
 <p id="bed-status">Checking loaded recordings…</p>
@@ -49,6 +73,13 @@ choices.bed_mellow=['Off','On'];
 const keyNames=['C','C♯','D','E♭','E','F','F♯','G','A♭','A','B♭','B'];
 const bedKeys=[],bedActions=['bed-out','bed-in','bed-stop'];
 const fields={},pending=new Map();let ready=false,busy=false,epoch=null,lastValues={},lastRuntime={},actionBusy=false;
+const performanceKeys=['osc1','osc2','piano','cutoff','wet','master'];
+const performanceLabels={osc1:'OSC 1',osc2:'OSC 2',piano:'PIANO',cutoff:'FILTER',wet:'FX',master:'MASTER'};
+// Original Stave's filter gesture was logarithmic. Wire values remain Hz;
+// render/restore never quantizes or sends the saved value back to the engine.
+function toSlider(key,value){return key==='cutoff'?1000*Math.log(Math.max(20,Math.min(20000,value))/20)/Math.log(1000):value;}
+function fromSlider(key,value){return key==='cutoff'?Math.round(20*Math.pow(1000,Math.max(0,Math.min(1000,Number(value)))/1000)):Number(value);}
+function paint(key,value){const f=fields[key];if(!f)return;f.out.textContent=formatted(key,value);f.input.setAttribute('aria-valuetext',formatted(key,value));if(f.input.type==='range'){const p=(Number(f.input.value)-Number(f.input.min))/(Number(f.input.max)-Number(f.input.min));f.input.style.setProperty('--fill',Math.max(0,Math.min(100,p*100))+'%');}}
 const notice=document.getElementById('notice');
 const routeFields={midi_source:'route-midi',audio_left:'route-left',audio_right:'route-right'};
 let routeSignature='';
@@ -100,23 +131,25 @@ async function setup(){
   let definitions;
   try{const response=await fetch('/controls',{signal:AbortSignal.timeout(2000)});if(!response.ok)throw Error('Controls unavailable');definitions=await response.json();}
   catch(e){notice.textContent='Connecting to Stave… retrying control definitions.';setTimeout(setup,2000);return;}
-  const order=['piano','osc1','osc2','piano_tone','cutoff','wet','master'];
+  const order=[...performanceKeys,'piano_tone'];
   const entries=[...order.filter(k=>k in definitions),...Object.keys(definitions).filter(k=>!order.includes(k))];
   for(const key of entries){const [min,max,step,value]=definitions[key];
     if(['release_all','bed_key','bed_fade','bed_release'].includes(key))continue;
-    const label=document.createElement('label');label.textContent=labels[key];label.className='control';label.setAttribute('data-control',key);
+    const label=document.createElement('label');label.className='control'+(performanceKeys.includes(key)?' performance':'');label.setAttribute('data-control',key);
+    const name=document.createElement('span');name.className='control-name';name.textContent=performanceLabels[key]||labels[key];label.append(name);
     const out=document.createElement('output');out.textContent=formatted(key,value);label.append(out);
     const input=document.createElement(choices[key]?'select':'input');
     if(choices[key])choices[key].forEach((name,i)=>{const o=document.createElement('option');o.value=i;o.textContent=name;input.append(o)});
-    else{input.type='range';input.min=min;input.max=max;input.step=step;}
-    input.value=value;input.disabled=true;input.setAttribute('aria-label',labels[key]);
-    input.addEventListener('input',()=>{out.textContent=formatted(key,input.value);if(!choices[key])send(key,Number(input.value));});
+    else{input.type='range';input.min=key==='cutoff'?0:min;input.max=key==='cutoff'?1000:max;input.step=key==='cutoff'?1:step;}
+    input.value=toSlider(key,value);input.disabled=true;input.setAttribute('aria-label',labels[key]);
+    if(performanceKeys.includes(key))input.setAttribute('aria-orientation','vertical');
+    input.addEventListener('input',()=>{const value=fromSlider(key,input.value);paint(key,value);if(!choices[key])send(key,value);});
     // One request in flight; pending absolute values coalesce by parameter.
     // Reconnect never replays one-shot actions or stale gestures.
-    input.addEventListener('change',()=>send(key,Number(input.value)));
-    label.append(input);document.getElementById(key.startsWith('bed_')?'bed-controls':['piano','piano_tone','osc1','osc2','cutoff','wet','master'].includes(key)?'mixer':'edit').append(label);fields[key]={input,out};
+    input.addEventListener('change',()=>send(key,fromSlider(key,input.value)));
+    label.append(input);document.getElementById(key.startsWith('bed_')?'bed-controls':key==='piano_tone'?'tone-controls':performanceKeys.includes(key)?'mixer':'edit').append(label);fields[key]={input,out};paint(key,value);
   }
-  keyNames.forEach((name,key)=>{const b=document.createElement('button');b.textContent=name;b.disabled=true;b.onclick=()=>send('bed_key',key);b.setAttribute('aria-pressed','false');document.getElementById('bed-keys').append(b);bedKeys.push(b);});
+  keyNames.forEach((name,key)=>{const b=document.createElement('button');b.textContent=name;b.disabled=true;b.onclick=()=>send('bed_key',key);b.setAttribute('aria-pressed','false');b.style.setProperty('--key-color','hsl('+(170+10*key)+' 65% 65%)');document.getElementById('bed-keys').append(b);bedKeys.push(b);});
   document.getElementById('bed-out').onclick=()=>send('bed_fade',1);
   document.getElementById('bed-in').onclick=()=>send('bed_fade',0);
   document.getElementById('bed-stop').onclick=()=>send('bed_release',1);
@@ -147,7 +180,7 @@ async function poll(){
     if(!ready)pending.clear();
     for(const [key,{input,out}] of Object.entries(fields)){
       input.disabled=!ready||(key.startsWith('bed_')&&!s.bed_mask);
-      if(document.activeElement!==input&&!pending.has(key)&&!d.pending){input.value=d.values[key];out.textContent=formatted(key,d.values[key]);}
+      if(document.activeElement!==input&&!pending.has(key)&&!d.pending){input.value=toSlider(key,d.values[key]);paint(key,d.values[key]);}
     }
     document.getElementById('release').disabled=!ready;
     document.getElementById('mute').disabled=!ready;

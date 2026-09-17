@@ -7,6 +7,10 @@ library. Recording, disk finalization and live asset replacement remain pending.
 
 ## Delivered source
 
+- Familiar dark green/orange vertical-fader surface; OSC1 and OSC2 always visible
+  beside piano/filter/FX/master. Phone wraps six faders into two rows of three;
+  piano brightness stays separate. Logarithmic synth-filter gesture translates
+  to the existing Hz wire contract, without changing saved tone on page load.
 - Stage: piano/OSC1/OSC2 balance, independent piano brightness, synth filter,
   reverb mix, master, freeze, key/pedal release and mute. OSC2 is always visible.
 - Edit: waveform/envelope/ambience controls, separate from the live mixer.
@@ -88,6 +92,18 @@ Mac root: `/Users/codyvanscyoc/Documents/stave-synth-pi4-backups`.
 - Muted live report: `a9e411edf6850dbafda7aba360999a444a0a84198abbc4daa4ce894c5dad9546`.
 - Rollback/final handoff report: `bbcb417067f3128be8c943fb533b702a6b7efff7364037428905486d50ae4480`.
 - Final HTML: `0705478fdbc8ef3a6a92d16a5e509a442dcd7088d7821d4ce54dd01fb5f2af05`.
+
+### Subsequent player pass and familiar UI
+
+Player accepted sound/response after actual stage-rig playing and saved a tone.
+422 note-ons observed with0 xruns/over-budget/raw-piano-full-scale and worst
+callback5.56654ms. Familiar UI tested with591 reviewed tests (zero skips), Node
+interaction/mapping checks and local Safari desktop/phone/tablet previews.
+HTML-only deployment was authorized after player left and turned sound system
+off; original binary, service PID, epoch, live values and saved snapshot stayed
+unchanged. Latest HTML SHA256:
+`83d0b577d159efebb05320d01190419d1ed3970e5292ba3b4f25df1edb8fa3d6`.
+See RESUME_HERE.md for backup/report paths and the still-open boot/device gates.
 - Mac native guard report: `3d18fd26f1261b1f4292f33950f4a098b990dc8bc837f2f2ad6a7d00aafa9f01`.
 
 This archive includes the one-off guarded build/test/handoff scripts. It is not
