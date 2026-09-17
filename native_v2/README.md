@@ -1,4 +1,4 @@
-# Stave native-v2: offline foundation, not the stage application
+# Stave native-v2: opt-in native core candidate
 
 This is an opt-in C++17 prototype on `pi4-native-engine-v2`. The working
 instrument is preserved separately as `pi4-v1.2-stage-snapshot-20260916` on the
@@ -7,13 +7,20 @@ See [the implementation plan](../docs/pi4/NATIVE_V2_PLAN.md) for promotion gates
 See [the saved checkpoint](../docs/pi4/NATIVE_V2_CHECKPOINT.md) for actual test
 results, artifact locations and the unresolved sanitizer check.
 
-Latest: player accepted the isolated512 listening test. Piano brightness and
-recorded-pad startup loading/controls passed muted real-driver Pi tests. The
-working service is restored, not replaced. Native recorder transport is tested
-with the graph tap, but file finalization, record-to-pad/live asset replacement
-and full UI/device integration remain. See the
-[library checkpoint](../docs/pi4/NATIVE_V2_LIBRARY.md). This is not a completed
-replacement for the full application; temporary8082 is not active.
+Latest: Stage/Edit/System native512 candidate is running at8082 in an isolated
+directory, with the old service paused and rehearsed automatic rollback. New
+sound snapshots exclude output gain and performance actions; selected-device
+recovery restarts muted.591 reviewed offline tests and a94.55-second muted Pi
+musical/control test pass, zero xruns/over-budget callbacks. Player's accepted
+tone knobs loaded, master0. This is NOT the boot default or full application
+parity. Recording/organ/presets/maps and other migration gates remain explicit.
+See [panel checkpoint](../docs/pi4/NATIVE_V2_STAGE_PANEL.md) and always start
+resumed work with [current ownership](../docs/pi4/RESUME_HERE.md).
+
+Earlier: piano brightness and recorded-pad startup/controls passed target tests;
+see the [library checkpoint](../docs/pi4/NATIVE_V2_LIBRARY.md). Native recording
+transport is tested with the graph tap, but disk finalization, record-to-pad
+and live asset replacement are not implemented. User's slots remain empty.
 
 Earlier: [target audition evidence](../docs/pi4/NATIVE_V2_TARGET_AUDITION.md).
 Pi4 build/guards and a94.5-second **muted real-callback512** musical/control test

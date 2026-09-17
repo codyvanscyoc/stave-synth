@@ -4,6 +4,61 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
+## September17: native512 Stage/Edit/System candidate RUNNING
+
+User deferred recording the slots and requested the UI/running core be finished.
+Source3795210, Safari polish9658fba. Native source built/tested on Pi in NEW
+`/home/codyvanscyoc/stave-v2-panel-20260917.HSb57u`; only the HTML was subsequently
+updated to9658fba. User's pad directory stays empty, no fake production assets.
+
+**Current owner:** transient user unit `stave-native-v2-candidate.service`,
+supervisorPID758911 at handoff, native-v2-stage identity,48k/512. Normal old
+`stave-synth.service` is intentionally STOPPED (MainPID0). Browser URL:
+**http://stavepi4.local:8082**, also http://192.168.1.203:8082. Hostname verified
+from Mac. Loaded the player's accepted listening TONE controls from the private
+snapshot, excluding master/freeze/release. Master0, piano.94, OSC1.38/OSC2.22;
+piano brightness1. Every audio restart/recovery returns MUTED. No user playing
+needed during this batch. Raise Master deliberately for the next listening test.
+
+Candidate has NO hour expiry but is NOT enabled at boot. Reboot returns the
+unchanged original8080 working app;8082 will not automatically reappear. The
+transient unit conflicts with old Stave to prevent simultaneous audio owners;
+ExecStopPost nonblocking-restores it. Rollback rehearsed successfully before
+the final candidate launch, including old UI/JACK presence and byte-identical
+saved state. To revert now:
+`systemctl --user stop stave-native-v2-candidate.service`
+then verify `stave-synth.service` active/healthy on8080. Old checkout remains
+cleanf600c7e in `/home/codyvanscyoc/stave-synth-pi4-rehearsal`; Pi5 untouched.
+
+Save sound uses candidate-only `HSb57u/player-native-state/native_controls.json`.
+System offers exact MIDI/stereo selection and restart; saved routes use separate
+native_routes.json. Wrong/stale epochs are refused. No notes/master/freeze/bed
+actions replay. Candidate reconnects the selected available graph ports only;
+it does not guarantee OS enumeration or universal USB support. Static private
+IPv4 binding remains a DHCP/cold-boot gate. See [panel notes](NATIVE_V2_STAGE_PANEL.md).
+
+Evidence:591 reviewed Mac tests, zero skips, Node interaction checks; full
+native C++/UBSan/fake-JACK guards, independent MIDI fixture guard pass. Safari
+desktop plus390x844 phone-width and768x1024 tablet-width simulated previews
+visually checked (not physical iOS sleep/wake qualification). Pi native build
+and9 new stage-controller tests pass;4,000 measured offline blocks, no deadline
+misses. Dense512+bed mean4.108568/max5.450552ms vs10.666667ms budget. Existing
+dense raw-piano full-scale4/8 warnings remain, not erased by the musical test.
+
+MUTED actual-driver test:94.552090sec,360 notes,8,883 callback delta,0 xruns,
+over-budget, raw-piano-full-scale or unsupported MIDI. Snapshot/save, restart
+restore, same-origin hostname, stale-command refusal and selected-route reapply
+pass. Deliberately disconnecting ONLY this candidate's MIDI JACK route recovered
+in4.698791sec, MUTED with saved tone. This is ONE software-route recovery test,
+not20 physical USB reconnects. Final handoff71.575°C, firmware0x0. No test peer
+left running. Test state is separate from player state.
+
+Remaining: recording disk worker/WAV finalization/record-to-pad/live asset swaps;
+legacy organ/program/preset/maps/pitch-bend/macros/scenes parity; full cold-boot,
+physical hotplug/Safari resilience, actual latency and full player qualification.
+The panel explicitly lists these omissions. User waived8h soak. Do not call the
+entire successor finished or silently promote it to the default boot service.
+
 ## September17: recorded-pad startup/control path passes target test
 
 User asked to continue and whether playing was needed first. No player test

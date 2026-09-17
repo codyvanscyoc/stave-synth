@@ -56,3 +56,39 @@ actions and disconnected/recovering states. Native fake-JACK/UBSan guards check
 both the unchanged bounded audition and explicitly opted-in native512 mode.
 Browser visual/Safari/device hotplug and physical latency qualification are
 separate; passing those unit tests does not complete them.
+
+### Verified target handoff
+
+Native3795210, HTML9658fba. Mac591 reviewed tests (zero skips), Node UI, native
+C++/UBSan/fake-JACK and independent MIDI-fixture checks pass. Safari desktop,
+390x844 phone-width and768x1024 tablet-width previews checked against a local
+simulated controller; no claim of physical iOS recovery coverage.
+
+Pi root `/home/codyvanscyoc/stave-v2-panel-20260917.HSb57u`: native build/guards,
+9 new controller tests and4,000 measured offline blocks pass without deadline
+misses. Muted actual-driver94.552090s test:360 notes,8,883 callback delta, zero
+xruns/over-budget/raw-piano-full-scale/unsupported MIDI. Save/restart/restore,
+hostname origin policy, stale epochs and route selection passed. One deliberate
+software MIDI-route disconnect recovered in4.698791s, muted. This is not a
+physical USB hotplug or arbitrary-interface qualification.
+
+Transient `stave-native-v2-candidate.service` is running at8082, conflicts with
+old `stave-synth.service` (currently stopped), with no hour expiry. It is NOT
+enabled on boot. Stop it to automatically restore old8080; this exact rollback
+policy was rehearsed successfully and legacy current-state bytes stayed equal.
+Reboot still starts the preserved old app. See RESUME_HERE.md for current owner,
+accepted tone settings, state paths and outstanding gates.
+
+Private source/build/settings/evidence archive is on both Pi and Mac:
+`stave-v2-panel-evidence-20260917.tar.gz`, SHA256
+`e9d5bd69c20d2f2763f454b66682a6b7ae21b725b679760dbed69acbe57103ee`.
+Mac root: `/Users/codyvanscyoc/Documents/stave-synth-pi4-backups`.
+
+- Pi build report SHA256: `8b9904e5302c8b67a38f541b335c8f728f588d3b97ad0fe08c2fdf0019353a32`.
+- Muted live report: `a9e411edf6850dbafda7aba360999a444a0a84198abbc4daa4ce894c5dad9546`.
+- Rollback/final handoff report: `bbcb417067f3128be8c943fb533b702a6b7efff7364037428905486d50ae4480`.
+- Final HTML: `0705478fdbc8ef3a6a92d16a5e509a442dcd7088d7821d4ce54dd01fb5f2af05`.
+- Mac native guard report: `3d18fd26f1261b1f4292f33950f4a098b990dc8bc837f2f2ad6a7d00aafa9f01`.
+
+This archive includes the one-off guarded build/test/handoff scripts. It is not
+a whole-SD image. Saved player tone is separate from disposable test state.
