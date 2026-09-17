@@ -21,7 +21,8 @@ const document={activeElement:null,addEventListener(){},createElement:()=>new El
 }};
 const controls={piano:[0,1,.01,.5],piano_tone:[0,1,.01,1],master:[0,1,.01,0],
   osc1:[0,1,.01,.13],osc2:[0,1,.01,.1],cutoff:[20,20000,1,487],wet:[0,1,.01,.74],
-  shimmer:[0,1,1,0],wave1:[0,4,1,0],delay_wet:[0,1,.01,0],piano_room:[0,1,.01,.4],
+  shimmer:[0,1,1,0],wave1:[0,4,1,0],wave2:[0,4,1,2],attack:[0,10000,10,530],release:[0,30000,10,530],resonance:[.5,10,.01,.7],
+  delay_wet:[0,1,.01,0],delay_feedback:[0,.99,.01,.35],piano_room:[0,1,.01,.4],piano_reverb:[0,1,.01,.13],reverb:[0,6,1,0],shimmer_mix:[0,1,.01,.07],freeze:[0,1,1,0],
   bed_level:[0,1,.01,1],bed_key:[0,11,1,-1],bed_rise:[0,60,.5,0],bed_rise_cutoff:[200,20000,1,3000],
   bed_mellow:[0,1,1,0],bed_mellow_cutoff:[100,8000,1,400],bed_fade:[0,1,1,0],bed_release:[0,1,1,0]};
 let state={stale:false,exited:null,pending:0,error:null,values:Object.fromEntries(Object.entries(controls).map(([k,v])=>[k,v[3]])),
@@ -70,9 +71,15 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
   pointer('pointerdown',100);state={...state,epoch:'new-gesture-session'};await vm.runInContext('poll()',context);
   before=sent.length;pointer('pointermove',80);await flush();assert.equal(sent.length,before,'epoch change cancels old gesture');
   pointer('pointerdown',100);nodes.get('nav-edit').onclick();pointer('pointermove',80);await flush();assert.equal(sent.length,before,'changing view cancels gesture');
-  assert.equal(nodes.get('edit-osc').children[0].attributes['data-control'],'wave1');
+  assert.equal(nodes.get('edit-wave1').children[0].attributes['data-control'],'wave1');
+  assert.equal(nodes.get('edit-wave2').children[0].attributes['data-control'],'wave2');
+  assert.equal(nodes.get('edit-osc').children[0].attributes['data-control'],'attack');
+  assert.equal(nodes.get('edit-osc').children[0].className.includes('knob-control'),true);
+  assert.match(nodes.get('edit-osc').children[0].children.at(-1).style['--knob-angle'],/deg$/);
   assert.equal(nodes.get('edit-delay').children[0].attributes['data-control'],'delay_wet');
   assert.equal(nodes.get('edit-piano').children[0].attributes['data-control'],'piano_room');
+  nodes.get('sound-tab-piano').onclick();assert.equal(nodes.get('sound-piano').attributes['data-open'],'true');assert.equal(nodes.get('sound-osc').attributes['data-open'],'false');
+  assert.equal(nodes.get('sound-tab-piano').attributes['aria-pressed'],'true');
   nodes.get('shimmer-toggle').onclick();await flush();assert.deepEqual(sent.at(-1),{key:'shimmer',value:1});
   const keys=nodes.get('bed-keys').children;
   assert.equal(keys.length,12);

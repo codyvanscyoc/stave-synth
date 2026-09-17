@@ -4,6 +4,35 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
+## September 17: focused analog Sound editor deployed
+
+The accepted engine remains the authority: 48 kHz / 512 frames and the accepted
+native DSP/control protocol are unchanged. The browser UI was updated in place
+with an atomic HTML-only install: `audition.html` SHA-256
+`46a8aadc808b4371b37d7e40266abaa0d701f0476101f7a1578bd784a5cc379c`.
+Backup: `/home/codyvanscyoc/stave-native-boot-backup-20260917/ui-analog-editor-_am6wttm`.
+No service restart, route change, performance-control write, binary change or
+saved-state change occurred. The service PID and epoch remained unchanged.
+
+Stage remains the six large accepted relative-pickup faders. Sound now uses the
+intentional legacy panel language with four compact tabs: **OSC / Piano / Space /
+Delay**. OSC presents paired wave choices and a truthful shared attack/release
+contour plus resonance; circular browser knobs are presentation only. There is
+no fabricated separate ADSR, pan, unison, routing or processing control. Existing
+controls retain their exact native values and relative touch behavior.
+
+The device was in correct muted recovery during install because its saved
+Clavinova MIDI port was absent; do not change routes remotely merely to clear
+that state. Connect the intended keyboard and let selected-device recovery
+complete before play testing. Recording into pad slots remains a separately
+unfinished native workflow: the queue/component exists, but the live host,
+durable take worker and safe live slot handoff do not.
+
+[ANALOG_EDITOR_PLAN.md](ANALOG_EDITOR_PLAN.md) is the feature ledger, not an
+instruction to bulk-port legacy controls. Future additions require a narrow
+native-protocol, transition-policy and Pi4 listening pass. Do not trade the
+accepted responsiveness for UI parity.
+
 ## September 17: screenshot-inspired Stage UI and relative fader pickup deployed
 
 User supplied eleven legacy screenshots and authorized a simplified native UI
