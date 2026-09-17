@@ -19,6 +19,8 @@ RestartSec=5
 TimeoutStartSec=90
 TimeoutStopSec=20
 WatchdogSec=30
+WatchdogSignal=SIGKILL
+LimitCORE=0
 KillMode=control-group
 
 [Install]

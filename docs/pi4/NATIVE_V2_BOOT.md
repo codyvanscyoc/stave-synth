@@ -17,7 +17,9 @@ JSON, never notes/master/freeze/actions. Saved tone is restored MUTED.
 
 The controller sends systemd READY when its supervision loop is available;
 this does not mean the audio hardware is ready. `/status` reports that separately.
-The30s watchdog supervises controller progress; Restart=always retries at5s
+The30s watchdog supervises controller progress; SIGKILL gives bounded recovery
+even for a stopped controller, and core dumps are disabled to protect storage.
+Restart=always retries at5s
 without exhausting a short boot-time limit. A manual service stop stays stopped.
 Stale native progress, fault, exit or lost route tears down the owned child and
 restarts muted. Missing selected ports wait; no arbitrary replacement is chosen.

@@ -152,7 +152,7 @@ class NativeStageTests(unittest.TestCase):
 
     def test_boot_unit_has_watchdog_no_legacy_auto_start_and_fixed_audio(self):
         unit = (ROOT/'systemd/stave-native.service').read_text()
-        for required in ('Type=notify', 'WatchdogSec=30', 'KillMode=control-group', 'Restart=always',
+        for required in ('Type=notify', 'WatchdogSec=30', 'WatchdogSignal=SIGKILL', 'LimitCORE=0', 'KillMode=control-group', 'Restart=always',
                          'WantedBy=default.target', '--listen auto', '--port 8082', '--state-dir %h/.local/share/stave-native'):
             self.assertIn(required, unit)
         self.assertNotIn('ExecStopPost=', unit)
