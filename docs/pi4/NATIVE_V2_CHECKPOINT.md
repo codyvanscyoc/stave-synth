@@ -1,6 +1,17 @@
 # Native-v2 checkpoint — September 17, 2026
 
-## Latest: master output chain compared
+## Latest: connected instrument, stress-case sound gate open
+
+[NATIVE_V2_INSTRUMENT.md](NATIVE_V2_INSTRUMENT.md) records StageInstrument's
+single-owner source/piano/room/sends/pad/shared-FX/master composition. Original
+source fixture passes independently at 512/256, worst 3.030e-10. The added
+high-gain piano fixture fails strict sound parity; common-prepared-piano
+diagnostics localize its larger difference upstream of the effects chain.
+Final runner returns exit 1 with sound_difference_review_required, NOT an
+all-tests-pass result. UBSan/zero-new guards, prior component rechecks and 549
+legacy tests plus Node pass. No Pi contact/deployment or stage qualification.
+
+## Earlier: master output chain compared
 
 [NATIVE_V2_MASTER.md](NATIVE_V2_MASTER.md) records eight 512/256 comparisons of
 master EQ/HP/shuffler, compression/sidechains, FX bypass, saturation and limiter.

@@ -26,6 +26,7 @@ python3 tools/compare_native_core.py --soundfont /absolute/path/to/existing.sf2
 python3 tools/compare_shared_effects.py
 python3 tools/compare_pad_ambience.py --source-dir /absolute/path/to/seven-stem-source-evidence
 python3 tools/compare_stage_master.py --ambience-dir /absolute/path/to/six-channel-ambience-evidence
+python3 tools/compare_stage_instrument.py --soundfont /absolute/path/to/existing.sf2
 ```
 
 Core tests require a C++17 compiler and lock-free 64-bit atomics. Sound tests
@@ -56,6 +57,12 @@ pad routing; their C++ guards also use UBSan, not their generated Faust C.
 The master runner additionally requires SciPy for the original RMS oracle;
 it covers both limiter policies, sidechains and master routing before bridge
 gain. Its C++ owner/guards use UBSan, not generated Faust C.
+The connected-instrument runner also requires SciPy and an explicit SF2.
+It currently exits 1: the original-source fixture passes, but a high-gain
+piano stress case exceeds the unchanged strict sound-comparison tolerance.
+It retains the full independent/common-input diagnostic matrix; see
+[integration evidence](../docs/pi4/NATIVE_V2_INSTRUMENT.md). This is not an
+all-tests-pass or field-testable successor checkpoint.
 Never run these compilers/tests on a playing Pi: offline means no devices,
 not zero CPU or memory contention.
 
@@ -100,9 +107,9 @@ See [source integration](../docs/pi4/NATIVE_V2_SOURCE_GRAPH.md) for that contrac
 | Timing | Bounded event scheduling, priority terminal stop, fault tests, single audio owner | Live MIDI timestamps, control coalescing, driver/recovery, whole-block postprocessing integration |
 | Oscillators | Integrated v1.2 voices/envelopes and actual12-slot/3-unison Faust; prepared phases/amplitudes and poly amp LFOs; StageCore owns faders, mute/re-entry and filter/Haas/send/bypass/shimmer buses | Global modulation/drift, production phase policy,1/5-unison paths, click fixes, full FX graph |
 | Piano | StageCore owns real int16 FluidSynth, velocity/pedal ownership, matched dry piano chain and downstream room; separate M1 float experiment | Pitch bend, live prepared program changes, library-internal real-time audit |
-| Shared effects | Native delay including reverse/Aurora; all seven reverb types and freeze; composed pad/filter/effect returns and dry/FX split | Wet-output filter, global modulation/sympathetic, source/master-owner integration, click/transition redesign |
+| Shared effects | Native delay/reverse/Aurora; seven reverb types/freeze; source-owned pad/filter/returns, wet filter and piano sends | Global modulation/sympathetic, overload sound-difference review, click/transition redesign |
 | Stage keys | Integrated raw-key/transpose/sustain/sostenuto ownership and supplied layer weights | Split-weight calculation and live timestamped MIDI protocol |
-| Output | Separate compared native master EQ/HP/shuffler, compression/sidechains, FX bypass, saturation and bounded lookahead limiter; explicit ceiling/zero-knee corrections | Full source/FX/master composition, final bridge gain, live backend, end-to-end latency |
+| Output | StageInstrument owns source/FX/master composition; original-source fixture passes; explicit limiter/zero-knee corrections retained | High-gain stress sound gate, final bridge gain, live backend, end-to-end latency |
 | Worship functions | None silently removed from the preserved working build | Independent sampled bed/drone, freeze, organ, recorder, splits, macros, scenes |
 | Browser/state | Existing implementation retained as reference | Versioned native protocol, preset conversion, five-fader UI integration |
 | Qualification | Offline tests and diagnostic render only | Pi4 build/timing, sound parity, actual hardware/rehearsal acceptance |
@@ -153,8 +160,11 @@ pass; see [core evidence](../docs/pi4/NATIVE_V2_CORE.md). Separate native shared
 effects and composed pad routing now also pass; see
 [shared-effects evidence](../docs/pi4/NATIVE_V2_SHARED_EFFECTS.md). The separate
 master chain also passes; see [master evidence](../docs/pi4/NATIVE_V2_MASTER.md).
-Next complete wet-output filtering/modulation, then join actual source
-acquisition and all returns without duplicate PadBus processing. Complete
+StageInstrument now joins actual sources and returns without duplicate PadBus
+processing, including wet-output filtering and piano sends. Its added overload
+sound gate remains open; do not replace it with the passing common-input
+diagnostic. See [integration evidence](../docs/pi4/NATIVE_V2_INSTRUMENT.md).
+Next resolve that difference, then complete global modulation, final output and
 control coverage and the event adapter. Keep whole-block piano
 processing separate from MIDI event slicing; do not silently change the proven
 cadence semantics. Bring effects and beds across only with their

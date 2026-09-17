@@ -6,7 +6,19 @@ Read this first; earlier review/deployment notes describe historical checkpoints
 
 ## September16 post-worship: native-v2 implementation authorized
 
-September17 latest: [NATIVE_V2_MASTER.md](NATIVE_V2_MASTER.md).
+September17 latest: [NATIVE_V2_INSTRUMENT.md](NATIVE_V2_INSTRUMENT.md).
+StageInstrument connects actual Faust/FluidSynth sources, piano room/filter/
+soft clip/sends, pad/delay/reverb/wet filter and master under one offline owner.
+Original-source full-chain comparisons PASS at 512/256 (worst 3.030e-10), but
+added high-gain piano stress FAILS strict 1e-6: 2.795e-6 / 2.027e-5. Identical
+prepared-piano isolation reduces downstream difference below 4.4e-12. Final
+runner exits 1, sound_difference_review_required; do NOT call it fully passed.
+UBSan/zero-new guards, old core/ambience rechecks and 549 legacy tests plus Node
+pass. PRE bridge gain; remaining features/live control/driver/UI still open.
+Next: trace stress-case first divergence, final output and remaining features.
+No Pi contact/deployment; no field-testable replacement or live 256 claim.
+
+Previous master checkpoint: [NATIVE_V2_MASTER.md](NATIVE_V2_MASTER.md).
 Native master EQ/HP/shuffler, compression/sidechains, FX bypass, saturation and
 limiter pass eight offline comparisons at 512/256; worst audio difference
 5.106e-10. Default limiter ceiling and exact-threshold zero-knee corrections

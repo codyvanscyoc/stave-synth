@@ -1,6 +1,7 @@
 #pragma once
 #include "stave/pad_bus.hpp"
 #include "stave/shared_effects.hpp"
+#include "stave/stage_lowpass.hpp"
 #include <algorithm>
 #include <cmath>
 
@@ -9,13 +10,14 @@ struct PadAmbienceConfig {
     PadBusConfig pad{};
     DelayConfig delay{};
     double wet{.75}, wet_gain{1};
+    bool wet_filter{};
     bool valid() const noexcept {
         return pad.valid()&&delay.valid()&&std::isfinite(wet)&&wet>=0&&wet<=1&&
             std::isfinite(wet_gain)&&wet_gain>=.5&&wet_gain<=3;
     }
 };
 // Composed native pad/filter/delay/reverb return path. NOT a master output:
-// piano/organ dry, independent sample bed, sympathetic, wet-output filter,
+// piano/organ dry, independent sample bed, sympathetic,
 // global modulation, master EQ/compressor/limiter are explicitly not here yet.
 // Only this audio owner calls methods, including reverb control operations.
 class PadAmbience final {
@@ -37,8 +39,18 @@ public:
         for(const auto* pair:{delay_send,reverb_send}) if(pair)
             for(const auto* p:*pair) if(!acceptable(p)) return false;
         if(!healthy()) { stop(); return false; }
+        const auto prior=pad_.state();
         if(!pad_.process_block(source,flags)||!delay_.process({pad_.stem(0),pad_.stem(1)},delay_send)) { stop(); return false; }
         const auto& p=config_.pad;
+        const auto state=pad_.state();
+        // Preserve v1's coefficient-update gate, including paused filters.
+        // Enabling/changing slope alone does not force a retune in v1.
+        if(config_.wet_filter&&(prior[5]!=state[5]||prior[6]!=state[6])) {
+            for(auto& f:wet_filters_) {
+                f[0].tune(state[5],p.resonance*(p.slope24?.5412/.707:1));
+                if(p.slope24) f[1].tune(state[5],p.resonance*(1.3066/.707));
+            }
+        }
         const double s1=p.bypass1?0:p.send1,s2=p.bypass2?0:p.send2;
         const bool fast=std::abs(s1-1)<1e-6&&std::abs(s2-1)<1e-6;
         const bool shimmer=p.shimmer&&p.shimmer_mix>.001&&flags.voices_present;
@@ -61,7 +73,12 @@ public:
         const double angle=wet_cur_*(3.14159265358979323846/2),dry_gain=std::cos(angle),wet_gain=std::sin(angle)*config_.wet_gain;
         const double ratio=pad_.state()[7],effective=ratio+(1-ratio)*dry_gain;
         for(unsigned c=0;c<2;++c) for(unsigned i=0;i<frames_;++i) {
-            double mixed=delay_.channel(c)[i]*dry_gain+reverb_.channel(c)[i]*wet_gain;
+            double wet=reverb_.channel(c)[i];
+            if(config_.wet_filter) {
+                wet=wet_filters_[c][0].tick(wet);
+                if(p.slope24) wet=wet_filters_[c][1].tick(wet);
+            }
+            double mixed=delay_.channel(c)[i]*dry_gain+wet*wet_gain;
             if(ratio>1e-6) mixed+=pad_.stem(4+c)[i];
             // Reconstruct pre-carve dry only for split routing; original dry
             // snapshot differs by at most rounding in this reconstruction.
@@ -77,6 +94,7 @@ public:
     const double* channel(unsigned c) const noexcept { return c<6?output_[c].data():nullptr; }
     bool healthy() const noexcept { return !stopped_&&pad_.healthy()&&delay_.healthy()&&reverb_.healthy(); }
     double current_wet() const noexcept { return wet_cur_; }
+    double current_cutoff() const noexcept { return pad_.state()[0]; }
     unsigned block_frames() const noexcept { return frames_; }
     void stop() noexcept { stopped_=true; delay_.stop(); reverb_.stop(); for(auto& c:output_) c.fill(0); }
 private:
@@ -93,5 +111,6 @@ private:
     PadAmbienceConfig config_{}; double wet_cur_{.75}; bool stopped_{};
     std::array<std::array<double,512>,2> send_{};
     std::array<std::array<double,512>,6> output_{};
+    std::array<std::array<StageLowpass,2>,2> wet_filters_{};
 };
 } // namespace stave

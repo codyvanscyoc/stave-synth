@@ -233,7 +233,7 @@ def compare(output, lib, refs, prefix, font, size, tape, integration=None):
         else: raise RuntimeError("Unexpected reference piano event: " + kind)
     keys.piano_callback = piano_event
     total = 640 * 512
-    channels = 11 if integration else 7
+    channels = getattr(integration,"channels",11) if integration else 7
     actual, expected = np.empty((channels,total)), np.empty((channels,total))
     reference_source = np.empty((7,size))
     raw_max_delta = 0
@@ -275,8 +275,12 @@ def compare(output, lib, refs, prefix, font, size, tape, integration=None):
             raw = fluid.render(size)
             if frame < 4*512: idle_raw_peak=max(idle_raw_peak,int(np.max(np.abs(raw.astype(np.int32)))))
             reference_source[5:] = player.process_raw(raw,size)
+            render_first = integration is not None and hasattr(integration,"native_before_reference")
+            if render_first:
+                if not lib.sources_render(handle): raise RuntimeError("Native source render failed")
+                integration.native_before_reference(handle,size)
             expected[:,frame:frame+size] = integration.process(reference_source, len(voice.voices)) if integration else reference_source
-            if not lib.sources_render(handle): raise RuntimeError("Native source render failed")
+            if not render_first and not lib.sources_render(handle): raise RuntimeError("Native source render failed")
             for c in range(channels): actual[c,frame:frame+size] = np.ctypeslib.as_array(lib.sources_stem(handle,c),shape=(size,))
             native_raw = np.ctypeslib.as_array(lib.sources_raw(handle),shape=(size*2,)).astype(np.int32)
             raw_max_delta = max(raw_max_delta,int(np.max(np.abs(native_raw-raw.astype(np.int32)))))
@@ -287,7 +291,9 @@ def compare(output, lib, refs, prefix, font, size, tape, integration=None):
         np.save(output/f"sources-native-{size}.npy",actual,allow_pickle=False)
         np.save(output/f"sources-reference-{size}.npy",expected,allow_pickle=False)
         peak_delta = np.max(np.abs(actual-expected),axis=1)
-        if raw_max_delta or np.any(peak_delta > TOLERANCE):
+        audio_ok = (integration.validate_audio(actual,expected) if integration is not None and hasattr(integration,"validate_audio")
+                    else not np.any(peak_delta > TOLERANCE))
+        if raw_max_delta or not audio_ok:
             raise RuntimeError(f"Source parity failed at{size}: raw={raw_max_delta}, stems={peak_delta.tolist()}")
         stats = (ct.c_uint64*6)(); lib.sources_stats(handle,stats)
         if any(stats[i] for i in (0,1,3,4,5)): raise RuntimeError(f"Unexpected graph counters: {list(stats)}")
