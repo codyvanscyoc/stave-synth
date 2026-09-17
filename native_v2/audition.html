@@ -16,6 +16,8 @@ body{font:17px system-ui;background:#10151a;color:#e8edea;max-width:960px;margin
 'use strict';
 const labels={piano:'Piano',osc1:'OSC1',osc2:'OSC2',cutoff:'Filter cutoff · Hz',wet:'Synth reverb mix',master:'Master',wave1:'OSC1 waveform',wave2:'OSC2 waveform',attack:'Oscillator attack · ms',release:'Oscillator release · ms',resonance:'Filter resonance',piano_room:'Piano room',piano_reverb:'Piano → shared reverb',delay_wet:'Delay mix',delay_feedback:'Delay feedback',shimmer:'Shimmer enabled',shimmer_mix:'Shimmer mix',reverb:'Reverb type',freeze:'Reverb freeze'};
 const choices={wave1:['Sine','Square','Saw','Triangle','Saturated'],wave2:['Sine','Square','Saw','Triangle','Saturated'],reverb:['Wash','Hall','Room','Plate','Bloom','Drone effect','Ghost'],shimmer:['Off','On'],freeze:['Released','Frozen']};
+labels.piano_tone='Piano brightness · dark → bright';
+labels.cutoff='Synth filter cutoff · Hz';
 const fields={},pending=new Map();let ready=false,busy=false;
 const notice=document.getElementById('notice');
 async function send(key,value){
@@ -44,7 +46,7 @@ async function setup(){
     // One request in flight; pending absolute values coalesce by parameter.
     // Reconnect never replays one-shot actions or stale gestures.
     input.addEventListener('change',()=>send(key,Number(input.value)));
-    label.append(input);document.getElementById(['piano','osc1','osc2','cutoff','wet','master'].includes(key)?'mixer':'edit').append(label);fields[key]={input,out};
+    label.append(input);document.getElementById(['piano','piano_tone','osc1','osc2','cutoff','wet','master'].includes(key)?'mixer':'edit').append(label);fields[key]={input,out};
   }
   document.getElementById('release').onclick=()=>send('release_all',1);
   poll();

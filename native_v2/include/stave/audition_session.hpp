@@ -9,12 +9,12 @@ namespace stave {
 enum class AuditionControl : unsigned {
     Piano, Osc1, Osc2, Cutoff, Wet, Master, Wave1, Wave2, Attack, Release,
     Resonance, PianoRoom, PianoReverb, DelayWet, DelayFeedback, Shimmer,
-    ShimmerMix, Reverb, Freeze, ReleaseAll, Count
+    ShimmerMix, Reverb, Freeze, ReleaseAll, PianoTone, Count
 };
 inline constexpr std::array<const char*,unsigned(AuditionControl::Count)> audition_names{
     "piano","osc1","osc2","cutoff","wet","master","wave1","wave2","attack","release",
     "resonance","piano_room","piano_reverb","delay_wet","delay_feedback","shimmer",
-    "shimmer_mix","reverb","freeze","release_all"};
+    "shimmer_mix","reverb","freeze","release_all","piano_tone"};
 inline bool audition_value_valid(AuditionControl c,double v) noexcept {
     if(!std::isfinite(v)) return false;
     switch(c) {
@@ -47,6 +47,7 @@ public:
         config_.owned_motion=true;
         config_.fader1=config_.fader2=0; // start piano-only; no saved patch imported
         config_.output.volume=0; // always silent until explicitly raised
+        config_.piano.highcut_smoothing_ms=80;
         if(!graph_.configure(config_)) request_stop(AuditionFault::Engine);
     }
     // One non-audio producer. Full/invalid controls are rejected, never
@@ -139,6 +140,8 @@ private:
         case C::Freeze: return graph_.freeze(v!=0);
         case C::ReleaseAll: return v==0||graph_.key_command(graph_.frame_position(),StageAction::ReleaseAll,0,0);
         case C::Piano: config_.piano.volume=v; break;
+        // Brightness0..1 ->200..20000Hz; full bright is the auditioned default.
+        case C::PianoTone: config_.piano.highcut_hz=v==1?20000:200*std::pow(100.,v); break;
         case C::Osc1: config_.fader1=v; break;
         case C::Osc2: config_.fader2=v; break;
         case C::Cutoff: config_.buses.pad.cutoff=v; break;

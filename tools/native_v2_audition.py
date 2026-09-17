@@ -29,6 +29,7 @@ CONTROLS = {
     "delay_wet": (0, 1, .01, 0), "delay_feedback": (0, .99, .01, .35),
     "shimmer": (0, 1, 1, 0), "shimmer_mix": (0, 1, .01, .5),
     "reverb": (0, 6, 1, 0), "freeze": (0, 1, 1, 0), "release_all": (0, 1, 1, 0),
+    "piano_tone": (0, 1, .01, 1),
 }
 INTEGRAL = {"wave1", "wave2", "shimmer", "reverb", "freeze", "release_all"}
 

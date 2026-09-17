@@ -68,6 +68,19 @@ class AuditionControlTests(unittest.TestCase):
         self.assertEqual(len(c.pending), 64)
         self.assertEqual(c.outgoing.qsize(), 64)
 
+    def test_piano_brightness_range_and_acknowledgment(self):
+        c = self.controller()
+        self.assertEqual(c.values["piano_tone"], 1)
+        for value in (-.01, 1.01, float("nan"), True):
+            with self.assertRaises(ValueError):
+                c.submit({"key": "piano_tone", "value": value})
+        c.submit({"key": "piano_tone", "value": .5})
+        self.assertEqual(c.values["piano_tone"], 1)
+        c.receive({"type": "status", "instance": "native-v2-audition", "fault": 0,
+                   "applied": 1, "blocks": 2, "routed": True})
+        self.assertEqual(c.values["piano_tone"], .5)
+        self.assertEqual(c.values["cutoff"], 8000)  # independent synth filter
+
     def test_same_origin_and_host_guards(self):
         c = self.controller()
         server = audition.HTTPServer(("127.0.0.1", 0), audition.BaseHTTPRequestHandler)

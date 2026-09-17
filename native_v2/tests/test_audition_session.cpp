@@ -21,6 +21,7 @@ int main(int argc,char** argv) {
         Random a,b; stave::StageInstrument actual(argv[1],a,frames,0,&a),expected(argv[1],b,frames,0,&b);
         stave::AuditionSession s(actual);
         stave::StageInstrumentConfig p; p.owned_motion=true; p.fader1=p.fader2=0; p.output.volume=0;
+        p.piano.highcut_smoothing_ms=80;
         check(expected.configure(p)); std::array<float,512> l{},r{};
         check(s.process(l.data(),r.data(),frames,nullptr,0)); check(expected.render_block());
         for(unsigned i=0;i<frames;++i) check(l[i]==0&&r[i]==0);
@@ -41,13 +42,19 @@ int main(int argc,char** argv) {
             if(block==50) {
                 check(s.enqueue({4,C::Cutoff,2300})); p.buses.pad.cutoff=2300; check(expected.configure(p));
             }
+            if(block==80) {
+                check(s.enqueue({5,C::PianoTone,.5})); p.piano.highcut_hz=2000; check(expected.configure(p));
+            }
+            if(block==120) {
+                check(s.enqueue({6,C::PianoTone,1})); p.piano.highcut_hz=20000; check(expected.configure(p));
+            }
             check(s.process(l.data(),r.data(),frames,block==0?events.data():nullptr,block==0?events.size():0));
             check(expected.render_block());
             for(unsigned i=0;i<frames;++i) {
                 check(l[i]==expected.pcm(0)[i]&&r[i]==expected.pcm(1)[i]); heard|=std::abs(l[i])>1e-5;
             }
         }
-        check(heard&&s.notes()==3&&s.quantized_midi()==4&&s.applied()==4);
+        check(heard&&s.notes()==3&&s.quantized_midi()==4&&s.applied()==6);
         // Bounded queue/full rejection, bounded drain, monotonic acknowledgments.
         for(unsigned i=0;i<s.capacity;++i) check(s.enqueue({10+i,C::Master,.5}));
         check(!s.enqueue({1000,C::Master,.5}));

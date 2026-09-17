@@ -12,6 +12,8 @@ struct PianoEqBand {
 
 struct PianoChainConfig {
     double volume{.5}, lowcut_hz{20}, highcut_hz{20000};
+    // Opt-in performance sweep; zero preserves legacy instantaneous retuning.
+    double highcut_smoothing_ms{};
     std::array<PianoEqBand, 4> eq{{{150, 2, .8, true}, {300, -2.5, 1, true},
                                   {2800, -3, 1.5, true}, {10000, -1.5, .7, true}}};
     bool comp_enabled{false};
@@ -44,6 +46,7 @@ public:
     bool healthy() const noexcept;
     // Owner-only diagnostic state, for differential tests; no concurrent UI.
     std::array<double, 6> state() const noexcept;
+    double current_highcut_hz() const noexcept; // audio-owner diagnostic only
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

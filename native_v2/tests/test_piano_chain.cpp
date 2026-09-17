@@ -25,6 +25,59 @@ void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
 
 int main() {
+    // Opt-in piano high-cut: exact unchanged default, monotonic log-Hz
+    // smoothing independent of block size, no allocation while sweeping.
+    for(unsigned frames:{256u,512u}) {
+        stave::PianoChainConfig direct_config, smooth_config;
+        smooth_config.highcut_smoothing_ms=80;
+        stave::PianoChain direct(48000,frames,direct_config), smooth(48000,frames,smooth_config);
+        std::array<double,512> in{}, dl{}, dr{}, sl{}, sr{};
+        for(unsigned i=0;i<frames;++i) in[i]=.1*std::sin(i*.173);
+        for(unsigned block=0;block<20;++block) {
+            check(direct.process_block(in.data(),in.data(),dl.data(),dr.data(),frames));
+            check(smooth.process_block(in.data(),in.data(),sl.data(),sr.data(),frames));
+            for(unsigned i=0;i<frames;++i) check(dl[i]==sl[i]&&dr[i]==sr[i]);
+        }
+        smooth_config.highcut_hz=200;
+        check(smooth.configure(smooth_config));
+        double previous=smooth.current_highcut_hz();
+        allocations=0; count_new=true;
+        for(unsigned block=0;block<300;++block) {
+            check(smooth.process_block(in.data(),in.data(),sl.data(),sr.data(),frames));
+            const double current=smooth.current_highcut_hz();
+            check(current>=200&&current<=previous);
+            const double expected=std::exp(std::log(200.)+(std::log(20000.)-std::log(200.))*std::exp(-double((block+1)*frames)/3840.));
+            check(std::abs(current-expected)<.0011);
+            for(unsigned i=0;i<frames;++i) check(std::isfinite(sl[i])&&std::isfinite(sr[i]));
+            previous=current;
+        }
+        count_new=false; check(allocations==0&&previous==200);
+        // Darkness removes high-frequency energy after settling, while the
+        // original path remains untouched. RMS of repeated high-frequency input.
+        double bright_energy=0,dark_energy=0;
+        for(unsigned block=0;block<20;++block) {
+            check(direct.process_block(in.data(),in.data(),dl.data(),dr.data(),frames));
+            check(smooth.process_block(in.data(),in.data(),sl.data(),sr.data(),frames));
+            for(unsigned i=0;i<frames;++i) { bright_energy+=dl[i]*dl[i]; dark_energy+=sl[i]*sl[i]; }
+        }
+        check(dark_energy<bright_energy*.02);
+        smooth_config.highcut_hz=20000; check(smooth.configure(smooth_config));
+        for(unsigned block=0;block<400;++block) {
+            check(smooth.process_block(in.data(),in.data(),sl.data(),sr.data(),frames));
+            const double current=smooth.current_highcut_hz();
+            check(current>=previous&&current<=20000); previous=current;
+        }
+        check(previous==20000);
+        smooth_config.highcut_smoothing_ms=std::numeric_limits<double>::quiet_NaN();
+        check(!smooth.configure(smooth_config));
+        check(smooth.current_highcut_hz()==20000);
+        smooth_config.highcut_smoothing_ms=0; smooth_config.highcut_hz=1000;
+        check(smooth.configure(smooth_config));
+        check(smooth.process_block(in.data(),in.data(),sl.data(),sr.data(),frames));
+        check(smooth.current_highcut_hz()==1000);
+        smooth.clear(); check(smooth.current_highcut_hz()==1000);
+    }
+    allocations=0;
     bool rejected = false;
     try { stave::PianoChain invalid(48000, 513); } catch (...) { rejected = true; }
     check(rejected);

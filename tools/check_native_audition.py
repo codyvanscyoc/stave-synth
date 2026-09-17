@@ -78,7 +78,7 @@ def main():
         flags = ["-std=c++17", "-O2", "-ffp-contract=off", "-Wall", "-Wextra", "-Werror", "-pthread",
                  "-fsanitize=undefined", "-fno-sanitize-recover=all", "-I", ROOT / "native_v2/include",
                  "-I", args.faust_prefix / "include", "-I", args.fluidsynth_prefix / "include", "-I", args.jack_include]
-        for name in ("test_audition_session", "test_audition_jack"):
+        for name in ("test_piano_chain", "test_audition_session", "test_audition_jack"):
             binary = out / name
             run([cxx, *flags, *[ROOT / f"native_v2/src/{x}.cpp" for x in SOURCES], ROOT / f"native_v2/tests/{name}.cpp",
                  *[args.reference_dir / p for p in OBJECTS], "-L", args.fluidsynth_prefix / "lib",

@@ -71,6 +71,7 @@ struct Lowpass {
 
 bool PianoChainConfig::valid() const noexcept {
     if (!range(volume, 0, 1) || !range(lowcut_hz, 20, 2000) || !range(highcut_hz, 200, 20000) ||
+        !range(highcut_smoothing_ms, 0, 1000) ||
         !range(comp_threshold_db, -40, 0) || !range(comp_ratio, 1, 20) ||
         !range(comp_attack_ms, .5, 200) || !range(comp_release_ms, 5, 2000) ||
         !range(comp_makeup_db, 0, 24) || !range(comp_knee_db, 0, 24) ||
@@ -96,9 +97,10 @@ struct PianoChain::Impl {
     double volume_cur{}, comp_envelope{}, previous_gain{}, velocity_cur{.7}, last_cutoff{18000}, phase{};
     bool previous_gain_valid{}, fault{};
     Lowpass brightness_l, brightness_r;
+    double highcut_cur;
 
     Impl(std::uint32_t rate, std::uint32_t frames, const PianoChainConfig& initial)
-        : sample_rate(rate), maximum_frames(frames), config(initial), volume_cur(initial.volume) {
+        : sample_rate(rate), maximum_frames(frames), config(initial), volume_cur(initial.volume), highcut_cur(initial.highcut_hz) {
         if (rate < 8000 || rate > 192000 || frames == 0 || frames > 512 || !initial.valid())
             throw std::invalid_argument("Invalid piano chain configuration");
         for (unsigned i = 0; i < input.size(); ++i) { input[i].resize(frames); inputs[i] = input[i].data(); }
@@ -136,7 +138,16 @@ struct PianoChain::Impl {
         const double alpha = 1 - std::exp(-static_cast<double>(frames) / (.01 * sample_rate));
         volume_cur += alpha * (config.volume - volume_cur);
         *gain_zone = volume_cur <= .001 ? 0 : std::pow(10.0, (volume_cur - 1) * 40 / 20);
-        *lowcut_zone = config.lowcut_hz; *highcut_zone = config.highcut_hz;
+        // Reuse the always-running piano-only Faust high-cut. No extra filter,
+        // voice, render queue or audio-thread allocation. Smooth in log Hz so
+        // the slider moves musically; settled/default settings remain exact.
+        if (config.highcut_smoothing_ms == 0 || std::abs(highcut_cur - config.highcut_hz) < .001) {
+            highcut_cur = config.highcut_hz;
+        } else {
+            const double amount = 1 - std::exp(-double(frames) / (config.highcut_smoothing_ms * .001 * sample_rate));
+            highcut_cur = std::exp(std::log(highcut_cur) + amount * (std::log(config.highcut_hz) - std::log(highcut_cur)));
+        }
+        *lowcut_zone = config.lowcut_hz; *highcut_zone = highcut_cur;
         for (unsigned i = 0; i < 4; ++i) {
             *eq_zones[i][0] = config.eq[i].frequency; *eq_zones[i][1] = config.eq[i].gain_db;
             *eq_zones[i][2] = config.eq[i].q; *eq_zones[i][3] = config.eq[i].enabled ? 1 : 0;
@@ -209,12 +220,14 @@ bool PianoChain::process_block(const double* l, const double* r, double* out_l, 
 void PianoChain::clear() noexcept {
     initStavePianoChain(impl_->dsp.get(), impl_->sample_rate);
     impl_->volume_cur = impl_->config.volume; impl_->comp_envelope = 0; impl_->previous_gain = 0;
+    impl_->highcut_cur = impl_->config.highcut_hz;
     impl_->previous_gain_valid = false; impl_->velocity_cur = .7; impl_->phase = 0; impl_->last_cutoff = 18000;
     impl_->brightness_l = {}; impl_->brightness_r = {};
     impl_->brightness_l.tune(18000, impl_->sample_rate); impl_->brightness_r.tune(18000, impl_->sample_rate);
     // Numeric faults remain terminal; clear is not permission to hide one.
 }
 bool PianoChain::healthy() const noexcept { return !impl_->fault; }
+double PianoChain::current_highcut_hz() const noexcept { return impl_->highcut_cur; }
 std::array<double, 6> PianoChain::state() const noexcept {
     return {impl_->volume_cur, impl_->comp_envelope, impl_->previous_gain, impl_->velocity_cur,
             impl_->last_cutoff, impl_->phase};

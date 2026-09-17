@@ -78,6 +78,7 @@ def main():
     try:
         paths=[*sorted((ROOT/"native_v2/include").rglob("*.hpp")),*[ROOT/f"native_v2/src/{x}.cpp" for x in SOURCES],
                ROOT/"native_v2/tests/benchmark_stage_instrument.cpp",ROOT/"native_v2/tests/test_stage_instrument.cpp",
+               ROOT/"native_v2/tests/test_piano_chain.cpp",
                Path(__file__),ROOT/"faust/faust_cprelude.h",*[ROOT/f"faust/{x}.dsp" for x,_,_ in MODULES]]
         if args.build_audition:
             paths += [ROOT/"native_v2/src/audition_jack.cpp",ROOT/"native_v2/tests/test_audition_session.cpp",ROOT/"native_v2/tests/test_audition_jack.cpp"]
@@ -128,6 +129,9 @@ def main():
         guard=out/"guard"; bench=out/"benchmark"
         run([*common,"-fsanitize=undefined","-fno-sanitize-recover=all",ROOT/"native_v2/tests/test_stage_instrument.cpp",*objects,*fluid,"-o",guard])
         report["guards"]=run([guard,args.soundfont],timeout=120)
+        piano_guard=out/"piano-guard"
+        run([*common,"-fsanitize=undefined","-fno-sanitize-recover=all",ROOT/"native_v2/tests/test_piano_chain.cpp",*objects,*fluid,"-o",piano_guard])
+        report["piano_guards"]=run([piano_guard],timeout=120)
         if args.build_audition:
             audition_guard=out/"audition-guard"
             run([*common,"-pthread","-fsanitize=undefined","-fno-sanitize-recover=all",ROOT/"native_v2/tests/test_audition_session.cpp",*objects,*fluid,"-o",audition_guard])
