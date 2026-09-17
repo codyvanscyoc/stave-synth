@@ -6,6 +6,12 @@ the default;256 is optional future exploration, not the next release gate.
 The user now permits UI redesign to serve musical control and playability.
 Independent sampled beds/drone and recording are no longer deferred.
 
+Latest successor checkpoint: [recorded-pad library/control integration](NATIVE_V2_LIBRARY.md).
+Startup WAV preparation/native loading and acknowledged bed controls now pass
+the target build and a muted combined real-driver512 test.581 reviewed Mac
+tests pass. Working stage restored; disk worker/record-to-pad and LIVE asset
+replacement remain next. The target results below are earlier checkpoints.
+
 ## Latest result: maintenance and target tests completed
 
 The user subsequently confirmed finished playing/muted. Piano brightness now

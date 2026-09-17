@@ -4,6 +4,31 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
+## September17: recorded-pad startup/control path passes target test
+
+User asked to continue and whether playing was needed first. No player test
+requested yet. Implemented explicit read-only WAV-library preparation and
+immutable startup bank loading plus acknowledged12-key bed level/rise/mellow/
+fade/release controls (eee5b25). Actual panel execution guards19aca73.581
+reviewed Mac tests, zero skips, Node and full C++/UBSan graph/host guards pass.
+Pi source/build `/home/codyvanscyoc/stave-v2-library-20260917.HHKSwP`: all asset
+tests and4,000 measured offline blocks pass with no deadline misses. Combined
+MUTED real-driver512 test passes94.311s/360 notes/353 controls,0 xruns/over-budget/
+raw-piano-full-scale, max5.30067ms, peak two active sampled beds and clean release.
+
+Working stage restoredPID739029,NRestarts0, same cleanf600c7e rehearsal checkout;
+HTTP/WS/native/audio health verified48k/512; no candidate/probe JACK client.
+Saved current-state bytes unchanged (SHA2f366d3c...), firmware0x0. User pad
+library remains empty: both current Pi and inspected September14 backup had
+no assigned recordings. Only isolated synthetic C/G TEST fixtures were created;
+none installed to user data.8082 test panel is not active. Keep512.
+
+See [library checkpoint](NATIVE_V2_LIBRARY.md). Next: disk worker/WAV durability,
+record-to-pad and live immutable-asset replacement, then product UI/persistence/
+remaining features and startup/device qualification. Startup bank loading is
+now complete; hot replacement and recording are NOT. Recheck current ownership
+before any next Pi operation; previous entries below are historical.
+
 ## September17: muted finishing window, stage restored
 
 User finished playing and explicitly authorized maintenance. The temporary
