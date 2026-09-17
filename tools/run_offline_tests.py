@@ -2,7 +2,7 @@
 """Run ONLY the reviewed, device-free Pi4 regression suite.
 
 Never discover tests/test_*.py: legacy stress scripts can control a live synth.
-Requires existing NumPy, websockets, Node and a C compiler; installs nothing.
+Requires existing NumPy/SciPy, websockets, Node and C/C++ compilers; installs nothing.
 The listener tests bind ephemeral loopback ports, not stage ports. Native DSP
 and JACK are mocked; no soundfont, device, Pi or running service is accessed.
 """
@@ -76,6 +76,7 @@ SAFE_TESTS = (
     "test_native_instrument_benchmark.py",
     "test_native_v2_audition.py",
     "test_native_v2_live_probe.py",
+    "test_native_sampled_bed.py",
 )
 
 
