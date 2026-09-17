@@ -4,6 +4,26 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
+## September17: Tailscale installed; remote login verification pending
+
+User requested private remote SSH from home and authorized Tailscale on Pi/Mac.
+Pi Debian13/trixie ARM64 now has Tailscale1.102.4 from the official signed apt
+repository, tailscaled enabled at boot. No OS upgrades; added Tailscale and
+iptables libraries. Requested `--accept-dns=false --accept-routes=false --ssh=false`:
+retain existing OpenSSH, no exit-node/subnet advertisement or public exposure.
+Latest Pi state **NeedsLogin**, no Tailscale IP assigned; user must authorize the
+device in their existing Google-backed Tailscale account. Do not claim remote
+SSH works yet. Auth link and account details were kept out of the repository.
+
+Mac official1.102.4 installer was downloaded and Apple signature/notarization
+verified; user subsequently installed `/Applications/Tailscale.app`. Last CLI
+check failed to load preferences, so Mac sign-in/extension setup and connection
+are not verified. Next: confirm both devices joined the intended account, then
+verify existing SSH via Pi Tailscale IP (validate host key against known Pi).
+For remote UI use SSH forwarding to Pi127.0.0.1:8082; native HTTP deliberately
+does not bind tailscale0/CGNAT addresses. Do not expose the UI or broaden routes.
+Pi native service stayedPID1556,NRestarts0 through package installation.
+
 ## September17: native build is now the DEFAULT; reboot/recovery passed
 
 Player explicitly authorized boot promotion, preserving v1.2, while away with
