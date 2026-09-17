@@ -8,9 +8,15 @@ body{font:17px system-ui;background:#10151a;color:#e8edea;max-width:960px;margin
 <p>Piano + OSC1/OSC2 • temporary test build • starts muted.<br>Raise Master gradually with monitoring low. This is not the normal Stave application or your saved patch.</p>
 <div class="panel" id="health">Waiting for native audio owner…</div><p id="notice" role="status"></p>
 <div class="panel" id="mixer"></div>
+<section class="panel" aria-label="Recorded pad bed"><h2>Recorded pad bed</h2>
+<p id="bed-status">Checking loaded recordings…</p>
+<div id="bed-keys" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(72px,1fr));gap:10px"></div>
+<div id="bed-controls" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:22px;margin-top:22px"></div>
+<div style="display:flex;gap:12px;margin-top:20px"><button id="bed-out" disabled>Fade bed out · 5s</button><button id="bed-in" disabled>Fade bed in · 5s</button><button id="bed-stop" disabled>Release bed · 4s</button></div>
+<p class="small">Independent of played notes and sustain. Concert key; keyboard transpose does not change this recording. Dark keys have no recording. Changing key releases the previous bed. Fade position stays where you set it—use Fade in to restore a faded bed.</p></section>
 <details class="panel"><summary>Sound controls</summary><div id="edit"></div></details>
 <button id="release" disabled>Release notes and pedals — effects tails continue</button>
-<p class="small">Deferred: recorded pads, independent drone and recording. Not in this audition: organ, presets/MIDI maps, pitch bend, macros, scenes, program changes or device recovery. MIDI channels share one keyboard; MIDI offsets are block-quantized. Loss of the selected device stops this audition. Closing this browser does not stop audio.</p>
+<p class="small">Recorded pads load at startup from an explicitly selected library. Live recording, replacement and record-to-pad are not available yet. No generated fallback for missing recordings. Not in this audition: organ, presets/MIDI maps, pitch bend, macros, scenes, program changes or device recovery. MIDI channels share one keyboard; MIDI offsets are block-quantized. Loss of the selected device stops this audition. Closing this browser does not stop audio.</p>
 <p class="small">512 frames is the first listening profile. No buffer switch is exposed. Timing here measures the native callback, not physical keyboard-to-speaker latency. Full-scale piano counts are a headroom warning, not proof of audible clipping.</p>
 <script>
 'use strict';
@@ -18,6 +24,10 @@ const labels={piano:'Piano',osc1:'OSC1',osc2:'OSC2',cutoff:'Filter cutoff · Hz'
 const choices={wave1:['Sine','Square','Saw','Triangle','Saturated'],wave2:['Sine','Square','Saw','Triangle','Saturated'],reverb:['Wash','Hall','Room','Plate','Bloom','Drone effect','Ghost'],shimmer:['Off','On'],freeze:['Released','Frozen']};
 labels.piano_tone='Piano brightness · dark → bright';
 labels.cutoff='Synth filter cutoff · Hz';
+Object.assign(labels,{bed_level:'Bed level',bed_rise:'Next trigger rise · seconds (0 = normal)',bed_rise_cutoff:'Rise peak filter · Hz',bed_mellow:'Mellow bed',bed_mellow_cutoff:'Mellow filter · Hz'});
+choices.bed_mellow=['Off','On'];
+const keyNames=['C','C♯','D','E♭','E','F','F♯','G','A♭','A','B♭','B'];
+const bedKeys=[],bedActions=['bed-out','bed-in','bed-stop'];
 const fields={},pending=new Map();let ready=false,busy=false;
 const notice=document.getElementById('notice');
 async function send(key,value){
@@ -35,7 +45,7 @@ async function send(key,value){
 async function setup(){
   const definitions=await (await fetch('/controls')).json();
   for(const [key,[min,max,step,value]] of Object.entries(definitions)){
-    if(key==='release_all')continue;
+    if(['release_all','bed_key','bed_fade','bed_release'].includes(key))continue;
     const label=document.createElement('label');label.textContent=labels[key];
     const out=document.createElement('output');out.textContent=value;label.append(out);
     const input=document.createElement(choices[key]?'select':'input');
@@ -46,8 +56,12 @@ async function setup(){
     // One request in flight; pending absolute values coalesce by parameter.
     // Reconnect never replays one-shot actions or stale gestures.
     input.addEventListener('change',()=>send(key,Number(input.value)));
-    label.append(input);document.getElementById(['piano','piano_tone','osc1','osc2','cutoff','wet','master'].includes(key)?'mixer':'edit').append(label);fields[key]={input,out};
+    label.append(input);document.getElementById(key.startsWith('bed_')?'bed-controls':['piano','piano_tone','osc1','osc2','cutoff','wet','master'].includes(key)?'mixer':'edit').append(label);fields[key]={input,out};
   }
+  keyNames.forEach((name,key)=>{const b=document.createElement('button');b.textContent=name;b.disabled=true;b.onclick=()=>send('bed_key',key);b.setAttribute('aria-pressed','false');document.getElementById('bed-keys').append(b);bedKeys.push(b);});
+  document.getElementById('bed-out').onclick=()=>send('bed_fade',1);
+  document.getElementById('bed-in').onclick=()=>send('bed_fade',0);
+  document.getElementById('bed-stop').onclick=()=>send('bed_release',1);
   document.getElementById('release').onclick=()=>send('release_all',1);
   poll();
 }
@@ -63,11 +77,15 @@ async function poll(){
     else notice.textContent=d.pending?'Waiting for audio-owner acknowledgment…':'Values below are acknowledged by the audio owner.';
     if(!ready)pending.clear();
     for(const [key,{input,out}] of Object.entries(fields)){
-      input.disabled=!ready;
+      input.disabled=!ready||(key.startsWith('bed_')&&!s.bed_mask);
       if(document.activeElement!==input&&!pending.has(key)&&!d.pending){input.value=d.values[key];out.textContent=d.values[key];}
     }
     document.getElementById('release').disabled=!ready;
-  }catch(e){ready=false;pending.clear();notice.textContent='Disconnected — audio may still be playing. No control replay.';for(const f of Object.values(fields))f.input.disabled=true;document.getElementById('release').disabled=true;}
+    bedKeys.forEach((button,key)=>{const loaded=Boolean((s.bed_mask||0)&(1<<key));button.disabled=!ready||!loaded;button.title=loaded?'Play recorded '+keyNames[key]:'No recording for '+keyNames[key];button.style.opacity=loaded?'1':'.35';button.setAttribute('aria-pressed',String(s.bed_key===key));button.style.outline=s.bed_key===key?'3px solid #70d9b0':'';});
+    for(const id of bedActions)document.getElementById(id).disabled=!ready||!s.bed_mask;
+    document.getElementById('bed-status').textContent=!s.bed_mask?'No recorded pads loaded. Piano and oscillators remain available.':
+      'Selected '+(s.bed_key>=0?keyNames[s.bed_key]:'none')+' · '+(s.active_beds||0)+' sounding/releasing beds · '+(d.values.bed_fade?'fading/faded out':'fade target full');
+  }catch(e){ready=false;pending.clear();notice.textContent='Disconnected — audio may still be playing. No control replay.';for(const f of Object.values(fields))f.input.disabled=true;document.getElementById('release').disabled=true;for(const b of bedKeys)b.disabled=true;for(const id of bedActions)document.getElementById(id).disabled=true;}
   setTimeout(poll,750);
 }
 setup().catch(e=>{notice.textContent='Audition setup failed: '+e.message;});

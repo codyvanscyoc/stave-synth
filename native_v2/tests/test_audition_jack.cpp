@@ -92,6 +92,23 @@ int main(int argc,char** argv) {
         check(deactivate_count==(fail_mode>=7&&fail_mode<=9?1u:0u));
         check(connect_count==(fail_mode>=8&&fail_mode<=9?3u:fail_mode==7?1u:0u));
     }
+    // Real private-bank CLI loading/refusal happens before any JACK open.
+    char bank_path[]="/tmp/stave-native-bank-host-XXXXXX";
+    const int bank_fd=mkstemp(bank_path); check(bank_fd>=0);
+    std::array<unsigned char,96> bank_bytes{};
+    std::memcpy(bank_bytes.data(),"STVBANK1",8);
+    bank_bytes[8]=0x80; bank_bytes[9]=0xbb; bank_bytes[12]=1; //48k, one entry
+    bank_bytes[16]=7; bank_bytes[24]=4; //G, four zero stereo frames
+    check(write(bank_fd,bank_bytes.data(),bank_bytes.size())==ssize_t(bank_bytes.size())); close(bank_fd);
+    std::array<std::string,11> bank_args{};
+    for(unsigned i=0;i<9;++i) bank_args[i]=args[i];
+    bank_args[9]="--bed-bank"; bank_args[10]=bank_path;
+    std::array<char*,11> bank_pointers{};
+    for(unsigned i=0;i<11;++i) bank_pointers[i]=bank_args[i].data();
+    fail_mode=9; open_count=close_count=activate_count=deactivate_count=connect_count=registrations=0;
+    check(audition_main(11,bank_pointers.data())==0&&open_count==1&&close_count==1);
+    check(unlink(bank_path)==0); open_count=0;
+    check(audition_main(11,bank_pointers.data())==1&&open_count==0);
     check(dup2(saved_stdin,STDIN_FILENO)>=0); close(saved_stdin);
     std::puts("PASS: fake JACK real graph callback512/256, silent unarmed/fault output, MIDI bound, graph changes, shutdown/xruns, signed CLI refusal,10 startup/route/disconnect/EOF/production-client cleanup paths; no devices opened");
 }

@@ -8,12 +8,14 @@ Control on a trusted private LAN is open; no pairing or public exposure.
 import argparse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import ipaddress
+import importlib.util
 import json
 import math
 from pathlib import Path
 import queue
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 
@@ -30,8 +32,12 @@ CONTROLS = {
     "shimmer": (0, 1, 1, 0), "shimmer_mix": (0, 1, .01, .5),
     "reverb": (0, 6, 1, 0), "freeze": (0, 1, 1, 0), "release_all": (0, 1, 1, 0),
     "piano_tone": (0, 1, .01, 1),
+    "bed_level": (0, 1, .01, 1), "bed_key": (0, 11, 1, -1),
+    "bed_rise": (0, 60, .5, 0), "bed_rise_cutoff": (200, 20000, 1, 3000),
+    "bed_mellow": (0, 1, 1, 0), "bed_mellow_cutoff": (100, 8000, 1, 400),
+    "bed_fade": (0, 1, 1, 0), "bed_release": (0, 1, 1, 0),
 }
-INTEGRAL = {"wave1", "wave2", "shimmer", "reverb", "freeze", "release_all"}
+INTEGRAL = {"wave1", "wave2", "shimmer", "reverb", "freeze", "release_all", "bed_key", "bed_mellow", "bed_fade", "bed_release"}
 
 
 def validate_control(data):
@@ -68,6 +74,9 @@ class Controller:
                 raise ValueError("Audio owner is not ready; no control replay")
             if len(self.pending) >= 64 or self.outgoing.full():
                 raise ValueError("Control backlog full; wait for acknowledgment")
+            mask = self.status.get("bed_mask", 0)
+            if key.startswith("bed_") and (not mask or (key == "bed_key" and not mask & (1 << int(value)))):
+                raise ValueError("No recording loaded for this pad/key")
             self.sequence += 1
             self.pending[self.sequence] = (key, value)
             self.outgoing.put_nowait((self.sequence, key, value))
@@ -89,6 +98,8 @@ class Controller:
                     if seq <= message.get("applied", 0):
                         key, value = self.pending.pop(seq)
                         self.values[key] = value
+                if "bed_key" in message:
+                    self.values["bed_key"] = message["bed_key"]
 
     def snapshot(self):
         with self.lock:
@@ -182,6 +193,7 @@ def main():
     parser.add_argument("--frames", type=int, choices=(512, 256), default=512)
     parser.add_argument("--seconds", type=int, default=1800)
     parser.add_argument("--allow-live-audition", action="store_true")
+    parser.add_argument("--pad-library", type=Path, help="Explicit WAV library; prepared privately before audio starts, never modified")
     args = parser.parse_args()
     address = ipaddress.ip_address(args.listen)
     if (not args.allow_live_audition or address.version != 4 or not address.is_private or address.is_unspecified or
@@ -193,6 +205,7 @@ def main():
     server = HTTPServer((str(address), args.port), BaseHTTPRequestHandler)
     server.timeout = .2
     child = None
+    prepared = None
     threads = []
     stopped = False
     def stop(_signum, _frame):
@@ -200,9 +213,19 @@ def main():
         stopped = True
     prior = {s: signal.signal(s, stop) for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
     try:
+        bed_args = []
+        if args.pad_library is not None:
+            prepared = tempfile.TemporaryDirectory(prefix="stave-v2-bed-")
+            spec = importlib.util.spec_from_file_location("stave_native_bed_assets", ROOT / "native_v2/bed_assets.py")
+            assets = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(assets)
+            bank = Path(prepared.name) / "prepared.bank"
+            result = assets.prepare_bank(args.pad_library, bank)
+            print(f"Prepared recorded pads: {len(result['slots'])}/12 keys, {result['pcm_bytes']} PCM bytes", flush=True)
+            bed_args = ["--bed-bank", str(bank)]
         child = subprocess.Popen(["/usr/bin/pw-jack", str(args.binary.resolve()), str(args.soundfont.resolve()),
                                   str(args.frames), "stave-v2-audition-listen", args.midi_source, args.audio_left,
-                                  args.audio_right, str(args.seconds), "--allow-live-audition"],
+                                  args.audio_right, str(args.seconds), "--allow-live-audition", *bed_args],
                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1, start_new_session=True)
         controller = Controller(child)
         threads = [threading.Thread(target=controller.read, daemon=True), threading.Thread(target=controller.write, daemon=True)]
@@ -227,6 +250,8 @@ def main():
                 thread.join(timeout=2)
             child.stdin.close()
             child.stdout.close()
+        if prepared is not None:
+            prepared.cleanup()
         for s, previous in prior.items():
             signal.signal(s, previous)
 

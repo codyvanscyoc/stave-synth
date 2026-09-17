@@ -1,6 +1,7 @@
 // Opt-in isolated listening host. No service/config/preset writes or automatic
 // sink selection. Run only with explicit maintenance authorization and ports.
 #include "stave/audition_session.hpp"
+#include "stave/bed_assets.hpp"
 #include <jack/jack.h>
 #include <jack/midiport.h>
 #include <chrono>
@@ -79,6 +80,7 @@ struct Host {
             <<",\"applied\":"<<session.applied()<<",\"blocks\":"<<session.blocks()<<",\"notes\":"<<session.notes()
             <<",\"unsupported_midi\":"<<session.unsupported_midi()<<",\"quantized_midi\":"<<session.quantized_midi()
             <<",\"piano_full_scale\":"<<session.piano_full_scale()<<",\"xruns\":"<<xruns.load()
+            <<",\"bed_mask\":"<<session.bed_mask()<<",\"active_beds\":"<<session.active_beds()<<",\"bed_key\":"<<session.bed_key()
             <<",\"over_budget\":"<<over_budget.load()<<",\"max_callback_ms\":"<<max_ns.load()/1e6<<"}"<<std::endl;
     }
 };
@@ -90,8 +92,9 @@ bool unsigned_text(const std::string& text,std::uint64_t& result) {
 }
 int main(int argc,char** argv) {
     try {
-        require(argc==9,"Usage: audition FONT FRAMES CLIENT MIDI_SOURCE AUDIO_LEFT AUDIO_RIGHT SECONDS --allow-live-audition");
+        require(argc==9||argc==11,"Usage: audition FONT FRAMES CLIENT MIDI_SOURCE AUDIO_LEFT AUDIO_RIGHT SECONDS --allow-live-audition [--bed-bank PREPARED_FILE]");
         require(std::string(argv[8])=="--allow-live-audition","Live audition opt-in required");
+        require(argc==9||std::string(argv[9])=="--bed-bank","Explicit prepared bank flag required");
         std::uint64_t frame_arg{},second_arg{};
         require(unsigned_text(argv[2],frame_arg)&&unsigned_text(argv[7],second_arg)&&
                 (frame_arg==512||frame_arg==256)&&second_arg>=10&&second_arg<=3600,"Invalid fixed cadence or bounded duration");
@@ -99,7 +102,8 @@ int main(int argc,char** argv) {
         const std::string name=argv[3];
         require(name.rfind("stave-v2-audition-",0)==0&&name.size()<48,"Isolated exact client prefix required");
         require(std::string(argv[5])!=argv[6],"Distinct explicit stereo output ports required");
-        AuditionRandom random; stave::StageInstrument graph(argv[1],random,frames,0,&random);
+        auto bed=argc==11?stave::load_prepared_bed_bank(argv[10]):nullptr;
+        AuditionRandom random; stave::StageInstrument graph(argv[1],random,frames,0,&random,std::move(bed));
         stave::AuditionSession session(graph); Host host{session,frames}; Client client;
         jack_status_t status{};
         client.value=jack_client_open(name.c_str(),static_cast<jack_options_t>(JackNoStartServer|JackUseExactName),&status);

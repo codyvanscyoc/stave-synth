@@ -62,3 +62,18 @@ class NativeLiveProbeTests(unittest.TestCase):
                 with mock.patch("sys.argv", self.args(root)), mock.patch.object(probe.urllib.request, "build_opener", return_value=opener), mock.patch.object(probe.subprocess, "Popen") as launch:
                     self.assertEqual(probe.main(), 1); launch.assert_not_called()
                 self.assertEqual(json.loads((root / "evidence/report.json").read_text())["status"], "failed")
+
+    def test_bed_sweep_requires_both_prepared_keys_before_midi(self):
+        for mask in (0, 1, 128):
+            status = {"instance": "native-v2-audition", "stale": False, "exited": None,
+                      "status": {"fault": 0, "frames": 512, "routed": True, "bed_mask": mask},
+                      "values": {"master": 0, "bed_level": 1}}
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp); opener = mock.Mock()
+                opener.open.return_value = io.BytesIO(json.dumps(status).encode())
+                with mock.patch("sys.argv", self.args(root)+["--bed-sweep"]), \
+                     mock.patch.object(probe.urllib.request, "build_opener", return_value=opener), \
+                     mock.patch.object(probe.subprocess, "Popen") as launch:
+                    self.assertEqual(probe.main(), 1); launch.assert_not_called()
+                report = json.loads((root / "evidence/report.json").read_text())
+                self.assertIn("requires prepared", report["error"])

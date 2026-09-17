@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import subprocess
 import threading
+import tempfile
 import time
 import unittest
 from unittest import mock
@@ -67,6 +68,69 @@ class AuditionControlTests(unittest.TestCase):
         with self.assertRaises(ValueError): c.submit({"key": "osc1", "value": .3})
         self.assertEqual(len(c.pending), 64)
         self.assertEqual(c.outgoing.qsize(), 64)
+
+    def test_recorded_keys_require_loaded_asset_and_authoritative_ack(self):
+        c = self.controller()
+        with self.assertRaises(ValueError):
+            c.submit({"key": "bed_key", "value": 0})
+        self.assertEqual(c.sequence, 0)
+        c.receive({"type": "status", "instance": "native-v2-audition", "fault": 0,
+                   "applied": 0, "routed": True, "blocks": 2, "bed_mask": 129, "bed_key": -1})
+        for value in (1, .5, -1, 12, True):
+            with self.assertRaises(ValueError):
+                c.submit({"key": "bed_key", "value": value})
+        c.submit({"key": "bed_key", "value": 7})
+        self.assertEqual(c.values["bed_key"], -1)
+        c.receive({"type": "status", "instance": "native-v2-audition", "fault": 0,
+                   "applied": 1, "routed": True, "blocks": 3, "bed_mask": 129, "bed_key": 7})
+        self.assertEqual(c.values["bed_key"], 7)
+        c.submit({"key": "bed_release", "value": 1})
+        c.receive({"type": "status", "instance": "native-v2-audition", "fault": 0,
+                   "applied": 2, "routed": True, "blocks": 4, "bed_mask": 129, "bed_key": -1})
+        self.assertEqual(c.values["bed_key"], -1)
+
+    def test_bed_controls_have_independent_bounded_ranges(self):
+        for key, valid, invalid in (("bed_level", (0, .5, 1), (-1, 2)),
+                                    ("bed_rise", (0, 2.5, 60), (-1, 61)),
+                                    ("bed_rise_cutoff", (200, 3000, 20000), (0, 20001)),
+                                    ("bed_mellow_cutoff", (100, 400, 8000), (99, 8001)),
+                                    ("bed_mellow", (0, 1), (.5, 2)),
+                                    ("bed_fade", (0, 1), (.5, 2))):
+            for value in valid:
+                self.assertEqual(audition.validate_control({"key": key, "value": value}), (key, value))
+            for value in (*invalid, float("nan"), True):
+                with self.assertRaises(ValueError):
+                    audition.validate_control({"key": key, "value": value})
+
+    def test_startup_prepares_private_bank_before_child_and_cleans_after_exit(self):
+        from test_pad_preparation import wav_bytes
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); library = root / "pads"; library.mkdir()
+            (library / "pad_C.wav").write_bytes(wav_bytes([0]*16))
+            binary = root / "binary"; binary.touch()
+            font = root / "font"; font.touch()
+            child = mock.Mock(); child.poll.return_value = 0; child.returncode = 0
+            child.stdout.readline.return_value = ""
+            prepared = []
+            def launch(argv, **_kwargs):
+                bank = Path(argv[argv.index("--bed-bank")+1]); prepared.append(bank)
+                self.assertEqual(bank.read_bytes()[:8], b"STVBANK1")
+                self.assertNotEqual(bank.parent, library)
+                return child
+            args = ["audition", "--binary", str(binary), "--soundfont", str(font), "--listen", "127.0.0.1",
+                    "--midi-source", "fake:midi", "--audio-left", "fake:l", "--audio-right", "fake:r",
+                    "--allow-live-audition", "--pad-library", str(library)]
+            with mock.patch("sys.argv", args), mock.patch.object(audition, "HTTPServer") as server, \
+                 mock.patch.object(audition.subprocess, "Popen", side_effect=launch) as process:
+                self.assertEqual(audition.main(), 0)
+                process.assert_called_once(); server.return_value.server_close.assert_called_once()
+            self.assertFalse(prepared[0].exists())
+            self.assertEqual(list(library.iterdir()), [library / "pad_C.wav"])
+            (library / "pad_C.wav").write_bytes(b"bad")
+            with mock.patch("sys.argv", args), mock.patch.object(audition, "HTTPServer") as server, \
+                 mock.patch.object(audition.subprocess, "Popen") as process:
+                with self.assertRaises(ValueError): audition.main()
+                process.assert_not_called(); server.return_value.server_close.assert_called_once()
 
     def test_piano_brightness_range_and_acknowledgment(self):
         c = self.controller()

@@ -14,10 +14,45 @@ struct Random final:stave::PhaseSource,stave::MotionRandom {
 };
 using C=stave::AuditionControl;
 using F=stave::AuditionFault;
+std::unique_ptr<stave::SampledBed> test_bank() {
+    auto bank=std::make_unique<stave::SampledBed>();
+    std::array<double,97> l{},r{};
+    for(unsigned i=0;i<97;++i) { l[i]=(int(i)-48)/512.; r[i]=-l[i]; }
+    for(unsigned slot:{0u,7u}) {
+        std::unique_ptr<const stave::PreparedBed> sample=std::make_unique<stave::PreparedBed>(l.data(),r.data(),l.size());
+        check(bank->install(slot,sample));
+    }
+    return bank;
+}
 }
 int main(int argc,char** argv) {
     check(argc==2);
     for(unsigned frames:{256u,512u}) {
+        {
+            Random random;
+            stave::StageInstrument graph(argv[1],random,frames,0,&random,test_bank());
+            stave::AuditionSession session(graph);
+            std::array<float,512> l{},r{};
+            check(session.bed_mask()==129&&session.bed_key()==-1&&session.active_beds()==0);
+            check(!session.enqueue({1,C::BedKey,1})); // missing key does not enter queue or stop graph
+            check(!session.enqueue({1,C::BedKey,12}));
+            check(!session.enqueue({1,C::BedKey,.5}));
+            check(session.enqueue({1,C::BedKey,0}));
+            check(session.process(l.data(),r.data(),frames,nullptr,0));
+            check(session.bed_key()==0&&session.active_beds()==1&&session.applied()==1);
+            check(session.enqueue({2,C::BedRise,2}));
+            check(session.enqueue({3,C::BedRiseCutoff,4800}));
+            check(session.enqueue({4,C::BedKey,7}));
+            check(session.enqueue({5,C::ReleaseAll,1}));
+            check(session.process(l.data(),r.data(),frames,nullptr,0));
+            check(session.bed_key()==7&&session.active_beds()>=1&&session.applied()==5);
+            // Recorded key remains independent of keyboard note/pedal release.
+            check(session.enqueue({6,C::BedRelease,1}));
+            check(session.process(l.data(),r.data(),frames,nullptr,0));
+            check(session.bed_key()==-1&&session.fault()==F::None);
+            session.request_stop(); check(!session.process(l.data(),r.data(),frames,nullptr,0));
+            check(session.active_beds()==0);
+        }
         {
             // Actual graph tap stays pre-master: muted physical PCM does not
             // mute a take. Disk overflow ends only capture, not the synth.
@@ -92,11 +127,12 @@ int main(int argc,char** argv) {
         for(unsigned i=0;i<frames;++i) check(l[i]==0&&r[i]==0);
         check(s.applied()==41); // queued controls never replay after STOP
         // Every exposed control's endpoints must actually configure/render.
-        Random c; stave::StageInstrument g(argv[1],c,frames,0,&c); stave::AuditionSession controls(g);
+        Random c; stave::StageInstrument g(argv[1],c,frames,0,&c,test_bank()); stave::AuditionSession controls(g);
         std::uint64_t id=1;
         for(unsigned control=0;control<unsigned(C::Count);++control) {
             const auto kind=static_cast<C>(control);
-            for(double v:{0.,.5,1.,4.,6.,10.,20.,8000.,20000.,30000.}) if(stave::audition_value_valid(kind,v)) {
+            for(double v:{0.,.5,1.,4.,6.,7.,10.,20.,60.,100.,200.,8000.,20000.,30000.}) if(stave::audition_value_valid(kind,v)) {
+                if(kind==C::BedKey&&v!=0&&v!=7) { check(!controls.enqueue({id,kind,v})); continue; }
                 check(controls.enqueue({id,kind,v}));
                 check(controls.process(l.data(),r.data(),frames,nullptr,0)); check(controls.applied()==id++);
             }

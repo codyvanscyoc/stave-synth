@@ -22,6 +22,7 @@ def main():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--allow-muted-live-test", action="store_true")
     parser.add_argument("--piano-tone-sweep", action="store_true", help="Also exercise the separately acknowledged piano brightness control")
+    parser.add_argument("--bed-sweep", action="store_true", help="Requires isolated prepared C/G test recordings; exercise independent bed key/rise/mellow/fade/release")
     args = parser.parse_args()
     url = urllib.parse.urlsplit(args.url)
     try:
@@ -58,6 +59,15 @@ def main():
         if args.piano_tone_sweep and "piano_tone" not in report["before"]["values"]:
             raise RuntimeError("Requested piano-tone sweep is not supported by this candidate")
         report["piano_tone_sweep"] = args.piano_tone_sweep
+        if args.bed_sweep and (report["before"]["status"].get("bed_mask", 0) & 129 != 129 or
+                               "bed_level" not in report["before"]["values"]):
+            raise RuntimeError("Requested bed sweep requires prepared C/G slots and bed controls")
+        report["bed_sweep"] = args.bed_sweep
+        bed_steps = [(2, (("bed_level", .5), ("bed_key", 0))),
+                     (24, (("bed_rise", 2), ("bed_rise_cutoff", 4800), ("bed_key", 7))),
+                     (48, (("bed_rise", 0), ("bed_mellow", 1), ("bed_mellow_cutoff", 800), ("bed_key", 0))),
+                     (60, (("bed_fade", 1),)), (67, (("bed_fade", 0),)), (78, (("bed_release", 1),))]
+        bed_step = 0
         child = subprocess.Popen(["/usr/bin/pw-jack", str(args.midi_probe.resolve()), "--allow-isolated-live-midi"],
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
         start = time.monotonic(); phase = 0
@@ -69,6 +79,10 @@ def main():
             if sample["temperature"] is not None and sample["temperature"] >= 80:
                 raise RuntimeError("Thermal guard80C")
             report["samples"].append(sample)
+            if args.bed_sweep and bed_step < len(bed_steps) and elapsed >= bed_steps[bed_step][0]:
+                for key, value in bed_steps[bed_step][1]:
+                    set_control(key, value)
+                bed_step += 1
             if elapsed >= 20 and phase == 0:
                 set_control("osc1", .6); set_control("osc2", .4); phase = 1
             if elapsed >= 40 and phase == 1:
@@ -99,6 +113,12 @@ def main():
             raise RuntimeError("MIDI/block accounting mismatch; no player input expected")
         if d["xruns"] or d["over_budget"]:
             raise RuntimeError("Strict live timing gate failed")
+        if args.bed_sweep:
+            report["peak_active_beds"] = max(sample["status"].get("active_beds", 0) for sample in report["samples"])
+            if (bed_step != len(bed_steps) or not report["peak_active_beds"] or
+                    after.get("bed_key") != -1 or after.get("active_beds") != 0 or
+                    report["after"]["pending"] or report["after"]["error"]):
+                raise RuntimeError("Bed actions/progress/release acknowledgment incomplete")
         report["status"] = "passed_muted_callback_probe_not_player_qualification"
     except Exception as error:
         report.update(status="failed", error=str(error))

@@ -10,12 +10,14 @@ namespace stave {
 enum class AuditionControl : unsigned {
     Piano, Osc1, Osc2, Cutoff, Wet, Master, Wave1, Wave2, Attack, Release,
     Resonance, PianoRoom, PianoReverb, DelayWet, DelayFeedback, Shimmer,
-    ShimmerMix, Reverb, Freeze, ReleaseAll, PianoTone, Count
+    ShimmerMix, Reverb, Freeze, ReleaseAll, PianoTone,
+    BedLevel, BedKey, BedRise, BedRiseCutoff, BedMellow, BedMellowCutoff, BedFade, BedRelease, Count
 };
 inline constexpr std::array<const char*,unsigned(AuditionControl::Count)> audition_names{
     "piano","osc1","osc2","cutoff","wet","master","wave1","wave2","attack","release",
     "resonance","piano_room","piano_reverb","delay_wet","delay_feedback","shimmer",
-    "shimmer_mix","reverb","freeze","release_all","piano_tone"};
+    "shimmer_mix","reverb","freeze","release_all","piano_tone",
+    "bed_level","bed_key","bed_rise","bed_rise_cutoff","bed_mellow","bed_mellow_cutoff","bed_fade","bed_release"};
 inline bool audition_value_valid(AuditionControl c,double v) noexcept {
     if(!std::isfinite(v)) return false;
     switch(c) {
@@ -23,9 +25,14 @@ inline bool audition_value_valid(AuditionControl c,double v) noexcept {
     case AuditionControl::Attack: return v>=0&&v<=10000;
     case AuditionControl::Release: return v>=0&&v<=30000;
     case AuditionControl::Resonance: return v>=.5&&v<=10;
+    case AuditionControl::BedKey: return v>=0&&v<=11&&v==std::floor(v);
+    case AuditionControl::BedRise: return v>=0&&v<=60;
+    case AuditionControl::BedRiseCutoff: return v>=200&&v<=20000;
+    case AuditionControl::BedMellowCutoff: return v>=100&&v<=8000;
     case AuditionControl::Wave1: case AuditionControl::Wave2: return v>=0&&v<=4&&v==std::floor(v);
     case AuditionControl::Reverb: return v>=0&&v<=6&&v==std::floor(v);
     case AuditionControl::Shimmer: case AuditionControl::Freeze: case AuditionControl::ReleaseAll:
+    case AuditionControl::BedMellow: case AuditionControl::BedFade: case AuditionControl::BedRelease:
         return v==0||v==1;
     case AuditionControl::DelayFeedback: return v>=0&&v<=.99;
     case AuditionControl::Count: return false;
@@ -47,6 +54,7 @@ public:
     // Optional one-take transport must outlive this session and its callback.
     // Attaching is pre-activation only; file worker/start/stop UI is separate.
     explicit AuditionSession(StageInstrument& instrument,RecordingCapture<>* capture=nullptr):graph_(instrument),capture_(capture) {
+        for(unsigned i=0;i<12;++i) if(graph_.bed_loaded(i)) bed_mask_|=1u<<i;
         config_.owned_motion=true;
         config_.fader1=config_.fader2=0; // start piano-only; no saved patch imported
         config_.output.volume=0; // always silent until explicitly raised
@@ -57,6 +65,8 @@ public:
     // acknowledged as applied; no MIDI note-off can be lost in this queue.
     bool enqueue(AuditionCommand c) noexcept {
         if(fault()!=AuditionFault::None||!c.id||c.id<=previous_id_||!audition_value_valid(c.control,c.value)) return false;
+        if(c.control>=AuditionControl::BedLevel&&(!bed_mask_||
+           (c.control==AuditionControl::BedKey&&!(bed_mask_&(1u<<unsigned(c.value)))))) return false;
         const auto h=head_.load(std::memory_order_relaxed),t=tail_.load(std::memory_order_acquire);
         if(h-t>=capacity) return false;
         commands_[h%capacity]=c; previous_id_=c.id;
@@ -73,6 +83,9 @@ public:
     std::uint64_t unsupported_midi() const noexcept { return unsupported_.load(std::memory_order_relaxed); }
     std::uint64_t quantized_midi() const noexcept { return quantized_.load(std::memory_order_relaxed); }
     std::uint64_t piano_full_scale() const noexcept { return full_scale_.load(std::memory_order_relaxed); }
+    unsigned bed_mask() const noexcept { return bed_mask_; } // immutable before publication
+    unsigned active_beds() const noexcept { return active_beds_.load(std::memory_order_relaxed); }
+    int bed_key() const noexcept { return bed_key_.load(std::memory_order_relaxed); }
     // Invalid output pointers leave memory untouched. Driver must obtain valid
     // JACK buffers and silence them on graph-size/rate mismatch itself.
     bool process(float* l,float* r,unsigned frames,const AuditionMidi* events,unsigned count) noexcept {
@@ -106,6 +119,7 @@ public:
             request_stop(AuditionFault::Engine); return silence(l,r,frames);
         }
         full_scale_.store(graph_.stats().full_scale_piano_samples,std::memory_order_relaxed);
+        active_beds_.store(graph_.active_beds(),std::memory_order_relaxed);
         // Same pre-volume/BTL tap as v1. Recorder failures are separate from
         // instrument faults: a stalled disk must never interrupt playing.
         if(capture_) capture_->push(graph_.recording_tap(0),graph_.recording_tap(1),frames);
@@ -146,6 +160,18 @@ private:
         case C::Freeze: return graph_.freeze(v!=0);
         case C::ReleaseAll: return v==0||graph_.key_command(graph_.frame_position(),StageAction::ReleaseAll,0,0);
         case C::Piano: config_.piano.volume=v; break;
+        case C::BedLevel: config_.bed.level=v; break;
+        case C::BedMellow: config_.bed.mellow=v!=0; break;
+        case C::BedMellowCutoff: config_.bed.mellow_hz=v; break;
+        case C::BedRise: bed_rise_=v; return true;
+        case C::BedRiseCutoff: bed_rise_cutoff_=v; return true;
+        case C::BedKey:
+            if(!graph_.trigger_bed(unsigned(v),bed_rise_,bed_rise_cutoff_)) return false;
+            bed_key_.store(int(v),std::memory_order_relaxed); return true;
+        case C::BedFade: return graph_.fade_bed(v!=0);
+        case C::BedRelease:
+            if(v!=0) { graph_.release_bed(); bed_key_.store(-1,std::memory_order_relaxed); }
+            return true;
         // Brightness0..1 ->200..20000Hz; full bright is the auditioned default.
         case C::PianoTone: config_.piano.highcut_hz=v==1?20000:200*std::pow(100.,v); break;
         case C::Osc1: config_.fader1=v; break;
@@ -170,12 +196,17 @@ private:
     }
     bool silence(float* l,float* r,unsigned n) noexcept {
         if(capture_) capture_->finish(CaptureEnd::EngineStopped);
+        active_beds_.store(0,std::memory_order_relaxed); bed_key_.store(-1,std::memory_order_relaxed);
         graph_.stop(); std::fill_n(l,n,0); std::fill_n(r,n,0); return false;
     }
     static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
     static_assert(std::atomic<AuditionFault>::is_always_lock_free);
     StageInstrument& graph_;
     RecordingCapture<>* capture_{};
+    unsigned bed_mask_{};
+    double bed_rise_{},bed_rise_cutoff_{3000};
+    std::atomic<unsigned> active_beds_{0};
+    std::atomic<int> bed_key_{-1};
     StageInstrumentConfig config_{};
     std::array<AuditionCommand,capacity> commands_{};
     alignas(64) std::atomic<std::uint64_t> head_{0},tail_{0};
