@@ -29,6 +29,7 @@ python3 tools/compare_stage_master.py --ambience-dir /absolute/path/to/six-chann
 python3 tools/compare_stage_instrument.py --soundfont /absolute/path/to/existing.sf2
 python3 tools/compare_stage_output.py
 python3 tools/compare_stage_splits.py
+python3 tools/compare_stage_motion.py
 ```
 
 Core tests require a C++17 compiler and lock-free 64-bit atomics. Sound tests
@@ -74,6 +75,10 @@ Raw-key split ranges/crossfades are now owned by StageInstrument:438,272 weights
 match exactly, and two extra full-chain split fixtures pass (ten runs total).
 Transpose/octave and pedal-release behavior are covered; the independent
 overload gate remains open. See [split evidence](../docs/pi4/NATIVE_V2_SPLITS.md).
+Standalone global motion/filter drift components now pass original non-merged
+comparisons (25,920 LFO and6,000 filter blocks), but are not yet connected to
+StageInstrument. Requires NumPy/SciPy, no Faust/SF2 for this component runner.
+See [motion evidence](../docs/pi4/NATIVE_V2_MOTION.md) before integrating them.
 Never run these compilers/tests on a playing Pi: offline means no devices,
 not zero CPU or memory contention.
 
@@ -123,6 +128,7 @@ retain current-boundary admission. Do not dispatch one event through both.
 | Piano | StageCore owns real int16 FluidSynth, velocity/pedal ownership, matched dry piano chain and downstream room; separate M1 float experiment | Pitch bend, live prepared program changes, library-internal real-time audit |
 | Shared effects | Native delay/reverse/Aurora; seven reverb types/freeze; source-owned pad/filter/returns, wet filter and piano sends | Global modulation/sympathetic, overload sound-difference review, click/transition redesign |
 | Stage keys | Integrated raw-key/transpose/sustain/sostenuto ownership; StageInstrument owns per-layer ranges and smoothstep split weights | Live timestamped MIDI protocol, preset octave-stash integration |
+| Motion | Separate two-LFO clock/ramp/amp/pan/bus/receive and filter drift/wobble components match pinned non-merged math | Graph ownership/key-sync/poly/merged-path integration, production randomness, per-voice pitch drift |
 | Output | StageInstrument owns source/FX/master/final float32 output and original volume/BTL math; recorder tap; original-source fixture passes | High-gain sound acceptance, live backend/recorder transfer, end-to-end latency |
 | Worship functions | Shared-reverb freeze and raw-key splits above; nothing removed from preserved v1.2 | Independent sampled bed/drone, organ, recorder, macros, scenes and live control integration |
 | Browser/state | Existing implementation retained as reference | Versioned native protocol, preset conversion, five-fader UI integration |
@@ -180,7 +186,8 @@ sound gate remains open; do not replace it with the passing common-input
 diagnostic. See [integration evidence](../docs/pi4/NATIVE_V2_INSTRUMENT.md).
 Final float32 output/volume/BTL and recorder tap are now owned and compared;
 reverb replay demonstrates the overload input-rounding divergence. Complete
-remaining modulation/features, sound acceptance, controls and event adapter.
+motion graph integration (standalone components now compared), remaining
+features, sound acceptance, controls and event adapter.
 Keep whole-block piano
 processing separate from MIDI event slicing; do not silently change the proven
 cadence semantics. Bring effects and beds across only with their

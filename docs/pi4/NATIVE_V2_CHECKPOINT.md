@@ -1,6 +1,17 @@
 # Native-v2 checkpoint — September 17, 2026
 
-## Latest: raw-key splits integrated through final PCM
+## Latest: standalone motion and filter-wander components
+
+[NATIVE_V2_MOTION.md](NATIVE_V2_MOTION.md) records two native LFOs, ramps,
+amp/pan/bus/receive decisions and global filter drift/wobble. Pinned non-merged
+comparisons pass:25,920 LFO blocks (synthetic audio worst1.077e-14),6,000 filter
+blocks (cutoff worst3.638e-12Hz). UBSan/scoped allocation guards and549legacy
+tests plus Node pass. Components are NOT yet connected to StageInstrument;
+next integrate in original order and compare actual Faust/merged paths.
+The full graph was unchanged/not rerun; its earlier high-gain sound gate
+remains open. No Pi contact/deployment or field-test/latency qualification.
+
+## Earlier: raw-key splits integrated through final PCM
 
 [NATIVE_V2_SPLITS.md](NATIVE_V2_SPLITS.md) records owned piano/OSC1/OSC2/shimmer
 key ranges and crossfades. 438,272 weights match exactly; two independent

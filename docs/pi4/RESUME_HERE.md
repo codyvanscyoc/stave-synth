@@ -6,7 +6,18 @@ Read this first; earlier review/deployment notes describe historical checkpoints
 
 ## September16 post-worship: native-v2 implementation authorized
 
-September17 latest: [NATIVE_V2_SPLITS.md](NATIVE_V2_SPLITS.md).
+September17 latest: [NATIVE_V2_MOTION.md](NATIVE_V2_MOTION.md).
+Standalone StageMotion (two global LFOs/routing/ramps) and FilterMotion
+(drift/wobble) pass pinned-original NON-MERGED component comparisons:
+25,920 LFO blocks, worst synthetic-audio1.077e-14;6,000 filter blocks, cutoff
+worst3.638e-12Hz, exact walk states/draw counts. UBSan/scoped zero-new guards
+and549legacytests plus Node pass. These components are NOT connected to
+StageInstrument yet; next integrate them in original source/filter/FX order,
+including key-sync, poly ownership and merged-path comparisons. No Pi contact
+or deployment. Prior full-graph high-gain1e-6 gate still open; no field-test or
+live256 claim. See the new document's explicit integration boundaries.
+
+Previous split checkpoint: [NATIVE_V2_SPLITS.md](NATIVE_V2_SPLITS.md).
 StageInstrument now owns raw-key piano/OSC1/OSC2/shimmer split ranges and
 smoothstep crossfades through key_command(). 438,272 weights match the pinned
 original exactly. New full-chain split fixtures pass at512/256, including
