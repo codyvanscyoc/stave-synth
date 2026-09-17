@@ -6,7 +6,17 @@ Read this first; earlier review/deployment notes describe historical checkpoints
 
 ## September16 post-worship: native-v2 implementation authorized
 
-September17 latest: [NATIVE_V2_SHARED_EFFECTS.md](NATIVE_V2_SHARED_EFFECTS.md).
+September17 latest: [NATIVE_V2_MASTER.md](NATIVE_V2_MASTER.md).
+Native master EQ/HP/shuffler, compression/sidechains, FX bypass, saturation and
+limiter pass eight offline comparisons at 512/256; worst audio difference
+5.106e-10. Default limiter ceiling and exact-threshold zero-knee corrections
+are explicit, independently tested differences from v1.2. UBSan, scoped zero-new
+guards and 549 legacy tests plus Node pass. Output remains PRE bridge gain;
+source/FX/master ownership is not yet joined. Next: wet filter/modulation and
+owned full graph/remaining features. No Pi contact or deployment; NOT a
+field-testable instrument, and live 256 remains unsupported.
+
+Previous effects checkpoint: [NATIVE_V2_SHARED_EFFECTS.md](NATIVE_V2_SHARED_EFFECTS.md).
 Native delay and all seven shared reverb types pass exact output/control-state
 comparisons, including freeze and backend changes. Composed pad/filter/delay/
 reverb/split routing passes at 512/256 with worst difference 1.665e-16, including

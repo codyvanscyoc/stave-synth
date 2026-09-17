@@ -1,6 +1,16 @@
 # Native-v2 checkpoint — September 17, 2026
 
-## Latest: shared effects and composed pad ambience compared
+## Latest: master output chain compared
+
+[NATIVE_V2_MASTER.md](NATIVE_V2_MASTER.md) records eight 512/256 comparisons of
+master EQ/HP/shuffler, compression/sidechains, FX bypass, saturation and limiter.
+Worst difference 5.106e-10; explicit ceiling and zero-knee corrections have
+separate regressions. UBSan, scoped allocation guards and 549 legacy tests plus
+Node pass. PRE bridge gain, separate component; full source/FX/master ownership,
+remaining features and live integration/qualification remain open. No Pi contact
+or deployment, no supported live 256 or field-testable replacement claimed.
+
+## Earlier: shared effects and composed pad ambience compared
 
 [NATIVE_V2_SHARED_EFFECTS.md](NATIVE_V2_SHARED_EFFECTS.md) records exact native
 delay/all-seven-reverb comparisons, freeze/backend transitions and composed pad
