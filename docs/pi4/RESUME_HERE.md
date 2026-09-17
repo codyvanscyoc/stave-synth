@@ -4,6 +4,26 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
+## September17: home Wi-Fi configured; moved-device boot verified
+
+After a clean shutdown/move, the first apparent startup failure was simply a
+switched-off power outlet. Once powered, the Pi booted native and Tailscale
+automatically. Ethernet DHCP192.168.1.231, Tailscale100.109.54.80. Home Wi-Fi
+profile `ProspectSecret` was then added through encrypted SSH with autoconnect;
+password is NOT recorded in repo/log documentation. Wi-Fi DHCP192.168.4.33 and
+direct Mac HTTP8082 check pass. Fallback hotspot became inactive and remains
+autoconnect=no; church CFBC profile preserved. Tailscale remained Running/online.
+
+Stave supervisorPID1088,NRestarts0 after boot/network change. No selected Yamaha
+MIDI/audio ports are currently present: controller truthfully stays up with
+attempts0 and reports missing/wrong device, only Dummy Output/MIDI Through.
+No native audio child started, master/default display0. Accepted saved tone file
+remains byte-identical SHA256
+`0bf5d9066b02c4a4e1bb1fab0c7293c2bc055e5c4ad6f7bcc17993c8c307bfc3`;
+it will be acknowledged only when selected hardware appears. Firmware0x0,52.5°C.
+Next physical step: connect desired keyboard/interface, confirm route recovery,
+then Ethernet may be unplugged and Tailscale/Wi-Fi checked alone.
+
 ## September17: private Tailscale SSH and UI tunnel VERIFIED
 
 User requested private remote SSH from home and authorized Tailscale on Pi/Mac.
