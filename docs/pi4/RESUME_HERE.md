@@ -4,6 +4,32 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
+## September16 post-worship: native-v2 implementation authorized
+
+This worktree is `pi4-native-engine-v2`, separate from preserved pi4-stage-pro.
+The user reports tonight's512-frame build played well under a beginner/light
+workload, then explicitly authorized preserving v1.2 and implementing a unified
+successor. Read [NATIVE_V2_PLAN.md](NATIVE_V2_PLAN.md) and native_v2/README.md.
+The historical freeze below is not a prohibition on this offline development;
+it remains a reminder not to interrupt the normal Pi without a maintenance window.
+
+Preserved tag pi4-v1.2-stage-snapshot-20260916 targets57bb94c; complete Git bundle
+and post-worship config archive are private. Actual Pi app remains cleanf600c7e,
+PID185009/invocation4e958aafdb1341d7958af803acd8ae4d, graph512/48000 and Yamaha
+policy unchanged at21:43CDT. No native-v2 deployment, service restart, audio
+device opening or live stress test is authorized by prototype test commands.
+Source/compiler tests and offline rendering on Mac do not qualify Pi4 timing.
+
+Implementation: native_v2 owns a bounded sample-position event scheduler and an
+offline piano/Faust oscillator slice. It does not replace existing voice/ADSR,
+full FX/bed/organ/scene behavior or the UI; follow milestone-specific evidence.
+
+M0/M1 checkpoint: [NATIVE_V2_CHECKPOINT.md](NATIVE_V2_CHECKPOINT.md). Core plus
+actual Faust/FluidR3 offline tests and both diagnostic WAVs pass; fixtures are
+identical at512/256, NOT live Pi4 qualification. Existing549-test suite and
+Node checks pass. Sanitizers remain unverified due to pre-main startup stalls.
+M2-M6 remain open; next is pinned v1.2 musical fixtures and voice/piano parity.
+
 ## Tonight's freeze and deferred architecture question
 
 User deferred further optimization until AFTER the September16 worship

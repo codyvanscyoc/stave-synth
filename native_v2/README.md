@@ -1,0 +1,113 @@
+# Stave native-v2: offline foundation, not the stage application
+
+This is an opt-in C++17 prototype on `pi4-native-engine-v2`. The working
+instrument is preserved separately as `pi4-v1.2-stage-snapshot-20260916` on the
+Pi4 stage line. Nothing here installs a service or changes the normal synth.
+See [the implementation plan](../docs/pi4/NATIVE_V2_PLAN.md) for promotion gates.
+See [the saved checkpoint](../docs/pi4/NATIVE_V2_CHECKPOINT.md) for actual test
+results, artifact locations and the unresolved sanitizer check.
+
+## Run only offline
+
+From this checkout, using already-installed dependencies:
+
+```sh
+python3 tools/run_native_v2.py
+python3 tools/run_native_v2.py --sanitize
+python3 tools/run_native_v2.py --with-sound
+python3 tools/run_native_v2.py --with-sound --soundfont /absolute/path/to/existing.sf2
+```
+
+Core tests require a C++17 compiler and lock-free 64-bit atomics. Sound tests
+also require Faust, its C headers and a C compiler. An explicit SoundFont
+requires FluidSynth headers/library; no sample is bundled or downloaded. Use
+`--faust-prefix` / `--fluidsynth-prefix` for nonstandard installed prefixes.
+Missing requested dependencies fail explicitly: a requested piano is never
+silently replaced with an oscillator. Nothing opens an audio/MIDI device,
+network listener, normal state path or existing application module.
+
+Artifacts go into a new temporary directory (printed at startup), or a NEW
+`--output-dir` whose parent already exists. Existing paths are refused. Keep
+`report.json` and its binaries/WAVs together. The report records commands,
+source hashes and host identity, and rejects source changes during the run.
+The two eight-second float WAVs are dry diagnostic fixtures, not v1.2 demos.
+`--sanitize` instruments core tests only, not generated Faust/FluidSynth.
+Never run these compilers/tests on a playing Pi: offline means no devices,
+not zero CPU or memory contention.
+
+## Command and ownership contract
+
+- One producer calls `Engine::enqueue`; one audio owner calls `process`.
+  Backend construction/destruction happens while that owner is stopped.
+- The fixed 256-entry SPSC queue accepts nondecreasing absolute frame times;
+  equal-time events retain submission order. Each process call consumes at
+  most its initial queue snapshot. Later arrivals wait for the next call.
+- Supported commands: note-on/off, sustain, OSC1/OSC2 blend and scheduled
+  panic. MIDI velocity-zero note-on releases. Blend/sustain values are finite
+  and in `[0,1]`; external signed/JSON fields must be validated before casting.
+- Sample-position dispatch subdivides each block. An event exactly at its end
+  belongs to the next block; late events clamp to its beginning and are counted.
+  FluidSynth's internal render block still constrains piano onset. Sample-timed
+  command delivery is NOT a physical latency or sample-exact piano claim.
+- Queue overflow is a terminal engine fault: the audio owner panics and
+  silences output; no unsafe concurrent reset or stale-event resume. Reconstruct
+  only while stopped. Invalid process arguments return false without touching
+  buffers; a future driver must implement its own invalid-call silence.
+- **Scheduled panic is not yet a live emergency STOP path.** It cannot jump
+  ahead of a previously queued future event. Live integration needs a separate
+  priority stop mechanism, plus safe release of every source and ambience tail.
+- Engine telemetry is atomic but not a transactionally coherent snapshot.
+  `SoundBackend::stats`, health and slot counts belong to the audio owner;
+  future UI access needs an explicit telemetry transfer, not concurrent reads.
+- Backend failures and engine faults are separate. The offline harness checks
+  both. A live adapter must propagate both truthfully into readiness/recovery.
+
+## Feature ledger
+
+| Area | Implemented in this prototype | Not yet migrated or qualified |
+| --- | --- | --- |
+| Timing | Bounded event scheduling, boundary/fault tests, single audio owner | Live MIDI timestamps, priority STOP, control coalescing, driver/recovery |
+| Oscillators | Existing Faust 12-slot bank, separate generated stereo stems, fixed-capacity notes, sustain, blend | Full v1.2 ADSR/retrigger/unison/modulation, random phase behavior, click-free stealing/toggles, independent FX routing |
+| Piano | Explicitly loaded FluidSynth SF2, native float rendering, 32-voice cap, sustain | v1.2 gain/velocity/piano-chain match, sostenuto, program changes, library-internal real-time audit |
+| Output | Dry stereo mix, finite checks, counted emergency export clamp, WAV | Complete FX/filter/limiter graph, live backend, end-to-end latency |
+| Worship functions | None silently removed from the preserved working build | Independent sampled bed/drone, freeze, organ, recorder, splits, macros, scenes |
+| Browser/state | Existing implementation retained as reference | Versioned native protocol, preset conversion, five-fader UI integration |
+| Qualification | Offline tests and diagnostic render only | Pi4 build/timing, sound parity, actual hardware/rehearsal acceptance |
+
+The prototype uses deterministic oscillator phase, simplified gates, no v1.2
+effects, and different piano gain/precision. Do not compare its raw loudness or
+timbre with the stage instrument and call the difference an improvement.
+Reuse of DSP source alone does not preserve a complete sound.
+
+## What the tests establish
+
+The core suite checks exact event placement, equal/future/end/late ordering,
+256/512 scheduling equivalence, validation, full-queue fault silence, frame
+overflow, bounded initial snapshots and a 20,000-event concurrent SPSC exercise.
+Its allocation probe checks C++ `new`/`new[]` in the engine plus a fixed fake
+backend only. It does not prove third-party code never calls malloc, blocks,
+logs or misses a deadline. Sanitizers are correctness checks, not timing tests.
+
+Sound tests exercise actual generated Faust, optional actual FluidSynth,
+note/pedal/channel handling, repeated-note stealing, render bounds, reported
+clipping, 256/512 fixture equivalence, and post-panic silence. Missing-SF2
+diagnostic errors are expected in the explicit dependency-failure test.
+The wrapper also checks direct WAV overwrite/symlink refusal.
+
+Keep the existing device-free regression suite separate:
+
+```sh
+python3 tools/run_offline_tests.py
+```
+
+Do not discover/run arbitrary legacy stress tests. See
+[engineering validation](../docs/pi4/ENGINEERING_VALIDATION.md).
+
+## Next: prove musical compatibility before adding breadth
+
+Freeze reference patch state, asset hashes, MIDI/pedal timestamps, seeds,
+sample rate, gain alignment and comparison tolerances. Port the existing
+voice/envelope and piano chain into the same owner, then verify dry and layered
+sound against those fixtures. Bring effects and beds across only with their
+tail/transition tests. Pi4 speed measurements and any deployment require a
+separate off-stage window; no claim here establishes that 256 frames will work.

@@ -3,7 +3,16 @@
 Start resumed work with `docs/pi4/RESUME_HERE.md`; it records the latest saved
 operational state, evidence locations, user decisions and unresolved findings.
 
-This checkout is for the Pi4 stage edition. Use the `pi4-stage-pro` branch and the requirements in `docs/pi4/PRODUCT_VISION.md`. The Pi5 and Mac lines are separate; do not push, merge, or deploy these changes to `main` or `mac-port` unless the user explicitly expands the task.
+This checkout is the user-authorized Pi4 native-engine successor experiment.
+Use `pi4-native-engine-v2` here; preserve `pi4-stage-pro` and the annotated
+`pi4-v1.2-stage-snapshot-20260916` tag as the working version. The v1.2 label is
+a preservation label, not a claim of full release qualification. The user
+authorized organizing and implementing this successor on September 16 after
+successful light-load worship use. Follow `docs/pi4/PRODUCT_VISION.md`.
+Do not push, merge, or deploy onto Pi5 `main`, `mac-port`, or the running stage
+checkout. Native-v2 starts as an offline prototype: no physical output, MIDI
+connections, service installation, production config writes or runtime imports.
+See `docs/pi4/NATIVE_V2_PLAN.md` for milestone and acceptance boundaries.
 
 The preserved Pi4 baseline is tag `pi4-stage-baseline-2026-09-14` at `d0142f0b811baa4ba4fa216d55c6d5e4b0ac7dbd`. See `docs/pi4/BASELINE.md` for backup scope. The baseline has been used on stage, but it has not passed the new release gates.
 
