@@ -21,6 +21,7 @@ def main():
     parser.add_argument("--midi-probe", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--allow-muted-live-test", action="store_true")
+    parser.add_argument("--stage-candidate", action="store_true", help="Explicitly select native-v2-stage identity and its isolated MIDI port; never legacy stage")
     parser.add_argument("--piano-tone-sweep", action="store_true", help="Also exercise the separately acknowledged piano brightness control")
     parser.add_argument("--bed-sweep", action="store_true", help="Requires isolated prepared C/G test recordings; exercise independent bed key/rise/mellow/fade/release")
     args = parser.parse_args()
@@ -36,19 +37,27 @@ def main():
     out = args.output_dir.resolve(); out.mkdir(mode=0o700, exist_ok=False)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     report = {"status": "started", "scope": "muted physical-driver callback test; not player or analog-latency acceptance", "samples": [], "commands": []}
+    expected_instance = "native-v2-stage" if args.stage_candidate else "native-v2-audition"
+    epoch = None
     def get():
+        nonlocal epoch
         with opener.open(args.url + "/status", timeout=2) as response:
             data = json.load(response)
-        if (data.get("instance") != "native-v2-audition" or data.get("stale") or data.get("exited") is not None or
+        if (data.get("instance") != expected_instance or data.get("stale") or data.get("exited") is not None or
                 data["status"].get("fault") != 0 or data["status"].get("frames") != 512 or not data["status"].get("routed")):
             raise RuntimeError("Isolated512 owner not healthy/routed/advancing")
+        if args.stage_candidate:
+            current = data.get("epoch")
+            if not current or data.get("runtime", {}).get("restoring", True) or (epoch is not None and epoch != current):
+                raise RuntimeError("Candidate epoch changed or restoration incomplete; test aborted")
+            epoch = current
         if data["values"].get("master") != 0:
             raise RuntimeError("Muted-only probe refused: master is not zero")
         return data
     def set_control(key, value):
         if key == "master": raise RuntimeError("Probe may never open master startup gate")
         request = urllib.request.Request(args.url + "/control", data=json.dumps({"key": key, "value": value}).encode(),
-                                         headers={"Content-Type": "application/json", "Origin": args.url}, method="POST")
+                                         headers={"Content-Type": "application/json", "Origin": args.url, "X-Stave-Epoch": epoch or ""}, method="POST")
         with opener.open(request, timeout=2) as response:
             data = json.load(response)
         if not data.get("queued"): raise RuntimeError("Control not queued")
@@ -68,7 +77,7 @@ def main():
                      (48, (("bed_rise", 0), ("bed_mellow", 1), ("bed_mellow_cutoff", 800), ("bed_key", 0))),
                      (60, (("bed_fade", 1),)), (67, (("bed_fade", 0),)), (78, (("bed_release", 1),))]
         bed_step = 0
-        child = subprocess.Popen(["/usr/bin/pw-jack", str(args.midi_probe.resolve()), "--allow-isolated-live-midi"],
+        child = subprocess.Popen(["/usr/bin/pw-jack", str(args.midi_probe.resolve()), "--allow-isolated-live-midi", *(["--stage-candidate"] if args.stage_candidate else [])],
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
         start = time.monotonic(); phase = 0
         while time.monotonic() - start < 100:

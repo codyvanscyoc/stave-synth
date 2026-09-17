@@ -50,7 +50,8 @@ struct Probe {
 };
 }
 int main(int argc,char** argv) {
-    if(argc!=2||std::strcmp(argv[1],"--allow-isolated-live-midi")) {
+    const bool candidate=argc==3&&!std::strcmp(argv[2],"--stage-candidate");
+    if((argc!=2&&!candidate)||std::strcmp(argv[1],"--allow-isolated-live-midi")) {
         std::cerr<<"Explicit --allow-isolated-live-midi required\n"; return 2;
     }
     Probe probe; jack_status_t status{};
@@ -58,7 +59,7 @@ int main(int argc,char** argv) {
     if(!client) return 1;
     bool active=false;
     const auto finish=[&](int code) { if(active) jack_deactivate(client); jack_client_close(client); return code; };
-    const char* destination="stave-v2-audition-listen:midi_in";
+    const char* destination=candidate?"stave-v2-stage-candidate:midi_in":"stave-v2-audition-listen:midi_in";
     auto* target=jack_port_by_name(client,destination);
     if(!target||std::strcmp(jack_port_type(target),JACK_DEFAULT_MIDI_TYPE)||!(jack_port_flags(target)&JackPortIsInput)||
        jack_get_sample_rate(client)!=48000||jack_get_buffer_size(client)!=512) return finish(1);

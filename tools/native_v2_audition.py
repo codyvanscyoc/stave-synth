@@ -13,6 +13,7 @@ import json
 import math
 from pathlib import Path
 import queue
+import re
 import signal
 import subprocess
 import tempfile
@@ -53,8 +54,9 @@ def validate_control(data):
 
 
 class Controller:
-    def __init__(self, child):
+    def __init__(self, child, instance="native-v2-audition"):
         self.child = child
+        self.instance = instance
         self.lock = threading.Lock()
         self.outgoing = queue.Queue(maxsize=64)
         self.sequence = 0
@@ -89,7 +91,7 @@ class Controller:
                 if not message.get("ok"):
                     self.pending.pop(seq, None)
                     self.error = f"Native owner rejected control {seq}"
-            elif message.get("type") == "status" and message.get("instance") == "native-v2-audition":
+            elif message.get("type") == "status" and message.get("instance") == self.instance:
                 if message.get("blocks", 0) > self.status.get("blocks", 0):
                     self.last_progress = time.monotonic()
                 self.status = message
@@ -103,7 +105,7 @@ class Controller:
 
     def snapshot(self):
         with self.lock:
-            return dict(instance="native-v2-audition", status=self.status.copy(), values=self.values.copy(),
+            return dict(instance=self.instance, status=self.status.copy(), values=self.values.copy(),
                         pending=len(self.pending), error=self.error, exited=self.child.poll(),
                         stale=time.monotonic() - self.last_status > 3 or time.monotonic() - self.last_progress > 3)
 
@@ -134,7 +136,19 @@ class Controller:
                 self.error = str(error)
 
 
+def authority_set(address, port, hostnames=()):
+    result = {f"{ipaddress.ip_address(address)}:{port}"}
+    for hostname in hostnames:
+        name = hostname.lower()
+        if (len(name) > 253 or not name.endswith(".local") or
+                any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", part) for part in name.split("."))):
+            raise ValueError("Explicit valid .local hostname required")
+        result.add(f"{name}:{port}")
+    return frozenset(result)
+
+
 def handler_for(controller, authority):
+    authorities = frozenset((authority,)) if isinstance(authority, str) else frozenset(authority)
     class Handler(BaseHTTPRequestHandler):
         def setup(self):
             super().setup()
@@ -155,8 +169,8 @@ def handler_for(controller, authority):
             self.wfile.write(body)
 
         def do_GET(self):
-            if self.headers.get("Host") != authority:
-                return self.reply(403, {"error": "Use the displayed private-IP URL"})
+            if self.headers.get("Host", "").lower() not in authorities:
+                return self.reply(403, {"error": "Use an explicitly configured Stave address"})
             if self.path == "/":
                 return self.reply(200, (ROOT / "native_v2/audition.html").read_bytes(), "text/html; charset=utf-8")
             if self.path == "/status":
@@ -166,16 +180,23 @@ def handler_for(controller, authority):
             self.reply(404, {"error": "Unknown audition endpoint"})
 
         def do_POST(self):
-            if (self.path != "/control" or self.headers.get("Host") != authority or
-                    self.headers.get("Origin") != "http://" + authority or
+            host = self.headers.get("Host", "").lower()
+            if (self.path not in ("/control", "/save", "/restart-audio", "/routes") or host not in authorities or
+                    self.headers.get("Origin", "").lower() != "http://" + host or
                     self.headers.get("Content-Type") != "application/json" or self.headers.get("Transfer-Encoding")):
                 return self.reply(403, {"error": "Same-origin JSON control required"})
             try:
                 length = int(self.headers.get("Content-Length", "0"))
-                if not 1 <= length <= 512:
+                if not 1 <= length <= (1024 if self.path == "/routes" else 512):
                     raise ValueError("Bounded request body required")
-                seq = controller.submit(json.loads(self.rfile.read(length)))
-                self.reply(202, {"queued": seq, "applied": False})
+                data = json.loads(self.rfile.read(length))
+                if hasattr(controller, "dispatch"):
+                    self.reply(202, controller.dispatch(self.path, data, self.headers.get("X-Stave-Epoch")))
+                elif self.path == "/control":
+                    seq = controller.submit(data)
+                    self.reply(202, {"queued": seq, "applied": False})
+                else:
+                    raise ValueError("Not available in this audition")
             except (ValueError, TypeError, OSError) as error:
                 self.reply(400, {"error": str(error)})
     return Handler
@@ -194,6 +215,7 @@ def main():
     parser.add_argument("--seconds", type=int, default=1800)
     parser.add_argument("--allow-live-audition", action="store_true")
     parser.add_argument("--pad-library", type=Path, help="Explicit WAV library; prepared privately before audio starts, never modified")
+    parser.add_argument("--hostname", action="append", default=[], help="Additional explicit .local hostname for same-origin control")
     args = parser.parse_args()
     address = ipaddress.ip_address(args.listen)
     if (not args.allow_live_audition or address.version != 4 or not address.is_private or address.is_unspecified or
@@ -201,6 +223,10 @@ def main():
             not args.binary.is_file() or not args.soundfont.is_file()):
         parser.error("Explicit live opt-in, private IPv4,8082..8090,10..3600 seconds and existing binary/SF2 required")
     authority = f"{address}:{args.port}"
+    try:
+        authorities = authority_set(str(address), args.port, args.hostname)
+    except ValueError as error:
+        parser.error(str(error))
     # Bind first. A port conflict must not leave an orphan audio process.
     server = HTTPServer((str(address), args.port), BaseHTTPRequestHandler)
     server.timeout = .2
@@ -231,7 +257,7 @@ def main():
         threads = [threading.Thread(target=controller.read, daemon=True), threading.Thread(target=controller.write, daemon=True)]
         for thread in threads:
             thread.start()
-        server.RequestHandlerClass = handler_for(controller, authority)
+        server.RequestHandlerClass = handler_for(controller, authorities)
         print(f"ISOLATED AUDITION ONLY: http://{authority} — starts MUTED; not the normal Stave UI", flush=True)
         while not stopped and child.poll() is None:
             server.handle_request()

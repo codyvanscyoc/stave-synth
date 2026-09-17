@@ -15,6 +15,18 @@ spec.loader.exec_module(probe)
 
 
 class NativeLiveProbeTests(unittest.TestCase):
+    def test_candidate_mode_never_accepts_legacy_or_audition_or_missing_epoch(self):
+        for instance in ("stage", "native-v2-audition", "native-v2-stage"):
+            status = dict(instance=instance, stale=False, exited=None,
+                          status=dict(fault=0, frames=512, routed=True), values=dict(master=0))
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp); opener = mock.Mock()
+                opener.open.return_value = io.BytesIO(json.dumps(status).encode())
+                with mock.patch("sys.argv", self.args(root)+["--stage-candidate"]), \
+                     mock.patch.object(probe.urllib.request, "build_opener", return_value=opener), \
+                     mock.patch.object(probe.subprocess, "Popen") as launch:
+                    self.assertEqual(probe.main(), 1); launch.assert_not_called()
+
     def args(self, root, url="http://127.0.0.1:8082", allow=True):
         peer = root / "peer"; peer.touch()
         return [str(PATH), "--url", url, "--midi-probe", str(peer), "--output-dir", str(root / "evidence")] + (["--allow-muted-live-test"] if allow else [])

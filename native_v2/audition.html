@@ -1,23 +1,41 @@
 <!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Stave • Native audition</title>
+<title>Stave · Stage</title>
+<meta name="theme-color" content="#111917">
 <style>
-body{font:17px system-ui;background:#10151a;color:#e8edea;max-width:960px;margin:auto;padding:24px}h1{font-size:26px}p{line-height:1.5;color:#b5c2c0}.panel{background:#1c252b;border:1px solid #34464a;border-radius:12px;padding:18px;margin:16px 0}#mixer,#edit{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:22px}label{display:block}input,select,button{width:100%;min-height:48px;font:inherit;accent-color:#70d9b0}input:disabled{opacity:.35}output{float:right;font-variant-numeric:tabular-nums}button{background:#31464b;color:white;border:1px solid #597378;border-radius:8px;cursor:pointer}#health{white-space:pre-wrap;line-height:1.6}#notice{color:#f5cc82}.small{font-size:14px}summary{cursor:pointer;min-height:44px}
+:root{color-scheme:dark;--bg:#111917;--panel:#1a2521;--line:#34453c;--ink:#f0f3e9;--muted:#a8b9ae;--mint:#a7ddb7;--gold:#e5c586}
+*{box-sizing:border-box}body{font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--ink);max-width:1160px;margin:auto;padding:24px 24px 64px}[hidden]{display:none!important}
+header{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:20px}.brand{font-size:32px;letter-spacing:.18em;font-weight:650}.eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:.16em;color:var(--muted)}h1,h2,p{margin:0}h1{font-size:24px;font-weight:550}h2{font-size:18px;font-weight:550}p{color:var(--muted)}.small{font-size:13px}.muted{color:var(--muted)}
+nav{display:flex;gap:6px;border-bottom:1px solid var(--line);padding-bottom:12px;margin-bottom:16px}nav button{width:auto;min-width:104px;background:transparent;border-color:transparent}nav button[aria-pressed=true]{background:var(--mint);color:#15271b}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:18px 0}.section-head{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:18px}.section-head p{font-size:13px;margin-top:3px}.statusbar{display:flex;flex-wrap:wrap;align-items:center;gap:10px;font-size:13px}.pill{border:1px solid var(--line);border-radius:30px;padding:5px 12px;color:var(--mint)}#notice{color:var(--gold);min-height:25px;font-size:13px;margin-top:8px}
+#mixer,#edit,#bed-controls{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}label.control{display:block;min-width:0;border:1px solid var(--line);border-radius:10px;padding:18px;background:#15201b;font-size:14px;font-weight:500}output{float:right;color:var(--mint);font-size:14px;font-variant-numeric:tabular-nums}label[data-control=master]{grid-column:1/-1;border-color:#746347;background:#25251d}label[data-control=master] output{color:var(--gold)}label[data-control=master] input{accent-color:var(--gold)}
+input,select,button{font:inherit;min-height:48px;width:100%;accent-color:var(--mint)}input[type=range]{margin:10px 0 0;cursor:pointer;touch-action:pan-y}select{margin-top:12px;padding:8px;background:#19271e;color:var(--ink);border:1px solid var(--line);border-radius:6px}button{background:#273a2e;color:var(--ink);border:1px solid #4a6755;border-radius:8px;cursor:pointer;padding:9px 16px;font-size:14px;font-weight:550}button:disabled{opacity:.4;cursor:default}input:disabled,select:disabled{opacity:.35}:focus-visible{outline:3px solid var(--gold);outline-offset:4px}.actions{display:flex;gap:10px;flex-wrap:wrap}.actions button{width:auto;flex:1;min-width:130px}#save{width:auto}#mute{border-color:#9a7654;color:#f1cbad;background:#36291f}#freeze-toggle[aria-pressed=true]{background:var(--mint);color:#14281a}
+#bed-keys{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:7px}#bed-keys button{padding:10px 0;min-height:58px}#bed-keys button[aria-pressed=true]{background:var(--mint);color:#14281a}#bed-controls{margin-top:18px}.bed-actions{margin:18px 0 12px}summary{cursor:pointer;min-height:44px;padding:8px 0;color:var(--muted)}#health{white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.8 ui-monospace,monospace;color:var(--muted)}.system-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.system-grid .panel{margin:0}.system-grid p{margin:10px 0;overflow-wrap:anywhere}.support{border-left:2px solid var(--gold);padding-left:14px;margin-top:18px}.footer-note{font-size:12px;color:var(--muted);margin-top:24px}
+@media(max-width:700px){body{padding:16px 14px 40px}.brand{font-size:26px}header{gap:10px}.panel{padding:16px}#mixer,#edit,#bed-controls{grid-template-columns:repeat(2,minmax(0,1fr))}label.control{padding:13px}#bed-keys{grid-template-columns:repeat(6,minmax(0,1fr))}.system-grid{grid-template-columns:1fr}.section-head{align-items:flex-start}.eyebrow{font-size:10px}nav button{flex:1;min-width:0}#save{font-size:12px;padding:8px 12px}}
+@media(max-width:380px){#mixer,#edit,#bed-controls{grid-template-columns:1fr}header{align-items:flex-start}output{float:none;display:block}}
 </style>
-<h1>Stave / Native audio audition</h1>
-<p>Piano + OSC1/OSC2 • temporary test build • starts muted.<br>Raise Master gradually with monitoring low. This is not the normal Stave application or your saved patch.</p>
-<div class="panel" id="health">Waiting for native audio owner…</div><p id="notice" role="status"></p>
-<div class="panel" id="mixer"></div>
-<section class="panel" aria-label="Recorded pad bed"><h2>Recorded pad bed</h2>
+<header><div><div class="brand">STAVE</div><div class="eyebrow">An instrument for the moment</div></div><button id="save" disabled>Save sound</button></header>
+<nav aria-label="Work areas"><button id="nav-stage" aria-pressed="true">Stage</button><button id="nav-edit" aria-pressed="false">Edit</button><button id="nav-system" aria-pressed="false">System</button></nav>
+<div class="statusbar"><span class="pill" id="connection">Connecting</span><span id="profile" class="muted">Native candidate · starts muted</span><span id="warning-count"></span></div>
+<p id="notice" role="status"></p>
+<main>
+<section id="stage-panel" aria-label="Stage">
+<div class="panel"><div class="section-head"><div><h1>Play. Blend. Shape.</h1><p>Piano and two played layers, always within reach.</p></div></div><div id="mixer"></div></div>
+<div class="actions"><button id="freeze-toggle" disabled aria-pressed="false">Freeze ambience</button><button id="release" disabled>Release keys & pedals</button><button id="mute" disabled>Mute output</button></div>
+<section class="panel" aria-label="Recorded pad bed"><div class="section-head"><div><h2>Background bed</h2><p>Hold the song’s key underneath your playing.</p></div></div>
 <p id="bed-status">Checking loaded recordings…</p>
-<div id="bed-keys" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(72px,1fr));gap:10px"></div>
-<div id="bed-controls" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:22px;margin-top:22px"></div>
-<div style="display:flex;gap:12px;margin-top:20px"><button id="bed-out" disabled>Fade bed out · 5s</button><button id="bed-in" disabled>Fade bed in · 5s</button><button id="bed-stop" disabled>Release bed · 4s</button></div>
-<p class="small">Independent of played notes and sustain. Concert key; keyboard transpose does not change this recording. Dark keys have no recording. Changing key releases the previous bed. Fade position stays where you set it—use Fade in to restore a faded bed.</p></section>
-<details class="panel"><summary>Sound controls</summary><div id="edit"></div></details>
-<button id="release" disabled>Release notes and pedals — effects tails continue</button>
-<p class="small">Recorded pads load at startup from an explicitly selected library. Live recording, replacement and record-to-pad are not available yet. No generated fallback for missing recordings. Not in this audition: organ, presets/MIDI maps, pitch bend, macros, scenes, program changes or device recovery. MIDI channels share one keyboard; MIDI offsets are block-quantized. Loss of the selected device stops this audition. Closing this browser does not stop audio.</p>
-<p class="small">512 frames is the first listening profile. No buffer switch is exposed. Timing here measures the native callback, not physical keyboard-to-speaker latency. Full-scale piano counts are a headroom warning, not proof of audible clipping.</p>
+<div id="bed-keys"></div>
+<div class="actions bed-actions"><button id="bed-out" disabled>Fade out · 5s</button><button id="bed-in" disabled>Fade in · 5s</button><button id="bed-stop" disabled>Release bed · 4s</button></div>
+<details><summary>Bed level & shaping</summary><div id="bed-controls"></div><p class="small">Concert-key recordings, independent of your keyboard and sustain. Rise applies on the next key trigger and uses its own filter. A new key releases the previous bed. Fade in restores a deliberately faded bed.</p></details></section>
+</section>
+<section id="edit-panel" aria-label="Edit sound" hidden><div class="panel"><div class="section-head"><div><h1>Shape your sound</h1><p>Oscillators, envelopes and shared space.</p></div></div><div id="edit"></div></div><p class="small">Changes are live. Save sound remembers supported tone controls, never held notes, freeze or output gain.</p></section>
+<section id="system-panel" aria-label="System" hidden>
+<div class="system-grid"><div class="panel"><h2>Connections</h2><p id="device-status">Waiting for connection details…</p><div id="route-picker" hidden><label>MIDI keyboard<select id="route-midi" aria-label="MIDI keyboard"></select></label><label>Audio left<select id="route-left" aria-label="Audio left"></select></label><label>Audio right<select id="route-right" aria-label="Audio right"></select></label><p><button id="apply-routes" disabled>Apply connections · returns muted</button></p></div><p class="small">Only the explicitly selected MIDI and stereo output are used. No arbitrary fallback output. Choose one MIDI port per keyboard, not both aliases.</p><button id="restart-audio" disabled>Restart audio · returns muted</button></div>
+<div class="panel"><h2>Sound snapshot</h2><p id="save-status">This session starts muted. Raise Master gradually with monitoring low.</p><p class="small">A saved native sound is separate from your original Stave presets. A restart restores knobs, not notes or performance actions.</p></div></div>
+<div class="panel"><h2>Audio diagnostics</h2><div id="health">Waiting for native audio owner…</div><p class="small">Timing measures processing, not physical keyboard-to-speaker latency. Full-scale piano counts are a headroom warning, not proof of audible clipping.512 is the accepted listening profile; no buffer switch is exposed.</p></div>
+<div class="support"><h2>Candidate scope</h2><p class="small">Piano, OSC1/OSC2, filter, effects and prepared recorded-pad playback are connected. Recording/record-to-pad, organ, legacy presets/MIDI maps, pitch bend, macros, scenes and program changes are not yet migrated. MIDI channels share one keyboard; MIDI offsets are block-quantized. The original working application remains recoverable. This is not full stage-release qualification.</p><p class="small" id="runtime-scope">Temporary audition: loss of the selected device stops audio. Closing this browser does not stop audio.</p></div>
+</section></main>
+<p class="footer-note">STAVE / PI4 NATIVE · This is not the normal Stave legacy UI · Trusted private Wi-Fi only · Keep monitoring low when opening Master.</p>
 <script>
 'use strict';
 const labels={piano:'Piano',osc1:'OSC1',osc2:'OSC2',cutoff:'Filter cutoff · Hz',wet:'Synth reverb mix',master:'Master',wave1:'OSC1 waveform',wave2:'OSC2 waveform',attack:'Oscillator attack · ms',release:'Oscillator release · ms',resonance:'Filter resonance',piano_room:'Piano room',piano_reverb:'Piano → shared reverb',delay_wet:'Delay mix',delay_feedback:'Delay feedback',shimmer:'Shimmer enabled',shimmer_mix:'Shimmer mix',reverb:'Reverb type',freeze:'Reverb freeze'};
@@ -28,15 +46,49 @@ Object.assign(labels,{bed_level:'Bed level',bed_rise:'Next trigger rise · secon
 choices.bed_mellow=['Off','On'];
 const keyNames=['C','C♯','D','E♭','E','F','F♯','G','A♭','A','B♭','B'];
 const bedKeys=[],bedActions=['bed-out','bed-in','bed-stop'];
-const fields={},pending=new Map();let ready=false,busy=false;
+const fields={},pending=new Map();let ready=false,busy=false,epoch=null,lastValues={},lastRuntime={},actionBusy=false;
 const notice=document.getElementById('notice');
+const routeFields={midi_source:'route-midi',audio_left:'route-left',audio_right:'route-right'};
+let routeSignature='';
+function updateRoutes(runtime){
+  document.getElementById('route-picker').hidden=!runtime.devices;
+  if(!runtime.devices)return;
+  const signature=JSON.stringify([runtime.devices,runtime.midi_source,runtime.audio_left,runtime.audio_right]);
+  if(signature!==routeSignature){
+    for(const [key,id] of Object.entries(routeFields)){
+      const select=document.getElementById(id),names=runtime.devices[key==='midi_source'?'midi':'audio'];
+      const previous=select.value||runtime[key];select.replaceChildren();
+      const selected=names.includes(previous)?previous:runtime[key];
+      for(const name of [...new Set([selected,...names].filter(Boolean))]){const o=document.createElement('option');o.value=name;o.textContent=name+(names.includes(name)?'':' (not detected)');select.append(o);}
+      select.value=selected;
+    }
+    routeSignature=signature;
+  }
+  document.getElementById('apply-routes').disabled=actionBusy||!runtime.can_restart;
+}
+function view(name){for(const tab of ['stage','edit','system']){document.getElementById(tab+'-panel').hidden=tab!==name;document.getElementById('nav-'+tab).setAttribute('aria-pressed',String(tab===name));}}
+for(const tab of ['stage','edit','system'])document.getElementById('nav-'+tab).onclick=()=>view(tab);
+function formatted(key,value){
+  if(choices[key])return choices[key][Number(value)]||String(value);
+  if(['cutoff','bed_rise_cutoff','bed_mellow_cutoff'].includes(key))return value>=1000?(value/1000).toFixed(1)+' kHz':Math.round(value)+' Hz';
+  if(['attack','release'].includes(key))return value>=1000?(value/1000).toFixed(1)+' s':Math.round(value)+' ms';
+  if(key==='bed_rise')return Number(value)===0?'Normal':Number(value).toFixed(1)+' s';
+  if(key==='resonance')return Number(value).toFixed(2);
+  return Math.round(Number(value)*100)+'%';
+}
+async function action(path,data={}){
+  if(actionBusy||!epoch)return;actionBusy=true;
+  try{const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Stave-Epoch':epoch},body:JSON.stringify(data),signal:AbortSignal.timeout(3000)});
+    const d=await r.json();if(!r.ok)throw Error(d.error||'Action refused');notice.textContent=d.message||'Action accepted';
+  }catch(e){notice.textContent=e.message+' — no automatic retry';}finally{actionBusy=false;}
+}
 async function send(key,value){
   if(!ready)return;
   pending.set(key,value); if(busy)return; busy=true;
   try{
     while(pending.size&&ready){
       const [k,v]=pending.entries().next().value;pending.delete(k);
-      const r=await fetch('/control',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k,value:v}),signal:AbortSignal.timeout(2000)});
+      const r=await fetch('/control',{method:'POST',headers:{'Content-Type':'application/json','X-Stave-Epoch':epoch||''},body:JSON.stringify({key:k,value:v}),signal:AbortSignal.timeout(2000)});
       const response=await r.json();if(!r.ok)throw Error(response.error||'Control rejected');
     }
   }catch(e){pending.clear();notice.textContent=e.message+' — no automatic replay';}
@@ -44,15 +96,17 @@ async function send(key,value){
 }
 async function setup(){
   const definitions=await (await fetch('/controls')).json();
-  for(const [key,[min,max,step,value]] of Object.entries(definitions)){
+  const order=['piano','osc1','osc2','piano_tone','cutoff','wet','master'];
+  const entries=[...order.filter(k=>k in definitions),...Object.keys(definitions).filter(k=>!order.includes(k))];
+  for(const key of entries){const [min,max,step,value]=definitions[key];
     if(['release_all','bed_key','bed_fade','bed_release'].includes(key))continue;
-    const label=document.createElement('label');label.textContent=labels[key];
-    const out=document.createElement('output');out.textContent=value;label.append(out);
+    const label=document.createElement('label');label.textContent=labels[key];label.className='control';label.setAttribute('data-control',key);
+    const out=document.createElement('output');out.textContent=formatted(key,value);label.append(out);
     const input=document.createElement(choices[key]?'select':'input');
     if(choices[key])choices[key].forEach((name,i)=>{const o=document.createElement('option');o.value=i;o.textContent=name;input.append(o)});
     else{input.type='range';input.min=min;input.max=max;input.step=step;}
     input.value=value;input.disabled=true;input.setAttribute('aria-label',labels[key]);
-    input.addEventListener('input',()=>{out.textContent=input.value;if(!choices[key])send(key,Number(input.value));});
+    input.addEventListener('input',()=>{out.textContent=formatted(key,input.value);if(!choices[key])send(key,Number(input.value));});
     // One request in flight; pending absolute values coalesce by parameter.
     // Reconnect never replays one-shot actions or stale gestures.
     input.addEventListener('change',()=>send(key,Number(input.value)));
@@ -63,29 +117,52 @@ async function setup(){
   document.getElementById('bed-in').onclick=()=>send('bed_fade',0);
   document.getElementById('bed-stop').onclick=()=>send('bed_release',1);
   document.getElementById('release').onclick=()=>send('release_all',1);
+  document.getElementById('mute').onclick=()=>send('master',0);
+  document.getElementById('freeze-toggle').onclick=()=>send('freeze',lastValues.freeze?0:1);
+  document.getElementById('save').onclick=()=>action('/save');
+  document.getElementById('restart-audio').onclick=()=>{if(confirm('Restart audio? Sound will stop and return muted. Unsaved changes are not restored.'))action('/restart-audio');};
+  document.getElementById('apply-routes').onclick=()=>{if(confirm('Change connections? Sound will stop and restart muted. Save your tone first if needed.'))action('/routes',Object.fromEntries(Object.entries(routeFields).map(([key,id])=>[key,document.getElementById(id).value])));};
   poll();
 }
 async function poll(){
   try{
     const r=await fetch('/status',{signal:AbortSignal.timeout(2000)});if(!r.ok)throw Error('Status unavailable');
-    const d=await r.json(),s=d.status;ready=!d.stale&&d.exited===null&&s.fault===0&&s.routed===true;
+    const d=await r.json(),s=d.status;lastRuntime=d.runtime||{};lastValues=d.values;
+    if(epoch!==null&&d.epoch!==epoch)pending.clear();epoch=d.epoch||null;
+    ready=!d.stale&&d.exited===null&&s.fault===0&&s.routed===true&&!lastRuntime.restoring;
+    document.getElementById('connection').textContent=ready?'Audio ready':'Not ready';
+    document.getElementById('profile').textContent=(s.frames||512)+' frames · '+(Number(d.values.master)>0?'Output enabled':'Output muted');
+    const warnings=(s.xruns||0)+(s.over_budget||0);
+    document.getElementById('warning-count').textContent=warnings?warnings+' audio timing warnings':'';
     document.getElementById('health').textContent=(ready?'Audio owner active':'NOT READY — do not assume audible output')+'\n'+
       (s.frames||'?')+' frames / 48 kHz · played notes '+(s.notes||0)+' · callbacks '+(s.blocks||0)+'\n'+
       'Xruns '+(s.xruns||0)+' · over-budget callbacks '+(s.over_budget||0)+' · worst '+Number(s.max_callback_ms||0).toFixed(2)+' ms\n'+
       'Piano full-scale samples '+(s.piano_full_scale||0)+' · unsupported MIDI '+(s.unsupported_midi||0)+' · pending controls '+d.pending;
-    if(d.error)notice.textContent=d.error;else if(!ready)notice.textContent='Control/audio connection is stale or stopped. No commands will be replayed.';
+    if(d.error)notice.textContent=d.error;else if(!ready)notice.textContent=lastRuntime.message||'Control/audio connection is stale or stopped. No commands will be replayed.';
     else notice.textContent=d.pending?'Waiting for audio-owner acknowledgment…':'Values below are acknowledged by the audio owner.';
     if(!ready)pending.clear();
     for(const [key,{input,out}] of Object.entries(fields)){
       input.disabled=!ready||(key.startsWith('bed_')&&!s.bed_mask);
-      if(document.activeElement!==input&&!pending.has(key)&&!d.pending){input.value=d.values[key];out.textContent=d.values[key];}
+      if(document.activeElement!==input&&!pending.has(key)&&!d.pending){input.value=d.values[key];out.textContent=formatted(key,d.values[key]);}
     }
     document.getElementById('release').disabled=!ready;
+    document.getElementById('mute').disabled=!ready;
+    document.getElementById('freeze-toggle').disabled=!ready;
+    document.getElementById('freeze-toggle').setAttribute('aria-pressed',String(Boolean(d.values.freeze)));
+    document.getElementById('freeze-toggle').textContent=d.values.freeze?'Release frozen ambience':'Freeze ambience';
+    document.getElementById('save').disabled=!ready||Boolean(d.pending)||!lastRuntime.persistence||actionBusy;
+    document.getElementById('restart-audio').disabled=!lastRuntime.can_restart||actionBusy;
+    updateRoutes(lastRuntime);
+    document.getElementById('save-status').textContent=lastRuntime.save_message||'Temporary audition — sound saving is not enabled. Starts muted.';
+    document.getElementById('device-status').textContent=lastRuntime.midi_source?
+      'MIDI: '+lastRuntime.midi_source+' · Output: '+lastRuntime.audio_left+' / '+lastRuntime.audio_right:
+      'Explicit routes selected by the audition launcher. See the current audio-owner state below.';
+    if(lastRuntime.scope)document.getElementById('runtime-scope').textContent=lastRuntime.scope;
     bedKeys.forEach((button,key)=>{const loaded=Boolean((s.bed_mask||0)&(1<<key));button.disabled=!ready||!loaded;button.title=loaded?'Play recorded '+keyNames[key]:'No recording for '+keyNames[key];button.style.opacity=loaded?'1':'.35';button.setAttribute('aria-pressed',String(s.bed_key===key));button.style.outline=s.bed_key===key?'3px solid #70d9b0':'';});
     for(const id of bedActions)document.getElementById(id).disabled=!ready||!s.bed_mask;
     document.getElementById('bed-status').textContent=!s.bed_mask?'No recorded pads loaded. Piano and oscillators remain available.':
       'Selected '+(s.bed_key>=0?keyNames[s.bed_key]:'none')+' · '+(s.active_beds||0)+' sounding/releasing beds · '+(d.values.bed_fade?'fading/faded out':'fade target full');
-  }catch(e){ready=false;pending.clear();notice.textContent='Disconnected — audio may still be playing. No control replay.';for(const f of Object.values(fields))f.input.disabled=true;document.getElementById('release').disabled=true;for(const b of bedKeys)b.disabled=true;for(const id of bedActions)document.getElementById(id).disabled=true;}
+  }catch(e){ready=false;pending.clear();notice.textContent='Disconnected — audio may still be playing. No control replay.';document.getElementById('connection').textContent='Browser disconnected';for(const f of Object.values(fields))f.input.disabled=true;for(const id of ['release','mute','freeze-toggle','save','restart-audio','apply-routes',...bedActions])document.getElementById(id).disabled=true;for(const b of bedKeys)b.disabled=true;}
   setTimeout(poll,750);
 }
 setup().catch(e=>{notice.textContent='Audition setup failed: '+e.message;});

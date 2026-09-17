@@ -29,6 +29,7 @@ struct Client {
 struct Host {
     stave::AuditionSession& session;
     unsigned frames;
+    const char* instance{"native-v2-audition"};
     jack_port_t *left{},*right{},*midi{};
     std::atomic<bool> armed{false};
     std::atomic<std::uint64_t> xruns{0},callbacks{0},over_budget{0},max_ns{0};
@@ -75,7 +76,7 @@ struct Host {
     }
     static void shutdown(void* p) noexcept { static_cast<Host*>(p)->session.request_stop(stave::AuditionFault::GraphContract); }
     void status(bool routed) const {
-        std::cout<<"{\"type\":\"status\",\"instance\":\"native-v2-audition\",\"frames\":"<<frames
+        std::cout<<"{\"type\":\"status\",\"instance\":\""<<instance<<"\",\"frames\":"<<frames
             <<",\"routed\":"<<(routed?"true":"false")<<",\"fault\":"<<unsigned(session.fault())
             <<",\"applied\":"<<session.applied()<<",\"blocks\":"<<session.blocks()<<",\"notes\":"<<session.notes()
             <<",\"unsupported_midi\":"<<session.unsupported_midi()<<",\"quantized_midi\":"<<session.quantized_midi()
@@ -93,23 +94,25 @@ bool unsigned_text(const std::string& text,std::uint64_t& result) {
 int main(int argc,char** argv) {
     try {
         require(argc==9||argc==11,"Usage: audition FONT FRAMES CLIENT MIDI_SOURCE AUDIO_LEFT AUDIO_RIGHT SECONDS --allow-live-audition [--bed-bank PREPARED_FILE]");
-        require(std::string(argv[8])=="--allow-live-audition","Live audition opt-in required");
+        const bool candidate=std::string(argv[8])=="--allow-stage-candidate";
+        require(candidate||std::string(argv[8])=="--allow-live-audition","Explicit live mode opt-in required");
         require(argc==9||std::string(argv[9])=="--bed-bank","Explicit prepared bank flag required");
         std::uint64_t frame_arg{},second_arg{};
         require(unsigned_text(argv[2],frame_arg)&&unsigned_text(argv[7],second_arg)&&
-                (frame_arg==512||frame_arg==256)&&second_arg>=10&&second_arg<=3600,"Invalid fixed cadence or bounded duration");
+                (candidate?(frame_arg==512&&second_arg==0):((frame_arg==512||frame_arg==256)&&second_arg>=10&&second_arg<=3600)),"Invalid cadence/duration for selected mode");
         const unsigned frames=static_cast<unsigned>(frame_arg),seconds=static_cast<unsigned>(second_arg);
         const std::string name=argv[3];
-        require(name.rfind("stave-v2-audition-",0)==0&&name.size()<48,"Isolated exact client prefix required");
+        require(name.rfind(candidate?"stave-v2-stage-":"stave-v2-audition-",0)==0&&name.size()<48,"Isolated exact client prefix required");
         require(std::string(argv[5])!=argv[6],"Distinct explicit stereo output ports required");
         auto bed=argc==11?stave::load_prepared_bed_bank(argv[10]):nullptr;
         AuditionRandom random; stave::StageInstrument graph(argv[1],random,frames,0,&random,std::move(bed));
         stave::AuditionSession session(graph); Host host{session,frames}; Client client;
+        if(candidate) host.instance="native-v2-stage";
         jack_status_t status{};
         client.value=jack_client_open(name.c_str(),static_cast<jack_options_t>(JackNoStartServer|JackUseExactName),&status);
         require(client.value,"JACK unavailable or audition client identity already in use");
         require(name==jack_get_client_name(client.value),"JACK renamed isolated client");
-        const char** stage_ports=jack_get_ports(client.value,"^StaveSynth:",nullptr,0);
+        const char** stage_ports=jack_get_ports(client.value,"^(StaveSynth:|stave-v2-(audition|stage)-.*:)",nullptr,0);
         const bool stage_present=stage_ports&&stage_ports[0];
         if(stage_ports) jack_free(stage_ports);
         require(!stage_present,"Working Stave client still present; pause it in an authorized window first");
@@ -137,7 +140,7 @@ int main(int argc,char** argv) {
         auto last_progress=start; std::uint64_t previous_blocks=0;
         std::string line; line.reserve(256);
         bool routed=true,quit=false;
-        while(!interrupted&&!quit&&session.fault()==stave::AuditionFault::None&&std::chrono::steady_clock::now()-start<std::chrono::seconds(seconds)) {
+        while(!interrupted&&!quit&&session.fault()==stave::AuditionFault::None&&(candidate||std::chrono::steady_clock::now()-start<std::chrono::seconds(seconds))) {
             const auto now=std::chrono::steady_clock::now();
             const auto blocks=session.blocks();
             if(blocks!=previous_blocks) { previous_blocks=blocks; last_progress=now; }

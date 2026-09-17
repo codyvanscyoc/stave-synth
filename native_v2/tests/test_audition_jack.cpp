@@ -24,7 +24,7 @@ jack_client_t* jack_client_open(const char* name,jack_options_t options,jack_sta
 int jack_client_close(jack_client_t*) { ++close_count; return 0; }
 char* jack_get_client_name(jack_client_t*) { return client_name.data(); }
 const char** jack_get_ports(jack_client_t*,const char* pattern,const char*,unsigned long) {
-    check(std::string(pattern)=="^StaveSynth:");
+    check(std::string(pattern)=="^(StaveSynth:|stave-v2-(audition|stage)-.*:)");
     static const char* found[]={"StaveSynth:out_l",nullptr}; return fail_mode==10?found:nullptr;
 }
 void jack_free(void*) {}
@@ -109,6 +109,12 @@ int main(int argc,char** argv) {
     check(audition_main(11,bank_pointers.data())==0&&open_count==1&&close_count==1);
     check(unlink(bank_path)==0); open_count=0;
     check(audition_main(11,bank_pointers.data())==1&&open_count==0);
+    args[3]="stave-v2-stage-fake"; args[7]="0"; args[8]="--allow-stage-candidate";
+    for(unsigned i=0;i<9;++i) pointers[i]=args[i].data();
+    open_count=close_count=activate_count=deactivate_count=connect_count=registrations=0;
+    check(audition_main(9,pointers.data())==0&&open_count==1&&close_count==1);
+    args[2]="256"; pointers[2]=args[2].data(); open_count=0;
+    check(audition_main(9,pointers.data())==1&&open_count==0); //candidate stays512
     check(dup2(saved_stdin,STDIN_FILENO)>=0); close(saved_stdin);
     std::puts("PASS: fake JACK real graph callback512/256, silent unarmed/fault output, MIDI bound, graph changes, shutdown/xruns, signed CLI refusal,10 startup/route/disconnect/EOF/production-client cleanup paths; no devices opened");
 }

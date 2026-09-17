@@ -79,6 +79,7 @@ SAFE_TESTS = (
     "test_native_sampled_bed.py",
     "test_native_recording_capture.py",
     "test_native_bed_assets.py",
+    "test_native_v2_stage.py",
 )
 
 
