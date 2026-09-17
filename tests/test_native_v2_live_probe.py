@@ -35,6 +35,19 @@ class NativeLiveProbeTests(unittest.TestCase):
                 with self.assertRaises(FileExistsError): probe.main()
                 network.assert_not_called()
 
+    def test_requested_piano_tone_requires_candidate_support_before_midi(self):
+        status = {"instance": "native-v2-audition", "stale": False, "exited": None,
+                  "status": {"fault": 0, "frames": 512, "routed": True}, "values": {"master": 0}}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); opener = mock.Mock()
+            opener.open.return_value = io.BytesIO(json.dumps(status).encode())
+            with mock.patch("sys.argv", self.args(root)+["--piano-tone-sweep"]), \
+                 mock.patch.object(probe.urllib.request, "build_opener", return_value=opener), \
+                 mock.patch.object(probe.subprocess, "Popen") as launch:
+                self.assertEqual(probe.main(), 1); launch.assert_not_called()
+            report = json.loads((root / "evidence/report.json").read_text())
+            self.assertIn("not supported", report["error"])
+
     def test_unmuted_wrong_instance_and_faulted_owner_never_launch_peer(self):
         for variation in ("master", "instance", "fault", "stale", "frames"):
             status = {"instance": "native-v2-audition", "stale": False, "exited": None,

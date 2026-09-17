@@ -32,9 +32,22 @@ int main(int argc,char** argv) {
     try {
         if(argc!=5) throw std::runtime_error("Usage: benchmark FONT FRAMES SCENARIO BLOCKS");
         const unsigned frames=std::stoul(argv[2]),scenario=std::stoul(argv[3]),blocks=std::stoul(argv[4]);
-        if((frames!=256&&frames!=512)||scenario>3||blocks<100||blocks>2000) throw std::runtime_error("Invalid probe bounds");
+        if((frames!=256&&frames!=512)||scenario>4||blocks<100||blocks>2000) throw std::runtime_error("Invalid probe bounds");
         FixtureRandom random;
-        stave::StageInstrument g(argv[1],random,frames,0,&random);
+        std::unique_ptr<stave::SampledBed> bank;
+        std::size_t bed_bytes=0;
+        if(scenario==4) {
+            // Deterministic benchmark-only PCM, never a substitute user pad.
+            bank=std::make_unique<stave::SampledBed>();
+            std::vector<double> l(48037),r(48037);
+            for(unsigned slot=0;slot<12;++slot) {
+                for(unsigned i=0;i<l.size();++i) { l[i]=.1*std::sin(i*(.013+slot*.001)); r[i]=.1*std::cos(i*(.011+slot*.001)); }
+                std::unique_ptr<const stave::PreparedBed> asset=std::make_unique<stave::PreparedBed>(l.data(),r.data(),l.size());
+                require(bank->install(slot,asset));
+            }
+            bed_bytes=bank->bytes();
+        }
+        stave::StageInstrument g(argv[1],random,frames,0,&random,std::move(bank));
         stave::StageInstrumentConfig p;
         p.owned_motion=true; p.filter_motion={2,.1};
         p.piano.volume=.5; p.output.volume=.7;
@@ -49,6 +62,7 @@ int main(int argc,char** argv) {
             p.motion.lfo[1].depth=.3; p.motion.lfo[1].target=stave::MotionTarget::Pan;
         }
         require(g.configure(p));
+        if(scenario==4) require(g.trigger_bed(0,1));
         require(g.reverb_type(stave::ReverbType::Hall));
         const unsigned notes=scenario>=2?12:6;
         const stave::LayerWeights weights=scenario==0?stave::LayerWeights{0,0,0,1}:stave::LayerWeights{};
@@ -56,10 +70,10 @@ int main(int argc,char** argv) {
         require(g.command(g.frame_position(),{stave::StageAction::Sustain,0,1}));
         for(unsigned i=0;i<100;++i) require(g.render_block());
         std::vector<double> wall(blocks),cpu(blocks);
-        double peak=0,energy=0; unsigned voice_peak=0;
+        double peak=0,energy=0; unsigned voice_peak=0,bed_peak=0;
         for(unsigned b=0;b<blocks;++b) {
             const double tc=thread_ms(); const auto start=std::chrono::steady_clock::now();
-            if(scenario==3) {
+            if(scenario>=3) {
                 p.buses.pad.cutoff=300.+7700.*(.5+.5*std::sin(b*.05));
                 p.pan1=.4*std::sin(b*.03); p.pan2=-p.pan1;
                 p.motion.lfo[1].target=static_cast<stave::MotionTarget>((b/50)%4);
@@ -71,11 +85,15 @@ int main(int argc,char** argv) {
                     require(g.command(g.frame_position(),{stave::StageAction::Sustain,0,1}));
                     require(g.reverb_type(static_cast<stave::ReverbType>((b/50)%7)));
                 }
+                if(scenario==4&&b%25==0) require(g.trigger_bed((b/25)%12,b%50?1:0));
+                if(scenario==4&&b==150) require(g.fade_bed(true,2));
+                if(scenario==4&&b==200) require(g.fade_bed(false,2));
             }
             require(g.render_block());
             wall[b]=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
             cpu[b]=thread_ms()-tc;
             voice_peak=std::max(voice_peak,g.active_voices());
+            bed_peak=std::max(bed_peak,g.active_beds());
             for(unsigned c=0;c<2;++c) for(unsigned i=0;i<frames;++i) {
                 const double x=g.pcm(c)[i]; require(std::isfinite(x)&&std::abs(x)<=1);
                 peak=std::max(peak,std::abs(x)); energy+=x*x;
@@ -88,6 +106,7 @@ int main(int argc,char** argv) {
         rusage usage{}; require(getrusage(RUSAGE_SELF,&usage)==0);
         std::printf("{\"scenario\":%u,\"block_frames\":%u,\"blocks\":%u,\"warmup_blocks\":100,\"audio_seconds\":%.6f,\"block_budget_ms\":%.9f,",scenario,frames,blocks,blocks*frames/48000.,frames/48.);
         metrics("wall",wall,frames/48.); std::printf(","); metrics("thread_cpu",cpu,frames/48.);
+        std::printf(",\"peak_sample_beds\":%u,\"sample_bank_bytes\":%zu",bed_peak,bed_bytes);
         std::printf(",\"peak\":%.9f,\"rms\":%.9f,\"peak_oscillator_voices\":%u,\"raw_piano_full_scale_samples\":%llu,\"maxrss_platform_units\":%ld,\"terminal_silence\":true}\n",peak,std::sqrt(energy/(blocks*frames*2)),voice_peak,static_cast<unsigned long long>(stats.full_scale_piano_samples),usage.ru_maxrss);
         return 0;
     } catch(const std::exception& e) { std::fprintf(stderr,"Offline benchmark failed: %s\n",e.what()); return 1; }

@@ -144,7 +144,7 @@ def main():
             run([*common,"-pthread",ROOT/"native_v2/src/audition_jack.cpp",*objects,*fluid,*jack,"-o",out/"audition-jack"])
         run([*common,ROOT/"native_v2/tests/benchmark_stage_instrument.cpp",*objects,*fluid,"-o",bench])
         for size in (512,256):
-            for scenario in range(4):
+            for scenario in range(5):
                 before=temperature(); value=json.loads(run([bench,args.soundfont,size,scenario,args.blocks],timeout=90))
                 value.update(temperature_before=before,temperature_after=temperature())
                 report["runs"].append(value); print(json.dumps(value),flush=True)

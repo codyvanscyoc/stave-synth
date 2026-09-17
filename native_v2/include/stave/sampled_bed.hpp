@@ -74,6 +74,10 @@ public:
     unsigned active() const noexcept {
         unsigned count=0; for(const auto& v:voices_) count+=v.active; return count;
     }
+    bool rise_filter_active() const noexcept {
+        for(const auto& v:voices_) if(v.active&&v.filtered) return true;
+        return false;
+    }
     bool trigger(unsigned slot,double rise_seconds=0,double open_hz=3000) noexcept {
         if(!sealed_||fault_||!loaded(slot)||!std::isfinite(rise_seconds)||rise_seconds<0||rise_seconds>60||
            !std::isfinite(open_hz)||open_hz<200||open_hz>20000) return false;

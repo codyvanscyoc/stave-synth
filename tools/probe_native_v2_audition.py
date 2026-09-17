@@ -21,6 +21,7 @@ def main():
     parser.add_argument("--midi-probe", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--allow-muted-live-test", action="store_true")
+    parser.add_argument("--piano-tone-sweep", action="store_true", help="Also exercise the separately acknowledged piano brightness control")
     args = parser.parse_args()
     url = urllib.parse.urlsplit(args.url)
     try:
@@ -54,6 +55,9 @@ def main():
     child = None
     try:
         report["before"] = get()
+        if args.piano_tone_sweep and "piano_tone" not in report["before"]["values"]:
+            raise RuntimeError("Requested piano-tone sweep is not supported by this candidate")
+        report["piano_tone_sweep"] = args.piano_tone_sweep
         child = subprocess.Popen(["/usr/bin/pw-jack", str(args.midi_probe.resolve()), "--allow-isolated-live-midi"],
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
         start = time.monotonic(); phase = 0
@@ -73,6 +77,8 @@ def main():
                 phase = 2
             if elapsed >= 42:
                 set_control("cutoff", 4500 + 3800 * math.sin(elapsed * .6))
+                if args.piano_tone_sweep:
+                    set_control("piano_tone", .65 + .3 * math.sin(elapsed * .27))
             if child.poll() is not None:
                 break
             time.sleep(.3)

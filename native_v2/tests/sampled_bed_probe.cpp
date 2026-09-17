@@ -1,4 +1,5 @@
 #include "stave/sampled_bed.hpp"
+#include "stave/bed_bus.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
@@ -36,6 +37,29 @@ int main(int argc,char** argv) {
     try { stave::PreparedBed invalid(left.data(),right.data(),stave::PreparedBed::max_bytes/16+1); }
     catch(const std::invalid_argument&) { rejected=true; }
     check(rejected);
+    {
+        auto prepared=std::make_unique<stave::SampledBed>();
+        std::unique_ptr<const stave::PreparedBed> asset=std::make_unique<stave::PreparedBed>(left.data(),right.data(),length);
+        check(prepared->install(0,asset));
+        stave::BedBus bus(std::move(prepared),frames);
+        check(bus.trigger(0)&&bus.fade(true,.02));
+        tracking=true;
+        check(bus.process());
+        const double t=double(frames)/960,expected=1-t*t*(3-2*t);
+        check(std::abs(bus.fade_gain()-expected)<1e-14&&bus.faded_target());
+        const double before=bus.fade_gain();
+        check(bus.fade(false,.02)&&bus.fade_gain()==before&&!bus.faded_target());
+        for(unsigned b=0;b<4;++b) check(bus.process());
+        check(bus.fade_gain()==1);
+        stave::BedConfig config; config.level=0;
+        check(bus.configure(config));
+        for(unsigned b=0;b<150;++b) check(bus.process());
+        for(unsigned c=0;c<2;++c) for(unsigned i=0;i<frames;++i) check(bus.channel(c)[i]==0);
+        config.level=std::numeric_limits<double>::quiet_NaN(); check(!bus.configure(config)&&bus.healthy());
+        check(!bus.fade(true,0)&&!bus.fade(true,31));
+        bus.stop(); check(!bus.process()&&!bus.trigger(0)&&bus.active()==0);
+        tracking=false; check(allocations==0);
+    }
     rejected=false;
     try { stave::PreparedBed invalid(left.data(),right.data(),4,44100); }
     catch(const std::invalid_argument&) { rejected=true; }

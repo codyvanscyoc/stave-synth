@@ -20,6 +20,66 @@ void silence(const stave::StageInstrument& g) {
     for(unsigned c=0;c<10;++c) for(unsigned i=0;i<g.block_frames();++i) check(g.stem(c)[i]==0);
     for(unsigned c=0;c<2;++c) for(unsigned i=0;i<g.block_frames();++i) check(g.pcm(c)[i]==0&&g.recording_tap(c)[i]==0);
 }
+std::unique_ptr<stave::SampledBed> bed_bank() {
+    std::array<double,48037> left{},right{};
+    for(unsigned i=0;i<left.size();++i) { left[i]=.2*std::sin(i*.031); right[i]=.17*std::cos(i*.019); }
+    auto bank=std::make_unique<stave::SampledBed>();
+    std::unique_ptr<const stave::PreparedBed> a=std::make_unique<stave::PreparedBed>(left.data(),right.data(),left.size());
+    check(bank->install(0,a));
+    a=std::make_unique<stave::PreparedBed>(right.data(),left.data(),left.size());
+    check(bank->install(7,a)); return bank;
+}
+void integrated_bed(const char* font,unsigned n) {
+    Phases a,b;
+    stave::StageInstrument actual(font,a,n,0,nullptr,bed_bank()),dry(font,b,n);
+    stave::BedBus bed(bed_bank(),n);
+    stave::StageMaster master(n); stave::StageOutput output(n);
+    stave::StageInstrumentConfig p; p.output.volume=.5;
+    std::array<std::array<double,512>,6> pad{};
+    check(actual.bed_loaded(0)&&actual.bed_loaded(7)&&!actual.bed_loaded(1));
+    check(!actual.trigger_bed(1)&&actual.healthy()&&!dry.trigger_bed(0));
+    check(actual.trigger_bed(0)&&bed.trigger(0));
+    counting=true;
+    bool heard=false;
+    for(unsigned block=0;block<300;++block) {
+        p.master.compression=block>=100; p.master.fx_bypass=block>=150;
+        p.bed.level=block>=30?.55:1;
+        p.bed.mellow=block>=90&&block<180; p.bed.mellow_hz=650;
+        check(actual.configure(p)&&dry.configure(p)&&bed.configure(p.bed)&&master.configure(p.master)&&output.configure(p.output));
+        if(block==0||block==130) {
+            check(actual.key_command(actual.frame_position(),stave::StageAction::NoteOn,60,100));
+            check(dry.key_command(dry.frame_position(),stave::StageAction::NoteOn,60,100));
+        }
+        if(block==50) check(actual.fade_bed(true,.2)&&bed.fade(true,.2));
+        if(block==55) check(actual.fade_bed(false,.3)&&bed.fade(false,.3));
+        if(block==70) {
+            check(actual.key_command(actual.frame_position(),stave::StageAction::ReleaseAll,0,0));
+            check(dry.key_command(dry.frame_position(),stave::StageAction::ReleaseAll,0,0));
+            check(actual.active_beds()==1); // keyboard pedals/release do not stop bed
+        }
+        if(block==100) check(actual.trigger_bed(7,.4,4800)&&bed.trigger(7,.4,4800));
+        if(block==190) { actual.release_bed(); bed.release(); }
+        check(actual.render_block()&&dry.render_block()&&bed.process());
+        check(actual.active_voices()==dry.active_voices()); // bed never steals keys
+        for(unsigned c=0;c<6;++c) for(unsigned i=0;i<n;++i) {
+            pad[c][i]=dry.stem(c+2)[i]+(c<4?bed.channel(c%2)[i]*.85:0);
+            check(pad[c][i]==actual.stem(c+2)[i]);
+        }
+        const std::array<const double*,6> bus{pad[0].data(),pad[1].data(),pad[2].data(),pad[3].data(),pad[4].data(),pad[5].data()};
+        const std::array<const double*,2> piano{dry.stem(8),dry.stem(9)};
+        check(master.process(bus,&piano)&&output.process({master.channel(0),master.channel(1)}));
+        for(unsigned c=0;c<2;++c) for(unsigned i=0;i<n;++i) {
+            check(actual.pcm(c)[i]==output.channel(c)[i]);
+            check(std::abs(actual.channel(c)[i])<=.98);
+            heard|=std::abs(actual.pcm(c)[i]-dry.pcm(c)[i])>1e-5;
+        }
+    }
+    check(heard&&bed.fade_gain()==1&&!bed.faded_target());
+    auto bad=p; bad.bed.level=1.1; check(!actual.configure(bad)&&actual.healthy());
+    check(!actual.fade_bed(true,0)&&!actual.fade_bed(true,std::numeric_limits<double>::quiet_NaN()));
+    actual.stop(); silence(actual); check(actual.active_beds()==0&&!actual.trigger_bed(0));
+    counting=false; check(allocations==0);
+}
 }
 void* operator new(std::size_t n) { return allocate(n); }
 void* operator new[](std::size_t n) { return allocate(n); }
@@ -31,6 +91,7 @@ int main(int argc,char** argv) {
     check(argc==2);
     counting=true; auto* calibration=::operator new(1); counting=false; ::operator delete(calibration);
     check(allocations==1); allocations=0;
+    for(unsigned n:{256u,512u}) integrated_bed(argv[1],n);
     for(unsigned n:{256u,512u}) {
         Phases phases; Random random; stave::StageInstrument graph(argv[1],phases,n,0,&random);
         stave::StageInstrumentConfig p;
@@ -138,5 +199,5 @@ int main(int argc,char** argv) {
         m.filter_motion.drift_cents=2; check(sync.configure(m)); r.available=false;
         check(!sync.render_block()&&!sync.healthy()); silence(sync);
     }
-    std::puts("PASS: 1400 owned instrument blocks, motion/poly/filter walks/key-sync, raw-key splits/pedal release, mute/re-entry, sends/filter/freeze/type/master transitions, zero C++ new/new[], configuration/phase/random fault and terminal silence guards");
+    std::puts("PASS: 600 integrated bed blocks (exact mixed/dry/FX/master routing, independent keys, fade/mellow/rise) plus1400 owned instrument blocks, motion/poly/filter walks/key-sync, raw-key splits/pedal release, mute/re-entry, sends/filter/freeze/type/master transitions, zero C++ new/new[], configuration/phase/random fault and terminal silence guards");
 }

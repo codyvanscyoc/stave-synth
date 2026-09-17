@@ -4,6 +4,7 @@
 #include "stave/stage_master.hpp"
 #include "stave/stage_output.hpp"
 #include "stave/stage_splits.hpp"
+#include "stave/bed_bus.hpp"
 
 namespace stave {
 // Reuse the established source/room configuration without constructing a
@@ -21,6 +22,7 @@ struct StageInstrumentConfig : StageCoreConfig {
     FilterMotionConfig filter_motion{};
     double wet{.75},wet_gain{1},piano_reverb_send{},piano_delay_send{};
     bool wet_filter{},piano_filter{};
+    BedConfig bed{};
     PadAmbienceConfig ambience_config() const noexcept {
         auto d=delay; auto p=buses.pad;
         if(owned_motion) {
@@ -41,7 +43,7 @@ struct StageInstrumentConfig : StageCoreConfig {
         return p;
     }
     bool valid() const noexcept {
-        return StageCoreConfig::valid()&&motion.valid()&&filter_motion.valid()&&
+        return StageCoreConfig::valid()&&motion.valid()&&filter_motion.valid()&&bed.valid()&&
             ambience_config().valid()&&master.valid()&&modulation.valid()&&output.valid()&&splits.valid()&&
             std::isfinite(piano_reverb_send)&&piano_reverb_send>=0&&piano_reverb_send<=1&&
             std::isfinite(piano_delay_send)&&piano_delay_send>=0&&piano_delay_send<=1;
@@ -49,18 +51,21 @@ struct StageInstrumentConfig : StageCoreConfig {
 };
 // Offline, single-owner, current-boundary commands only. Actual sources,
 // piano room/soft clip/sends, pad/delay/reverb and master are owned together.
-// No driver, browser protocol, sample bed or organ.
+// Optional preloaded sample bed; no driver, browser protocol, asset I/O or organ.
 // pcm() is post master-fader/BTL float32; channel() retains PRE output-stage
 // double diagnostics. Device gain/driver remain external. This is not Engine's
 // sample-sliced Backend; render complete blocks, never once per event slice.
 class StageInstrument final : private KeyTrigger {
 public:
-    StageInstrument(const std::string& font,PhaseSource& phases,unsigned frames=512,int program=0,MotionRandom* random=nullptr)
+    StageInstrument(const std::string& font,PhaseSource& phases,unsigned frames=512,int program=0,MotionRandom* random=nullptr,
+                    std::unique_ptr<SampledBed> bed={})
         :motion_(frames,random),filter_motion_(random),sources_(font,phases,frames,program,this),room_(frames),mix_(frames),ambience_(frames),master_(frames),output_(frames) {
+        if(bed) bed_=std::make_unique<BedBus>(std::move(bed),frames);
         if(!configure(config_)) throw std::runtime_error("Instrument initialization failed");
     }
     bool configure(const StageInstrumentConfig& p) noexcept {
         if(!healthy()||!p.valid()) return false;
+        if(bed_&&!bed_->configure(p.bed)) { stop(); return false; }
         if(p.owned_motion&&(!motion_.configure(p.motion)||!filter_motion_.configure(p.filter_motion))) { stop(); return false; }
         if(!sources_.configure(p.source_patch(prepared_))||!room_.configure(p.buses.room)||
            !mix_.configure(p.mix_config())||!ambience_.configure(p.ambience_config())||!master_.configure(p.master)||!output_.configure(p.output)) {
@@ -85,6 +90,13 @@ public:
     bool reverb_type(ReverbType t) noexcept { return healthy()&&ambience_.reverb_type(t); }
     bool freeze(bool v) noexcept { return healthy()&&ambience_.freeze(v); }
     bool retrigger_bpm() noexcept { return healthy()&&master_.retrigger_bpm(); }
+    bool bed_loaded(unsigned slot) const noexcept { return bed_&&bed_->loaded(slot); }
+    unsigned active_beds() const noexcept { return bed_?bed_->active():0; }
+    bool trigger_bed(unsigned slot,double rise=0,double cutoff=3000) noexcept {
+        return healthy()&&bed_&&bed_->trigger(slot,rise,cutoff);
+    }
+    bool fade_bed(bool out,double seconds=5) noexcept { return healthy()&&bed_&&bed_->fade(out,seconds); }
+    void release_bed() noexcept { if(bed_) bed_->release(); }
     bool render_block() noexcept {
         if(!healthy()) { stop(); return false; }
         prepared_=mix_.advance();
@@ -121,6 +133,17 @@ public:
             config_.owned_motion?&motion_:nullptr,config_.owned_motion?&filter_motion_:nullptr)) { stop(); return false; }
         std::array<const double*,6> pad{};
         for(unsigned c=0;c<6;++c) pad[c]=ambience_.channel(c);
+        if(bed_) {
+            if(!bed_->process()) { stop(); return false; }
+            // Recorded bed already contains its sound/effects. Add only to
+            // mixed and dry pad paths, not FX, BEFORE master processing. The
+            // existing pad headroom trim is0.85 in both split/unified modes.
+            for(unsigned c=0;c<4;++c) {
+                for(unsigned i=0;i<block_frames();++i)
+                    bed_mix_[c][i]=pad[c][i]+bed_->channel(c%2)[i]*.85;
+                pad[c]=bed_mix_[c].data();
+            }
+        }
         const auto modulation=config_.owned_motion?MasterModulation{config_.motion.bpm,config_.motion.lfo[0].depth,motion_.state(0).last_a}:config_.modulation;
         if(!master_.process(pad,&piano,modulation)) { stop(); return false; }
         if(!output_.process({master_.channel(0),master_.channel(1)})) { stop(); return false; }
@@ -129,9 +152,11 @@ public:
     void stop() noexcept {
         if(stopped_) return;
         stopped_=true; motion_.stop(); filter_motion_.stop(); sources_.stop(); ambience_.stop(); master_.stop(); output_.stop();
+        if(bed_) bed_->stop();
+        for(auto& c:bed_mix_) c.fill(0);
         for(auto& c:piano_) c.fill(0);
     }
-    bool healthy() const noexcept { return !stopped_&&motion_.healthy()&&filter_motion_.healthy()&&sources_.healthy()&&room_.healthy()&&ambience_.healthy()&&master_.healthy()&&output_.healthy(); }
+    bool healthy() const noexcept { return !stopped_&&(!bed_||bed_->healthy())&&motion_.healthy()&&filter_motion_.healthy()&&sources_.healthy()&&room_.healthy()&&ambience_.healthy()&&master_.healthy()&&output_.healthy(); }
     MotionState motion_state(unsigned j) const noexcept { return motion_.state(j); }
     std::array<double,3> filter_motion_state() const noexcept { return filter_motion_.state(); }
     const double* channel(unsigned c) const noexcept { return master_.channel(c); }
@@ -143,7 +168,7 @@ public:
     // Diagnostics: master0/1, pad mixed/dry/FX2..7, prepared piano8/9.
     const double* stem(unsigned c) const noexcept {
         if(c<2) return channel(c);
-        if(c<8) return ambience_.channel(c-2);
+        if(c<8) return bed_&&c<6?bed_mix_[c-2].data():ambience_.channel(c-2);
         return c<10?piano_[c-8].data():nullptr;
     }
     std::uint64_t frame_position() const noexcept { return sources_.frame_position(); }
@@ -159,5 +184,7 @@ private:
     StageInstrumentConfig config_{}; PreparedSourceMix prepared_{}; bool stopped_{};
     std::array<std::array<double,512>,2> piano_{},reverb_send_{},delay_send_{};
     std::array<std::array<StageLowpass,2>,2> piano_filter_{};
+    std::unique_ptr<BedBus> bed_;
+    std::array<std::array<double,512>,4> bed_mix_{};
 };
 } // namespace stave

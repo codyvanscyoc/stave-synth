@@ -32,6 +32,7 @@ def main():
     parser.add_argument("--fluidsynth-prefix", type=Path, required=True)
     parser.add_argument("--jack-include", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--benchmark-beds", action="store_true", help="Also run bounded unpaced combined-bed throughput cases on this host, not live qualification")
     args = parser.parse_args()
     for path in (args.soundfont, args.reference_dir / "report.json", args.faust_prefix / "include/faust/gui/CInterface.h",
                  args.fluidsynth_prefix / "include/fluidsynth.h", args.jack_include / "jack/jack.h"):
@@ -78,12 +79,21 @@ def main():
         flags = ["-std=c++17", "-O2", "-ffp-contract=off", "-Wall", "-Wextra", "-Werror", "-pthread",
                  "-fsanitize=undefined", "-fno-sanitize-recover=all", "-I", ROOT / "native_v2/include",
                  "-I", args.faust_prefix / "include", "-I", args.fluidsynth_prefix / "include", "-I", args.jack_include]
-        for name in ("test_piano_chain", "test_audition_session", "test_audition_jack"):
+        for name in ("test_piano_chain", "test_stage_instrument", "test_audition_session", "test_audition_jack"):
             binary = out / name
             run([cxx, *flags, *[ROOT / f"native_v2/src/{x}.cpp" for x in SOURCES], ROOT / f"native_v2/tests/{name}.cpp",
                  *[args.reference_dir / p for p in OBJECTS], "-L", args.fluidsynth_prefix / "lib",
                  "-Wl,-rpath," + str(args.fluidsynth_prefix / "lib"), "-lfluidsynth", "-o", binary])
             print(run([binary, args.soundfont]), flush=True)
+        if args.benchmark_beds:
+            binary=out/"benchmark-bed"
+            timing_flags=[f for f in flags if f not in ("-fsanitize=undefined", "-fno-sanitize-recover=all")]
+            run([cxx, *timing_flags, *[ROOT / f"native_v2/src/{x}.cpp" for x in SOURCES],
+                 ROOT / "native_v2/tests/benchmark_stage_instrument.cpp", *[args.reference_dir / p for p in OBJECTS],
+                 "-L", args.fluidsynth_prefix / "lib", "-Wl,-rpath," + str(args.fluidsynth_prefix / "lib"),
+                 "-lfluidsynth", "-o", binary])
+            report["bed_throughput"]=[json.loads(run([binary,args.soundfont,frames,4,400])) for frames in (512,256)]
+            print(json.dumps(report["bed_throughput"]),flush=True)
         if hashes() != report["source_sha256"]: raise RuntimeError("Source changed during checks")
         report["status"] = "passed_offline_audition_guards_not_live_qualification"
     except Exception as error:
