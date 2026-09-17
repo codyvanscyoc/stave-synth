@@ -7,7 +7,13 @@ See [the implementation plan](../docs/pi4/NATIVE_V2_PLAN.md) for promotion gates
 See [the saved checkpoint](../docs/pi4/NATIVE_V2_CHECKPOINT.md) for actual test
 results, artifact locations and the unresolved sanitizer check.
 
-September17: the player deferred independent drone/pad/recording until the first
+Latest: [target audition evidence](../docs/pi4/NATIVE_V2_TARGET_AUDITION.md).
+Pi4 build/guards and a94.5-second **muted real-callback512** musical/control test
+pass,360 notes and zero xruns/over-budget callbacks. The working service was
+restored. A limited listening binary is ready for temporary activation when the
+player arrives; not complete feature parity, live256 or stage-release approval.
+
+Earlier preparation checkpoint (superseded above): the player deferred independent drone/pad/recording until the first
 listening test. An opt-in isolated JACK host, bounded whole-block audition
 adapter and temporary browser controls are now implemented and offline-tested.
 They are **not deployed or target-qualified**, and do not replace the familiar
@@ -145,7 +151,7 @@ retain current-boundary admission. Do not dispatch one event through both.
 
 | Area | Implemented in this prototype | Not yet migrated or qualified |
 | --- | --- | --- |
-| Timing | Bounded event scheduling, priority terminal stop, fault tests, single audio owner | Live MIDI timestamps, control coalescing, driver/recovery, whole-block postprocessing integration |
+| Timing | Bounded M1 scheduling; whole-block audition MIDI/control owner and isolated JACK host; priority terminal stop and fault tests | Sample-accurate full-graph MIDI, production control/driver/recovery parity |
 | Oscillators | Integrated v1.2 voices/envelopes and actual12-slot/3-unison Faust; StageInstrument owns motion/poly decisions; faders, mute/re-entry and filter/Haas/send/bypass/shimmer buses | Per-voice pitch drift, production phase policy,1/5-unison paths, click fixes |
 | Piano | StageCore owns real int16 FluidSynth, velocity/pedal ownership, matched dry piano chain and downstream room; separate M1 float experiment | Pitch bend, live prepared program changes, library-internal real-time audit |
 | Shared effects | Native delay/reverse/Aurora; seven reverb types/freeze; source-owned pad/filter/returns, wet filter, motion and piano sends | Sympathetic resonance, overload sound-difference review, click/transition redesign |
@@ -153,8 +159,8 @@ retain current-boundary admission. Do not dispatch one event through both.
 | Motion | Owned two-LFO clocks/amp/pan/bus/filter drift/wobble, key-sync and poly decisions; joined merged/nonmerged reference comparisons pass | Production randomness, per-voice pitch drift, live control protocol |
 | Output | StageInstrument owns source/FX/master/final float32 output and original volume/BTL math; recorder tap; original-source fixture passes | High-gain sound acceptance, live backend/recorder transfer, end-to-end latency |
 | Worship functions | Shared-reverb freeze and raw-key splits above; nothing removed from preserved v1.2 | Independent sampled bed/drone, organ, recorder, macros, scenes and live control integration |
-| Browser/state | Existing implementation retained as reference | Versioned native protocol, preset conversion, five-fader UI integration |
-| Qualification | Offline comparisons; Pi4 build/guards and short incomplete-graph throughput probe | Complete-workload Pi4 timing, sound parity, actual hardware/rehearsal acceptance |
+| Browser/state | Existing implementation retained as reference; separate temporary audition controls with owner acknowledgments | Full native protocol, preset conversion, familiar five-fader UI integration |
+| Qualification | Offline comparisons; Pi4 build/guards, throughput and short muted real-callback512 musical/control test | Complete-workload timing, sound parity, actual listening/latency/rehearsal acceptance; live256 |
 
 StageCore produces eleven internal channels, not a finished stereo master.
 Its bounded post-warmup exercise observes zero C++ `new`/`new[]` allocations;

@@ -1,5 +1,10 @@
 # Native-v2 limited listening candidate — September 17, 2026
 
+**Superseding target checkpoint:** [NATIVE_V2_TARGET_AUDITION.md](NATIVE_V2_TARGET_AUDITION.md).
+The Pi build and first muted real-callback512 probe now pass. Working service
+restored; limited listening binary ready to activate when the player arrives.
+The original preparation-only status below is retained as historical evidence.
+
 User reprioritized: **defer independent drone, recorded pad and recording until
 after the morning audio test**. These remain product requirements; do not
 restart their migration before the requested audition. This checkpoint adds

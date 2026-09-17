@@ -6,6 +6,23 @@ Read this first; earlier review/deployment notes describe historical checkpoints
 
 ## September16 post-worship: native-v2 implementation authorized
 
+September17 latest: user authorized current paused maintenance. Target build and
+first MUTED real-JACK/PipeWire512 test PASS. See
+[NATIVE_V2_TARGET_AUDITION.md](NATIVE_V2_TARGET_AUDITION.md).45 chords/360 notes,
+176 HTTP controls,8,911 callback-block delta, zero xruns/over-budget/raw-piano
+full-scale/unsupported-channel MIDI; worst callback5.25873ms vs10.667ms budget.
+94.525s wall with1Hz telemetry; no audible/analogue/full-feature qualification.
+Native source5a22fbe; target executable ready in
+`/home/codyvanscyoc/stave-v2-audition-20260917.zRXTny/evidence/audition-jack`.
+Working stage restoredPID709387,NRestarts0,cleanf600c7e/same rehearsal checkout;
+HTTP/WS/native/audio healthy48k/512, current_state bytes unchanged, firmware0x0.
+No candidate/test/compiler remains,8082 closed;565 reviewed tests plus Node pass.
+Next is activating the limited512 listening session WHEN THE PLAYER ARRIVES,
+then giving the separate8082 URL. Don't mistake normal8080 for native-v2.
+Drone/pad/recording deferred until afterward. High-gain parity/full-piano stress
+warnings and other full-feature/physical gates remain open. Saved evidence and
+restoration procedure in the linked document; no new rebuild needed to listen.
+
 September17 latest priority: user deferred independent drone/recorded-pad/
 recording until AFTER the morning audio test. See
 [NATIVE_V2_AUDITION.md](NATIVE_V2_AUDITION.md). Implemented a bounded whole-block
