@@ -4,6 +4,37 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
+## September 17: Pi headphone output enabled for home testing
+
+User required the Pi4's physical 3.5 mm system output (no Clavinova headphone
+adapter). Enabled the previously disabled onboard audio with the single guarded
+boot change `dtparam=audio=off` to `dtparam=audio=on`, then completed a real
+reboot. Original `/boot/firmware/config.txt` is preserved on the Pi at
+`/home/codyvanscyoc/stave-native-boot-backup-20260917/config-before-pi-headphones-20260917.txt`.
+Original SHA256 is
+`7253b0b47caea449b7a98b647e7c92f6b5efe7ae0b0142f0b4ce379d5bf63132`;
+enabled config SHA256 is
+`293fa44d2cb5596cbb0acd66ce27a4a28521cd9cfdb82932967c4249a8dfcffb`.
+No DSP source, native binary, sample rate or buffer-size change was made.
+
+Boot ID `2ba176cf-cc09-423a-ae6e-04e80f2d2f4d` exposed ALSA card
+`bcm2835 Headphones`. Saved native routes now use Clavinova MIDI input and
+`Built-in Audio Stereo:playback_FL/FR`; exact JACK connections were verified.
+The native engine recovered the saved tone, routed healthy at 48 kHz / 512
+frames with fault 0, pending 0 and no over-budget or piano-full-scale events.
+The two reported xruns occurred around boot/route restarts; the count stayed at
+2 during the later observation window and system-volume change. This is not a
+long playing qualification of the analog output.
+
+User confirmed the UI works at both `http://192.168.4.33:8082` and
+`http://stavepi4.local:8082`. At handoff, Stave Master is transiently 0.50 and
+the PipeWire `Built-in Audio Stereo` system volume is 0.75. The underlying ALSA
+PCM control was left unchanged at 78% (-19.88 dB). Master deliberately returns
+muted on audio recovery; PipeWire normally remembers device volume, but verify
+headphone level after a reboot. The Pi analog output is a convenient fallback,
+not evidence that it matches the latency/noise/output quality of a qualified
+USB audio interface.
+
 ## September17: home Clavinova route recovered and ready
 
 Wi-Fi-only real power-up passed: new boot IDb7c480c6-14b8-4248-8591-e5193ad082ab,
