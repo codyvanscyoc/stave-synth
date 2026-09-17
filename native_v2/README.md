@@ -28,6 +28,7 @@ python3 tools/compare_pad_ambience.py --source-dir /absolute/path/to/seven-stem-
 python3 tools/compare_stage_master.py --ambience-dir /absolute/path/to/six-channel-ambience-evidence
 python3 tools/compare_stage_instrument.py --soundfont /absolute/path/to/existing.sf2
 python3 tools/compare_stage_output.py
+python3 tools/compare_stage_splits.py
 ```
 
 Core tests require a C++17 compiler and lock-free 64-bit atomics. Sound tests
@@ -69,6 +70,10 @@ float32 conversion, master-volume smoother, recorder tap and BTL math exactly
 on identical input. The diagnostic reverb replay localizes the overload
 difference; it does not waive the independent sound gate. See
 [output evidence](../docs/pi4/NATIVE_V2_OUTPUT.md).
+Raw-key split ranges/crossfades are now owned by StageInstrument:438,272 weights
+match exactly, and two extra full-chain split fixtures pass (ten runs total).
+Transpose/octave and pedal-release behavior are covered; the independent
+overload gate remains open. See [split evidence](../docs/pi4/NATIVE_V2_SPLITS.md).
 Never run these compilers/tests on a playing Pi: offline means no devices,
 not zero CPU or memory contention.
 
@@ -78,6 +83,9 @@ The following is the M1 `Engine` contract. New `StageSources` and `StageCore` ad
 only exact current-block-boundary commands and renders complete blocks. It
 does not implement `Backend` and must not be called once per event slice.
 See [source integration](../docs/pi4/NATIVE_V2_SOURCE_GRAPH.md) for that contract.
+StageInstrument additionally accepts `key_command()` for raw keys with owned
+split ranges; `command()` remains the prepared-weight diagnostic path. Both
+retain current-boundary admission. Do not dispatch one event through both.
 
 - One producer calls `Engine::enqueue`; one audio owner calls `process`.
   Backend construction/destruction happens while that owner is stopped.
@@ -114,9 +122,9 @@ See [source integration](../docs/pi4/NATIVE_V2_SOURCE_GRAPH.md) for that contrac
 | Oscillators | Integrated v1.2 voices/envelopes and actual12-slot/3-unison Faust; prepared phases/amplitudes and poly amp LFOs; StageCore owns faders, mute/re-entry and filter/Haas/send/bypass/shimmer buses | Global modulation/drift, production phase policy,1/5-unison paths, click fixes, full FX graph |
 | Piano | StageCore owns real int16 FluidSynth, velocity/pedal ownership, matched dry piano chain and downstream room; separate M1 float experiment | Pitch bend, live prepared program changes, library-internal real-time audit |
 | Shared effects | Native delay/reverse/Aurora; seven reverb types/freeze; source-owned pad/filter/returns, wet filter and piano sends | Global modulation/sympathetic, overload sound-difference review, click/transition redesign |
-| Stage keys | Integrated raw-key/transpose/sustain/sostenuto ownership and supplied layer weights | Split-weight calculation and live timestamped MIDI protocol |
+| Stage keys | Integrated raw-key/transpose/sustain/sostenuto ownership; StageInstrument owns per-layer ranges and smoothstep split weights | Live timestamped MIDI protocol, preset octave-stash integration |
 | Output | StageInstrument owns source/FX/master/final float32 output and original volume/BTL math; recorder tap; original-source fixture passes | High-gain sound acceptance, live backend/recorder transfer, end-to-end latency |
-| Worship functions | None silently removed from the preserved working build | Independent sampled bed/drone, freeze, organ, recorder, splits, macros, scenes |
+| Worship functions | Shared-reverb freeze and raw-key splits above; nothing removed from preserved v1.2 | Independent sampled bed/drone, organ, recorder, macros, scenes and live control integration |
 | Browser/state | Existing implementation retained as reference | Versioned native protocol, preset conversion, five-fader UI integration |
 | Qualification | Offline tests and diagnostic render only | Pi4 build/timing, sound parity, actual hardware/rehearsal acceptance |
 

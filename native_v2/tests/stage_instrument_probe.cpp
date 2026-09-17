@@ -6,6 +6,18 @@ using ProbeConfig=stave::StageInstrumentConfig;
 #include "delay_fixture.hpp"
 #include "master_fixture.hpp"
 extern "C" {
+int instrument_splits(void* h,const int* v,unsigned n) {
+    if(!h||!v||n!=13||(v[0]!=0&&v[0]!=1)) return 0;
+    auto& owner=*static_cast<CoreOwner*>(h); auto p=owner.config;
+    p.splits={bool(v[0]),{v[1],v[2],v[3]},{v[4],v[5],v[6]},
+              {v[7],v[8],v[9]},{v[10],v[11],v[12]}};
+    if(!owner.graph->configure(p)) return 0;
+    owner.config=p; return 1;
+}
+int instrument_key(void* h,std::uint64_t frame,int kind,int note,int value) {
+    if(!h||kind<0||kind>4) return 0;
+    return static_cast<CoreOwner*>(h)->graph->key_command(frame,static_cast<stave::StageAction>(kind),note,value);
+}
 int instrument_output(void* h,double volume,int btl) {
     if(!h||(btl!=0&&btl!=1)) return 0;
     auto& owner=*static_cast<CoreOwner*>(h); auto p=owner.config;

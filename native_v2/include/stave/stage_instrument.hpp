@@ -3,6 +3,7 @@
 #include "stave/pad_ambience.hpp"
 #include "stave/stage_master.hpp"
 #include "stave/stage_output.hpp"
+#include "stave/stage_splits.hpp"
 
 namespace stave {
 // Reuse the established source/room configuration without constructing a
@@ -12,13 +13,14 @@ struct StageInstrumentConfig : StageCoreConfig {
     MasterConfig master{};
     MasterModulation modulation{};
     OutputConfig output{};
+    StageSplits splits{};
     double wet{.75},wet_gain{1},piano_reverb_send{},piano_delay_send{};
     bool wet_filter{},piano_filter{};
     PadAmbienceConfig ambience_config() const noexcept {
         return {buses.pad,delay,wet,wet_gain,wet_filter};
     }
     bool valid() const noexcept {
-        return StageCoreConfig::valid()&&ambience_config().valid()&&master.valid()&&modulation.valid()&&output.valid()&&
+        return StageCoreConfig::valid()&&ambience_config().valid()&&master.valid()&&modulation.valid()&&output.valid()&&splits.valid()&&
             std::isfinite(piano_reverb_send)&&piano_reverb_send>=0&&piano_reverb_send<=1&&
             std::isfinite(piano_delay_send)&&piano_delay_send>=0&&piano_delay_send<=1;
     }
@@ -48,6 +50,13 @@ public:
         const bool ok=sources_.command(frame,command);
         if(!sources_.healthy()) stop();
         return ok;
+    }
+    // Raw-key entry point. command() remains the explicit prepared-weight
+    // diagnostic API; never apply both routing paths to the same event.
+    bool key_command(std::uint64_t frame,StageAction action,int note,int value) noexcept {
+        StageCommand event{action,note,value};
+        if(action==StageAction::NoteOn&&value>0&&!config_.splits.weights(note,event.weights)) return false;
+        return command(frame,event);
     }
     bool reverb_control(ReverbControl c,double v) noexcept { return healthy()&&ambience_.reverb_control(c,v); }
     bool reverb_type(ReverbType t) noexcept { return healthy()&&ambience_.reverb_type(t); }

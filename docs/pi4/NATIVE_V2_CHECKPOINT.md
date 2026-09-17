@@ -1,6 +1,17 @@
 # Native-v2 checkpoint — September 17, 2026
 
-## Latest: final PCM output and exact reverb-input replay
+## Latest: raw-key splits integrated through final PCM
+
+[NATIVE_V2_SPLITS.md](NATIVE_V2_SPLITS.md) records owned piano/OSC1/OSC2/shimmer
+key ranges and crossfades. 438,272 weights match exactly; two independent
+full-chain fixtures pass at512/256, worst1.885e-9, with raw-key-before-transpose,
+octave, silent layers and pedal/release coverage. UBSan/scoped allocation guards
+and549legacytests plus Node pass. Original source sound comparison still passes;
+independent high-gain strict comparison still fails unchanged. Full runner exits1,
+not an all-tests-pass milestone. No Pi contact/deployment or live qualification.
+Remaining modulation/bed/organ/control/backend work remains open.
+
+## Earlier: final PCM output and exact reverb-input replay
 
 [NATIVE_V2_OUTPUT.md](NATIVE_V2_OUTPUT.md) records the connected float32 output,
 original master-volume smoother/clamp/BTL and recorder tap. Output component

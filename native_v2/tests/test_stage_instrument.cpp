@@ -30,6 +30,25 @@ int main(int argc,char** argv) {
         Phases phases; stave::StageInstrument graph(argv[1],phases,n);
         stave::StageInstrumentConfig p;
         check(!graph.stem(10)&&!graph.channel(2)); silence(graph);
+        p.splits={true,{0,0,0},{127,127,0},{0,0,0},{127,127,0}};
+        check(graph.configure(p));
+        check(!graph.key_command(1,stave::StageAction::NoteOn,60,100));
+        check(!graph.key_command(0,stave::StageAction::NoteOn,-1,100));
+        check(!graph.key_command(0,stave::StageAction::NoteOn,128,100));
+        check(graph.key_command(0,stave::StageAction::NoteOn,60,100));
+        check(graph.active_voices()==0); // excluded key consumes no oscillator slot
+        check(graph.key_command(0,stave::StageAction::NoteOff,60,0));
+        auto invalid=p; invalid.splits.piano.crossfade=25;
+        check(!graph.configure(invalid)&&graph.healthy());
+        check(graph.key_command(0,stave::StageAction::NoteOn,60,100)&&graph.active_voices()==0);
+        check(graph.key_command(0,stave::StageAction::ReleaseAll,0,0));
+        p.transpose=12; p.piano_octave=1; p.splits.osc1={60,60,0};
+        check(graph.configure(p));
+        check(graph.key_command(0,stave::StageAction::NoteOn,60,100)&&graph.active_voices()==1);
+        check(graph.key_command(0,stave::StageAction::NoteOn,72,100)&&graph.active_voices()==1);
+        // Musical release is not terminal STOP: the slot retires during render.
+        check(graph.key_command(0,stave::StageAction::ReleaseAll,0,0)&&graph.active_voices()==1);
+        p={}; check(graph.configure(p));
         check(!graph.command(1,{stave::StageAction::NoteOn,60,100}));
         for(int note:{60,64,67}) check(graph.command(0,{stave::StageAction::NoteOn,note,110}));
         check(graph.render_block()); counting=true;
@@ -43,12 +62,17 @@ int main(int argc,char** argv) {
             p.master.compression=b%5; p.master.fx_bypass=b%2;
             p.master.sidechain=static_cast<stave::SidechainSource>(b%4);
             p.output={(b%101)/100.,bool(b%2)};
+            p.splits.enabled=b%2;
+            p.splits.osc1={48,72,12}; p.splits.osc2={60,84,6};
             check(graph.configure(p));
             if(b%100==0) check(graph.reverb_type(static_cast<stave::ReverbType>((b/100)%7)));
             if(b%30==0) check(graph.freeze((b/30)%2));
             if(b%70==0) check(graph.retrigger_bpm());
-            if(b==180) check(graph.command(graph.frame_position(),{stave::StageAction::ReleaseAll,0,0}));
-            if(b==240) check(graph.command(graph.frame_position(),{stave::StageAction::NoteOn,64,100}));
+            if(b==180) check(graph.key_command(graph.frame_position(),stave::StageAction::ReleaseAll,0,0));
+            if(b==240) check(graph.key_command(graph.frame_position(),stave::StageAction::NoteOn,64,100));
+            if(b==241) check(graph.key_command(graph.frame_position(),stave::StageAction::Sustain,0,1));
+            if(b==242) check(graph.key_command(graph.frame_position(),stave::StageAction::NoteOn,64,0));
+            if(b==260) check(graph.key_command(graph.frame_position(),stave::StageAction::Sustain,0,0));
             check(graph.render_block()); muted+=graph.prepared_mix().skip_voices;
             for(unsigned c=0;c<10;++c) for(unsigned i=0;i<n;++i) check(std::isfinite(graph.stem(c)[i]));
             for(unsigned i=0;i<n;++i) { check(std::abs(graph.channel(0)[i])<=.98); heard|=std::abs(graph.channel(0)[i])>1e-4; }
@@ -64,10 +88,11 @@ int main(int argc,char** argv) {
         graph.stop(); silence(graph);
         check(!graph.configure({})&&!graph.render_block()&&!graph.retrigger_bpm()&&!graph.freeze(true));
         check(!graph.command(frame,{stave::StageAction::NoteOn,60,100}));
+        check(!graph.key_command(frame,stave::StageAction::NoteOn,60,100));
         counting=false; check(allocations==0);
         Phases unavailable; stave::StageInstrument failed(argv[1],unavailable,n);
         unavailable.available=false; check(!failed.command(0,{stave::StageAction::NoteOn,60,100}));
         check(!failed.healthy()); silence(failed);
     }
-    std::puts("PASS: 1400 owned instrument blocks, mute/re-entry, sends/filter/freeze/type/master transitions, zero C++ new/new[], configuration/phase fault and terminal silence guards");
+    std::puts("PASS: 1400 owned instrument blocks, raw-key splits/pedal release, mute/re-entry, sends/filter/freeze/type/master transitions, zero C++ new/new[], configuration/phase fault and terminal silence guards");
 }

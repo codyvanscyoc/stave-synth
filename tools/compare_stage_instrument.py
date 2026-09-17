@@ -28,6 +28,7 @@ import compare_shared_effects as effects
 import compare_pad_ambience as ambience
 import compare_stage_master as master
 import compare_stage_output as output_stage
+import compare_stage_splits as splits
 
 PD=sources.PD
 # Keep the original strict sound gate. Both independent and common-piano
@@ -201,6 +202,37 @@ class Integration(core.Integration):
         self.output_independent_peak=max(self.output_independent_peak,float(np.max(np.abs(pcm-self.native_pcm))))
         return np.vstack((stereo,buses_out,original_piano))
 
+class SplitIntegration(Integration):
+    def __init__(self,*args,**kwargs):
+        super().__init__(*args,**kwargs)
+        self.split_weight,_=splits.oracle()
+        self.split_events=0; self.partial_weights=0; self.silent_weights=0
+    def fixture(self):
+        initial,patches,events,weights=super().fixture()
+        # These sounding raw keys cross different zones if wrongly evaluated
+        # AFTER transpose. Piano octave is independent of the raw-key ranges.
+        patches[60].update({8:12,9:1})
+        patches[84]={8:-12,9:-1}
+        events[96]=[(0,64,0)]  # velocity-zero note-on must remain a release
+        return initial,patches,events,weights
+    def prepare(self,handle,bank,values,frame,frames):
+        skip=super().prepare(handle,bank,values,frame,frames)
+        self.split_config=splits.configuration(frame//512)
+        config=(ct.c_int*13)(*self.split_config)
+        if not self.lib.instrument_splits(handle,config,13): raise RuntimeError("Split configuration rejected")
+        return skip
+    def key_event(self,handle,frame,kind,note,value,weights):
+        c=self.split_config
+        # Original Python function decides reference weights from RAW key;
+        # candidate receives only the raw event and its independent config.
+        weights[:]=[self.split_weight(note,*c[1+3*z:4+3*z]) if c[0] else 1. for z in range(4)]
+        if kind==0 and value>0:
+            self.split_events+=1
+            self.partial_weights+=int(np.count_nonzero((weights>0)&(weights<1)))
+            self.silent_weights+=int(np.count_nonzero(weights==0))
+        return self.lib.instrument_key(handle,frame,kind,note,value)
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--soundfont",required=True,type=Path)
@@ -211,7 +243,7 @@ def main():
     if args.output_dir: output=args.output_dir.expanduser().resolve(); output.mkdir(mode=0o700,exist_ok=False)
     else: output=Path(tempfile.mkdtemp(prefix="stave-instrument-"))
     print(f"Evidence: {output}",flush=True)
-    modules=(base,sources,core,buses,room,mix,effects,ambience,master,output_stage)
+    modules=(base,sources,core,buses,room,mix,effects,ambience,master,output_stage,splits)
     paths=[*sorted((base.ROOT/"native_v2").rglob("*.hpp")),*sorted((base.ROOT/"native_v2").rglob("*.cpp")),
            *[Path(m.__file__) for m in modules],Path(__file__),base.ROOT/"faust/faust_cprelude.h",font]
     hashes=lambda:{str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
@@ -251,6 +283,8 @@ def main():
         _,mcreate,report["master_oracle_sha256"]=master.oracles(dirs["master"],mr)
         _,report["piano_routing_sha256"]=piano_routing_oracle()
         lib=sources.native_api(candidate)
+        lib.instrument_splits.argtypes=[ct.c_void_p,ct.POINTER(ct.c_int),ct.c_uint]; lib.instrument_splits.restype=ct.c_int
+        lib.instrument_key.argtypes=[ct.c_void_p,ct.c_uint64,ct.c_int,ct.c_int,ct.c_int]; lib.instrument_key.restype=ct.c_int
         lib.instrument_trace.argtypes=[ct.c_void_p,ct.c_uint]; lib.instrument_trace.restype=PD
         for name in ("instrument_pcm","instrument_tap"):
             getattr(lib,name).argtypes=[ct.c_void_p,ct.c_uint]; getattr(lib,name).restype=output_stage.PF
@@ -261,29 +295,38 @@ def main():
             getattr(lib,name).argtypes=params; getattr(lib,name).restype=ct.c_int
         tape=np.random.RandomState(base.SEED).uniform(0,1,(512,4)).astype(np.float64)
         np.save(output/"phase-tape.npy",tape,allow_pickle=False)
-        for overload,common_piano in ((False,False),(False,True),(True,False),(True,True)):
-            label=("overload" if overload else "original-source-fixture")+("-common-piano" if common_piano else "-independent")
+        source_fixtures={}
+        for overload,common_piano,split_routing in ((False,False,False),(False,True,False),(True,False,False),(True,True,False),(False,False,True)):
+            label=("raw-key-splits" if split_routing else "overload" if overload else "original-source-fixture")+("-common-piano" if common_piano else "-independent")
             run_dir=output/label; run_dir.mkdir()
             for size in (512,256):
-                integration=Integration(lib,pcreate,prender,rcreate,rrender,advance,classes,mcreate,type(filters.lp[0][0]),size,output_reference,common_piano,overload)
+                integration_type=SplitIntegration if split_routing else Integration
+                integration=integration_type(lib,pcreate,prender,rcreate,rrender,advance,classes,mcreate,type(filters.lp[0][0]),size,output_reference,common_piano,overload)
+                source_fixtures[label]=integration.fixture()
                 result=sources.compare(run_dir,lib,refs,args.fluidsynth_prefix,font,size,tape,integration)
                 result.update(muted_blocks=integration.muted,wet_filter_blocks=integration.wet_filter_blocks,
                     piano_filter_blocks=integration.piano_filter_blocks,piano_send_blocks=integration.send_blocks,
                     piano_samples_above_soft_knee=integration.soft_clipped,peak_piano_before_routing=integration.peak_before_clip,
-                    error_metrics=integration.error_metrics,fixture=label,overload=overload,trace_metrics=integration.trace_metrics,
+                    error_metrics=integration.error_metrics,fixture=label,overload=overload,split_routing=split_routing,trace_metrics=integration.trace_metrics,
                     native_input_reference_reverb_replay_difference=integration.replay_peak_difference,
                     output_same_input_peak_difference=integration.output_same_input_peak,
                     output_independent_peak_difference=integration.output_independent_peak)
                 if integration.replay_peak_difference!=0: raise RuntimeError("Reference reverb replay with native input differs")
+                if split_routing:
+                    result.update(split_note_ons=integration.split_events,partial_split_weights=integration.partial_weights,
+                                  silent_split_weights=integration.silent_weights)
+                    if not all((integration.split_events,integration.partial_weights,integration.silent_weights)):
+                        raise RuntimeError("Split routing fixture coverage missing")
                 if not all((integration.muted,integration.wet_filter_blocks,integration.piano_filter_blocks,*integration.send_blocks)) or (overload and not integration.soft_clipped):
                     raise RuntimeError("Required integration branch not exercised")
                 report["runs"].append(result); print(f"MEASURED: {result}",flush=True)
-        (output/"fixture.json").write_text(json.dumps({"sources_overload":integration.fixture(),"buses":buses.fixture()[:2],
+        (output/"fixture.json").write_text(json.dumps({"source_variants":source_fixtures,"buses":buses.fixture()[:2],
             "effects":effects.fixtures(),"master":master.fixture(),"routing":"deterministic prepare() recipe in hashed runner"},indent=2)+"\n")
         if hashes()!=report["source_sha256"]: raise RuntimeError("Sources changed during comparison")
         report["independent_sound_gate_passed"]=all(r["error_metrics"]["original_1e_6_gate_passed"] for r in report["runs"] if r["error_metrics"]["mode"]=="independent-full-chain")
         report["original_source_sound_gate_passed"]=all(r["error_metrics"]["original_1e_6_gate_passed"] for r in report["runs"] if not r["overload"] and r["error_metrics"]["mode"]=="independent-full-chain")
         report["common_piano_diagnostic_passed"]=all(r["error_metrics"]["original_1e_6_gate_passed"] for r in report["runs"] if r["error_metrics"]["mode"]=="common-prepared-piano-isolation")
+        report["split_routing_sound_gate_passed"]=all(r["error_metrics"]["original_1e_6_gate_passed"] for r in report["runs"] if r["split_routing"])
         report["status"]=("passed_owned_instrument_pcm_only" if all(r["error_metrics"]["original_1e_6_gate_passed"] for r in report["runs"])
                           else "sound_difference_review_required")
     except Exception as error: report.update(status="failed",error=str(error))

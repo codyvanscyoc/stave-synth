@@ -6,7 +6,19 @@ Read this first; earlier review/deployment notes describe historical checkpoints
 
 ## September16 post-worship: native-v2 implementation authorized
 
-September17 latest: [NATIVE_V2_OUTPUT.md](NATIVE_V2_OUTPUT.md).
+September17 latest: [NATIVE_V2_SPLITS.md](NATIVE_V2_SPLITS.md).
+StageInstrument now owns raw-key piano/OSC1/OSC2/shimmer split ranges and
+smoothstep crossfades through key_command(). 438,272 weights match the pinned
+original exactly. New full-chain split fixtures pass at512/256, including
+positive/negative transpose, octave, silent/partial layers and pedal releases;
+worst internal difference1.885e-9. Original eight comparisons retained: original
+source passes, high-gain independent1e-6 still fails unchanged; full runner
+exits1 (sound_difference_review_required). UBSan/scoped zero-new guards and
+549legacytests plus Node pass. No Pi contact/deployment. Next: remaining
+modulation/bed/organ/control features, bounded live integration and qualification;
+not field-test ready. Musical ReleaseAll preserves tails; hard STOP is separate.
+
+Previous output checkpoint: [NATIVE_V2_OUTPUT.md](NATIVE_V2_OUTPUT.md).
 StageInstrument now reaches final float32 PCM through the original master
 volume smoother/clamp/BTL math, with the pre-volume recorder tap preserved.
 Output component and connected same-input output match exactly. Overload

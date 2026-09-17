@@ -264,7 +264,9 @@ def compare(output, lib, refs, prefix, font, size, tape, integration=None):
             if frame % 512 == 0:
                 if tick in weight_changes: weights[:]=weight_changes[tick]
                 for kind,note,value in events.get(tick,[]):
-                    if not lib.sources_command(handle,frame,kind,note,value,ptr(weights)): raise RuntimeError("Native event rejected")
+                    if integration is not None and hasattr(integration,"key_event"):
+                        if not integration.key_event(handle,frame,kind,note,value,weights): raise RuntimeError("Native raw-key event rejected")
+                    elif not lib.sources_command(handle,frame,kind,note,value,ptr(weights)): raise RuntimeError("Native event rejected")
                     message = ((0x90,note,value) if kind==0 else (0x80,note,0) if kind==1 else
                                (0xB0,64,127*value) if kind==2 else (0xB0,66,127*value) if kind==3 else (0xB0,123,0))
                     keys.feed(message)
