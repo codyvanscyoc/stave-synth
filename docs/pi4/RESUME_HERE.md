@@ -4,6 +4,35 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
+## September17: muted finishing window, stage restored
+
+User finished playing and explicitly authorized maintenance. The temporary
+listening session was ended, not left running. Piano brightness passed a new
+94.299-second MUTED real-JACK512 test:360 notes,341 acknowledged controls,
+8,849 callback-block delta,0 xruns/over-budget/full-scale piano samples;
+worst5.17846ms. Native sampled-bed graph integration committedcc38d7f and built
+on the Pi: ten offline cases/4,000 measured blocks, no deadline misses. Dense
+512 with bed mean4.100814/max5.558649ms; this is NOT physical latency evidence.
+Original sampled-bed oracle also passes on Pi. Keep512; no live256 switch.
+
+Working `stave-synth.service` restoredPID722136,NRestarts0, same cleanf600c7e
+rehearsal checkout; HTTP/WS/audio/native health verified48k/512. Saved current
+state byte-identical (SHA2f366d3c...), firmware0x0, no native test client left.
+Accepted listening reference and Pi5 branches untouched. Private Pi build/log/
+settings archive saved and SHA-verified on Mac. Recheck actual service on resume.
+
+Recorder transport commit8fb7cb3: bounded lock-free SPSC capture optionally
+connected to the actual pre-volume/BTL tap; overflow ends only recording.
+569 reviewed Mac tests, zero skips, Node UI and full native C++/UBSan guards
+pass. Disk worker/WAV finalization and record-to-pad integration NOT done.
+The standalone capture guard also passes on Pi/ARM64/UBSan inPqAL9z without
+restarting stage (PID722136 unchanged,73.523°C afterward,firmware0x0).
+Mac ThreadSanitizer exits139 even for a minimal unrelated thread smoke test;
+this is not a successful race-sanitizer check. See
+[bed/capture checkpoint](NATIVE_V2_BED_CAPTURE.md) for evidence and exact next
+steps. Earlier entries below are historical; do not reactivate a listening
+session or repeat a completed build simply because an older paragraph says to.
+
 ## September17 after listening: finish integration authorized
 
 Player accepted the limited native512 audition as phenomenal/near-instant with

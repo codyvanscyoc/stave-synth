@@ -6,6 +6,21 @@ the default;256 is optional future exploration, not the next release gate.
 The user now permits UI redesign to serve musical control and playability.
 Independent sampled beds/drone and recording are no longer deferred.
 
+## Latest result: maintenance and target tests completed
+
+The user subsequently confirmed finished playing/muted. Piano brightness now
+passes the target build and a94.299-second muted real-driver sweep. The bed
+is integrated before the native master/limiter and passes combined Pi offline
+benchmarks, but the live host still does NOT load a pad library or expose bed
+controls. Recording has a tested native capture transport connected optionally
+to the graph tap, NOT a finished file writer or UI. The working service is
+restored; temporary8082 audition is not running. See the authoritative
+[bed/capture checkpoint](NATIVE_V2_BED_CAPTURE.md).
+
+Steps1 and the graph-mixing part of2 below are complete. Continue with immutable
+asset preparation/handoff, recorder finalization, product UI and qualification.
+The previous local-only results below are retained as historical evidence.
+
 ## Preserved listening reference
 
 Annotated tag `pi4-native-listening-pass-20260917` points to8c1a88a (source and
@@ -23,7 +38,7 @@ latency measurement. The private `player-listening-accepted.json` preserves
 the settings and counters in the target-audition backup directory. Never
 blindly replay the saved release action or unmute master automatically.
 
-## Current local implementation batch
+## Earlier local implementation batch (superseded by target tests above)
 
 Piano-brightness commit8b7cdc1; sampled-bed component commit8db3254.
 Reviewed Mac offline suite:567 tests, zero skips, plus Node UI checks,

@@ -7,11 +7,13 @@ See [the implementation plan](../docs/pi4/NATIVE_V2_PLAN.md) for promotion gates
 See [the saved checkpoint](../docs/pi4/NATIVE_V2_CHECKPOINT.md) for actual test
 results, artifact locations and the unresolved sanitizer check.
 
-Latest: player accepted the isolated512 listening test. Piano brightness and
-the original-sound sampled-bed component are implemented/tested locally, not
-deployed. See [finishing checkpoint](../docs/pi4/NATIVE_V2_FINISHING.md) for the
-remaining live bed/recorder/UI/device integration; this is not a completed
-replacement for the full application.
+Latest: player accepted the isolated512 listening test. Piano brightness passed
+a muted real-driver Pi test; integrated sampled beds passed combined Pi offline
+benchmarks. The working service is restored, not replaced. Native recorder
+transport is tested with the graph tap, but asset loading, file finalization,
+record-to-pad and full UI/device integration remain. See the
+[bed/capture checkpoint](../docs/pi4/NATIVE_V2_BED_CAPTURE.md). This is not a
+completed replacement for the full application; temporary8082 is not active.
 
 Earlier: [target audition evidence](../docs/pi4/NATIVE_V2_TARGET_AUDITION.md).
 Pi4 build/guards and a94.5-second **muted real-callback512** musical/control test
