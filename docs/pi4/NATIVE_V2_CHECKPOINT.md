@@ -1,6 +1,13 @@
 # Native-v2 checkpoint — September 17, 2026
 
-## Latest: pad/filter and room buses composed and compared
+## Latest: source-fader scalar adapter compared
+
+[NATIVE_V2_SOURCE_MIX.md](NATIVE_V2_SOURCE_MIX.md) records5,504pinned-reference
+blocks for native fader smoothing/amplitude/pan/gating decisions, UBSan and
+549legacytests+Node passes. The all-muted Faust/fallback transition and full
+source/bus/control owner still need integration. No Pi contact/deployment.
+
+## Earlier this batch: pad/filter and room buses composed and compared
 
 [NATIVE_V2_BUSES.md](NATIVE_V2_BUSES.md) records the11-channel downstream
 slice and pinned-reference comparisons. Main/independent filters, Haas,

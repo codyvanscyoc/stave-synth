@@ -21,6 +21,7 @@ python3 tools/compare_native_v2.py --soundfont /absolute/path/to/existing.sf2
 python3 tools/compare_native_sources.py --soundfont /absolute/path/to/existing.sf2
 python3 tools/compare_native_room.py
 python3 tools/compare_native_buses.py
+python3 tools/compare_source_mix.py
 ```
 
 Core tests require a C++17 compiler and lock-free 64-bit atomics. Sound tests
@@ -86,7 +87,7 @@ See [source integration](../docs/pi4/NATIVE_V2_SOURCE_GRAPH.md) for that contrac
 | Area | Implemented in this prototype | Not yet migrated or qualified |
 | --- | --- | --- |
 | Timing | Bounded event scheduling, priority terminal stop, fault tests, single audio owner | Live MIDI timestamps, control coalescing, driver/recovery, whole-block postprocessing integration |
-| Oscillators | Integrated v1.2 voices/envelopes and actual12-slot/3-unison Faust; prepared phases/amplitudes and poly amp LFOs; separate verified filter/Haas/send/bypass/shimmer buses | Stage fader/gating adapter, global modulation/drift, production phase policy,1/5-unison paths, click fixes, full FX graph |
+| Oscillators | Integrated v1.2 voices/envelopes and actual12-slot/3-unison Faust; prepared phases/amplitudes and poly amp LFOs; separate verified fader scalar adapter and filter/Haas/send/bypass/shimmer buses | Fader/mute/source/bus owner integration, global modulation/drift, production phase policy,1/5-unison paths, click fixes, full FX graph |
 | Piano | Integrated real int16 FluidSynth, velocity/pedal ownership and matched dry piano chain; room composed with downstream buses; separate M1 float experiment | Full source-to-bus owner, pitch bend, live prepared program changes, library-internal real-time audit |
 | Stage keys | Integrated raw-key/transpose/sustain/sostenuto ownership and supplied layer weights | Split-weight calculation and live timestamped MIDI protocol |
 | Output | Dry stereo mix, finite checks, counted emergency export clamp, WAV | Complete FX/filter/limiter graph, live backend, end-to-end latency |
@@ -132,8 +133,9 @@ Do not discover/run arbitrary legacy stress tests. See
 ## Next: prove musical compatibility before adding breadth
 
 Pinned source fixtures and the11-channel pad/room bus composition now pass.
-See [bus evidence](../docs/pi4/NATIVE_V2_BUSES.md). Next implement the stage
-fader/gating adapter, then compose buses with the source graph,
+See [bus evidence](../docs/pi4/NATIVE_V2_BUSES.md) and the verified
+[source-fader scalars](../docs/pi4/NATIVE_V2_SOURCE_MIX.md). Next compose the
+adapter/buses with the source graph and test the all-muted transition,
 then complete control coverage and the event adapter. Keep whole-block piano
 processing separate from MIDI event slicing; do not silently change the proven
 cadence semantics. Bring effects and beds across only with their

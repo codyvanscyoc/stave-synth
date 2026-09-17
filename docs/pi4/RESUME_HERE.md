@@ -6,14 +6,21 @@ Read this first; earlier review/deployment notes describe historical checkpoints
 
 ## September16 post-worship: native-v2 implementation authorized
 
-September17 latest: [NATIVE_V2_BUSES.md](NATIVE_V2_BUSES.md).
+September17 latest: [NATIVE_V2_SOURCE_MIX.md](NATIVE_V2_SOURCE_MIX.md).
+SourceMix now preserves stage fader smoothing/dB mapping, hard-pan and source/
+shimmer/Haas scalar decisions:5,504pinned-reference blocks pass, worst1.111e-16;
+UBSan passes. Separate component, not yet the full source/bus/control owner.
+Next: owned composition and explicit all-muted Faust/fallback transition tests.
+No Pi contact/deployment; not a morning native-v2 field-test candidate yet.
+
+Previous checkpoint in this batch: [NATIVE_V2_BUSES.md](NATIVE_V2_BUSES.md).
 Native PadBus + PianoRoom now compose as StageBuses:11 internal channels,
 verified against pinned scalar/routing code and actual Faust at512/256.
 Saved source-stem results are exact; synthetic worst difference6.939e-18.
 UBSan guards and549legacytests+Node pass. No Pi contact/deployment. NOT a
 field-testable successor; no complete master/FX/control/browser/device path.
-Next: source fader-to-amplitude/mute control adapter and source/bus ownership
-integration. Read the new checkpoint's explicit gain and all-muted-path gap.
+The scalar fader adapter above advances that checkpoint's next step; owned
+source/bus integration and its all-muted-path gap still remain.
 
 Earlier room checkpoint: [NATIVE_V2_PIANO_ROOM.md](NATIVE_V2_PIANO_ROOM.md).
 The native piano-room downstream component passes exact pinned-reference
