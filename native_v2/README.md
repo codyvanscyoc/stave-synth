@@ -27,6 +27,7 @@ python3 tools/compare_shared_effects.py
 python3 tools/compare_pad_ambience.py --source-dir /absolute/path/to/seven-stem-source-evidence
 python3 tools/compare_stage_master.py --ambience-dir /absolute/path/to/six-channel-ambience-evidence
 python3 tools/compare_stage_instrument.py --soundfont /absolute/path/to/existing.sf2
+python3 tools/compare_stage_output.py
 ```
 
 Core tests require a C++17 compiler and lock-free 64-bit atomics. Sound tests
@@ -63,6 +64,11 @@ piano stress case exceeds the unchanged strict sound-comparison tolerance.
 It retains the full independent/common-input diagnostic matrix; see
 [integration evidence](../docs/pi4/NATIVE_V2_INSTRUMENT.md). This is not an
 all-tests-pass or field-testable successor checkpoint.
+The final output component and its owned integration now match the original
+float32 conversion, master-volume smoother, recorder tap and BTL math exactly
+on identical input. The diagnostic reverb replay localizes the overload
+difference; it does not waive the independent sound gate. See
+[output evidence](../docs/pi4/NATIVE_V2_OUTPUT.md).
 Never run these compilers/tests on a playing Pi: offline means no devices,
 not zero CPU or memory contention.
 
@@ -109,7 +115,7 @@ See [source integration](../docs/pi4/NATIVE_V2_SOURCE_GRAPH.md) for that contrac
 | Piano | StageCore owns real int16 FluidSynth, velocity/pedal ownership, matched dry piano chain and downstream room; separate M1 float experiment | Pitch bend, live prepared program changes, library-internal real-time audit |
 | Shared effects | Native delay/reverse/Aurora; seven reverb types/freeze; source-owned pad/filter/returns, wet filter and piano sends | Global modulation/sympathetic, overload sound-difference review, click/transition redesign |
 | Stage keys | Integrated raw-key/transpose/sustain/sostenuto ownership and supplied layer weights | Split-weight calculation and live timestamped MIDI protocol |
-| Output | StageInstrument owns source/FX/master composition; original-source fixture passes; explicit limiter/zero-knee corrections retained | High-gain stress sound gate, final bridge gain, live backend, end-to-end latency |
+| Output | StageInstrument owns source/FX/master/final float32 output and original volume/BTL math; recorder tap; original-source fixture passes | High-gain sound acceptance, live backend/recorder transfer, end-to-end latency |
 | Worship functions | None silently removed from the preserved working build | Independent sampled bed/drone, freeze, organ, recorder, splits, macros, scenes |
 | Browser/state | Existing implementation retained as reference | Versioned native protocol, preset conversion, five-fader UI integration |
 | Qualification | Offline tests and diagnostic render only | Pi4 build/timing, sound parity, actual hardware/rehearsal acceptance |
@@ -164,8 +170,10 @@ StageInstrument now joins actual sources and returns without duplicate PadBus
 processing, including wet-output filtering and piano sends. Its added overload
 sound gate remains open; do not replace it with the passing common-input
 diagnostic. See [integration evidence](../docs/pi4/NATIVE_V2_INSTRUMENT.md).
-Next resolve that difference, then complete global modulation, final output and
-control coverage and the event adapter. Keep whole-block piano
+Final float32 output/volume/BTL and recorder tap are now owned and compared;
+reverb replay demonstrates the overload input-rounding divergence. Complete
+remaining modulation/features, sound acceptance, controls and event adapter.
+Keep whole-block piano
 processing separate from MIDI event slicing; do not silently change the proven
 cadence semantics. Bring effects and beds across only with their
 tail/transition tests. Pi4 speed measurements and any deployment require a

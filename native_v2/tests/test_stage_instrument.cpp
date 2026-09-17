@@ -13,6 +13,7 @@ struct Phases final:stave::PhaseSource {
 };
 void silence(const stave::StageInstrument& g) {
     for(unsigned c=0;c<10;++c) for(unsigned i=0;i<g.block_frames();++i) check(g.stem(c)[i]==0);
+    for(unsigned c=0;c<2;++c) for(unsigned i=0;i<g.block_frames();++i) check(g.pcm(c)[i]==0&&g.recording_tap(c)[i]==0);
 }
 }
 void* operator new(std::size_t n) { return allocate(n); }
@@ -41,6 +42,7 @@ int main(int argc,char** argv) {
             p.delay.enabled=true; p.delay.wet=.35;
             p.master.compression=b%5; p.master.fx_bypass=b%2;
             p.master.sidechain=static_cast<stave::SidechainSource>(b%4);
+            p.output={(b%101)/100.,bool(b%2)};
             check(graph.configure(p));
             if(b%100==0) check(graph.reverb_type(static_cast<stave::ReverbType>((b/100)%7)));
             if(b%30==0) check(graph.freeze((b/30)%2));
@@ -50,6 +52,11 @@ int main(int argc,char** argv) {
             check(graph.render_block()); muted+=graph.prepared_mix().skip_voices;
             for(unsigned c=0;c<10;++c) for(unsigned i=0;i<n;++i) check(std::isfinite(graph.stem(c)[i]));
             for(unsigned i=0;i<n;++i) { check(std::abs(graph.channel(0)[i])<=.98); heard|=std::abs(graph.channel(0)[i])>1e-4; }
+            for(unsigned c=0;c<2;++c) for(unsigned i=0;i<n;++i) {
+                check(std::isfinite(graph.pcm(c)[i])&&std::abs(graph.pcm(c)[i])<=1);
+                check(graph.recording_tap(c)[i]==float(graph.channel(c)[i]));
+                if(p.output.btl) check(graph.pcm(0)[i]==-graph.pcm(1)[i]);
+            }
         }
         check(muted>0&&heard);
         const auto frame=graph.frame_position(); p.wet=std::numeric_limits<double>::quiet_NaN();

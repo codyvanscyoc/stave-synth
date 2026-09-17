@@ -1,6 +1,18 @@
 # Native-v2 checkpoint — September 17, 2026
 
-## Latest: connected instrument, stress-case sound gate open
+## Latest: final PCM output and exact reverb-input replay
+
+[NATIVE_V2_OUTPUT.md](NATIVE_V2_OUTPUT.md) records the connected float32 output,
+original master-volume smoother/clamp/BTL and recorder tap. Output component
+and same-input full-graph output wiring match exactly. Original reverb replay
+with captured native inputs also matches exactly, demonstrating downstream
+input-rounding/feedback divergence in the overload case. The independent
+strict overload sound gate is still OPEN; full runner exits 1, not all tests
+passed. UBSan/scoped allocation guards and 549 legacy tests plus Node pass.
+No Pi contact/deployment or live qualification. Remaining feature/protocol/
+driver integration remains substantial despite the core now reaching PCM.
+
+## Earlier: connected instrument, stress-case sound gate open
 
 [NATIVE_V2_INSTRUMENT.md](NATIVE_V2_INSTRUMENT.md) records StageInstrument's
 single-owner source/piano/room/sends/pad/shared-FX/master composition. Original

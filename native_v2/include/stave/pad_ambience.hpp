@@ -92,6 +92,14 @@ public:
     }
     // mixed pad L/R, separated dry L/R, separated FX L/R (do not sum all six).
     const double* channel(unsigned c) const noexcept { return c<6?output_[c].data():nullptr; }
+#ifdef STAVE_OFFLINE_TRACE
+    // Read-only test instrumentation, never part of live control/telemetry.
+    const double* trace(unsigned c) const noexcept {
+        if(c<2) return delay_.channel(c);
+        if(c<4) return send_[c-2].data();
+        return c<6?reverb_.channel(c-4):nullptr;
+    }
+#endif
     bool healthy() const noexcept { return !stopped_&&pad_.healthy()&&delay_.healthy()&&reverb_.healthy(); }
     double current_wet() const noexcept { return wet_cur_; }
     double current_cutoff() const noexcept { return pad_.state()[0]; }

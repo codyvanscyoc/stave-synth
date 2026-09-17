@@ -6,7 +6,19 @@ Read this first; earlier review/deployment notes describe historical checkpoints
 
 ## September16 post-worship: native-v2 implementation authorized
 
-September17 latest: [NATIVE_V2_INSTRUMENT.md](NATIVE_V2_INSTRUMENT.md).
+September17 latest: [NATIVE_V2_OUTPUT.md](NATIVE_V2_OUTPUT.md).
+StageInstrument now reaches final float32 PCM through the original master
+volume smoother/clamp/BTL math, with the pre-volume recorder tap preserved.
+Output component and connected same-input output match exactly. Overload
+discrepancy is traced to adjacent float32 reverb-input values; an independent
+original reverb fed native input reproduces native wet output EXACTLY in all
+eight runs. Original-source sound fixture passes; overload strict 1e-6 gate
+still fails and full runner exits 1 (sound_difference_review_required).
+UBSan/zero-new guards and 549 legacy tests plus Node pass. No Pi contact or
+deployment. Next: remaining feature/event/control/backend integration and
+separate sound acceptance; not a field-testable replacement or live 256 claim.
+
+Previous connected checkpoint: [NATIVE_V2_INSTRUMENT.md](NATIVE_V2_INSTRUMENT.md).
 StageInstrument connects actual Faust/FluidSynth sources, piano room/filter/
 soft clip/sends, pad/delay/reverb/wet filter and master under one offline owner.
 Original-source full-chain comparisons PASS at 512/256 (worst 3.030e-10), but

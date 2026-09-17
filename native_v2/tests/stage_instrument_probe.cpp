@@ -1,3 +1,4 @@
+#define STAVE_OFFLINE_TRACE
 #include "stave/stage_instrument.hpp"
 using ProbeGraph=stave::StageInstrument;
 using ProbeConfig=stave::StageInstrumentConfig;
@@ -5,6 +6,18 @@ using ProbeConfig=stave::StageInstrumentConfig;
 #include "delay_fixture.hpp"
 #include "master_fixture.hpp"
 extern "C" {
+int instrument_output(void* h,double volume,int btl) {
+    if(!h||(btl!=0&&btl!=1)) return 0;
+    auto& owner=*static_cast<CoreOwner*>(h); auto p=owner.config;
+    p.output={volume,bool(btl)};
+    if(!owner.graph->configure(p)) return 0;
+    owner.config=p; return 1;
+}
+const float* instrument_pcm(void* h,unsigned c) { return h?static_cast<CoreOwner*>(h)->graph->pcm(c):nullptr; }
+const float* instrument_tap(void* h,unsigned c) { return h?static_cast<CoreOwner*>(h)->graph->recording_tap(c):nullptr; }
+const double* instrument_trace(void* h,unsigned c) {
+    return h?static_cast<CoreOwner*>(h)->graph->trace(c):nullptr;
+}
 int instrument_effects(void* h,const double* d,const double* m,const double* routing,unsigned n) {
     if(!h||!routing||n!=9) return 0;
     for(unsigned i=0;i<n;++i) if(!std::isfinite(routing[i])) return 0;

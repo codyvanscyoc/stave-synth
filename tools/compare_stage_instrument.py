@@ -3,7 +3,7 @@
 
 Actual Faust/FluidSynth, explicit SF2, fixed48k/512/256. No app imports,
 devices, network, production state or Pi contact. Still no global modulation,
-independent beds/organ, bridge fader, driver or live command protocol.
+independent beds/organ, driver or live command protocol. Output fader is included.
 """
 from __future__ import annotations
 import argparse
@@ -27,6 +27,7 @@ import compare_source_mix as mix
 import compare_shared_effects as effects
 import compare_pad_ambience as ambience
 import compare_stage_master as master
+import compare_stage_output as output_stage
 
 PD=sources.PD
 # Keep the original strict sound gate. Both independent and common-piano
@@ -62,10 +63,19 @@ def piano_routing_oracle():
 
 class Integration(core.Integration):
     channels=10
-    def __init__(self,lib,pcreate,prender,rcreate,rrender,advance,classes,mcreate,filter_type,size,common_piano=False,overload=False):
+    def __init__(self,lib,pcreate,prender,rcreate,rrender,advance,classes,mcreate,filter_type,size,output_reference,common_piano=False,overload=False):
         super().__init__(lib,pcreate,prender,rcreate,rrender,advance)
         self.pad._synth_diagnostics=None; self.pad._dry_wet_cur=.75
         self.pad.reverb=classes["FaustReverb"]()
+        self.replay_reverb=classes["FaustReverb"]()
+        self.replay_peak_difference=0.
+        reverb_process=self.pad.reverb.process
+        def capture_reverb(x):
+            self.reference_send=x.copy()
+            y=reverb_process(x)
+            self.reference_wet=y.copy()
+            return y
+        self.pad.reverb.process=capture_reverb
         self.pad._stereo_out=np.zeros((2,size)); self.pad._dry_bus_scratch=np.zeros((2,size)); self.pad._fx_bus_scratch=np.zeros((2,size))
         for name in ("reverb_filter_l","reverb_filter_r","reverb_filter2_l","reverb_filter2_r"):
             setattr(self.pad,name,filter_type(8000,.707,48000))
@@ -85,6 +95,10 @@ class Integration(core.Integration):
         self.common_piano=common_piano; self.native_piano=None
         self.overload=overload
         self.error_metrics={}
+        self.trace_metrics={}; self.trace_frame=0
+        self.output_reference=output_stage.Reference(output_reference)
+        self.output_independent=output_stage.Reference(output_reference)
+        self.output_same_input_peak=0.; self.output_independent_peak=0.; self.volume=.85; self.btl=0
     def validate_audio(self,actual,expected):
         error=actual-expected
         peak=np.max(np.abs(error),axis=1); rms=np.sqrt(np.mean(error*error,axis=1))
@@ -98,6 +112,13 @@ class Integration(core.Integration):
         # acceptance is decided across the complete matrix in main, never hidden.
         return bool(np.max(np.abs(actual[:2]))<=.98)
     def native_before_reference(self,handle,size):
+        self.native_trace=np.array([np.ctypeslib.as_array(self.lib.instrument_trace(handle,c),shape=(size,)) for c in range(6)])
+        self.native_pcm=np.array([np.ctypeslib.as_array(self.lib.instrument_pcm(handle,c),shape=(size,)) for c in (0,1)])
+        native_tap=np.array([np.ctypeslib.as_array(self.lib.instrument_tap(handle,c),shape=(size,)) for c in (0,1)])
+        native_master=np.array([np.ctypeslib.as_array(self.lib.sources_stem(handle,c),shape=(size,)) for c in (0,1)])
+        expected,tap=self.output_reference.process(native_master,self.volume,self.btl)
+        self.output_same_input_peak=max(self.output_same_input_peak,float(np.max(np.abs(expected-self.native_pcm))))
+        if not np.array_equal(expected,self.native_pcm) or not np.array_equal(tap,native_tap): raise RuntimeError("Connected output/tap differs from original gain loop on identical input")
         if self.common_piano:
             self.native_piano=np.array([np.ctypeslib.as_array(self.lib.sources_stem(handle,c),shape=(size,)) for c in (8,9)])
     def fixture(self):
@@ -111,15 +132,18 @@ class Integration(core.Integration):
     def prepare(self,handle,bank,values,frame,frames):
         skip=super().prepare(handle,bank,values,frame,frames)
         tick=frame//512; ptr=lambda x:x.ctypes.data_as(PD)
+        self.volume=((tick//40)%11)/10; self.btl=int(200<=tick<250)
+        if not self.lib.instrument_output(handle,self.volume,self.btl): raise RuntimeError("Output configuration rejected")
         if frame%512==0:
             for i,v in self.dchanges.get(tick,{}).items(): self.d[i]=v
             for i,v in self.mchanges.get(tick,{}).items(): self.m[i]=v
             for action,value in self.events.get(tick,[]):
                 if action==9: continue
                 if not self.lib.instrument_reverb(handle,action,value): raise RuntimeError("Reverb command rejected")
-                if action<7: getattr(self.pad.reverb,effects.SETTERS[action])(value)
-                elif action==7: self.pad.reverb.set_type(effects.TYPES[value])
-                elif action==8: self.pad.reverb.set_freeze(bool(value))
+                for reverb in (self.pad.reverb,self.replay_reverb):
+                    if action<7: getattr(reverb,effects.SETTERS[action])(value)
+                    elif action==7: reverb.set_type(effects.TYPES[value])
+                    elif action==8: reverb.set_freeze(bool(value))
             if tick in (129,196,441):
                 if not self.lib.instrument_reverb(handle,10,0): raise RuntimeError("BPM retrigger rejected")
                 self.master._bpm_beat_phase=0.; self.master._bpm_pulse_remaining=2400
@@ -157,8 +181,24 @@ class Integration(core.Integration):
         p=self.prepared; flags=int(bool(p[7]))|int(voices>0)*2|int(bool(p[10]))*4
         pad,state=self.prender(self.pad,signal,flags,not p[9])
         dry,fx=self.render_mix(self.pad,pad,state,rev)
+        stages=np.vstack((pad[:2],self.reference_send,self.reference_wet))
+        replay=self.replay_reverb.process(self.native_trace[2:4].copy())
+        self.replay_peak_difference=max(self.replay_peak_difference,float(np.max(np.abs(replay-self.native_trace[4:6]))))
+        for name,sl in (("delay",slice(0,2)),("reverb_input",slice(2,4)),("reverb_output",slice(4,6))):
+            a=self.native_trace[sl]; b=stages[sl]; diff=np.abs(a-b)
+            metric=self.trace_metrics.setdefault(name,{"peak":0.,"first_float32_difference":None})
+            metric["peak"]=max(metric["peak"],float(np.max(diff)))
+            coords=np.argwhere(a.astype(np.float32)!=b.astype(np.float32))
+            if coords.size and metric["first_float32_difference"] is None:
+                c,i=min(coords.tolist(),key=lambda x:x[1])
+                metric["first_float32_difference"]={"frame":self.trace_frame+i,"channel":c,
+                    "native":float(a[c,i]),"reference":float(b[c,i]),
+                    "native_float":float(np.float32(a[c,i])),"reference_float":float(np.float32(b[c,i]))}
+        self.trace_frame+=signal.shape[1]
         buses_out=np.vstack((self.pad._stereo_out*.85,dry,fx))
         stereo=self.master.process(buses_out,piano)
+        pcm,_=self.output_independent.process(stereo,self.volume,self.btl)
+        self.output_independent_peak=max(self.output_independent_peak,float(np.max(np.abs(pcm-self.native_pcm))))
         return np.vstack((stereo,buses_out,original_piano))
 
 def main():
@@ -171,7 +211,7 @@ def main():
     if args.output_dir: output=args.output_dir.expanduser().resolve(); output.mkdir(mode=0o700,exist_ok=False)
     else: output=Path(tempfile.mkdtemp(prefix="stave-instrument-"))
     print(f"Evidence: {output}",flush=True)
-    modules=(base,sources,core,buses,room,mix,effects,ambience,master)
+    modules=(base,sources,core,buses,room,mix,effects,ambience,master,output_stage)
     paths=[*sorted((base.ROOT/"native_v2").rglob("*.hpp")),*sorted((base.ROOT/"native_v2").rglob("*.cpp")),
            *[Path(m.__file__) for m in modules],Path(__file__),base.ROOT/"faust/faust_cprelude.h",font]
     hashes=lambda:{str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
@@ -180,15 +220,16 @@ def main():
             "dependencies":{name:importlib.metadata.version(name) for name in ("numpy","scipy","cffi")}}
     try:
         report["source_sha256"]=hashes()
-        dirs={name:output/name for name in ("sources","buses","effects","master")}
+        dirs={name:output/name for name in ("sources","buses","effects","master","output")}
         for d in dirs.values(): d.mkdir()
         _,bank,cc,compiler,sg,faust=sources.build(dirs["sources"],args.fluidsynth_prefix)
         report.update(compiler=compiler,faust=faust)
         br,_,bg,_,_=buses.build(dirs["buses"])
         er,_,eg,_,_=effects.build(dirs["effects"])
         mr,_,mg,_,_=master.build(dirs["master"])
+        output_reference,_,og,report["output_oracle_sha256"]=output_stage.build(dirs["output"])
         report["component_guards"]={name:base.run([str(guard),*([str(font)] if name=="sources" else [])],timeout=60).stdout
-                                    for name,guard in (("sources",sg),("buses",bg),("effects",eg),("master",mg))}
+                                    for name,guard in (("sources",sg),("buses",bg),("effects",eg),("master",mg),("output",og))}
         cxx=shutil.which("c++"); include=Path(shutil.which("faust")).resolve().parent.parent/"include"
         objects=[str(d/f"{name}.o") for key,names in (("sources",("osc_bank","piano_chain")),("buses",("pad_bus","piano_room")),
                  ("effects",tuple(x[0] for x in effects.MODULES)),("master",("master_fx","bus_comp"))) for d in (dirs[key],) for name in names]
@@ -210,9 +251,13 @@ def main():
         _,mcreate,report["master_oracle_sha256"]=master.oracles(dirs["master"],mr)
         _,report["piano_routing_sha256"]=piano_routing_oracle()
         lib=sources.native_api(candidate)
+        lib.instrument_trace.argtypes=[ct.c_void_p,ct.c_uint]; lib.instrument_trace.restype=PD
+        for name in ("instrument_pcm","instrument_tap"):
+            getattr(lib,name).argtypes=[ct.c_void_p,ct.c_uint]; getattr(lib,name).restype=output_stage.PF
         for name,params in (("core_buses",[ct.c_void_p,PD,ct.c_uint,ct.c_int]),
                             ("instrument_effects",[ct.c_void_p,PD,PD,PD,ct.c_uint]),
-                            ("instrument_reverb",[ct.c_void_p,ct.c_uint,ct.c_double])):
+                            ("instrument_reverb",[ct.c_void_p,ct.c_uint,ct.c_double]),
+                            ("instrument_output",[ct.c_void_p,ct.c_double,ct.c_int])):
             getattr(lib,name).argtypes=params; getattr(lib,name).restype=ct.c_int
         tape=np.random.RandomState(base.SEED).uniform(0,1,(512,4)).astype(np.float64)
         np.save(output/"phase-tape.npy",tape,allow_pickle=False)
@@ -220,12 +265,16 @@ def main():
             label=("overload" if overload else "original-source-fixture")+("-common-piano" if common_piano else "-independent")
             run_dir=output/label; run_dir.mkdir()
             for size in (512,256):
-                integration=Integration(lib,pcreate,prender,rcreate,rrender,advance,classes,mcreate,type(filters.lp[0][0]),size,common_piano,overload)
+                integration=Integration(lib,pcreate,prender,rcreate,rrender,advance,classes,mcreate,type(filters.lp[0][0]),size,output_reference,common_piano,overload)
                 result=sources.compare(run_dir,lib,refs,args.fluidsynth_prefix,font,size,tape,integration)
                 result.update(muted_blocks=integration.muted,wet_filter_blocks=integration.wet_filter_blocks,
                     piano_filter_blocks=integration.piano_filter_blocks,piano_send_blocks=integration.send_blocks,
                     piano_samples_above_soft_knee=integration.soft_clipped,peak_piano_before_routing=integration.peak_before_clip,
-                    error_metrics=integration.error_metrics,fixture=label,overload=overload)
+                    error_metrics=integration.error_metrics,fixture=label,overload=overload,trace_metrics=integration.trace_metrics,
+                    native_input_reference_reverb_replay_difference=integration.replay_peak_difference,
+                    output_same_input_peak_difference=integration.output_same_input_peak,
+                    output_independent_peak_difference=integration.output_independent_peak)
+                if integration.replay_peak_difference!=0: raise RuntimeError("Reference reverb replay with native input differs")
                 if not all((integration.muted,integration.wet_filter_blocks,integration.piano_filter_blocks,*integration.send_blocks)) or (overload and not integration.soft_clipped):
                     raise RuntimeError("Required integration branch not exercised")
                 report["runs"].append(result); print(f"MEASURED: {result}",flush=True)
@@ -235,7 +284,7 @@ def main():
         report["independent_sound_gate_passed"]=all(r["error_metrics"]["original_1e_6_gate_passed"] for r in report["runs"] if r["error_metrics"]["mode"]=="independent-full-chain")
         report["original_source_sound_gate_passed"]=all(r["error_metrics"]["original_1e_6_gate_passed"] for r in report["runs"] if not r["overload"] and r["error_metrics"]["mode"]=="independent-full-chain")
         report["common_piano_diagnostic_passed"]=all(r["error_metrics"]["original_1e_6_gate_passed"] for r in report["runs"] if r["error_metrics"]["mode"]=="common-prepared-piano-isolation")
-        report["status"]=("passed_owned_instrument_pre_bridge_only" if all(r["error_metrics"]["original_1e_6_gate_passed"] for r in report["runs"])
+        report["status"]=("passed_owned_instrument_pcm_only" if all(r["error_metrics"]["original_1e_6_gate_passed"] for r in report["runs"])
                           else "sound_difference_review_required")
     except Exception as error: report.update(status="failed",error=str(error))
     report["commands"]=base.COMMANDS

@@ -2,6 +2,7 @@
 #include "stave/stage_core.hpp"
 #include "stave/pad_ambience.hpp"
 #include "stave/stage_master.hpp"
+#include "stave/stage_output.hpp"
 
 namespace stave {
 // Reuse the established source/room configuration without constructing a
@@ -10,13 +11,14 @@ struct StageInstrumentConfig : StageCoreConfig {
     DelayConfig delay{};
     MasterConfig master{};
     MasterModulation modulation{};
+    OutputConfig output{};
     double wet{.75},wet_gain{1},piano_reverb_send{},piano_delay_send{};
     bool wet_filter{},piano_filter{};
     PadAmbienceConfig ambience_config() const noexcept {
         return {buses.pad,delay,wet,wet_gain,wet_filter};
     }
     bool valid() const noexcept {
-        return StageCoreConfig::valid()&&ambience_config().valid()&&master.valid()&&modulation.valid()&&
+        return StageCoreConfig::valid()&&ambience_config().valid()&&master.valid()&&modulation.valid()&&output.valid()&&
             std::isfinite(piano_reverb_send)&&piano_reverb_send>=0&&piano_reverb_send<=1&&
             std::isfinite(piano_delay_send)&&piano_delay_send>=0&&piano_delay_send<=1;
     }
@@ -24,18 +26,19 @@ struct StageInstrumentConfig : StageCoreConfig {
 // Offline, single-owner, current-boundary commands only. Actual sources,
 // piano room/soft clip/sends, pad/delay/reverb and master are owned together.
 // No driver, browser protocol, sample bed, organ or global modulation owner.
-// Stereo output is PRE bridge/master-fader/device gain. This is not Engine's
+// pcm() is post master-fader/BTL float32; channel() retains PRE output-stage
+// double diagnostics. Device gain/driver remain external. This is not Engine's
 // sample-sliced Backend; render complete blocks, never once per event slice.
 class StageInstrument final {
 public:
     StageInstrument(const std::string& font,PhaseSource& phases,unsigned frames=512,int program=0)
-        :sources_(font,phases,frames,program),room_(frames),mix_(frames),ambience_(frames),master_(frames) {
+        :sources_(font,phases,frames,program),room_(frames),mix_(frames),ambience_(frames),master_(frames),output_(frames) {
         if(!configure(config_)) throw std::runtime_error("Instrument initialization failed");
     }
     bool configure(const StageInstrumentConfig& p) noexcept {
         if(!healthy()||!p.valid()) return false;
         if(!sources_.configure(p.source_patch(prepared_))||!room_.configure(p.buses.room)||
-           !mix_.configure(p.mix_config())||!ambience_.configure(p.ambience_config())||!master_.configure(p.master)) {
+           !mix_.configure(p.mix_config())||!ambience_.configure(p.ambience_config())||!master_.configure(p.master)||!output_.configure(p.output)) {
             stop(); return false;
         }
         config_=p; return true;
@@ -86,15 +89,21 @@ public:
         std::array<const double*,6> pad{};
         for(unsigned c=0;c<6;++c) pad[c]=ambience_.channel(c);
         if(!master_.process(pad,&piano,config_.modulation)) { stop(); return false; }
+        if(!output_.process({master_.channel(0),master_.channel(1)})) { stop(); return false; }
         return true;
     }
     void stop() noexcept {
         if(stopped_) return;
-        stopped_=true; sources_.stop(); ambience_.stop(); master_.stop();
+        stopped_=true; sources_.stop(); ambience_.stop(); master_.stop(); output_.stop();
         for(auto& c:piano_) c.fill(0);
     }
-    bool healthy() const noexcept { return !stopped_&&sources_.healthy()&&room_.healthy()&&ambience_.healthy()&&master_.healthy(); }
+    bool healthy() const noexcept { return !stopped_&&sources_.healthy()&&room_.healthy()&&ambience_.healthy()&&master_.healthy()&&output_.healthy(); }
     const double* channel(unsigned c) const noexcept { return master_.channel(c); }
+    const float* pcm(unsigned c) const noexcept { return output_.channel(c); }
+    const float* recording_tap(unsigned c) const noexcept { return output_.recording_tap(c); }
+#ifdef STAVE_OFFLINE_TRACE
+    const double* trace(unsigned c) const noexcept { return ambience_.trace(c); }
+#endif
     // Diagnostics: master0/1, pad mixed/dry/FX2..7, prepared piano8/9.
     const double* stem(unsigned c) const noexcept {
         if(c<2) return channel(c);
@@ -108,7 +117,7 @@ public:
     const short* raw_piano() const noexcept { return sources_.raw_piano(); }
     const PreparedSourceMix& prepared_mix() const noexcept { return prepared_; }
 private:
-    StageSources sources_; PianoRoom room_; SourceMix mix_; PadAmbience ambience_; StageMaster master_;
+    StageSources sources_; PianoRoom room_; SourceMix mix_; PadAmbience ambience_; StageMaster master_; StageOutput output_;
     StageInstrumentConfig config_{}; PreparedSourceMix prepared_{}; bool stopped_{};
     std::array<std::array<double,512>,2> piano_{},reverb_send_{},delay_send_{};
     std::array<std::array<StageLowpass,2>,2> piano_filter_{};
