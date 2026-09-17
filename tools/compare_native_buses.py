@@ -57,7 +57,7 @@ def build(output):
     return refs,candidate,guard,base.run([cxx,"--version"]).stdout,base.run([faust,"--version"]).stdout
 
 
-def pad_oracle(library, fallback_types=None):
+def pad_oracle(library, fallback_types=None, with_delay=False):
     source=base.source_from_reference("stave_synth/faust_pad_bus.py")
     definitions=[n.value.args[0].value for n in ast.parse(source).body if isinstance(n,ast.Expr)
                  and isinstance(n.value,ast.Call) and ast.unparse(n.value.func)=="_ffi.cdef"]
@@ -133,7 +133,9 @@ return result,state
     fn=ast.parse("def render(self,signal,flags,native_active=True):\n    pass\n").body[0]
     route=ast.If(test=ast.Name(id="use_pad_bus",ctx=ast.Load()),body=pad_setup+compute+dry_copy,
                  orelse=pad_candidates[0].orelse)
-    fn.body=intro+scalar+[route]+carve+sends+[shimmer]+tail
+    capture=ast.parse("self._pre_fx_snapshot=np.array([output_l,output_r])").body if with_delay else []
+    delay=ast.parse("self._process_ping_pong(output_l,output_r)").body if with_delay else []
+    fn.body=intro+scalar+[route]+capture+carve+delay+sends+[shimmer]+tail
     env={"np":np,"_Q24_S1_RATIO":.5412/.707,"_Q24_S2_RATIO":1.3066/.707}
     exec(compile(ast.fix_missing_locations(ast.Module(body=[fn],type_ignores=[])),"pinned-pad-scalar-routing", "exec"),env)
     def create():

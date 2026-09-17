@@ -6,7 +6,17 @@ Read this first; earlier review/deployment notes describe historical checkpoints
 
 ## September16 post-worship: native-v2 implementation authorized
 
-September17 latest: [NATIVE_V2_CORE.md](NATIVE_V2_CORE.md).
+September17 latest: [NATIVE_V2_SHARED_EFFECTS.md](NATIVE_V2_SHARED_EFFECTS.md).
+Native delay and all seven shared reverb types pass exact output/control-state
+comparisons, including freeze and backend changes. Composed pad/filter/delay/
+reverb/split routing passes at 512/256 with worst difference 1.665e-16, including
+muted sources and external sends. UBSan, scoped zero-new guards and all 549
+legacy tests plus Node pass. Saved source stems are used for composition; the
+new effects are NOT yet joined to StageCore's source acquisition. Next: wet
+filter/modulation and master processing, then full source/output ownership.
+No Pi contact/deployment; still not a field-testable replacement instrument.
+
+Previous core checkpoint: [NATIVE_V2_CORE.md](NATIVE_V2_CORE.md).
 StageCore now owns source faders, voices/Faust/FluidSynth/piano processing,
 pad/filter/send buses and piano room. Composed eleven-channel comparisons pass
 at 512/256: first nine exact, piano-room worst difference 1.112e-13. All-muted

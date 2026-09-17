@@ -23,6 +23,8 @@ python3 tools/compare_native_room.py
 python3 tools/compare_native_buses.py
 python3 tools/compare_source_mix.py
 python3 tools/compare_native_core.py --soundfont /absolute/path/to/existing.sf2
+python3 tools/compare_shared_effects.py
+python3 tools/compare_pad_ambience.py --source-dir /absolute/path/to/seven-stem-source-evidence
 ```
 
 Core tests require a C++17 compiler and lock-free 64-bit atomics. Sound tests
@@ -48,6 +50,8 @@ The buses comparator composes pad/filter/send routing with room and instruments
 that C++ path/guards; generated Faust remains uninstrumented.
 The composed-core comparator also covers actual sources, faders, buses, room
 and fixed-three-unison all-muted/re-entry behavior; its C++ guards use UBSan.
+Shared-effects and pad-ambience runners cover delay, all reverb types/freeze and
+pad routing; their C++ guards also use UBSan, not their generated Faust C.
 Never run these compilers/tests on a playing Pi: offline means no devices,
 not zero CPU or memory contention.
 
@@ -92,6 +96,7 @@ See [source integration](../docs/pi4/NATIVE_V2_SOURCE_GRAPH.md) for that contrac
 | Timing | Bounded event scheduling, priority terminal stop, fault tests, single audio owner | Live MIDI timestamps, control coalescing, driver/recovery, whole-block postprocessing integration |
 | Oscillators | Integrated v1.2 voices/envelopes and actual12-slot/3-unison Faust; prepared phases/amplitudes and poly amp LFOs; StageCore owns faders, mute/re-entry and filter/Haas/send/bypass/shimmer buses | Global modulation/drift, production phase policy,1/5-unison paths, click fixes, full FX graph |
 | Piano | StageCore owns real int16 FluidSynth, velocity/pedal ownership, matched dry piano chain and downstream room; separate M1 float experiment | Pitch bend, live prepared program changes, library-internal real-time audit |
+| Shared effects | Native delay including reverse/Aurora; all seven reverb types and freeze; composed pad/filter/effect returns and dry/FX split | Wet-output filter, global modulation/sympathetic, source-owner integration, master processing, click/transition redesign |
 | Stage keys | Integrated raw-key/transpose/sustain/sostenuto ownership and supplied layer weights | Split-weight calculation and live timestamped MIDI protocol |
 | Output | Dry stereo mix, finite checks, counted emergency export clamp, WAV | Complete FX/filter/limiter graph, live backend, end-to-end latency |
 | Worship functions | None silently removed from the preserved working build | Independent sampled bed/drone, freeze, organ, recorder, splits, macros, scenes |
@@ -140,9 +145,12 @@ Do not discover/run arbitrary legacy stress tests. See
 ## Next: prove musical compatibility before adding breadth
 
 The owned source/fader/filter/room composition and its all-muted transitions
-now pass; see [core evidence](../docs/pi4/NATIVE_V2_CORE.md). Next port and
-compare shared effects/master routing, complete global modulation/control
-coverage and the event adapter. Keep whole-block piano
+pass; see [core evidence](../docs/pi4/NATIVE_V2_CORE.md). Separate native shared
+effects and composed pad routing now also pass; see
+[shared-effects evidence](../docs/pi4/NATIVE_V2_SHARED_EFFECTS.md). Next complete
+wet-output filtering/modulation and master processing, then join actual source
+acquisition and all returns without duplicate PadBus processing. Complete
+control coverage and the event adapter. Keep whole-block piano
 processing separate from MIDI event slicing; do not silently change the proven
 cadence semantics. Bring effects and beds across only with their
 tail/transition tests. Pi4 speed measurements and any deployment require a

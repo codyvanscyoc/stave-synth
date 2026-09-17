@@ -1,6 +1,15 @@
 # Native-v2 checkpoint — September 17, 2026
 
-## Latest: source/fader/filter/room core composed and compared
+## Latest: shared effects and composed pad ambience compared
+
+[NATIVE_V2_SHARED_EFFECTS.md](NATIVE_V2_SHARED_EFFECTS.md) records exact native
+delay/all-seven-reverb comparisons, freeze/backend transitions and composed pad
+routing (worst difference 1.665e-16 at 512/256). UBSan, allocation guards, prior
+bus rechecks and 549 legacy tests plus Node pass. Master processing, remaining
+features and full source/FX/live-control ownership remain open; no Pi contact,
+deployment, supported live 256 or field-testable replacement is claimed.
+
+## Earlier: source/fader/filter/room core composed and compared
 
 [NATIVE_V2_CORE.md](NATIVE_V2_CORE.md) records the single-owner eleven-channel
 offline composition and all-muted/re-entry behavior. At both 512 and 256,
