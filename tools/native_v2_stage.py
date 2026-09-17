@@ -34,6 +34,7 @@ def module(name, path):
 
 audition = module("stave_candidate_protocol", ROOT / "tools/native_v2_audition.py")
 storage = module("stave_candidate_store", ROOT / "native_v2/control_store.py")
+lifecycle = module("stave_native_lifecycle", ROOT / "tools/native_v2_lifecycle.py")
 
 
 def parse_ports(text):
@@ -111,6 +112,7 @@ class CandidateHub:
         self.restart = False
         self.ports = {}
         self.restarts = 0
+        self.network = {}
 
     def attach(self, child):
         with self.lock:
@@ -144,7 +146,12 @@ class CandidateHub:
 
     def reconcile(self):
         with self.lock:
-            if not self.active or not self.restoring:
+            if not self.active:
+                return
+            if not self.restoring:
+                data = self.active.snapshot()
+                if data['stale'] or data['exited'] is not None or data['status'].get('fault', 1) or not data['status'].get('routed'):
+                    raise ValueError('Audio progress/route lost; restarting muted')
                 return
             if time.monotonic() - self.restore_started > 10:
                 raise ValueError("Audio startup/saved-control acknowledgment timed out")
@@ -172,7 +179,7 @@ class CandidateHub:
             audio = [name for name, p in self.ports.items() if p["type"] == "32 bit float mono audio" and "input" in p["flags"] and not name.startswith(("StaveSynth:", "stave-v2-"))]
             data.update(epoch=self.epoch, runtime=dict(restoring=self.restoring, message=self.message,
                 persistence=True, save_message=self.save_message, state_warning=self.state_warning, can_restart=True,
-                attempts=self.restarts, devices={"midi": midi, "audio": audio}, **self.routes,
+                attempts=self.restarts, network=dict(self.network), devices={"midi": midi, "audio": audio}, **self.routes,
                 scope="Native512 candidate: selected-device recovery restarts MUTED with saved tone controls. Browser disconnect does not stop audio. No legacy preset/recording parity or stage-release approval yet."))
             return data
 
@@ -221,8 +228,8 @@ class CandidateHub:
 class BoundedHTTPServer(socketserver.ThreadingMixIn, audition.HTTPServer):
     daemon_threads = True
     block_on_close = False
-    def __init__(self, *args, **kwargs):
-        self.slots = threading.BoundedSemaphore(4)
+    def __init__(self, *args, slots=None, **kwargs):
+        self.slots = slots if slots is not None else threading.BoundedSemaphore(4)
         super().__init__(*args, **kwargs)
 
     def process_request(self, request, client_address):
@@ -250,10 +257,15 @@ def main():
         parser.add_argument("--"+name, required=True)
     parser.add_argument("--port", type=int, default=8082)
     parser.add_argument("--hostname", action="append", default=[])
+    parser.add_argument("--network-interface", action="append", default=[],
+                        help="With --listen auto, bind RFC1918 addresses on these interfaces plus loopback")
     parser.add_argument("--pad-library", type=Path)
     parser.add_argument("--allow-stage-candidate", action="store_true")
     args = parser.parse_args()
-    address = ipaddress.ip_address(args.listen)
+    automatic = args.listen == 'auto'
+    address = ipaddress.ip_address('127.0.0.1' if automatic else args.listen)
+    if (automatic and (not args.network_interface or any(n not in ('wlan0', 'eth0') for n in args.network_interface))):
+        parser.error('Automatic networking requires explicit wlan0/eth0 interfaces')
     if (not args.allow_stage_candidate or address.version != 4 or not address.is_private or address.is_unspecified or
             address.is_multicast or not 8082 <= args.port <= 8090 or not args.binary.is_file() or not args.soundfont.is_file()):
         parser.error("Explicit candidate opt-in, private IPv4, isolated8082..8090, binary and soundfont required")
@@ -274,7 +286,13 @@ def main():
         parser.error("Candidate state is already owned by another controller")
     hub = CandidateHub(storage.ControlStore(state_root/"native_controls.json", audition.validate_control),
                        {k: getattr(args, k) for k in ("midi_source", "audio_left", "audio_right")})
-    server = None
+    slots = threading.BoundedSemaphore(4)
+    def listener(address):
+        allowed = audition.authority_set(address, args.port, args.hostname)
+        server = BoundedHTTPServer((address, args.port), audition.handler_for(hub, allowed), slots=slots)
+        server.timeout = .1
+        return server
+    listeners = lifecycle.Listeners(listener)
     child = None
     workers = []
     prepared = None
@@ -295,10 +313,9 @@ def main():
             child.stdin.close(); child.stdout.close()
             child = None; workers = []
     try:
-        # Bind before any audio child. Listener failures after startup are
-        # retried independently; a healthy audio owner stays alive meanwhile.
-        server = BoundedHTTPServer((str(address), args.port), audition.handler_for(hub, authorities))
-        server.timeout = .1
+        # Audio does not depend on DHCP/Wi-Fi or a successful HTTP bind.
+        # No wildcard listener: LAN addresses are explicitly inventoried.
+        listeners.reconcile({str(address)})
         bed_args = []
         if args.pad_library is not None:
             prepared = tempfile.TemporaryDirectory(prefix="stave-native-bank-")
@@ -306,10 +323,22 @@ def main():
             bank = Path(prepared.name)/"prepared.bank"
             assets.prepare_bank(args.pad_library, bank)
             bed_args = ["--bed-bank", str(bank)]
-        next_inventory = next_launch = next_bind = 0
+        next_inventory = next_launch = next_network = next_notify = 0
+        lifecycle.notify('READY=1\nSTATUS=Native controller running; audio readiness is reported separately')
         print("NATIVE512 CANDIDATE: "+", ".join("http://"+a for a in sorted(authorities))+" — starts/restarts MUTED", flush=True)
         while not stopped:
             now = time.monotonic()
+            if now >= next_network:
+                network_error = None
+                try:
+                    addresses = lifecycle.discover(args.network_interface) if automatic else {str(address)}
+                except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+                    addresses = {'127.0.0.1'} if automatic else {str(address)}
+                    network_error = str(error)
+                listeners.reconcile(addresses)
+                with hub.lock:
+                    hub.network = dict(addresses=sorted(listeners.servers), errors=dict(listeners.errors), discovery_error=network_error)
+                next_network = now + 2
             requested = hub.take_restart()
             if requested or (child is not None and child.poll() is not None):
                 code = child.poll() if child is not None else None
@@ -343,21 +372,15 @@ def main():
                 hub.reconcile()
             except ValueError as error:
                 hub.detached(str(error)); stop_child(); next_launch = now + 10
-            if server is None and now >= next_bind:
-                try:
-                    server = BoundedHTTPServer((str(address), args.port), audition.handler_for(hub, authorities)); server.timeout = .1
-                except OSError:
-                    next_bind = now + 1
-            if server is not None:
-                try: server.handle_request()
-                except OSError:
-                    server.server_close(); server = None; next_bind = now + 1
-            else:
-                time.sleep(.1)
+            listeners.poll()
+            if now >= next_notify:
+                lifecycle.notify('WATCHDOG=1')
+                next_notify = now + 5
         return 0
     finally:
         hub.detached("Candidate stopped.")
-        if server is not None: server.server_close()
+        lifecycle.notify('STOPPING=1')
+        listeners.close()
         stop_child()
         if prepared is not None: prepared.cleanup()
         for s, previous in prior.items(): signal.signal(s, previous)

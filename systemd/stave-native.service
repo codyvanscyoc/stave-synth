@@ -1,0 +1,25 @@
+# Pi4 native stage default. Install only after explicit promotion/backups.
+# Preserved legacy service is disabled, NOT deleted. See NATIVE_V2_BOOT.md.
+[Unit]
+Description=Stave native Pi4 instrument
+Wants=pipewire.service wireplumber.service
+After=pipewire.service wireplumber.service stave-synth.service stave-native-v2-candidate.service
+Conflicts=stave-synth.service stave-native-v2-candidate.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+NotifyAccess=main
+WorkingDirectory=%h/stave-native/current
+ExecStart=%h/stave-synth/venv/bin/python %h/stave-native/current/tools/native_v2_stage.py --binary %h/stave-native/current/evidence/audition-jack --soundfont /usr/share/sounds/sf2/FluidR3_GM.sf2 --listen auto --network-interface wlan0 --network-interface eth0 --port 8082 --hostname stavepi4.local --state-dir %h/.local/share/stave-native --midi-source "Midi-Bridge:Yamaha MX Series MIDI 1 (capture)" --audio-left "Yamaha MX Series Analog Stereo:playback_FL" --audio-right "Yamaha MX Series Analog Stereo:playback_FR" --allow-stage-candidate --pad-library %h/.local/share/stave-synth/pad_samples
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=MALLOC_ARENA_MAX=2
+Restart=always
+RestartSec=5
+TimeoutStartSec=90
+TimeoutStopSec=20
+WatchdogSec=30
+KillMode=control-group
+
+[Install]
+WantedBy=default.target

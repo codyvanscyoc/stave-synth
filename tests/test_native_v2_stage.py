@@ -2,6 +2,8 @@
 import http.client
 import importlib.util
 import json
+import os
+import socket
 from pathlib import Path
 import tempfile
 import threading
@@ -98,6 +100,70 @@ class NativeStageTests(unittest.TestCase):
         self.hub.attach(child)
         self.hub.restore_started = time.monotonic()-11
         with self.assertRaisesRegex(ValueError, "timed out"): self.hub.reconcile()
+
+    def test_running_audio_progress_is_supervised_after_restore(self):
+        for mode in ('stale', 'exited', 'fault', 'route'):
+            control = self.attached(); self.hub.reconcile()
+            self.assertFalse(self.hub.restoring)
+            self.hub.reconcile()
+            if mode == 'stale': control.last_progress = 0
+            if mode == 'exited': control.child.poll.return_value = 1
+            if mode == 'fault': control.status['fault'] = 1
+            if mode == 'route': control.status['routed'] = False
+            with self.assertRaisesRegex(ValueError, 'restarting muted'): self.hub.reconcile()
+
+    def test_auto_network_is_explicit_private_and_survives_no_wifi(self):
+        def row(name, address, up=True):
+            return dict(ifname=name, flags=['UP'] if up else [], addr_info=[dict(family='inet', scope='global', local=address)])
+        rows = [row('wlan0', '192.168.1.203'), row('eth0', '10.42.0.1'), row('vpn0', '10.1.1.1'),
+                row('wlan0', '8.8.8.8'), row('wlan0', '169.254.1.1'), row('eth0', '172.20.0.1', False)]
+        self.assertEqual(stage.lifecycle.private_addresses(json.dumps(rows), ['wlan0', 'eth0']),
+                         {'127.0.0.1', '192.168.1.203', '10.42.0.1'})
+        self.assertEqual(stage.lifecycle.private_addresses('[]', ['wlan0']), {'127.0.0.1'})
+        for text in ('{}', 'broken', ' '*65537):
+            with self.assertRaises(ValueError): stage.lifecycle.private_addresses(text, ['wlan0'])
+
+    def test_listener_rebind_retries_conflict_without_owning_audio(self):
+        first, second = mock.Mock(), mock.Mock()
+        factory = mock.Mock(side_effect=[first, OSError('occupied'), second])
+        listeners = stage.lifecycle.Listeners(factory)
+        listeners.reconcile({'127.0.0.1'})
+        listeners.reconcile({'127.0.0.1', '192.168.1.1'})
+        self.assertIn('192.168.1.1', listeners.errors)
+        listeners.reconcile({'127.0.0.1', '192.168.1.1'})
+        self.assertEqual(len(listeners.servers), 2)
+        self.assertFalse(listeners.errors)
+        listeners.reconcile({'127.0.0.1'})
+        second.server_close.assert_called_once()
+        first.server_close.assert_not_called()
+        listeners.close(); first.server_close.assert_called_once()
+
+    def test_notify_uses_real_local_datagram_without_audio(self):
+        # Short /tmp path also fits macOS sockaddr_un's smaller path limit.
+        with tempfile.TemporaryDirectory(dir='/tmp') as short:
+            path = short + '/notify'
+            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as receiver:
+                receiver.bind(path); receiver.settimeout(1)
+                with mock.patch.dict(os.environ, {'NOTIFY_SOCKET': path}):
+                    stage.lifecycle.notify('READY=1\nWATCHDOG=1')
+                self.assertEqual(receiver.recv(100), b'READY=1\nWATCHDOG=1')
+        with mock.patch.dict(os.environ, {'NOTIFY_SOCKET': path}):
+            stage.lifecycle.notify('STOPPING=1')  # missing manager is bounded
+
+    def test_boot_unit_has_watchdog_no_legacy_auto_start_and_fixed_audio(self):
+        unit = (ROOT/'systemd/stave-native.service').read_text()
+        for required in ('Type=notify', 'WatchdogSec=30', 'KillMode=control-group', 'Restart=always',
+                         'WantedBy=default.target', '--listen auto', '--port 8082', '--state-dir %h/.local/share/stave-native'):
+            self.assertIn(required, unit)
+        self.assertNotIn('ExecStopPost=', unit)
+        self.assertNotIn('256', unit)
+
+    def test_multiple_listeners_share_global_http_worker_budget(self):
+        slots = threading.BoundedSemaphore(4)
+        with stage.BoundedHTTPServer(('127.0.0.1', 0), stage.audition.BaseHTTPRequestHandler, slots=slots) as first, \
+             stage.BoundedHTTPServer(('127.0.0.1', 0), stage.audition.BaseHTTPRequestHandler, slots=slots) as second:
+            for _ in range(4): self.assertTrue(first.slots.acquire(False))
+            self.assertFalse(second.slots.acquire(False))
 
     def test_routes_require_exact_available_type_direction_and_persist(self):
         self.assertEqual(stage.validate_routes(ROUTES, self.hub.ports), ROUTES)
