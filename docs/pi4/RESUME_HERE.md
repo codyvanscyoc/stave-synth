@@ -6,11 +6,21 @@ Read this first; earlier review/deployment notes describe historical checkpoints
 
 ## September16 post-worship: native-v2 implementation authorized
 
-September17 latest: [NATIVE_V2_SOURCE_MIX.md](NATIVE_V2_SOURCE_MIX.md).
+September17 latest: [NATIVE_V2_CORE.md](NATIVE_V2_CORE.md).
+StageCore now owns source faders, voices/Faust/FluidSynth/piano processing,
+pad/filter/send buses and piano room. Composed eleven-channel comparisons pass
+at 512/256: first nine exact, piano-room worst difference 1.112e-13. All-muted
+pause/re-entry and continued piano are tested. UBSan, a scoped zero-new probe,
+component/source/bus rechecks and 549 legacy tests plus Node pass. Next: shared
+effects and master routing, remaining modulation and control/feature coverage.
+No Pi contact/deployment; still not a field-testable complete instrument.
+
+Previous scalar checkpoint: [NATIVE_V2_SOURCE_MIX.md](NATIVE_V2_SOURCE_MIX.md).
 SourceMix now preserves stage fader smoothing/dB mapping, hard-pan and source/
 shimmer/Haas scalar decisions:5,504pinned-reference blocks pass, worst1.111e-16;
 UBSan passes. Separate component, not yet the full source/bus/control owner.
-Next: owned composition and explicit all-muted Faust/fallback transition tests.
+The composed-core checkpoint above now covers that owned composition and its
+fixed-three-unison all-muted Faust/fallback transition tests.
 No Pi contact/deployment; not a morning native-v2 field-test candidate yet.
 
 Previous checkpoint in this batch: [NATIVE_V2_BUSES.md](NATIVE_V2_BUSES.md).
@@ -20,7 +30,7 @@ Saved source-stem results are exact; synthetic worst difference6.939e-18.
 UBSan guards and549legacytests+Node pass. No Pi contact/deployment. NOT a
 field-testable successor; no complete master/FX/control/browser/device path.
 The scalar fader adapter above advances that checkpoint's next step; owned
-source/bus integration and its all-muted-path gap still remain.
+source/bus integration and its all-muted-path gap are covered by StageCore above.
 
 Earlier room checkpoint: [NATIVE_V2_PIANO_ROOM.md](NATIVE_V2_PIANO_ROOM.md).
 The native piano-room downstream component passes exact pinned-reference
@@ -62,9 +72,10 @@ policy unchanged at21:43CDT. No native-v2 deployment, service restart, audio
 device opening or live stress test is authorized by prototype test commands.
 Source/compiler tests and offline rendering on Mac do not qualify Pi4 timing.
 
-Implementation: native_v2 owns a bounded sample-position event scheduler and an
-offline piano/Faust oscillator slice. It does not replace existing voice/ADSR,
-full FX/bed/organ/scene behavior or the UI; follow milestone-specific evidence.
+Implementation: native_v2 has a bounded sample-position event scheduler and a
+separate offline whole-block StageCore owning voices/ADSR, piano/Faust sources
+and filter/room buses. They are not yet integrated with each other or the full
+FX/bed/organ/scene behavior and UI; follow milestone-specific evidence.
 
 Earlier M0/M1 checkpoint: [NATIVE_V2_CHECKPOINT.md](NATIVE_V2_CHECKPOINT.md). Core plus
 actual Faust/FluidR3 offline tests and both diagnostic WAVs pass; fixtures are

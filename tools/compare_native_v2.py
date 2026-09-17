@@ -489,8 +489,16 @@ def voice_oracle_components() -> tuple[str, dict]:
     if len(cleanup) != 1: raise RuntimeError("Pinned voice cleanup boundary changed")
     end_ast = ast.parse("def end(self):\n    dead_voices = self.dead_voices\n")
     end_ast.body[0].body.append(copy.deepcopy(cleanup[0]))
+    faust_render = [node for node in render.body if isinstance(node, ast.If)
+                    and ast.unparse(node.test) == "use_faust"
+                    and any(isinstance(x, ast.Assign) and any(ast.unparse(t) == "active_slots" for t in x.targets)
+                            for x in node.body)]
+    if len(faust_render) != 1: raise RuntimeError("Pinned active-slot cleanup boundary changed")
+    prepare_ast = ast.parse("def prepare(self):\n    pass\n")
+    prepare_ast.body[0].body = copy.deepcopy(faust_render[0].body[:2])
     exec(compile(ast.fix_missing_locations(begin_ast), "pinned-v1.2-envelope-render", "exec"), namespace)
     exec(compile(ast.fix_missing_locations(end_ast), "pinned-v1.2-voice-cleanup", "exec"), namespace)
+    exec(compile(ast.fix_missing_locations(prepare_ast), "pinned-v1.2-active-slot-cleanup", "exec"), namespace)
     return source, namespace
 
 

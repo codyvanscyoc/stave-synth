@@ -210,11 +210,21 @@ struct StageSources::Impl final : StageNoteSink, StageVoiceSink {
         if (fault) stop();
         return !fault;
     }
-    bool render() noexcept {
+    bool render(bool render_oscillators) noexcept {
         if (fault || stopped) { stop(); return false; }
         if (frames > std::numeric_limits<std::uint64_t>::max() - position) { fault = true; stop(); return false; }
-        if (!voices.begin_block(frames)) { fault = true; stop(); return false; }
-        computeStaveOscBank(osc.get(), frames, nullptr, osc_ptrs.data());
+        if (!voices.begin_block(frames, !render_oscillators)) { fault = true; stop(); return false; }
+        if (render_oscillators) {
+            // Original active-slot cleanup precedes compute (separate from
+            // retiring/recycling inactive voices after compute).
+            std::array<bool, 12> active{};
+            for (unsigned i = 0; i < voices.size(); ++i) {
+                const auto* v = voices.voice_at(i);
+                if (v->env1.active() || v->env2.active()) active[voices.slot_at(i)] = true;
+            }
+            for (unsigned i = 0; i < active.size(); ++i) if (!active[i]) clear_slot(i);
+            computeStaveOscBank(osc.get(), frames, nullptr, osc_ptrs.data());
+        } else for (auto& channel : osc_audio) channel.fill(0);
         if (!voices.end_block()) fault = true;
         fluid_check(fluid_synth_write_s16(piano.get(), frames, raw.data(), 0, 2, raw.data(), 1, 2));
         for (unsigned i = 0; i < frames; ++i) {
@@ -240,7 +250,7 @@ StageSources::StageSources(const std::string& font, PhaseSource& phases, std::ui
 StageSources::~StageSources() = default;
 bool StageSources::configure(const StagePatch& p) noexcept { return impl_->configure(p); }
 bool StageSources::command(std::uint64_t b, const StageCommand& e) noexcept { return impl_->command(b, e); }
-bool StageSources::render_block() noexcept { return impl_->render(); }
+bool StageSources::render_block(bool render_oscillators) noexcept { return impl_->render(render_oscillators); }
 void StageSources::stop() noexcept { impl_->stop(); }
 bool StageSources::healthy() const noexcept { return !impl_->fault && !impl_->stopped; }
 std::uint64_t StageSources::frame_position() const noexcept { return impl_->position; }

@@ -104,6 +104,7 @@ struct PadBus::Impl {
             for (unsigned i = 0; i < frames; ++i) {
                 input[c][i] = source[c][i];
                 if (!std::isfinite(input[c][i])) fault = true;
+                if (!flags.native_active && input[c][i] != 0) fault = true;
             }
         if (fault) { silence(); return false; }
         const auto& p = config;
@@ -126,6 +127,14 @@ struct PadBus::Impl {
         const double send1 = p.bypass1 ? 0 : p.send1, send2 = p.bypass2 ? 0 : p.send2;
         const bool slow = !(std::abs(send1 - 1) < 1e-6 && std::abs(send2 - 1) < 1e-6);
         const bool shimmer_on = p.shimmer && p.shimmer_mix > .001 && flags.voices_present;
+        if (!flags.native_active && (flags.osc2_audible || (p.shimmer && p.shimmer_mix > .001))) {
+            fault = true; silence(); return false;
+        }
+        if (!flags.native_active) {
+            // Fixed3-unison: legacy fallback filters have only ever received
+            // zero input, so they output exact zero; native state stays frozen.
+            bypass_ratio = 0; silence(); return true;
+        }
         if (shimmer_on) shimmer_cur += alpha * (p.shimmer_mix - shimmer_cur);
         const std::array<double, ZoneCount> values{
             cutoff_set, resonance_set, p.slope24 ? 1.0 : 0.0, position(cutoff_cur),

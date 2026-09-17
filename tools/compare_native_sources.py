@@ -185,11 +185,12 @@ def fixture():
     return initial, patches, events, weights
 
 
-def compare(output, lib, refs, prefix, font, size, tape):
+def compare(output, lib, refs, prefix, font, size, tape, integration=None):
     Bank, vn, create_piano, pn, Keys, jns, _ = refs
     bank = Bank(48000); phase_index = 0
     original_set_voice = bank.set_voice
-    initial, patches, events, weight_changes = fixture(); values = np.array(initial, dtype=np.float64)
+    initial, patches, events, weight_changes = integration.fixture() if integration else fixture()
+    values = np.array(initial, dtype=np.float64)
     ptr = lambda a: a.ctypes.data_as(PD)
     fluid = Fluid(prefix, font)
     handle = lib.sources_create(str(font).encode(), size, ptr(tape), len(tape))
@@ -213,7 +214,8 @@ def compare(output, lib, refs, prefix, font, size, tape):
         original_set_voice(slot, hz, a, b)
     bank.set_voice = gate
     voice = SimpleNamespace(voices=[], max_voices=12, _age_counter=0, lfo_key_sync=False, lfo2_key_sync=False,
-                            _faust_osc_bank=bank, _faust_slot_free=list(range(12)), unison_voices=3, _render_lock=nullcontext())
+                            _faust_osc_bank=bank, _faust_slot_free=list(range(12)), _faust_nvoices=12,
+                            unison_voices=3, _render_lock=nullcontext())
     voice._voice_pool = [vn["Voice"](adsr_osc1=vn["ADSREnvelope"](vn["ADSRConfig"]()),
                                      adsr_osc2=vn["ADSREnvelope"](vn["ADSRConfig"]())) for _ in range(12)]
     keys = Keys(); keys.min_velocity = 10; keys.split_enabled = True
@@ -231,7 +233,9 @@ def compare(output, lib, refs, prefix, font, size, tape):
         else: raise RuntimeError("Unexpected reference piano event: " + kind)
     keys.piano_callback = piano_event
     total = 640 * 512
-    actual, expected = np.empty((7,total)), np.empty((7,total))
+    channels = 11 if integration else 7
+    actual, expected = np.empty((channels,total)), np.empty((channels,total))
+    reference_source = np.empty((7,size))
     raw_max_delta = 0
     idle_raw_peak = 0
     try:
@@ -256,6 +260,7 @@ def compare(output, lib, refs, prefix, font, size, tape):
                 player.comp_attack_ms=10; player.comp_release_ms=80; player.comp_knee_db=18
                 player.eq_bands = [dict(zip(("freq_hz","gain_db","q","enabled"), row)) for row in
                                    ((150,2,.8,True),(300,-2.5,1,True),(2800,-3,1.5,True),(10000,-1.5,.7,True))]
+            skip = integration.prepare(handle, bank, values, frame, size) if integration else False
             if frame % 512 == 0:
                 if tick in weight_changes: weights[:]=weight_changes[tick]
                 for kind,note,value in events.get(tick,[]):
@@ -263,14 +268,16 @@ def compare(output, lib, refs, prefix, font, size, tape):
                     message = ((0x90,note,value) if kind==0 else (0x80,note,0) if kind==1 else
                                (0xB0,64,127*value) if kind==2 else (0xB0,66,127*value) if kind==3 else (0xB0,123,0))
                     keys.feed(message)
-            vn["begin"](voice,size,False)
-            expected[:5,frame:frame+size] = bank.process(size)
+            vn["begin"](voice,size,skip)
+            if not skip: vn["prepare"](voice)
+            reference_source[:5] = 0 if skip else bank.process(size)
             vn["end"](voice)
             raw = fluid.render(size)
             if frame < 4*512: idle_raw_peak=max(idle_raw_peak,int(np.max(np.abs(raw.astype(np.int32)))))
-            expected[5:,frame:frame+size] = player.process_raw(raw,size)
+            reference_source[5:] = player.process_raw(raw,size)
+            expected[:,frame:frame+size] = integration.process(reference_source, len(voice.voices)) if integration else reference_source
             if not lib.sources_render(handle): raise RuntimeError("Native source render failed")
-            for c in range(7): actual[c,frame:frame+size] = np.ctypeslib.as_array(lib.sources_stem(handle,c),shape=(size,))
+            for c in range(channels): actual[c,frame:frame+size] = np.ctypeslib.as_array(lib.sources_stem(handle,c),shape=(size,))
             native_raw = np.ctypeslib.as_array(lib.sources_raw(handle),shape=(size*2,)).astype(np.int32)
             raw_max_delta = max(raw_max_delta,int(np.max(np.abs(native_raw-raw.astype(np.int32)))))
             if lib.sources_voices(handle) != len(voice.voices) or lib.sources_phases(handle) != phase_index:
@@ -290,7 +297,7 @@ def compare(output, lib, refs, prefix, font, size, tape):
         lib.sources_stop(handle)
         if lib.sources_render(handle) or lib.sources_command(handle,total,0,60,100,ptr(weights)):
             raise RuntimeError("Terminal stop resumed")
-        if any(np.any(np.ctypeslib.as_array(lib.sources_stem(handle,c),shape=(size,))) for c in range(7)):
+        if any(np.any(np.ctypeslib.as_array(lib.sources_stem(handle,c),shape=(size,))) for c in range(channels)):
             raise RuntimeError("Stop not silent")
         return {"frames":total,"block_frames":size,"peak_delta_by_stem":peak_delta.tolist(),
                 "peak_by_stem":np.max(np.abs(actual),axis=1).tolist(),"raw_piano_max_lsb_difference":raw_max_delta,

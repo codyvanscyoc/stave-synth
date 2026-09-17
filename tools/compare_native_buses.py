@@ -57,7 +57,7 @@ def build(output):
     return refs,candidate,guard,base.run([cxx,"--version"]).stdout,base.run([faust,"--version"]).stdout
 
 
-def pad_oracle(library):
+def pad_oracle(library, fallback_types=None):
     source=base.source_from_reference("stave_synth/faust_pad_bus.py")
     definitions=[n.value.args[0].value for n in ast.parse(source).body if isinstance(n,ast.Expr)
                  and isinstance(n.value,ast.Call) and ast.unparse(n.value.func)=="_ffi.cdef"]
@@ -105,7 +105,11 @@ render_osc2=bool(flags & 1)
 voice_idx=1 if flags & 2 else 0
 haas_active=bool(flags & 4)
 render_shimmer=self.shimmer_enabled and self.shimmer_mix > 0.001
-use_pad_bus=True
+use_pad_bus=native_active
+filter_buf=np.zeros((2,n_samples))
+osc1_indep_buf=np.zeros((2,n_samples))
+osc2_indep_buf=np.zeros((2,n_samples))
+pad_out=np.zeros((9,n_samples))
 output_l=np.zeros(n_samples)
 output_r=np.zeros(n_samples)
 pad_bus_send_l=None
@@ -126,8 +130,10 @@ state=np.array([self._filter_cutoff_cur,self._osc1_indep_cutoff_cur,self._osc2_i
                 self._filter_res_last_set,bypass_ratio])
 return result,state
 """).body
-    fn=ast.parse("def render(self,signal,flags):\n    pass\n").body[0]
-    fn.body=intro+scalar+pad_setup+compute+dry_copy+carve+sends+[shimmer]+tail
+    fn=ast.parse("def render(self,signal,flags,native_active=True):\n    pass\n").body[0]
+    route=ast.If(test=ast.Name(id="use_pad_bus",ctx=ast.Load()),body=pad_setup+compute+dry_copy,
+                 orelse=pad_candidates[0].orelse)
+    fn.body=intro+scalar+[route]+carve+sends+[shimmer]+tail
     env={"np":np,"_Q24_S1_RATIO":.5412/.707,"_Q24_S2_RATIO":1.3066/.707}
     exec(compile(ast.fix_missing_locations(ast.Module(body=[fn],type_ignores=[])),"pinned-pad-scalar-routing", "exec"),env)
     def create():
@@ -144,7 +150,12 @@ return result,state
         for name in ("filter_l","filter_r","filter2_l","filter2_r","osc1_indep_filter_l","osc1_indep_filter_r",
                      "osc2_indep_filter_l","osc2_indep_filter_r","_rev_send_filter_l","_rev_send_filter_r",
                      "_rev_send_filter2_l","_rev_send_filter2_r"):
-            setattr(obj,name,SimpleNamespace(set_params=lambda *args:None))
+            if fallback_types:
+                setattr(obj,name,fallback_types[0](20000 if "indep" in name else 8000,.707,48000))
+            else: setattr(obj,name,SimpleNamespace(set_params=lambda *args:None))
+        if fallback_types:
+            obj.filter_hp_l=fallback_types[1](20,.707,48000)
+            obj.filter_hp_r=fallback_types[1](20,.707,48000)
         return obj
     return create,env["render"],{p:hashlib.sha256(s.encode()).hexdigest() for p,s in (("wrapper",source),("engine",engine))}
 
@@ -239,6 +250,7 @@ def main():
     paths=[ROOT/p for p in ("native_v2/include/stave/pad_bus.hpp","native_v2/include/stave/stage_buses.hpp",
         "native_v2/include/stave/piano_room.hpp","native_v2/src/pad_bus.cpp","native_v2/src/piano_room.cpp",
         "native_v2/tests/stage_buses_probe.cpp","native_v2/tests/test_stage_buses.cpp",
+        "native_v2/tests/bus_fixture.hpp",
         "tools/compare_native_buses.py","tools/compare_native_room.py","tools/compare_native_v2.py","faust/faust_cprelude.h")]
     source_paths={}
     if args.source_dir:

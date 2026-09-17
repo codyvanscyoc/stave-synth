@@ -58,7 +58,8 @@ public:
     StageSources& operator=(const StageSources&) = delete;
     bool configure(const StagePatch&) noexcept;
     bool command(std::uint64_t boundary, const StageCommand&) noexcept;
-    bool render_block() noexcept;
+    // All-muted stage blocks advance envelopes/piano but freeze oscillator DSP.
+    bool render_block(bool render_oscillators = true) noexcept;
     // Owner-only terminal hard stop; cannot resume or be called concurrently.
     void stop() noexcept;
     bool healthy() const noexcept;

@@ -1,6 +1,16 @@
 # Native-v2 checkpoint — September 17, 2026
 
-## Latest: source-fader scalar adapter compared
+## Latest: source/fader/filter/room core composed and compared
+
+[NATIVE_V2_CORE.md](NATIVE_V2_CORE.md) records the single-owner eleven-channel
+offline composition and all-muted/re-entry behavior. At both 512 and 256,
+nine channels match exactly and piano-room differs by at most 1.112e-13.
+UBSan, scoped allocation guards, component/source/bus rechecks and all 549
+legacy tests plus Node pass. M2 remains open: shared effects/master, remaining
+features and live control/device/UI integration still need work. No Pi contact
+or deployment, no live 256 qualification and no field-testable successor yet.
+
+## Earlier: source-fader scalar adapter compared
 
 [NATIVE_V2_SOURCE_MIX.md](NATIVE_V2_SOURCE_MIX.md) records5,504pinned-reference
 blocks for native fader smoothing/amplitude/pan/gating decisions, UBSan and

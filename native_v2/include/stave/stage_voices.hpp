@@ -146,8 +146,9 @@ public:
         for (unsigned i = 0; i < count_;) {
             const auto slot = order_[i];
             if (voices_[slot].retire) {
-                // Preserve v1 ordering: old gate is cleared AFTER this render,
-                // not before. Whole-DSP parity must include this last block.
+                // Slot retirement/recycling follows render. The DSP owner
+                // separately clears inactive slot gates BEFORE compute, as
+                // v1 does; this cleanup is not a substitute for that pass.
                 sink_.clear_slot(slot);
                 free_[free_count_++] = slot;
                 erase(i);

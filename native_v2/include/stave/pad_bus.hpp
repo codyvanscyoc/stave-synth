@@ -18,7 +18,12 @@ struct PadBusConfig {
 // Supplied by the source owner for THIS block, not inferred from amplitude:
 // osc2_audible comes from smoothed blend; voices_present from rendered voices;
 // haas_active is the effective pan separation > .5 (including hard-pan).
-struct PadBlockFlags { bool osc2_audible{true}, voices_present{}, haas_active{}; };
+struct PadBlockFlags {
+    bool osc2_audible{true}, voices_present{}, haas_active{};
+    // Only the fixed3-unison all-source-muted path: native DSP pauses while
+    // scalar filters advance. Inputs must be exactly silent in this mode.
+    bool native_active{true};
+};
 
 // Single-owner offline routing slice. Fixed48k/fixed256 or512 whole blocks.
 // No global LFO, filter drift/wobble, ping-pong, reverb or master. Those are
