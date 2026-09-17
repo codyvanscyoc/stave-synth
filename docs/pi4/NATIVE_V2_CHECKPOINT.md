@@ -1,6 +1,14 @@
 # Native-v2 checkpoint — September 17, 2026
 
-## Latest: integrated source graph passes, downstream graph pending
+## Latest: piano-room component passes, downstream composition pending
+
+[NATIVE_V2_PIANO_ROOM.md](NATIVE_V2_PIANO_ROOM.md) records the native room port,
+exact output/control/tail comparisons at512/256 and UBSan guards. It remains a
+separate component, not a change to StageSources' dry piano stems. Full pad/
+filter/effects/master composition remains pending.549legacytests+Node pass;
+no Pi contact or deployment. M2 remains open.
+
+## Earlier: integrated source graph passes, downstream graph pending
 
 [NATIVE_V2_SOURCE_GRAPH.md](NATIVE_V2_SOURCE_GRAPH.md) records the single-owner
 source integration and comparisons. Keys/pedals, voices, actual Faust/FluidSynth

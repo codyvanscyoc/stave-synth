@@ -19,6 +19,7 @@ python3 tools/run_native_v2.py --with-sound
 python3 tools/run_native_v2.py --with-sound --soundfont /absolute/path/to/existing.sf2
 python3 tools/compare_native_v2.py --soundfont /absolute/path/to/existing.sf2
 python3 tools/compare_native_sources.py --soundfont /absolute/path/to/existing.sf2
+python3 tools/compare_native_room.py
 ```
 
 Core tests require a C++17 compiler and lock-free 64-bit atomics. Sound tests
@@ -39,6 +40,7 @@ only, not generated Faust/FluidSynth/piano-chain tests. They are mutually
 exclusive; UBSan-only has passed, ASan remains unverified.
 The separate source-graph runner instruments its C++ graph and piano chain
 with UBSan too; its generated C and external FluidSynth remain uninstrumented.
+The room comparator similarly instruments its C++ wrapper/guards, not Faust C.
 Never run these compilers/tests on a playing Pi: offline means no devices,
 not zero CPU or memory contention.
 
@@ -82,7 +84,7 @@ See [source integration](../docs/pi4/NATIVE_V2_SOURCE_GRAPH.md) for that contrac
 | --- | --- | --- |
 | Timing | Bounded event scheduling, priority terminal stop, fault tests, single audio owner | Live MIDI timestamps, control coalescing, driver/recovery, whole-block postprocessing integration |
 | Oscillators | Integrated v1.2 voices/envelopes and actual12-slot/3-unison Faust; prepared phases and poly amp LFOs | Global modulation/drift, production phase policy,1/5-unison paths, click fixes, downstream FX routing |
-| Piano | Integrated real int16 FluidSynth, velocity/pedal ownership and matched dry piano chain; separate M1 float experiment | Room, pitch bend, live prepared program changes, library-internal real-time audit |
+| Piano | Integrated real int16 FluidSynth, velocity/pedal ownership and matched dry piano chain; separately verified native room; separate M1 float experiment | Room-to-graph composition, pitch bend, live prepared program changes, library-internal real-time audit |
 | Stage keys | Integrated raw-key/transpose/sustain/sostenuto ownership and supplied layer weights | Split-weight calculation and live timestamped MIDI protocol |
 | Output | Dry stereo mix, finite checks, counted emergency export clamp, WAV | Complete FX/filter/limiter graph, live backend, end-to-end latency |
 | Worship functions | None silently removed from the preserved working build | Independent sampled bed/drone, freeze, organ, recorder, splits, macros, scenes |
@@ -126,8 +128,9 @@ Do not discover/run arbitrary legacy stress tests. See
 
 ## Next: prove musical compatibility before adding breadth
 
-Pinned source fixtures and the integrated seven-stem graph now pass. Next
-port downstream pad/filter/piano-room routing with actual output/tail tests,
+Pinned source fixtures, the integrated seven-stem graph and separate room now
+pass. See [room evidence](../docs/pi4/NATIVE_V2_PIANO_ROOM.md). Next port
+downstream pad/filter routing, then compose room and bus with the source graph,
 then complete control coverage and the event adapter. Keep whole-block piano
 processing separate from MIDI event slicing; do not silently change the proven
 cadence semantics. Bring effects and beds across only with their
