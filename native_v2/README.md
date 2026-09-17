@@ -7,7 +7,13 @@ See [the implementation plan](../docs/pi4/NATIVE_V2_PLAN.md) for promotion gates
 See [the saved checkpoint](../docs/pi4/NATIVE_V2_CHECKPOINT.md) for actual test
 results, artifact locations and the unresolved sanitizer check.
 
-Latest: [target audition evidence](../docs/pi4/NATIVE_V2_TARGET_AUDITION.md).
+Latest: player accepted the isolated512 listening test. Piano brightness and
+the original-sound sampled-bed component are implemented/tested locally, not
+deployed. See [finishing checkpoint](../docs/pi4/NATIVE_V2_FINISHING.md) for the
+remaining live bed/recorder/UI/device integration; this is not a completed
+replacement for the full application.
+
+Earlier: [target audition evidence](../docs/pi4/NATIVE_V2_TARGET_AUDITION.md).
 Pi4 build/guards and a94.5-second **muted real-callback512** musical/control test
 pass,360 notes and zero xruns/over-budget callbacks. The working service was
 restored. A limited listening binary is ready for temporary activation when the

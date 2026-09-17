@@ -42,6 +42,15 @@ Candidate behavior for review: a deliberate key selection starts the bed; it hol
 
 ## Performance interface
 
+September17 player override after successful native audition: responsiveness,
+playability and musical quality take priority over preserving the old layout.
+The user explicitly permits a different UI. Retain useful learned gestures,
+but the five-fader arrangement below is now a starting point, not a constraint.
+Keep piano, OSC1 and OSC2 levels separately visible; expose piano brightness
+independently from the played-synth filter. UI changes do not justify moving
+any browser/persistence work back onto the audio callback. Native512 is the
+accepted first-listening profile; do not chase256 as a release requirement.
+
 Keep the existing five-fader locations and learned gestures as the starting point: OSC, PIANO, FILTER, FX, MASTER. Preserve the existing alternate functions until a hands-on review justifies a change. OSC2 and the independent bed need clear level/status access while performing; prototype any extra visibility before rearranging the main surface.
 
 The Stage screen should support a complete service without opening detailed settings: balance piano and oscillators, shape the filter, move effects, start/fade the bed, freeze/release ambience, adjust master, and panic. Current key, layer mute states, active alternate functions, and any pending control update must be unambiguous.

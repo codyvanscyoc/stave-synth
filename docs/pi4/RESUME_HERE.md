@@ -4,6 +4,52 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
+## September17 after listening: finish integration authorized
+
+Player accepted the limited native512 audition as phenomenal/near-instant with
+no heard issues. Keep512; user permits UI changes to prioritize playability.
+See [NATIVE_V2_FINISHING.md](NATIVE_V2_FINISHING.md) for the preserved reference,
+current local piano-brightness/sampled-bed code, evidence and exact remaining
+integration sequence. Listening tag `pi4-native-listening-pass-20260917` keeps
+8c1a88a; private accepted settings/telemetry snapshot saved alongside the prior
+target evidence. No new code has been deployed to the playing Pi in this batch.
+Source commits8b7cdc1 (piano tone) and8db3254 (bed component).567 reviewed Mac
+tests, zero skips, Node checks and extra C++/UBSan full-audition guards pass.
+Asked asynchronously whether player is finished/muted before future build or
+restart; no response yet at this checkpoint. Continue LOCAL work meanwhile.
+The time-limited audition below may still run until09:05CDT; recheck ownership.
+
+## September17 08:04 CDT: PLAYER LISTENING SESSION ACTIVE
+
+Initial player feedback: "phenomenal so far" and response "feels instant";
+subjective report, not measured end-to-end latency or completed acceptance.
+Requested an independent piano filter/brightness slider for a softer, more
+muffled tone by song. User explicitly prefers uninterrupted testing if this
+is not a quick temporary-screen addition. Source inspection: native graph has
+an optional piano filter linked to the pad cutoff, but the running audition
+control protocol exposes neither that toggle nor an independent piano cutoff.
+Deferred this request until after listening: needs native control/DSP wiring,
+smoothing and tests, then a rebuild/restart; not just an HTML slider. No live
+engine/UI changes made for this request.
+
+Player arrived and requested access. The old service is now intentionally
+inactive (MainPID0). Isolated `stave-v2-listen-zrxtny.service` is active,
+PID717421, started08:04:43CDT, using the previously verified binary/source below.
+Audition URL: http://192.168.1.203:8082 (numeric IP required). Yamaha MIDI1 and
+stereo playback explicitly routed,512 frames, master0 at readiness. Callback
+progress verified;187 blocks,4 physical note-ons,0 xruns/over-budget/faults,
+max3.26963ms at initial check. No generated MIDI, rebuild, persistent config
+change or production source change. The player will raise master gradually.
+
+One-hour native lifetime: expected end around09:04:43CDT. Transient unit has
+RuntimeMaxSec3650 and ExecStopPost restoring unchanged `stave-synth.service`.
+Independent `stave-v2-listen-failsafe-zrxtny.timer` at65min stops this audition
+before starting the old service. Do NOT restart or run stimulus while the
+player listens. Recheck actual state on every resume; this entry will expire.
+Launcher and log are `listening-start.py` and `listening-ui.log` under the
+isolated zRXTny target directory below. This is a temporary controls/defaults
+audition, not the saved patch, full product migration or stage qualification.
+
 ## September16 post-worship: native-v2 implementation authorized
 
 September17 latest: user authorized current paused maintenance. Target build and
