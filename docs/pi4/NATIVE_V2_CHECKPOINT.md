@@ -1,6 +1,16 @@
-# Native-v2 checkpoint — September 16, 2026
+# Native-v2 checkpoint — September 17, 2026
 
-## Latest: M2 components implemented, integration pending
+## Latest: integrated source graph passes, downstream graph pending
+
+[NATIVE_V2_SOURCE_GRAPH.md](NATIVE_V2_SOURCE_GRAPH.md) records the single-owner
+source integration and comparisons. Keys/pedals, voices, actual Faust/FluidSynth
+and dry piano processing now work together offline with explicit whole-block
+cadence. All seven source stems match pinned references within the original
+tolerance at512 and256. M2 remains open; no downstream FX/master, live event/
+driver/browser integration or Pi4 timing qualification. No Pi contact this
+batch. Source-graph UBSan guards and549legacytests+Node pass.
+
+## Earlier: M2 components implemented, integration pending
 
 See [NATIVE_V2_M2_COMPONENTS.md](NATIVE_V2_M2_COMPONENTS.md) for the overnight
 batch, persistent evidence and exact next work. Native envelopes, key/pedal

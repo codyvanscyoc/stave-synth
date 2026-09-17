@@ -6,7 +6,17 @@ Read this first; earlier review/deployment notes describe historical checkpoints
 
 ## September16 post-worship: native-v2 implementation authorized
 
-Latest overnight checkpoint: [NATIVE_V2_M2_COMPONENTS.md](NATIVE_V2_M2_COMPONENTS.md).
+September17 latest: [NATIVE_V2_SOURCE_GRAPH.md](NATIVE_V2_SOURCE_GRAPH.md).
+StageSources now integrates keys/pedals/voices, actual Faust and FluidSynth,
+and the piano chain into a single-owner OFFLINE boundary-cadence source graph.
+Seven stems pass pinned-reference comparisons at512/256: oscillator outputs
+exact, piano worst difference1.854e-13. This is not the downstream FX/master
+graph or live scheduler/UI integration. M2 remains open. UBSan graph/chain
+guards and549legacytests+Node pass; no Pi contact/restart/deployment this batch.
+Next: downstream pad/filter/piano-room routing and tail comparisons, then
+remaining control/event integration. Read the source checkpoint before work.
+
+Earlier overnight checkpoint: [NATIVE_V2_M2_COMPONENTS.md](NATIVE_V2_M2_COMPONENTS.md).
 M2 components now pass pinned-v1.2 comparisons: envelope11,340blocks,
 key/pedal10,652commands, voice7,101commands, dry piano524,288samples per
 cadence512/256. Scheduler priority terminal STOP implemented; UBSan-only core/

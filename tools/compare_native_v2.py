@@ -451,7 +451,7 @@ def note_ownership_comparison(output: Path, cxx: str) -> dict:
             "scope": "v1.2 collapsed-channel key/transpose/pedal ownership; no split-weight/audio/UI/clock parity"}
 
 
-def voice_comparison(output: Path, cxx: str) -> dict:
+def voice_oracle_components() -> tuple[str, dict]:
     source = source_from_reference("stave_synth/synth_engine.py")
     namespace = declarations(source, ["ADSRConfig", "_exp_factors", "ADSREnvelope", "Voice"],
                              {"dataclass": dataclasses.dataclass, "field": dataclasses.field, "np": np,
@@ -491,6 +491,11 @@ def voice_comparison(output: Path, cxx: str) -> dict:
     end_ast.body[0].body.append(copy.deepcopy(cleanup[0]))
     exec(compile(ast.fix_missing_locations(begin_ast), "pinned-v1.2-envelope-render", "exec"), namespace)
     exec(compile(ast.fix_missing_locations(end_ast), "pinned-v1.2-voice-cleanup", "exec"), namespace)
+    return source, namespace
+
+
+def voice_comparison(output: Path, cxx: str) -> dict:
+    source, namespace = voice_oracle_components()
     config_type, envelope_type, voice_type = (namespace[name] for name in ("ADSRConfig", "ADSREnvelope", "Voice"))
     expected, commands, events = [], [], []
     owner = None
