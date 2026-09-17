@@ -169,7 +169,7 @@ class AuditionControlTests(unittest.TestCase):
         html = (ROOT / "native_v2/audition.html").read_text()
         javascript = html.split("<script>", 1)[1].split("</script>", 1)[0]
         subprocess.run(["node", "--check", "-"], input=javascript, text=True, capture_output=True, check=True)
-        self.assertIn("not the normal Stave", html)
+        self.assertIn("not full stage-release qualification", html)
         self.assertIn("block-quantized", html)
         self.assertIn("pending.clear()", html)
 

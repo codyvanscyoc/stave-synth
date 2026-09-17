@@ -4,6 +4,54 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
+## September 17: screenshot-inspired Stage UI and relative fader pickup deployed
+
+User supplied eleven legacy screenshots and authorized a simplified native UI
+using their visual language. Six visible faders retained (OSC1, OSC2, piano,
+filter, FX, master); large filled green tracks and orange filter, colored loaded
+pad keys, compact navigation, independent piano brightness. Shimmer toggle is
+now on Stage beside freeze, release-keys/pedals and output mute. Edit groups
+existing controls into Oscillators, Piano, Reverb & shimmer, and Delay. No
+additional engine controls, source settings, buffer or DSP changes.
+
+Relative pickup applies to all range inputs: touching a track sends nothing;
+dragging changes from the value at pickup. Native mouse AND legacy touch track
+seeking are suppressed; keyboard/assistive input remains native. Gesture state
+clears on cancellation, capture loss, view switch, hidden document, blur, stale
+audio or epoch change. A released focused fader follows acknowledged state again.
+This fixes unwanted UI jumps; it does not prove every DSP transition is click-free.
+
+Validation: actual-script Node interaction checks plus 597 reviewed offline tests
+pass in existing `stave-synth-pi4-backups/native-v2-test-env`. System Python was
+missing SciPy; do not mistake that earlier run for a code failure. Isolated Chrome
+at loopback 8768 passed mouse/touch tap-without-write, relative drag, and 390px
+Stage/Edit overflow checks. Tablet 1366x1024 and phone previews inspected.
+Artifacts: `/private/tmp/stave-stage-ui.acRoz3`. Real iPad Safari touch remains
+the player's next check; no audio injection occurred on the Pi.
+
+HTML SHA256 `252d4f770371112014f7148423db1de7a96c3a1a9a9afbb701a0e27ae8a3359d`.
+Previous HTML and before/after report are preserved at
+`/home/codyvanscyoc/stave-native-boot-backup-20260917/ui-stage-pickup-kjf1b7t6`.
+Native unit PID1105, NRestarts0, epoch `a2eed6a58e3544738fcbb3266ca1a74a`
+unchanged through installation; live values, native_controls/native_routes and
+accepted native binary hashes unchanged. No service restart or control POST.
+URL remains `http://stavepi4.local:8082` (home `192.168.4.33:8082`).
+
+At handoff: 231714 blocks, 546 notes, 36 xruns, 0 over-budget/full-scale,
+max callback5.45379ms, 512 frames. Xruns rose from3 in the earlier listening
+window to36 before deployment and remained36 through installation. Cause is
+NOT established; the earlier claim that the observed clicks were definitely
+analog or exclusively UI-related was too strong. The user associated heard
+clicks with tapping FX at a distant position, which motivated this pickup fix.
+Keep the analog/output-path xrun observation separate from UI validation.
+
+Next: player feedback on layout and pickup; agree remaining musical controls
+before expanding the protocol. Legacy ADSR detail, LFOs, pan/unison, editable
+reverb/processing parameters, recording, presets/setlists and MIDI mapping are
+not implied to be available because their screenshots exist. Native component
+support and live control integration are different milestones. Retain current
+accepted sound and latency while choosing these deliberately.
+
 ## September 17: Pi headphone output enabled for home testing
 
 User required the Pi4's physical 3.5 mm system output (no Clavinova headphone

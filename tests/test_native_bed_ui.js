@@ -9,13 +9,19 @@ class Element {
   replaceChildren(){this.children=[];}
   setAttribute(key,value){this.attributes[key]=value;}
   addEventListener(key,fn){this.listeners[key]=fn;}
+  focus(){document.activeElement=this;}
+  getBoundingClientRect(){return {height:208,width:208};}
+  setPointerCapture(id){this.capture=id;}
+  hasPointerCapture(id){return this.capture===id;}
+  releasePointerCapture(){this.capture=null;}
 }
 const nodes=new Map();
-const document={activeElement:null,createElement:()=>new Element(),getElementById:id=>{
+const document={activeElement:null,addEventListener(){},createElement:()=>new Element(),getElementById:id=>{
   if(!nodes.has(id))nodes.set(id,new Element());return nodes.get(id);
 }};
 const controls={piano:[0,1,.01,.5],piano_tone:[0,1,.01,1],master:[0,1,.01,0],
   osc1:[0,1,.01,.13],osc2:[0,1,.01,.1],cutoff:[20,20000,1,487],wet:[0,1,.01,.74],
+  shimmer:[0,1,1,0],wave1:[0,4,1,0],delay_wet:[0,1,.01,0],piano_room:[0,1,.01,.4],
   bed_level:[0,1,.01,1],bed_key:[0,11,1,-1],bed_rise:[0,60,.5,0],bed_rise_cutoff:[200,20000,1,3000],
   bed_mellow:[0,1,1,0],bed_mellow_cutoff:[100,8000,1,400],bed_fade:[0,1,1,0],bed_release:[0,1,1,0]};
 let state={stale:false,exited:null,pending:0,error:null,values:Object.fromEntries(Object.entries(controls).map(([k,v])=>[k,v[3]])),
@@ -30,7 +36,7 @@ const fetch=async(url,args)=>({ok:true,json:async()=>{
 }});
 const html=fs.readFileSync(path.join(__dirname,'../native_v2/audition.html'),'utf8');
 const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];
-const context=vm.createContext({document,fetch,AbortSignal,confirm:()=>true,setTimeout:()=>{}});
+const context=vm.createContext({document,window:{addEventListener(){}},fetch,AbortSignal,confirm:()=>true,setTimeout:()=>{}});
 vm.runInContext(script,context);
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 (async()=>{
@@ -44,6 +50,30 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
   assert.equal(vm.runInContext("fromSlider('cutoff',1000)",context),20000);
   const filter=nodes.get('mixer').children[3].children.at(-1);filter.value=500;filter.listeners.input();await flush();
   assert.deepEqual(sent.at(-1),{key:'cutoff',value:632});assert.equal(filter.attributes['aria-valuetext'],'632 Hz');
+  const fx=nodes.get('mixer').children[4].children.at(-1);
+  const pointer=(type,y,id=1,x=20)=>{let prevented=false;fx.listeners[type]({button:0,pointerId:id,clientY:y,clientX:x,preventDefault(){prevented=true;}});return prevented;};
+  let before=sent.length;
+  assert.ok(pointer('pointerdown',200));pointer('pointerup',200);await flush();
+  assert.equal(Number(fx.value),.74);assert.equal(sent.length,before,'tap anywhere does not change FX');
+  pointer('pointerdown',200);pointer('pointermove',200);assert.equal(sent.length,before,'stationary touch sends nothing');
+  pointer('pointermove',180,2);assert.equal(sent.length,before,'another finger cannot hijack this fader');
+  pointer('pointermove',180);await flush();assert.deepEqual(sent.at(-1),{key:'wet',value:.84});
+  await vm.runInContext('poll()',context);assert.equal(Number(fx.value),.84,'ack poll must not move a held fader');
+  pointer('pointermove',-1000);await flush();assert.equal(Number(fx.value),1,'drag clamps to range');
+  pointer('pointercancel',-1000);before=sent.length;pointer('pointermove',200);await flush();assert.equal(sent.length,before,'cancel terminates gesture');
+  await vm.runInContext('poll()',context);assert.equal(Number(fx.value),.74,'released focused control follows authoritative state');
+  const tone=nodes.get('tone-controls').children[0].children.at(-1);
+  tone.listeners.pointerdown({button:0,pointerId:3,clientX:100,clientY:50,preventDefault(){}});
+  tone.listeners.pointermove({pointerId:3,clientX:80,clientY:50,preventDefault(){}});await flush();
+  assert.deepEqual(sent.at(-1),{key:'piano_tone',value:.9},'horizontal pickup moves relative to current value');
+  tone.listeners.pointerup({pointerId:3});
+  pointer('pointerdown',100);state={...state,epoch:'new-gesture-session'};await vm.runInContext('poll()',context);
+  before=sent.length;pointer('pointermove',80);await flush();assert.equal(sent.length,before,'epoch change cancels old gesture');
+  pointer('pointerdown',100);nodes.get('nav-edit').onclick();pointer('pointermove',80);await flush();assert.equal(sent.length,before,'changing view cancels gesture');
+  assert.equal(nodes.get('edit-osc').children[0].attributes['data-control'],'wave1');
+  assert.equal(nodes.get('edit-delay').children[0].attributes['data-control'],'delay_wet');
+  assert.equal(nodes.get('edit-piano').children[0].attributes['data-control'],'piano_room');
+  nodes.get('shimmer-toggle').onclick();await flush();assert.deepEqual(sent.at(-1),{key:'shimmer',value:1});
   const keys=nodes.get('bed-keys').children;
   assert.equal(keys.length,12);
   keys.forEach((button,key)=>assert.equal(button.disabled,![0,7].includes(key)));
@@ -71,5 +101,5 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
   const actionCount=actions.length;
   state={...state,runtime:{...state.runtime,restoring:false}};
   await vm.runInContext('poll()',context);assert.equal(actions.length,actionCount);assert.equal(sent.length,count);
-  console.log('PASS: loaded/absent bed keys, actions, stale recovery, Stage/Edit/System, save and route epochs, no reconnect replay');
+  console.log('PASS: relative pickup, gesture cancellation, state reconciliation, grouped controls, shimmer, bed actions, save/routes and recovery');
 })().catch(error=>{console.error(error);process.exitCode=1;});

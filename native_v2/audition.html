@@ -39,29 +39,54 @@ button,select,.panel,label.control,.pill{border-radius:2px}button{background:tra
 @media(max-width:700px){body{padding:14px 12px 40px}.panel{padding:12px}#mixer{grid-template-columns:repeat(3,minmax(0,1fr));gap:16px 12px}#mixer input[type=range]{height:160px}#tone-controls output{float:right;display:inline;margin:0}#tone-controls .control-name{font-size:12px}#edit,#bed-controls{grid-template-columns:repeat(2,minmax(0,1fr))}.brand{font-size:25px}}
 @media(max-width:380px){#edit,#bed-controls{grid-template-columns:1fr}#mixer .control-name,#mixer output{font-size:12px}#mixer input[type=range]{height:140px}#tone-controls output{float:none;display:block}}
 @media(min-width:701px) and (max-height:600px){body{padding-top:12px}#mixer input[type=range]{height:130px}.section-head p{display:none}}
+/* Stage surface: generous touch travel, compact chrome, musical groups. */
+body{max-width:1600px;padding:18px 26px 28px}.brand{font-size:26px}.eyebrow{letter-spacing:.22em}
+header{gap:16px;margin-bottom:14px}.header-actions{display:flex;align-items:center;gap:10px}.header-actions button{width:auto;min-width:100px}
+nav{border-bottom:0;margin:0;padding:0;gap:8px}nav button{min-width:92px;border-color:var(--line)}
+.statusbar{border-top:1px solid var(--line);padding-top:12px;gap:14px}.pill{border:0;padding:0;font-weight:bold}#notice{margin:4px 0 0;font-size:11px;min-height:18px}
+.performance-panel{border:0;background:transparent;padding:0;margin:14px 0}.performance-panel .section-head{display:none}
+#mixer{gap:clamp(12px,2.4vw,38px)}#mixer input[type=range]{height:clamp(180px,calc(100svh - 650px),560px);background:linear-gradient(to top,color-mix(in srgb,var(--channel) 67%,var(--bg)) 0 var(--fill,0%),var(--bg) var(--fill,0%) 100%)}
+#mixer label[data-control=piano],#mixer label[data-control=master]{--channel:var(--mint)}#mixer label[data-control=cutoff]{--channel:var(--gold)}
+#mixer input::-webkit-slider-thumb{width:100%;height:4px;border:0}#mixer input::-moz-range-thumb{width:100%;height:4px;border:0}
+#mixer output{font-size:13px;color:var(--ink)}#tone-controls{max-width:520px;margin:16px auto}#tone-controls label{border:0;padding:0}
+.performance-actions{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0 20px}.performance-actions button{width:auto;flex:1;min-width:120px}
+#shimmer-toggle[aria-pressed=true]{background:var(--gold);color:var(--bg);border-color:var(--gold)}#mute{margin-left:24px;border-color:#e46076;color:#f397a7}#freeze-toggle[aria-pressed=true]{background:var(--mint)}
+.bed-panel{border-width:1px 0 0;background:transparent;padding:16px 0 0}.bed-panel .section-head{margin-bottom:8px}.bed-panel h2{font-size:12px;letter-spacing:.15em;text-transform:uppercase}.bed-panel .section-head p{font-size:11px}
+#bed-keys{gap:8px}#bed-keys button{min-height:64px;background:color-mix(in srgb,var(--key-color) 53%,var(--bg));color:#d5e4dd;border:1px solid transparent;font-size:17px;font-weight:bold}#bed-keys button:disabled{background:transparent;border-color:var(--line);color:var(--muted)}#bed-keys button[aria-pressed=true]{color:var(--bg);border-color:white}
+.bed-actions{justify-content:flex-end}.bed-actions button{flex:0 1 auto;min-width:125px;font-size:12px}
+.edit-groups{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.edit-group{padding:18px;border:1px solid var(--line);min-width:0}.edit-group h2{font-size:14px;text-transform:uppercase;letter-spacing:.16em}.edit-group>p{font-size:12px;margin:7px 0 16px}.edit-group .control-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.edit-group label.control{padding:12px;border-color:#253229}.edit-group output{float:none;display:block;margin-top:4px}#edit{display:none}
+input[type=range]{touch-action:pan-y}#mixer input[type=range]{touch-action:none}input[type=range]:disabled{cursor:default}.footer-note{font-size:10px;margin-top:22px}
+@media(max-width:700px){body{padding:14px 14px 24px}header{flex-wrap:wrap;gap:12px}.brand{font-size:23px}.header-actions{margin-left:auto}.header-actions button{min-width:85px;padding:8px}nav{width:100%;order:3}nav button{flex:1}.statusbar{font-size:11px;gap:8px}#mixer{grid-template-columns:repeat(3,minmax(0,1fr));gap:20px 18px}#mixer input[type=range]{height:180px}.performance-actions{display:grid;grid-template-columns:1fr 1fr}.performance-actions button{min-width:0}#mute{margin-left:0}.edit-groups{grid-template-columns:1fr}.edit-group{padding:14px}#bed-keys{grid-template-columns:repeat(6,minmax(0,1fr))}#bed-keys button{min-height:52px}.bed-actions button{min-width:90px;flex:1;padding:8px 4px}#tone-controls{max-width:none}}
+@media(min-width:701px) and (max-height:650px){#mixer input[type=range]{height:200px}body{padding-top:12px}.performance-actions{margin:8px 0}#tone-controls{margin:8px auto}}
 </style>
-<header><div><div class="brand">STAVE</div><div class="eyebrow">SYNTH / NATIVE PI4</div></div><button id="save" disabled>Save sound</button></header>
+<header><div><div class="brand">STAVE</div><div class="eyebrow">PIANO + SYNTH</div></div>
 <nav aria-label="Work areas"><button id="nav-stage" aria-pressed="true">Stage</button><button id="nav-edit" aria-pressed="false">Edit</button><button id="nav-system" aria-pressed="false">System</button></nav>
+<div class="header-actions"><button id="save" disabled>Save sound</button></div></header>
 <div class="statusbar"><span class="pill" id="connection">Connecting</span><span id="profile" class="muted">Native candidate · starts muted</span><span id="warning-count"></span></div>
 <p id="notice" role="status"></p>
 <main>
 <section id="stage-panel" aria-label="Stage">
-<div class="panel"><div class="section-head"><div><h1>Live mix</h1><p>The familiar Stave surface. Both oscillator layers always visible.</p></div></div><div id="mixer"></div><div id="tone-controls"></div></div>
-<div class="actions"><button id="freeze-toggle" disabled aria-pressed="false">Freeze ambience</button><button id="release" disabled>Release keys & pedals</button><button id="mute" disabled>Mute output</button></div>
-<section class="panel" aria-label="Recorded pad bed"><div class="section-head"><div><h2>Background bed</h2><p>Hold the song’s key underneath your playing.</p></div></div>
+<div class="panel performance-panel"><div class="section-head"><div><h1>Live mix</h1><p>Touch to pick up. Drag to blend.</p></div></div><div id="mixer"></div><div id="tone-controls"></div></div>
+<div class="performance-actions"><button id="shimmer-toggle" disabled aria-pressed="false">Shimmer off</button><button id="freeze-toggle" disabled aria-pressed="false">Freeze ambience</button><button id="release" disabled>Release keys & pedals</button><button id="mute" disabled>Mute output</button></div>
+<section class="panel bed-panel" aria-label="Recorded pad bed"><div class="section-head"><div><h2>Background pad</h2><p>Recorded ambience in the song’s key.</p></div></div>
 <p id="bed-status">Checking loaded recordings…</p>
 <div id="bed-keys"></div>
 <div class="actions bed-actions"><button id="bed-out" disabled>Fade out · 5s</button><button id="bed-in" disabled>Fade in · 5s</button><button id="bed-stop" disabled>Release bed · 4s</button></div>
 <details><summary>Bed level & shaping</summary><div id="bed-controls"></div><p class="small">Concert-key recordings, independent of your keyboard and sustain. Rise applies on the next key trigger and uses its own filter. A new key releases the previous bed. Fade in restores a deliberately faded bed.</p></details></section>
 </section>
-<section id="edit-panel" aria-label="Edit sound" hidden><div class="panel"><div class="section-head"><div><h1>Shape your sound</h1><p>Oscillators, envelopes and shared space.</p></div></div><div id="edit"></div></div><p class="small">Changes are live. Save sound remembers supported tone controls, never held notes, freeze or output gain.</p></section>
+<section id="edit-panel" aria-label="Edit sound" hidden><div class="panel"><div class="section-head"><div><h1>Shape your sound</h1><p>Touch to pick up a slider; drag to adjust. Changes are live.</p></div></div><div class="edit-groups">
+<section class="edit-group"><h2>Oscillators</h2><p>Two played layers. Attack and release shape both together.</p><div id="edit-osc" class="control-grid"></div></section>
+<section class="edit-group"><h2>Piano</h2><p>Keep the attack clear; blend room and shared ambience to taste.</p><div id="edit-piano" class="control-grid"></div></section>
+<section class="edit-group"><h2>Reverb & shimmer</h2><p>FX on Stage controls synth reverb mix. Piano has its own send.</p><div id="edit-reverb" class="control-grid"></div></section>
+<section class="edit-group"><h2>Delay</h2><p>Blend the echoes and set how much repeats.</p><div id="edit-delay" class="control-grid"></div></section>
+</div><div id="edit"></div></div><p class="small">Save sound remembers tone controls. Output gain, held notes and freeze are performance actions.</p></section>
 <section id="system-panel" aria-label="System" hidden>
 <div class="system-grid"><div class="panel"><h2>Connections</h2><p id="device-status">Waiting for connection details…</p><div id="route-picker" hidden><label>MIDI keyboard<select id="route-midi" aria-label="MIDI keyboard"></select></label><label>Audio left<select id="route-left" aria-label="Audio left"></select></label><label>Audio right<select id="route-right" aria-label="Audio right"></select></label><p><button id="apply-routes" disabled>Apply connections · returns muted</button></p></div><p class="small">Only the explicitly selected MIDI and stereo output are used. No arbitrary fallback output. Choose one MIDI port per keyboard, not both aliases.</p><button id="restart-audio" disabled>Restart audio · returns muted</button></div>
 <div class="panel"><h2>Sound snapshot</h2><p id="save-status">This session starts muted. Raise Master gradually with monitoring low.</p><p class="small">A saved native sound is separate from your original Stave presets. A restart restores knobs, not notes or performance actions.</p></div></div>
 <div class="panel"><h2>Audio diagnostics</h2><div id="health">Waiting for native audio owner…</div><p class="small">Timing measures processing, not physical keyboard-to-speaker latency. Full-scale piano counts are a headroom warning, not proof of audible clipping.512 is the accepted listening profile; no buffer switch is exposed.</p></div>
 <div class="support"><h2>Candidate scope</h2><p class="small">Piano, OSC1/OSC2, filter, effects and prepared recorded-pad playback are connected. Recording/record-to-pad, organ, legacy presets/MIDI maps, pitch bend, macros, scenes and program changes are not yet migrated. MIDI channels share one keyboard; MIDI offsets are block-quantized. The original working application remains recoverable. This is not full stage-release qualification.</p><p class="small" id="runtime-scope">Temporary audition: loss of the selected device stops audio. Closing this browser does not stop audio.</p></div>
 </section></main>
-<p class="footer-note">STAVE / PI4 NATIVE · This is not the normal Stave legacy UI · Trusted private Wi-Fi only · Keep monitoring low when opening Master.</p>
+<p class="footer-note">STAVE / PI4 · Touch to pick up, drag to blend · Trusted private Wi-Fi</p>
 <script>
 'use strict';
 const labels={piano:'Piano',osc1:'OSC1',osc2:'OSC2',cutoff:'Filter cutoff · Hz',wet:'Synth reverb mix',master:'Master',wave1:'OSC1 waveform',wave2:'OSC2 waveform',attack:'Oscillator attack · ms',release:'Oscillator release · ms',resonance:'Filter resonance',piano_room:'Piano room',piano_reverb:'Piano → shared reverb',delay_wet:'Delay mix',delay_feedback:'Delay feedback',shimmer:'Shimmer enabled',shimmer_mix:'Shimmer mix',reverb:'Reverb type',freeze:'Reverb freeze'};
@@ -75,6 +100,40 @@ const bedKeys=[],bedActions=['bed-out','bed-in','bed-stop'];
 const fields={},pending=new Map();let ready=false,busy=false,epoch=null,lastValues={},lastRuntime={},actionBusy=false;
 const performanceKeys=['osc1','osc2','piano','cutoff','wet','master'];
 const performanceLabels={osc1:'OSC 1',osc2:'OSC 2',piano:'PIANO',cutoff:'FILTER',wet:'FX',master:'MASTER'};
+const editGroups={wave1:'osc',wave2:'osc',attack:'osc',release:'osc',resonance:'osc',piano_room:'piano',piano_reverb:'piano',reverb:'reverb',shimmer:'reverb',shimmer_mix:'reverb',freeze:'reverb',delay_wet:'delay',delay_feedback:'delay'};
+const gestures=new Map();
+function cancelGestures(){for(const cancel of [...gestures.values()])cancel();}
+// Relative pickup prevents a track tap from sending a sudden parameter jump.
+// Keyboard and assistive range input continue to use the browser's input event.
+function bindPickup(input,key){
+  let drag=null;
+  // Some range widgets also handle legacy touch events after pointerdown.
+  // Suppress that native track-seeking path as well as mouse defaults.
+  input.addEventListener('touchstart',e=>{if(ready&&!input.disabled)e.preventDefault();},{passive:false});
+  input.addEventListener('touchmove',e=>{if(drag)e.preventDefault();},{passive:false});
+  const finish=()=>{if(!drag)return;const id=drag.id;drag=null;gestures.delete(key);if(input.hasPointerCapture(id))input.releasePointerCapture(id);};
+  input.addEventListener('pointerdown',e=>{
+    if(input.disabled||!ready||e.button!==0)return;
+    e.preventDefault();if(drag)return;
+    input.focus({preventScroll:true});const vertical=performanceKeys.includes(key),rect=input.getBoundingClientRect();
+    drag={id:e.pointerId,position:vertical?e.clientY:e.clientX,value:Number(input.value),span:Math.max(1,(vertical?rect.height:rect.width)-8),vertical,epoch};
+    gestures.set(key,finish);input.setPointerCapture(e.pointerId);
+  });
+  input.addEventListener('pointermove',e=>{
+    if(!drag||e.pointerId!==drag.id)return;
+    if(!ready||input.disabled||drag.epoch!==epoch){finish();return;}
+    e.preventDefault();const min=Number(input.min),max=Number(input.max),step=Number(input.step);
+    const delta=drag.vertical?drag.position-e.clientY:e.clientX-drag.position;
+    const raw=Math.max(min,Math.min(max,drag.value+delta/drag.span*(max-min)));
+    const next=Number((min+Math.round((raw-min)/step)*step).toFixed(8));
+    if(next===Number(input.value))return;
+    input.value=next;const value=fromSlider(key,input.value);paint(key,value);send(key,value);
+  });
+  for(const event of ['pointerup','pointercancel','lostpointercapture'])input.addEventListener(event,e=>{if(drag&&e.pointerId===drag.id)finish();});
+  input.addEventListener('click',e=>e.preventDefault());
+}
+document.addEventListener('visibilitychange',()=>{if(document.hidden)cancelGestures();});
+window.addEventListener('blur',cancelGestures);
 // Original Stave's filter gesture was logarithmic. Wire values remain Hz;
 // render/restore never quantizes or sends the saved value back to the engine.
 function toSlider(key,value){return key==='cutoff'?1000*Math.log(Math.max(20,Math.min(20000,value))/20)/Math.log(1000):value;}
@@ -99,7 +158,7 @@ function updateRoutes(runtime){
   }
   document.getElementById('apply-routes').disabled=actionBusy||!runtime.can_restart;
 }
-function view(name){for(const tab of ['stage','edit','system']){document.getElementById(tab+'-panel').hidden=tab!==name;document.getElementById('nav-'+tab).setAttribute('aria-pressed',String(tab===name));}}
+function view(name){cancelGestures();for(const tab of ['stage','edit','system']){document.getElementById(tab+'-panel').hidden=tab!==name;document.getElementById('nav-'+tab).setAttribute('aria-pressed',String(tab===name));}}
 for(const tab of ['stage','edit','system'])document.getElementById('nav-'+tab).onclick=()=>view(tab);
 function formatted(key,value){
   if(choices[key])return choices[key][Number(value)]||String(value);
@@ -143,11 +202,12 @@ async function setup(){
     else{input.type='range';input.min=key==='cutoff'?0:min;input.max=key==='cutoff'?1000:max;input.step=key==='cutoff'?1:step;}
     input.value=toSlider(key,value);input.disabled=true;input.setAttribute('aria-label',labels[key]);
     if(performanceKeys.includes(key))input.setAttribute('aria-orientation','vertical');
+    if(!choices[key])bindPickup(input,key);
     input.addEventListener('input',()=>{const value=fromSlider(key,input.value);paint(key,value);if(!choices[key])send(key,value);});
     // One request in flight; pending absolute values coalesce by parameter.
     // Reconnect never replays one-shot actions or stale gestures.
     input.addEventListener('change',()=>send(key,fromSlider(key,input.value)));
-    label.append(input);document.getElementById(key.startsWith('bed_')?'bed-controls':key==='piano_tone'?'tone-controls':performanceKeys.includes(key)?'mixer':'edit').append(label);fields[key]={input,out};paint(key,value);
+    label.append(input);document.getElementById(key.startsWith('bed_')?'bed-controls':key==='piano_tone'?'tone-controls':performanceKeys.includes(key)?'mixer':editGroups[key]?'edit-'+editGroups[key]:'edit').append(label);fields[key]={input,out};paint(key,value);
   }
   keyNames.forEach((name,key)=>{const b=document.createElement('button');b.textContent=name;b.disabled=true;b.onclick=()=>send('bed_key',key);b.setAttribute('aria-pressed','false');b.style.setProperty('--key-color','hsl('+(170+10*key)+' 65% 65%)');document.getElementById('bed-keys').append(b);bedKeys.push(b);});
   document.getElementById('bed-out').onclick=()=>send('bed_fade',1);
@@ -156,6 +216,7 @@ async function setup(){
   document.getElementById('release').onclick=()=>send('release_all',1);
   document.getElementById('mute').onclick=()=>send('master',0);
   document.getElementById('freeze-toggle').onclick=()=>send('freeze',lastValues.freeze?0:1);
+  document.getElementById('shimmer-toggle').onclick=()=>send('shimmer',lastValues.shimmer?0:1);
   document.getElementById('save').onclick=()=>action('/save');
   document.getElementById('restart-audio').onclick=()=>{if(confirm('Restart audio? Sound will stop and return muted. Unsaved changes are not restored.'))action('/restart-audio');};
   document.getElementById('apply-routes').onclick=()=>{if(confirm('Change connections? Sound will stop and restart muted. Save your tone first if needed.'))action('/routes',Object.fromEntries(Object.entries(routeFields).map(([key,id])=>[key,document.getElementById(id).value])));};
@@ -165,7 +226,7 @@ async function poll(){
   try{
     const r=await fetch('/status',{signal:AbortSignal.timeout(2000)});if(!r.ok)throw Error('Status unavailable');
     const d=await r.json(),s=d.status;lastRuntime=d.runtime||{};lastValues=d.values;
-    if(epoch!==null&&d.epoch!==epoch)pending.clear();epoch=d.epoch||null;
+    if(epoch!==null&&d.epoch!==epoch){pending.clear();cancelGestures();}epoch=d.epoch||null;
     ready=!d.stale&&d.exited===null&&s.fault===0&&s.routed===true&&!lastRuntime.restoring;
     document.getElementById('connection').textContent=ready?'Audio ready':'Not ready';
     document.getElementById('profile').textContent=(s.frames||512)+' frames · '+(Number(d.values.master)>0?'Output enabled':'Output muted');
@@ -177,14 +238,17 @@ async function poll(){
       'Piano full-scale samples '+(s.piano_full_scale||0)+' · unsupported MIDI '+(s.unsupported_midi||0)+' · pending controls '+d.pending;
     if(d.error)notice.textContent=d.error;else if(!ready)notice.textContent=lastRuntime.message||'Control/audio connection is stale or stopped. No commands will be replayed.';
     else notice.textContent=d.pending?'Waiting for audio-owner acknowledgment…':'Values below are acknowledged by the audio owner.';
-    if(!ready)pending.clear();
+    if(!ready){pending.clear();cancelGestures();}
     for(const [key,{input,out}] of Object.entries(fields)){
       input.disabled=!ready||(key.startsWith('bed_')&&!s.bed_mask);
-      if(document.activeElement!==input&&!pending.has(key)&&!d.pending){input.value=toSlider(key,d.values[key]);paint(key,d.values[key]);}
+      if(!gestures.has(key)&&!busy&&!pending.has(key)&&!d.pending){input.value=toSlider(key,d.values[key]);paint(key,d.values[key]);}
     }
     document.getElementById('release').disabled=!ready;
     document.getElementById('mute').disabled=!ready;
     document.getElementById('freeze-toggle').disabled=!ready;
+    document.getElementById('shimmer-toggle').disabled=!ready;
+    document.getElementById('shimmer-toggle').setAttribute('aria-pressed',String(Boolean(d.values.shimmer)));
+    document.getElementById('shimmer-toggle').textContent=d.values.shimmer?'Shimmer on':'Shimmer off';
     document.getElementById('freeze-toggle').setAttribute('aria-pressed',String(Boolean(d.values.freeze)));
     document.getElementById('freeze-toggle').textContent=d.values.freeze?'Release frozen ambience':'Freeze ambience';
     document.getElementById('save').disabled=!ready||Boolean(d.pending)||!lastRuntime.persistence||actionBusy;
@@ -199,7 +263,7 @@ async function poll(){
     for(const id of bedActions)document.getElementById(id).disabled=!ready||!s.bed_mask;
     document.getElementById('bed-status').textContent=!s.bed_mask?'No recorded pads loaded. Piano and oscillators remain available.':
       'Selected '+(s.bed_key>=0?keyNames[s.bed_key]:'none')+' · '+(s.active_beds||0)+' sounding/releasing beds · '+(d.values.bed_fade?'fading/faded out':'fade target full');
-  }catch(e){ready=false;pending.clear();notice.textContent='Disconnected — audio may still be playing. No control replay.';document.getElementById('connection').textContent='Browser disconnected';for(const f of Object.values(fields))f.input.disabled=true;for(const id of ['release','mute','freeze-toggle','save','restart-audio','apply-routes',...bedActions])document.getElementById(id).disabled=true;for(const b of bedKeys)b.disabled=true;}
+  }catch(e){ready=false;pending.clear();cancelGestures();notice.textContent='Disconnected — audio may still be playing. No control replay.';document.getElementById('connection').textContent='Browser disconnected';for(const f of Object.values(fields))f.input.disabled=true;for(const id of ['release','mute','shimmer-toggle','freeze-toggle','save','restart-audio','apply-routes',...bedActions])document.getElementById(id).disabled=true;for(const b of bedKeys)b.disabled=true;}
   setTimeout(poll,750);
 }
 setup().catch(e=>{notice.textContent='Audition setup failed: '+e.message;});
