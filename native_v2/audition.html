@@ -13,6 +13,8 @@ input,select,button{font:inherit;min-height:48px;width:100%;accent-color:var(--m
 #bed-keys{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:7px}#bed-keys button{padding:10px 0;min-height:58px}#bed-keys button[aria-pressed=true]{background:var(--mint);color:#14281a}#bed-controls{margin-top:18px}.bed-actions{margin:18px 0 12px}summary{cursor:pointer;min-height:44px;padding:8px 0;color:var(--muted)}#health{white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.8 ui-monospace,monospace;color:var(--muted)}.system-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.system-grid .panel{margin:0}.system-grid p{margin:10px 0;overflow-wrap:anywhere}.support{border-left:2px solid var(--gold);padding-left:14px;margin-top:18px}.footer-note{font-size:12px;color:var(--muted);margin-top:24px}
 @media(max-width:700px){body{padding:16px 14px 40px}.brand{font-size:26px}header{gap:10px}.panel{padding:16px}#mixer,#edit,#bed-controls{grid-template-columns:repeat(2,minmax(0,1fr))}label.control{padding:13px}#bed-keys{grid-template-columns:repeat(6,minmax(0,1fr))}.system-grid{grid-template-columns:1fr}.section-head{align-items:flex-start}.eyebrow{font-size:10px}nav button{flex:1;min-width:0}#save{font-size:12px;padding:8px 12px}}
 @media(max-width:380px){#mixer,#edit,#bed-controls{grid-template-columns:1fr}header{align-items:flex-start}output{float:none;display:block}}
+@media(max-width:700px){output{float:none;display:block;margin-top:4px}.system-grid>.panel{min-width:0}select{max-width:100%}}
+select{appearance:none;height:48px;padding-right:28px;background-image:linear-gradient(45deg,transparent 50%,#a7ddb7 50%),linear-gradient(135deg,#a7ddb7 50%,transparent 50%);background-position:calc(100% - 17px) 21px,calc(100% - 12px) 21px;background-size:5px 5px;background-repeat:no-repeat}
 </style>
 <header><div><div class="brand">STAVE</div><div class="eyebrow">An instrument for the moment</div></div><button id="save" disabled>Save sound</button></header>
 <nav aria-label="Work areas"><button id="nav-stage" aria-pressed="true">Stage</button><button id="nav-edit" aria-pressed="false">Edit</button><button id="nav-system" aria-pressed="false">System</button></nav>
@@ -95,7 +97,9 @@ async function send(key,value){
   finally{busy=false;}
 }
 async function setup(){
-  const definitions=await (await fetch('/controls')).json();
+  let definitions;
+  try{const response=await fetch('/controls',{signal:AbortSignal.timeout(2000)});if(!response.ok)throw Error('Controls unavailable');definitions=await response.json();}
+  catch(e){notice.textContent='Connecting to Stave… retrying control definitions.';setTimeout(setup,2000);return;}
   const order=['piano','osc1','osc2','piano_tone','cutoff','wet','master'];
   const entries=[...order.filter(k=>k in definitions),...Object.keys(definitions).filter(k=>!order.includes(k))];
   for(const key of entries){const [min,max,step,value]=definitions[key];
