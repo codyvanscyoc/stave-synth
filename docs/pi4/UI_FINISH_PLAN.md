@@ -36,6 +36,14 @@ paragraphs and implementation details on the playing surface.
 
 ## 2. Oscillator instrument panel — next functional milestone
 
+September17 candidate implemented: eight independent ADSR controls, acknowledged
+schematic diagrams, musical time-knob scaling, and native single-command LINK.
+Legacy shared AR is expanded on load; explicit independent values take precedence.
+Restore applies LINK last so enabling it never rewrites unequal contours.
+Local UBSan/native PCM equivalence,604 reviewed regressions, actual browser
+mouse/touch/device-free/save checks passed. Pi build/deployment is a separate gate;
+see RESUME_HERE for the installed version, not this candidate statement.
+
 Reference screenshot 3. Full ADSR is an essential part of the requested sound
 editor, not optional decoration. Finish this before adding more menu categories.
 
@@ -78,7 +86,7 @@ voice count, routing graph or render scheduling for this editor.
 | Reverb, screenshot 4 | Character, decay, pre-delay, tone/damping, source sends, shimmer and freeze | Ambiguous SPACE/RESO/CLOUD macros and arbitrary routing switches |
 | Delay, screenshot 11 | Time, feedback, mix, tone; add musical sync when tempo control is connected | Oblivion, reverse/Aurora complexity in the first menu |
 | Motion, screenshot 5 | Add a compact rate/depth/destination section only after a native LFO control contract is implemented | Two full matrices and duplicate per-source routing |
-| Global, screenshots 8/10 | Connections, essential MIDI preferences, audio diagnostics, optional output trim | Old latency toggle/claims, general bus-processing laboratory |
+| Global, screenshots 8/10 | Connections, audio diagnostics; existing master EQ gain at200/1000/5000Hz (±6dB), existing12dB/oct low cut20–200Hz; essential MIDI preferences only when implemented | Old latency toggle/claims, general bus-processing laboratory; compression remains unexposed/off |
 | Bank, screenshots 1/9 | Existing Save; optional small favorites when native presets exist | Macros and replacing entire setlists/banks |
 | Recording, screenshot 7 | Complete real capture→take→pad-key assignment as its own backend milestone | Empty record buttons, pretending a saved tone is a recorded sample |
 
@@ -86,6 +94,14 @@ Each newly exposed control must name its existing native owner, persistence
 mapping and held-note transition behavior. Source support alone is not evidence
 that its live UI integration works. Do not automatically add processing or alter
 the loved sound merely because an old screenshot contains a knob.
+
+Global tone candidate uses `MasterConfig.eq/highpass/cutoff` in the existing
+master chain, not added processing. All gains default0dB and low cut stays off;
+no changes to pre-gain, limiter, compression, DSP sources or48k/512 scheduling.
+The existing low-cut enable is a hard topology selection, not a crossfade:
+set it between songs. Existing envelope sustain updates can change held levels;
+PCM equivalence proves preservation, not inaudibility of every extreme gesture.
+Real listening/transition qualification remains required before claiming click-free.
 
 ## Completion criteria
 

@@ -25,6 +25,8 @@ const controls={piano:[0,1,.01,.5],piano_tone:[0,1,.01,1],master:[0,1,.01,0],
   delay_wet:[0,1,.01,0],delay_feedback:[0,.99,.01,.35],piano_room:[0,1,.01,.4],piano_reverb:[0,1,.01,.13],reverb:[0,6,1,0],shimmer_mix:[0,1,.01,.07],freeze:[0,1,1,0],
   bed_level:[0,1,.01,1],bed_key:[0,11,1,-1],bed_rise:[0,60,.5,0],bed_rise_cutoff:[200,20000,1,3000],
   bed_mellow:[0,1,1,0],bed_mellow_cutoff:[100,8000,1,400],bed_fade:[0,1,1,0],bed_release:[0,1,1,0]};
+for(const n of [1,2])Object.assign(controls,{['attack'+n]:[0,10000,1,530],['decay'+n]:[0,20000,1,1500],['sustain'+n]:[0,100,.1,80],['release'+n]:[0,30000,1,530]});
+Object.assign(controls,{envelope_link:[0,1,1,0],master_low:[-6,6,.1,0],master_mid:[-6,6,.1,0],master_high:[-6,6,.1,0],master_lowcut:[0,1,1,0],master_lowcut_hz:[20,200,1,80]});
 let state={stale:false,exited:null,pending:0,error:null,values:Object.fromEntries(Object.entries(controls).map(([k,v])=>[k,v[3]])),
   status:{fault:0,routed:true,frames:512,blocks:100,bed_mask:129,bed_key:7,active_beds:1}};
 const sent=[];
@@ -73,7 +75,14 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
   pointer('pointerdown',100);nodes.get('nav-edit').onclick();pointer('pointermove',80);await flush();assert.equal(sent.length,before,'changing view cancels gesture');
   assert.equal(nodes.get('edit-wave1').children[0].attributes['data-control'],'wave1');
   assert.equal(nodes.get('edit-wave2').children[0].attributes['data-control'],'wave2');
-  assert.equal(nodes.get('edit-osc').children[0].attributes['data-control'],'attack');
+  assert.equal(nodes.get('edit-osc').children[0].attributes['data-control'],'resonance');
+  for(const n of [1,2]){
+    assert.deepEqual(nodes.get('edit-env'+n).children.map(x=>x.attributes['data-control']),['attack','decay','sustain','release'].map(x=>x+n));
+    assert.ok(!nodes.get('envelope'+n).attributes.points.includes('NaN'));
+    for(const [key,max] of [['attack',10000],['decay',20000],['release',30000]])for(const v of [0,1,70,530,max])assert.equal(vm.runInContext(`fromSlider('${key+n}',toSlider('${key+n}',${v}))`,context),v);
+  }
+  assert.equal(nodes.get('edit-link').children[0].attributes['data-control'],'envelope_link');
+  assert.equal(nodes.get('edit-global').children.length,5);
   assert.equal(nodes.get('edit-osc').children[0].className.includes('knob-control'),true);
   assert.match(nodes.get('edit-osc').children[0].children.at(-2).style['--knob-turn'],/deg$/);
   assert.equal(nodes.get('edit-delay').children[0].attributes['data-control'],'delay_wet');

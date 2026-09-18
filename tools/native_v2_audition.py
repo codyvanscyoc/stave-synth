@@ -37,8 +37,32 @@ CONTROLS = {
     "bed_rise": (0, 60, .5, 0), "bed_rise_cutoff": (200, 20000, 1, 3000),
     "bed_mellow": (0, 1, 1, 0), "bed_mellow_cutoff": (100, 8000, 1, 400),
     "bed_fade": (0, 1, 1, 0), "bed_release": (0, 1, 1, 0),
+    "attack1": (0, 10000, 1, 200), "decay1": (0, 20000, 1, 1500),
+    "sustain1": (0, 100, .1, 80), "release1": (0, 30000, 1, 500),
+    "attack2": (0, 10000, 1, 200), "decay2": (0, 20000, 1, 1500),
+    "sustain2": (0, 100, .1, 80), "release2": (0, 30000, 1, 500),
+    "envelope_link": (0, 1, 1, 0),
+    "master_low": (-6, 6, .1, 0), "master_mid": (-6, 6, .1, 0), "master_high": (-6, 6, .1, 0),
+    "master_lowcut": (0, 1, 1, 0), "master_lowcut_hz": (20, 200, 1, 80),
 }
-INTEGRAL = {"wave1", "wave2", "shimmer", "reverb", "freeze", "release_all", "bed_key", "bed_mellow", "bed_fade", "bed_release"}
+INTEGRAL = {"wave1", "wave2", "shimmer", "reverb", "freeze", "release_all", "bed_key", "bed_mellow", "bed_fade", "bed_release", "envelope_link", "master_lowcut"}
+
+
+def apply_value(values, key, value):
+    """Mirror one acknowledged native transaction (also used without devices)."""
+    values[key] = value
+    if key in ("attack", "release"):
+        values[key + "1"] = values[key + "2"] = value
+    elif key in {p + n for p in ("attack", "decay", "sustain", "release") for n in ("1", "2")}:
+        if values.get("envelope_link", 0):
+            values[key[:-1] + ("2" if key[-1] == "1" else "1")] = value
+
+
+def restore_items(values):
+    # A newly attached native owner starts unlinked. Legacy aliases first,
+    # explicit independent values next, LINK last: unequal linked patches
+    # remain unequal until the player's next linked edit.
+    return sorted(values.items(), key=lambda item: 0 if item[0] in ("attack", "release") else 2 if item[0] == "envelope_link" else 1)
 
 
 def validate_control(data):
@@ -99,7 +123,7 @@ class Controller:
                 for seq in sorted(list(self.pending)):
                     if seq <= message.get("applied", 0):
                         key, value = self.pending.pop(seq)
-                        self.values[key] = value
+                        apply_value(self.values, key, value)
                 if "bed_key" in message:
                     self.values["bed_key"] = message["bed_key"]
 

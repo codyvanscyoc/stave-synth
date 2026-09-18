@@ -118,7 +118,7 @@ class NativeStageTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.hub.dispatch('/control', dict(key='piano', value=.2), old_epoch)
         self.hub.reconcile()
-        self.assertEqual(dict(control.pending.values()), dict(piano=.81, cutoff=734, attack=670))
+        self.assertEqual(dict(control.pending.values()), dict(piano=.81, cutoff=734, attack1=670, attack2=670))
         sequence = control.sequence
         control.receive(dict(type='status', instance='native-v2-stage', blocks=2, applied=sequence, routed=True, fault=0))
         self.hub.reconcile()
@@ -126,6 +126,52 @@ class NativeStageTests(unittest.TestCase):
         self.assertEqual(self.hub.snapshot()['values']['piano'], .81)
         self.assertEqual(self.hub.snapshot()['values']['bed_level'], .25)
         self.assertEqual(control.values['master'], 0)
+
+    def test_legacy_envelope_migration_preserves_explicit_values(self):
+        self.store.path.write_text(json.dumps(dict(schema=1, controls=dict(attack=670, release=950, attack2=120))))
+        loaded = self.store.load()
+        self.assertEqual(loaded, dict(attack1=670, attack2=120, release1=950, release2=950))
+        self.assertNotIn('attack', self.store.save(loaded))
+        self.assertEqual(self.store.load(), loaded)
+
+    def test_link_is_one_acknowledged_transaction_and_restores_last(self):
+        epoch = self.hub.epoch
+        for key, value in [('attack1', 120), ('attack2', 770), ('envelope_link', 1)]:
+            self.hub.dispatch('/control', dict(key=key, value=value), epoch)
+        values = self.hub.snapshot()['values']
+        self.assertEqual((values['attack1'], values['attack2']), (120, 770))
+        self.hub.dispatch('/save', {}, epoch)
+        self.hub = stage.CandidateHub(self.store, ROUTES)
+        c = self.attached(); self.hub.reconcile()
+        self.assertEqual(list(c.pending.values())[-1], ('envelope_link', 1))
+        c.receive(dict(type='status', instance='native-v2-stage', blocks=2, applied=c.sequence, routed=True, fault=0))
+        self.hub.reconcile()
+        self.assertEqual((c.values['attack1'], c.values['attack2']), (120, 770))
+        seq = c.submit(dict(key='decay2', value=2345))
+        self.assertEqual(len(c.pending), 1)
+        self.assertEqual((c.values['decay1'], c.values['decay2']), (1500, 1500))
+        c.receive(dict(type='status', instance='native-v2-stage', blocks=3, applied=seq, routed=True, fault=0))
+        self.assertEqual((c.values['decay1'], c.values['decay2']), (2345, 2345))
+        self.hub.detached('No keyboard')
+        self.hub.dispatch('/control', dict(key='sustain1', value=42), self.hub.epoch)
+        values = self.hub.snapshot()['values']
+        self.assertEqual((values['sustain1'], values['sustain2']), (42, 42))
+        before = values.copy()
+        with self.assertRaises(ValueError):
+            self.hub.dispatch('/control', dict(key='sustain2', value=101), self.hub.epoch)
+        self.assertEqual(self.hub.snapshot()['values'], before)
+        self.hub.dispatch('/control', dict(key='envelope_link', value=0), self.hub.epoch)
+        self.hub.dispatch('/control', dict(key='release2', value=1350), self.hub.epoch)
+        self.assertEqual(self.hub.snapshot()['values']['release1'], 500)
+
+    def test_global_tone_is_bounded_and_saved_without_devices(self):
+        for key, value in [('master_low', -2.3), ('master_mid', 1.4), ('master_high', 0), ('master_lowcut', 1), ('master_lowcut_hz', 43)]:
+            self.hub.dispatch('/control', dict(key=key, value=value), self.hub.epoch)
+        self.hub.dispatch('/save', {}, self.hub.epoch)
+        self.assertEqual(self.store.load()['master_low'], -2.3)
+        for key, value in [('master_low', 7), ('master_lowcut', .5), ('master_lowcut_hz', 201)]:
+            with self.assertRaises(ValueError):
+                self.hub.dispatch('/control', dict(key=key, value=value), self.hub.epoch)
 
     def test_device_loss_keeps_acknowledged_unsaved_tone_not_actions_or_pending(self):
         control = self.attached()

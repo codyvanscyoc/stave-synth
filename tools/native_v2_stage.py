@@ -174,7 +174,7 @@ class CandidateHub:
                 return
             if self.restore_sequence is None:
                 last = 0
-                for key, value in self.prepared.items():
+                for key, value in audition.restore_items(self.prepared):
                     if key.startswith("bed_") and not data["status"].get("bed_mask"):
                         continue
                     last = self.active.submit({"key": key, "value": value})
@@ -229,7 +229,7 @@ class CandidateHub:
                     key, value = audition.validate_control(data)
                     if key in storage.TRANSIENT:
                         raise ValueError('Output and performance actions require audio; tone controls can be prepared now')
-                    self.prepared[key] = value
+                    audition.apply_value(self.prepared, key, value)
                     return {'prepared': True, 'applied': False}
                 if path == '/save' and data == {}:
                     saved = self.store.save(self.prepared)

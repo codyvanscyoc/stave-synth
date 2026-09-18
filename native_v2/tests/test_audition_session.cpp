@@ -29,6 +29,53 @@ int main(int argc,char** argv) {
     check(argc==2);
     for(unsigned frames:{256u,512u}) {
         {
+            // New UI controls must be the same existing graph operations, not
+            // new DSP. No bed bank: unrelated controls must never require one.
+            Random ra,rb;
+            stave::StageInstrument a(argv[1],ra,frames,0,&ra),b(argv[1],rb,frames,0,&rb);
+            stave::AuditionSession owner(a);
+            stave::StageInstrumentConfig p; p.owned_motion=true; p.fader1=p.fader2=0; p.output.volume=0;
+            p.piano.highcut_smoothing_ms=80; check(b.configure(p));
+            std::array<float,512> left{},right{};
+            std::uint64_t id=0;
+            auto send=[&](C c,double v){check(owner.enqueue({++id,c,v}));};
+            send(C::Master,.6); p.output.volume=.6;
+            send(C::Osc1,.5); p.fader1=.5; send(C::Osc2,.4); p.fader2=.4;
+            for(unsigned block=0;block<160;++block) {
+                if(block==5) { send(C::Attack1,120); p.env1.attack_ms=120; }
+                if(block==10) { send(C::Attack2,770); p.env2.attack_ms=770; }
+                if(block==15) { send(C::Decay1,900); p.env1.decay_ms=900; }
+                if(block==20) { send(C::Sustain2,35); p.env2.sustain_percent=35; }
+                if(block==25) { send(C::Release1,1234); p.env1.release_ms=1234; }
+                if(block==30) { send(C::EnvelopeLink,1); } // enabling must not copy unequal envelopes
+                if(block==35) { send(C::Decay2,2300); p.env1.decay_ms=p.env2.decay_ms=2300; }
+                if(block==40) { send(C::Attack2,420); p.env1.attack_ms=p.env2.attack_ms=420; }
+                if(block==45) { send(C::Sustain1,63); p.env1.sustain_percent=p.env2.sustain_percent=63; }
+                if(block==50) { send(C::Release2,890); p.env1.release_ms=p.env2.release_ms=890; }
+                if(block==55) { send(C::EnvelopeLink,0); send(C::Decay2,200); p.env2.decay_ms=200; }
+                if(block==60) { send(C::Attack,90); p.env1.attack_ms=p.env2.attack_ms=90; }
+                if(block==65) { send(C::Release,1500); p.env1.release_ms=p.env2.release_ms=1500; }
+                if(block==70) { send(C::MasterLow,-2); p.master.eq[0].gain=-2; }
+                if(block==75) { send(C::MasterMid,1.4); p.master.eq[1].gain=1.4; }
+                if(block==80) { send(C::MasterHigh,-3.1); p.master.eq[2].gain=-3.1; }
+                if(block==85) { send(C::MasterLowcutHz,43); p.master.cutoff=43; }
+                if(block==90) { send(C::MasterLowcut,1); p.master.highpass=true; }
+                check(b.configure(p));
+                stave::AuditionMidi e{0,3,{0x90,60,100}}; unsigned count=0;
+                if(block==0||block==95) { count=1; check(b.key_command(b.frame_position(),stave::StageAction::NoteOn,60,100)); }
+                if(block==100) { e.bytes={0xb0,64,127}; count=1; check(b.key_command(b.frame_position(),stave::StageAction::Sustain,0,1)); }
+                if(block==105) { e.bytes={0x80,60,0}; count=1; check(b.key_command(b.frame_position(),stave::StageAction::NoteOff,60,0)); }
+                if(block==110) { e.bytes={0xb0,64,0}; count=1; check(b.key_command(b.frame_position(),stave::StageAction::Sustain,0,0)); }
+                check(owner.process(left.data(),right.data(),frames,count?&e:nullptr,count));
+                check(b.render_block());
+                for(unsigned i=0;i<frames;++i) check(left[i]==b.pcm(0)[i]&&right[i]==b.pcm(1)[i]);
+            }
+            check(owner.applied()==id);
+            check(!owner.enqueue({id+1,C::Sustain1,101}));
+            check(!owner.enqueue({id+1,C::MasterLow,6.1}));
+            check(!owner.enqueue({id+1,C::EnvelopeLink,.5}));
+        }
+        {
             Random random;
             stave::StageInstrument graph(argv[1],random,frames,0,&random,test_bank());
             stave::AuditionSession session(graph);

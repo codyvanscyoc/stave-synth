@@ -11,19 +11,27 @@ enum class AuditionControl : unsigned {
     Piano, Osc1, Osc2, Cutoff, Wet, Master, Wave1, Wave2, Attack, Release,
     Resonance, PianoRoom, PianoReverb, DelayWet, DelayFeedback, Shimmer,
     ShimmerMix, Reverb, Freeze, ReleaseAll, PianoTone,
-    BedLevel, BedKey, BedRise, BedRiseCutoff, BedMellow, BedMellowCutoff, BedFade, BedRelease, Count
+    BedLevel, BedKey, BedRise, BedRiseCutoff, BedMellow, BedMellowCutoff, BedFade, BedRelease,
+    Attack1, Decay1, Sustain1, Release1, Attack2, Decay2, Sustain2, Release2, EnvelopeLink,
+    MasterLow, MasterMid, MasterHigh, MasterLowcut, MasterLowcutHz, Count
 };
 inline constexpr std::array<const char*,unsigned(AuditionControl::Count)> audition_names{
     "piano","osc1","osc2","cutoff","wet","master","wave1","wave2","attack","release",
     "resonance","piano_room","piano_reverb","delay_wet","delay_feedback","shimmer",
     "shimmer_mix","reverb","freeze","release_all","piano_tone",
-    "bed_level","bed_key","bed_rise","bed_rise_cutoff","bed_mellow","bed_mellow_cutoff","bed_fade","bed_release"};
+    "bed_level","bed_key","bed_rise","bed_rise_cutoff","bed_mellow","bed_mellow_cutoff","bed_fade","bed_release",
+    "attack1","decay1","sustain1","release1","attack2","decay2","sustain2","release2","envelope_link",
+    "master_low","master_mid","master_high","master_lowcut","master_lowcut_hz"};
 inline bool audition_value_valid(AuditionControl c,double v) noexcept {
     if(!std::isfinite(v)) return false;
     switch(c) {
     case AuditionControl::Cutoff: return v>=20&&v<=20000;
-    case AuditionControl::Attack: return v>=0&&v<=10000;
-    case AuditionControl::Release: return v>=0&&v<=30000;
+    case AuditionControl::Attack: case AuditionControl::Attack1: case AuditionControl::Attack2: return v>=0&&v<=10000;
+    case AuditionControl::Release: case AuditionControl::Release1: case AuditionControl::Release2: return v>=0&&v<=30000;
+    case AuditionControl::Decay1: case AuditionControl::Decay2: return v>=0&&v<=20000;
+    case AuditionControl::Sustain1: case AuditionControl::Sustain2: return v>=0&&v<=100;
+    case AuditionControl::MasterLow: case AuditionControl::MasterMid: case AuditionControl::MasterHigh: return v>=-6&&v<=6;
+    case AuditionControl::MasterLowcutHz: return v>=20&&v<=200;
     case AuditionControl::Resonance: return v>=.5&&v<=10;
     case AuditionControl::BedKey: return v>=0&&v<=11&&v==std::floor(v);
     case AuditionControl::BedRise: return v>=0&&v<=60;
@@ -32,6 +40,7 @@ inline bool audition_value_valid(AuditionControl c,double v) noexcept {
     case AuditionControl::Wave1: case AuditionControl::Wave2: return v>=0&&v<=4&&v==std::floor(v);
     case AuditionControl::Reverb: return v>=0&&v<=6&&v==std::floor(v);
     case AuditionControl::Shimmer: case AuditionControl::Freeze: case AuditionControl::ReleaseAll:
+    case AuditionControl::EnvelopeLink: case AuditionControl::MasterLowcut:
     case AuditionControl::BedMellow: case AuditionControl::BedFade: case AuditionControl::BedRelease:
         return v==0||v==1;
     case AuditionControl::DelayFeedback: return v>=0&&v<=.99;
@@ -65,7 +74,7 @@ public:
     // acknowledged as applied; no MIDI note-off can be lost in this queue.
     bool enqueue(AuditionCommand c) noexcept {
         if(fault()!=AuditionFault::None||!c.id||c.id<=previous_id_||!audition_value_valid(c.control,c.value)) return false;
-        if(c.control>=AuditionControl::BedLevel&&(!bed_mask_||
+        if(c.control>=AuditionControl::BedLevel&&c.control<=AuditionControl::BedRelease&&(!bed_mask_||
            (c.control==AuditionControl::BedKey&&!(bed_mask_&(1u<<unsigned(c.value)))))) return false;
         const auto h=head_.load(std::memory_order_relaxed),t=tail_.load(std::memory_order_acquire);
         if(h-t>=capacity) return false;
@@ -183,6 +192,22 @@ private:
         case C::Wave2: config_.wave2=int(v); break;
         case C::Attack: config_.env1.attack_ms=config_.env2.attack_ms=v; break;
         case C::Release: config_.env1.release_ms=config_.env2.release_ms=v; break;
+        // LINK changes editing behavior only. One command changes both existing
+        // envelopes before a single configure; no intermediate rendered state.
+        case C::EnvelopeLink: envelope_link_=v!=0; return true;
+        case C::Attack1: config_.env1.attack_ms=v; if(envelope_link_) config_.env2.attack_ms=v; break;
+        case C::Decay1: config_.env1.decay_ms=v; if(envelope_link_) config_.env2.decay_ms=v; break;
+        case C::Sustain1: config_.env1.sustain_percent=v; if(envelope_link_) config_.env2.sustain_percent=v; break;
+        case C::Release1: config_.env1.release_ms=v; if(envelope_link_) config_.env2.release_ms=v; break;
+        case C::Attack2: config_.env2.attack_ms=v; if(envelope_link_) config_.env1.attack_ms=v; break;
+        case C::Decay2: config_.env2.decay_ms=v; if(envelope_link_) config_.env1.decay_ms=v; break;
+        case C::Sustain2: config_.env2.sustain_percent=v; if(envelope_link_) config_.env1.sustain_percent=v; break;
+        case C::Release2: config_.env2.release_ms=v; if(envelope_link_) config_.env1.release_ms=v; break;
+        case C::MasterLow: config_.master.eq[0].gain=v; break;
+        case C::MasterMid: config_.master.eq[1].gain=v; break;
+        case C::MasterHigh: config_.master.eq[2].gain=v; break;
+        case C::MasterLowcut: config_.master.highpass=v!=0; break;
+        case C::MasterLowcutHz: config_.master.cutoff=v; break;
         case C::Resonance: config_.buses.pad.resonance=v; break;
         case C::PianoRoom: config_.buses.room.wet=v; break;
         case C::PianoReverb: config_.piano_reverb_send=v; break;
@@ -212,6 +237,7 @@ private:
     alignas(64) std::atomic<std::uint64_t> head_{0},tail_{0};
     std::uint64_t previous_id_{};
     bool audition_unmuted_{}; // audio owner only; not a live mute toggle
+    bool envelope_link_{};
     std::atomic<AuditionFault> fault_{AuditionFault::None};
     std::atomic<std::uint64_t> applied_{0},blocks_{0},notes_{0},unsupported_{0},quantized_{0},full_scale_{0};
 };

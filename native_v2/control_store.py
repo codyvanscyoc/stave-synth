@@ -34,6 +34,13 @@ class ControlStore:
                 raise ValueError("Transient/output actions cannot be restored")
             k, v = self.validate({"key": key, "value": value})
             result[k] = v
+        # Expand legacy shared AR only where independent values were not saved.
+        # Do not replay aliases after independent values; retain schema1 reading.
+        for name in ("attack", "release"):
+            if name in result:
+                value = result.pop(name)
+                for oscillator in ("1", "2"):
+                    result.setdefault(name + oscillator, value)
         return result
 
     def load(self):
