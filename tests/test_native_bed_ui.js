@@ -41,6 +41,7 @@ for(const n of [1,2])Object.assign(controls,{['attack'+n]:[0,10000,1,530],['deca
 Object.assign(controls,{envelope_link:[0,1,1,0],master_low:[-6,6,.1,0],master_mid:[-6,6,.1,0],master_high:[-6,6,.1,0],master_lowcut:[0,1,1,0],master_lowcut_hz:[20,200,1,80]});
 Object.assign(controls,{piano_room_size:[0,1,.01,.5],piano_room_damp:[0,.99,.01,.6],reverb_decay:[0,30,.1,6],reverb_predelay:[0,150,1,25],reverb_lowcut:[20,20000,1,80],reverb_highcut:[20,20000,1,7000],reverb_damp:[0,.99,.01,.5],delay_time:[1,1000,1,500],delay_lowcut:[20,1000,1,20],delay_highcut:[500,20000,1,18000]});
 Object.assign(controls,{transpose:[-24,24,1,0],piano_octave:[-3,3,1,0],octave1:[-3,3,1,0],octave2:[-3,3,1,0],record_start:[0,1,1,0],record_stop:[0,1,1,0],release_all:[0,1,1,0]});
+Object.assign(controls,{pan1:[-1,1,.01,0],pan2:[-1,1,.01,0],detune:[0,1,.001,.07],spread:[0,1,.001,.85]});
 let state={stale:false,exited:null,pending:0,error:null,values:Object.fromEntries(Object.entries(controls).map(([k,v])=>[k,v[3]])),
   status:{fault:0,routed:true,frames:512,blocks:100,bed_mask:129,bed_key:7,active_beds:1}};
 const sent=[];
@@ -91,6 +92,7 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
   assert.equal(nodes.get('edit-wave1').children[0].attributes['data-control'],'wave1');
   assert.equal(nodes.get('edit-wave2').children[0].attributes['data-control'],'wave2');
   assert.equal(nodes.get('edit-osc').children[0].attributes['data-control'],'resonance');
+  assert.deepEqual(nodes.get('edit-osc').children.slice(-4).map(x=>x.attributes['data-control']),['pan1','pan2','detune','spread']);
   for(const n of [1,2]){
     assert.deepEqual(nodes.get('edit-env'+n).children.map(x=>x.attributes['data-control']),['attack','decay','sustain','release'].map(x=>x+n));
     assert.ok(!nodes.get('envelope'+n).attributes.points.includes('NaN'));

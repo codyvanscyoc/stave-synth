@@ -141,7 +141,7 @@ class MidiMapStore:
         self.load()
 
     def validated(self, value):
-        if not isinstance(value, dict) or len(value) > 48:
+        if not isinstance(value, dict) or len(value) > 64:
             raise ValueError("Bounded MIDI map required")
         result = {}
         used = set()

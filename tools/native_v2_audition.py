@@ -51,6 +51,8 @@ CONTROLS = {
     "record_start": (0, 1, 1, 0), "record_stop": (0, 1, 1, 0),
     "transpose": (-24, 24, 1, 0), "piano_octave": (-3, 3, 1, 0),
     "octave1": (-3, 3, 1, 0), "octave2": (-3, 3, 1, 0),
+    "pan1": (-1, 1, .01, 0), "pan2": (-1, 1, .01, 0),
+    "detune": (0, 1, .001, .07), "spread": (0, 1, .001, .85),
 }
 INTEGRAL = {"wave1", "wave2", "shimmer", "reverb", "freeze", "release_all", "bed_key", "bed_mellow", "bed_fade", "bed_release", "envelope_link", "master_lowcut", "record_start", "record_stop", "transpose", "piano_octave", "octave1", "octave2"}
 MIDI_RESERVED = frozenset((64, 66, 120, 123))

@@ -91,10 +91,12 @@ header{position:relative}.header-actions{gap:7px}.header-actions button{min-widt
 .pitch-strip{display:flex;align-items:center;justify-content:center;gap:8px;margin:3px 0 8px}.pitch-strip>span{color:var(--muted);font-size:10px;letter-spacing:.12em}.stepper{display:inline-grid;grid-template-columns:34px 48px 34px;align-items:center}.stepper button{min-height:32px;height:32px;padding:0}.stepper output{float:none;text-align:center;color:var(--ink)}
 .layer-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0 auto 8px;max-width:580px}.layer-strip button{min-height:34px;padding:3px 8px;font-size:10px;letter-spacing:.12em}.layer-strip button[aria-pressed=true]{background:var(--mint);color:var(--bg)}
 .preset-strip{display:grid;grid-template-columns:repeat(5,minmax(0,1fr)) auto;gap:7px;margin:6px 0 10px}.preset-strip button{min-height:38px;padding:4px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:10px}.preset-strip button[data-selected=true]{border-color:var(--gold);color:var(--gold)}#preset-store{min-width:62px}
-.channel-foot{display:grid;grid-template-columns:28px 42px 28px;justify-content:center;align-items:center;gap:3px;margin-top:-2px}.channel-foot button{min-height:28px;height:28px;padding:0;font-size:13px}.channel-foot output{float:none;text-align:center;font-size:10px;color:var(--muted)}
+.channel-foot{order:3;display:grid;grid-template-columns:32px 46px 32px;justify-content:center;align-items:center;gap:4px;height:30px;margin-top:-2px}.channel-foot button{width:32px;min-width:32px;min-height:30px;height:30px;padding:0;font-size:13px}.channel-foot output{float:none;text-align:center;font-size:10px;color:var(--muted)}.channel-foot.placeholder{visibility:hidden;pointer-events:none}
 .bed-actions{justify-content:flex-end}.bed-actions button{min-width:100px}.record-pad #record-status,#bed-status{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:18px}.record-pad{flex-wrap:nowrap}.record-pad label{display:flex;align-items:center;gap:7px;white-space:nowrap}.record-pad select{margin:0;width:75px}.record-pad button{width:auto;white-space:nowrap}
-.edit-group .control-grid{grid-template-columns:repeat(4,minmax(0,1fr))}.contour .control-grid{grid-template-columns:repeat(4,minmax(0,1fr));max-width:none}.edit-group label.knob-control{min-height:135px}.edit-group label.knob-control input[type=range]{width:70px;height:70px;min-height:70px}.knob-dial{top:43px;width:70px;height:70px;left:calc(50% - 35px)}.knob-dial::after{height:17px;transform-origin:50% 25px}.osc-layout .voice{padding:10px}.envelope-plot{height:100px;margin:6px 0 3px}.osc-layout .envelope-controls label.knob-control{min-height:116px}.osc-layout .envelope-controls .knob-dial{top:38px}.sound-tabs{margin-bottom:10px}.edit-group>p{margin-bottom:9px}
+.pad-edit{margin-top:5px}.pad-edit summary{min-height:32px;padding:4px 0;font-size:10px;letter-spacing:.12em}.pad-edit[open]{border-top:1px solid var(--line);margin-top:9px;padding-top:5px}
+.edit-group .control-grid{grid-template-columns:repeat(4,minmax(0,1fr))}.contour .control-grid{grid-template-columns:repeat(5,minmax(0,1fr));max-width:none}.edit-group label.knob-control{min-height:135px}.edit-group label.knob-control input[type=range]{width:70px;height:70px;min-height:70px}.knob-dial{top:43px;width:70px;height:70px;left:calc(50% - 35px)}.knob-dial::after{height:17px;transform-origin:50% 25px}.osc-layout .voice{padding:10px}.envelope-plot{height:100px;margin:6px 0 3px}.osc-layout .envelope-controls label.knob-control{min-height:116px}.osc-layout .envelope-controls .knob-dial{top:38px}.sound-tabs{margin-bottom:10px}.edit-group>p{margin-bottom:9px}
 @media(max-width:700px){.header-actions{order:2}.header-stack{grid-template-columns:1fr 1fr}.header-stack button{height:26px}.pitch-strip{justify-content:flex-start}.preset-strip{grid-template-columns:repeat(5,minmax(0,1fr))}.preset-strip #preset-store{grid-column:1/-1}.record-pad{flex-wrap:wrap}.edit-group .control-grid,.contour .control-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.osc-layout .envelope-controls{grid-template-columns:repeat(4,minmax(0,1fr))}.osc-layout .envelope-controls label.knob-control{min-height:108px}.osc-layout .envelope-controls .knob-dial{width:60px;height:60px;left:calc(50% - 30px)}}
+@media(min-width:701px){body{padding-bottom:8px}#stage-panel{min-height:0}.performance-panel{margin:4px 0 2px}#mixer input[type=range]{height:clamp(190px,calc(100svh - 610px),650px)}#tone-controls{margin:4px auto}.preset-strip{margin:3px 0 5px}.bed-panel{padding-top:5px}.bed-panel .section-head{margin-bottom:2px}#bed-status{margin-bottom:3px}#bed-keys button{min-height:48px}.bed-actions{margin:3px 0 0}.bed-actions button{min-height:34px}.footer-note{display:none}}
 </style>
 <header><div class="brand-lockup"><img class="retro-logo" src="/logo.png" alt="Stave"><div><div class="brand">STAVE</div><div class="eyebrow">PIANO + SYNTH</div></div></div>
 <nav aria-label="Work areas"><button id="nav-stage" aria-pressed="true">Stage</button><button id="nav-edit" aria-pressed="false">Sound</button><button id="nav-system" aria-pressed="false">System</button></nav>
@@ -112,8 +114,7 @@ header{position:relative}.header-actions{gap:7px}.header-actions button{min-widt
 <p id="bed-status">Checking loaded recordings…</p>
 <div id="bed-keys"></div>
 <div class="actions bed-actions"><button id="bed-stop" disabled>STOP PAD</button></div>
-<div class="record-pad"><button id="record-start" disabled>RECORD</button><button id="record-stop" disabled>STOP</button><label>KEY <select id="record-slot" aria-label="Recorded pad destination"></select></label><button id="record-assign" disabled>SAVE PAD</button><span id="record-status">Recorder idle.</span></div>
-<details><summary>Pad level & shaping</summary><div id="bed-controls"></div><p class="small">Tap a loaded key to fade it in. Tap it again to fade it out. Selecting a different key crossfades to the new pad.</p></details></section>
+<details class="pad-edit"><summary>PAD RECORD / SHAPE</summary><div class="record-pad"><button id="record-start" disabled>RECORD</button><button id="record-stop" disabled>STOP</button><label>KEY <select id="record-slot" aria-label="Recorded pad destination"></select></label><button id="record-assign" disabled>SAVE PAD</button><span id="record-status">Recorder idle.</span></div><div id="bed-controls"></div><p class="small">Tap a loaded key to fade it in. Tap it again to fade it out. Selecting a different key crossfades to the new pad.</p></details></section>
 </section>
 <section id="edit-panel" aria-label="Shape sound" hidden><div class="panel"><div class="section-head"><div><h1>Sound</h1><p>Drag knobs sideways to adjust.</p></div></div><div class="sound-tabs" role="group" aria-label="Sound sections"><button id="sound-tab-osc" aria-pressed="true">OSC</button><button id="sound-tab-piano" aria-pressed="false">PIANO</button><button id="sound-tab-reverb" aria-pressed="false">REVERB</button><button id="sound-tab-delay" aria-pressed="false">DELAY</button></div><div class="edit-groups">
 <section id="sound-osc" class="edit-group" data-group="osc" data-open="true"><h2>OSCILLATORS</h2><div id="edit-link" class="control-grid"></div><div class="osc-layout"><div class="voice"><h3>OSC 1</h3><div id="edit-wave1" class="control-grid"></div><svg class="envelope-plot" viewBox="0 0 400 130" role="img" aria-label="OSC 1 envelope contour"><polyline id="envelope1" points="10,120 80,10 170,32 270,32 390,120"/></svg><div class="envelope-caption">ADSR · schematic</div><div id="edit-env1" class="control-grid envelope-controls"></div></div><div class="voice"><h3>OSC 2</h3><div id="edit-wave2" class="control-grid"></div><svg class="envelope-plot" viewBox="0 0 400 130" role="img" aria-label="OSC 2 envelope contour"><polyline id="envelope2" points="10,120 80,10 170,32 270,32 390,120"/></svg><div class="envelope-caption">ADSR · schematic</div><div id="edit-env2" class="control-grid envelope-controls"></div></div></div><div class="contour"><h3>SHARED FILTER</h3><div id="edit-osc" class="control-grid"></div></div></section>
@@ -140,6 +141,7 @@ choices.bed_mellow=['Off','On'];
 const keyNames=['C','C♯','D','E♭','E','F','F♯','G','A♭','A','B♭','B'];
 const bedKeys=[],bedActions=['bed-stop'];
 const fields={},pending=new Map();let ready=false,audioReady=false,busy=false,epoch=null,lastValues={},lastRuntime={},actionBusy=false;
+const visualToggles=new Map();
 let activeBed=-1,bedFaded=false;
 const lastLayerValues={osc1:.7,osc2:.5,piano:.7};
 const stepperRoots={};
@@ -157,7 +159,9 @@ for(const n of [1,2])for(const [part,max] of [['attack',10000],['decay',20000],[
 }
 Object.assign(labels,{envelope_link:'Link envelopes',master_low:'Low · 200 Hz',master_mid:'Mid · 1 kHz',master_high:'High · 5 kHz',master_lowcut:'Low cut',master_lowcut_hz:'Low cut frequency'});
 Object.assign(labels,{transpose:'Transpose',piano_octave:'Piano octave',octave1:'OSC 1 octave',octave2:'OSC 2 octave'});
+Object.assign(labels,{pan1:'OSC 1 pan · L ↔ R',pan2:'OSC 2 pan · L ↔ R',detune:'Unison detune',spread:'Unison stereo width'});
 editGroups.envelope_link='link';choices.envelope_link=['Independent','Linked edits'];choices.master_lowcut=['Off','On'];
+for(const key of ['pan1','pan2','detune','spread']){editGroups[key]='osc';knobKeys.add(key);}
 for(const key of ['master_low','master_mid','master_high','master_lowcut','master_lowcut_hz']){editGroups[key]='global';if(key!=='master_lowcut')knobKeys.add(key);}
 Object.assign(labels,{piano_room_size:'Room size',piano_room_damp:'Room warmth',reverb_decay:'Decay',reverb_predelay:'Pre-delay',reverb_lowcut:'Low cut',reverb_highcut:'High cut',reverb_damp:'Damping',delay_time:'Time',delay_lowcut:'Low cut',delay_highcut:'High cut'});
 for(const key of ['piano_room_size','piano_room_damp']){editGroups[key]='piano';knobKeys.add(key);}
@@ -265,6 +269,8 @@ function formatted(key,value){
   if(key==='bed_rise')return Number(value)===0?'Normal':Number(value).toFixed(1)+' s';
   if(key==='transpose')return (value>0?'+':'')+Math.round(value)+' st';
   if(['piano_octave','octave1','octave2'].includes(key))return (value>0?'+':'')+Math.round(value)+' oct';
+  if(key==='pan1'||key==='pan2')return Math.abs(value)<.005?'C':(value<0?'L ':'R ')+Math.round(Math.abs(value)*100);
+  if(key==='detune')return Number(value).toFixed(3);
   if(key==='resonance')return Number(value).toFixed(2);
   return Math.round(Number(value)*100)+'%';
 }
@@ -314,6 +320,7 @@ async function setup(){
   }
   bindStepper(document.getElementById('transpose-stepper'),'transpose',-24,24);
   for(const [mix,pitch] of [['osc1','octave1'],['osc2','octave2'],['piano','piano_octave']])attachOctave(fields[mix].label,pitch);
+  for(const key of ['cutoff','wet','master']){const spacer=document.createElement('div');spacer.className='channel-foot placeholder';spacer.setAttribute('aria-hidden','true');fields[key].label.append(spacer);}
   for(const key of ['osc1','osc2','piano'])document.getElementById('layer-'+key).onclick=()=>toggleLayer(key);
   keyNames.forEach((name,key)=>{const b=document.createElement('button');b.textContent=name;b.disabled=true;b.onclick=()=>{if(activeBed===key)send('bed_fade',bedFaded?0:1);else{if(bedFaded)send('bed_fade',0);send('bed_key',key);}};b.setAttribute('aria-pressed','false');b.style.setProperty('--key-color','hsl('+(170+10*key)+' 65% 65%)');document.getElementById('bed-keys').append(b);bedKeys.push(b);});
   keyNames.forEach((name,key)=>{const o=document.createElement('option');o.value=key;o.textContent=name;document.getElementById('record-slot').append(o);});
@@ -322,8 +329,8 @@ async function setup(){
   document.getElementById('record-stop').onclick=()=>send('record_stop',1);
   document.getElementById('record-assign').onclick=()=>{const slot=Number(document.getElementById('record-slot').value);if(confirm('Save this take to '+keyNames[slot]+'? Any pad already in that slot is kept as an undo file. Audio will restart and restore this sound.'))action('/record-assign',{slot});};
   document.getElementById('mute').onclick=()=>{send('release_all',1);send('master',0);};
-  document.getElementById('freeze-toggle').onclick=()=>send('freeze',lastValues.freeze?0:1);
-  document.getElementById('shimmer-toggle').onclick=()=>send('shimmer',lastValues.shimmer?0:1);
+  document.getElementById('freeze-toggle').onclick=()=>{const value=(visualToggles.has('freeze')?visualToggles.get('freeze'):lastValues.freeze)?0:1;visualToggles.set('freeze',value);const button=document.getElementById('freeze-toggle');button.setAttribute('aria-pressed',String(Boolean(value)));button.textContent=value?'UNFREEZE':'FREEZE';send('freeze',value);};
+  document.getElementById('shimmer-toggle').onclick=()=>{const value=(visualToggles.has('shimmer')?visualToggles.get('shimmer'):lastValues.shimmer)?0:1;visualToggles.set('shimmer',value);const button=document.getElementById('shimmer-toggle');button.setAttribute('aria-pressed',String(Boolean(value)));button.textContent=value?'SHIM ON':'SHIM';send('shimmer',value);};
   document.getElementById('save').onclick=()=>action('/save');
   document.getElementById('connections').onclick=()=>view('system');
   document.getElementById('warning-count').onclick=()=>view('system');
@@ -389,7 +396,7 @@ async function poll(){
     if(Date.now()>=noticeExpires){
     if(preparing)notice.textContent='';
     else if(d.error)notice.textContent=d.error;else if(!ready)notice.textContent=lastRuntime.message||'Control/audio connection is stale or stopped. No commands will be replayed.';
-    else notice.textContent=d.pending?'Updating…':'';
+    else notice.textContent='';
     }
     if(!ready){pending.clear();cancelGestures();}
     for(const [key,{input,out}] of Object.entries(fields)){
@@ -402,10 +409,13 @@ async function poll(){
     document.getElementById('mute').disabled=!audioReady;
     document.getElementById('freeze-toggle').disabled=!audioReady;
     document.getElementById('shimmer-toggle').disabled=!ready;
-    document.getElementById('shimmer-toggle').setAttribute('aria-pressed',String(Boolean(d.values.shimmer)));
-    document.getElementById('shimmer-toggle').textContent=d.values.shimmer?'SHIM ON':'SHIM';
-    document.getElementById('freeze-toggle').setAttribute('aria-pressed',String(Boolean(d.values.freeze)));
-    document.getElementById('freeze-toggle').textContent=d.values.freeze?'UNFREEZE':'FREEZE';
+    if(!d.pending&&!busy){visualToggles.delete('shimmer');visualToggles.delete('freeze');}
+    const shimmerVisual=visualToggles.has('shimmer')?visualToggles.get('shimmer'):d.values.shimmer;
+    const freezeVisual=visualToggles.has('freeze')?visualToggles.get('freeze'):d.values.freeze;
+    document.getElementById('shimmer-toggle').setAttribute('aria-pressed',String(Boolean(shimmerVisual)));
+    document.getElementById('shimmer-toggle').textContent=shimmerVisual?'SHIM ON':'SHIM';
+    document.getElementById('freeze-toggle').setAttribute('aria-pressed',String(Boolean(freezeVisual)));
+    document.getElementById('freeze-toggle').textContent=freezeVisual?'UNFREEZE':'FREEZE';
     document.getElementById('save').disabled=!ready||busy||Boolean(pending.size)||Boolean(d.pending)||!lastRuntime.persistence||actionBusy;
     document.getElementById('restart-audio').disabled=!lastRuntime.can_restart||actionBusy;
     const mapButton=document.getElementById('midi-map');mapButton.disabled=!audioReady||actionBusy;
