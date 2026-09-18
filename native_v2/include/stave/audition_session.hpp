@@ -15,7 +15,8 @@ enum class AuditionControl : unsigned {
     Attack1, Decay1, Sustain1, Release1, Attack2, Decay2, Sustain2, Release2, EnvelopeLink,
     MasterLow, MasterMid, MasterHigh, MasterLowcut, MasterLowcutHz,
     PianoRoomSize, PianoRoomDamp, ReverbDecay, ReverbPredelay, ReverbLowcut, ReverbHighcut, ReverbDamp,
-    DelayTime, DelayLowcut, DelayHighcut, RecordStart, RecordStop, Count
+    DelayTime, DelayLowcut, DelayHighcut, RecordStart, RecordStop,
+    Transpose, PianoOctave, Octave1, Octave2, Count
 };
 inline constexpr std::array<const char*,unsigned(AuditionControl::Count)> audition_names{
     "piano","osc1","osc2","cutoff","wet","master","wave1","wave2","attack","release",
@@ -25,7 +26,8 @@ inline constexpr std::array<const char*,unsigned(AuditionControl::Count)> auditi
     "attack1","decay1","sustain1","release1","attack2","decay2","sustain2","release2","envelope_link",
     "master_low","master_mid","master_high","master_lowcut","master_lowcut_hz",
     "piano_room_size","piano_room_damp","reverb_decay","reverb_predelay","reverb_lowcut","reverb_highcut","reverb_damp",
-    "delay_time","delay_lowcut","delay_highcut","record_start","record_stop"};
+    "delay_time","delay_lowcut","delay_highcut","record_start","record_stop",
+    "transpose","piano_octave","octave1","octave2"};
 inline bool audition_value_valid(AuditionControl c,double v) noexcept {
     if(!std::isfinite(v)) return false;
     switch(c) {
@@ -49,6 +51,9 @@ inline bool audition_value_valid(AuditionControl c,double v) noexcept {
     case AuditionControl::BedRiseCutoff: return v>=200&&v<=20000;
     case AuditionControl::BedMellowCutoff: return v>=100&&v<=8000;
     case AuditionControl::Wave1: case AuditionControl::Wave2: return v>=0&&v<=4&&v==std::floor(v);
+    case AuditionControl::Transpose: return v>=-24&&v<=24&&v==std::floor(v);
+    case AuditionControl::PianoOctave: case AuditionControl::Octave1: case AuditionControl::Octave2:
+        return v>=-3&&v<=3&&v==std::floor(v);
     case AuditionControl::Reverb: return v>=0&&v<=6&&v==std::floor(v);
     case AuditionControl::Shimmer: case AuditionControl::Freeze: case AuditionControl::ReleaseAll:
     case AuditionControl::EnvelopeLink: case AuditionControl::MasterLowcut:
@@ -187,7 +192,7 @@ private:
         case C::Reverb: return graph_.reverb_type(static_cast<ReverbType>(unsigned(v)));
         case C::Freeze: return graph_.freeze(v!=0);
         case C::ReleaseAll: return v==0||graph_.key_command(graph_.frame_position(),StageAction::ReleaseAll,0,0);
-        case C::Piano: config_.piano.volume=v; break;
+        case C::Piano: config_.piano.volume=v; config_.piano.enabled=v>0; break;
         case C::BedLevel: config_.bed.level=v; break;
         case C::BedMellow: config_.bed.mellow=v!=0; break;
         case C::BedMellowCutoff: config_.bed.mellow_hz=v; break;
@@ -239,6 +244,10 @@ private:
         case C::DelayHighcut: config_.delay.highcut=v; break;
         case C::RecordStart: return v==0||capture_->start();
         case C::RecordStop: if(v!=0) capture_->request_stop(); return true;
+        case C::Transpose: config_.transpose=int(v); break;
+        case C::PianoOctave: config_.piano_octave=int(v); break;
+        case C::Octave1: config_.octave1=int(v); break;
+        case C::Octave2: config_.octave2=int(v); break;
         case C::Resonance: config_.buses.pad.resonance=v; break;
         case C::PianoRoom: config_.buses.room.wet=v; break;
         case C::PianoReverb: config_.piano_reverb_send=v; break;

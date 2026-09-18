@@ -49,8 +49,10 @@ CONTROLS = {
     "reverb_lowcut": (20, 20000, 1, 80), "reverb_highcut": (20, 20000, 1, 7000), "reverb_damp": (0, .99, .01, .5),
     "delay_time": (1, 1000, 1, 500), "delay_lowcut": (20, 1000, 1, 20), "delay_highcut": (500, 20000, 1, 18000),
     "record_start": (0, 1, 1, 0), "record_stop": (0, 1, 1, 0),
+    "transpose": (-24, 24, 1, 0), "piano_octave": (-3, 3, 1, 0),
+    "octave1": (-3, 3, 1, 0), "octave2": (-3, 3, 1, 0),
 }
-INTEGRAL = {"wave1", "wave2", "shimmer", "reverb", "freeze", "release_all", "bed_key", "bed_mellow", "bed_fade", "bed_release", "envelope_link", "master_lowcut", "record_start", "record_stop"}
+INTEGRAL = {"wave1", "wave2", "shimmer", "reverb", "freeze", "release_all", "bed_key", "bed_mellow", "bed_fade", "bed_release", "envelope_link", "master_lowcut", "record_start", "record_stop", "transpose", "piano_octave", "octave1", "octave2"}
 
 
 def apply_value(values, key, value):
@@ -72,7 +74,24 @@ def restore_items(values):
     # A newly attached native owner starts unlinked. Legacy aliases first,
     # explicit independent values next, LINK last: unequal linked patches
     # remain unequal until the player's next linked edit.
-    return sorted(values.items(), key=lambda item: 0 if item[0] in ("attack", "release", "reverb") else 2 if item[0] == "envelope_link" else 1)
+    values = dict(values)
+    result = []
+    # Cross linked cutoff pairs through their safe minimum so either endpoint
+    # can move past the old range without an invalid intermediate state.
+    for low in ("reverb_lowcut", "delay_lowcut"):
+        if low in values:
+            result.append((low, CONTROLS[low][0]))
+    result.extend(sorted(((k, v) for k, v in values.items() if k not in
+                          ("reverb_lowcut", "delay_lowcut", "envelope_link", "master")),
+                         key=lambda item: 0 if item[0] in ("attack", "release", "reverb") else 1))
+    for low in ("reverb_lowcut", "delay_lowcut"):
+        if low in values:
+            result.append((low, values[low]))
+    if "envelope_link" in values:
+        result.append(("envelope_link", values["envelope_link"]))
+    if "master" in values:
+        result.append(("master", values["master"]))
+    return result
 
 
 def validate_control(data):
@@ -231,7 +250,7 @@ def handler_for(controller, authority):
 
         def do_POST(self):
             host = self.headers.get("Host", "").lower()
-            if (self.path not in ("/control", "/save", "/restart-audio", "/routes", "/record-assign") or host not in authorities or
+            if (self.path not in ("/control", "/save", "/restart-audio", "/routes", "/record-assign", "/preset-save", "/preset-load") or host not in authorities or
                     self.headers.get("Origin", "").lower() != "http://" + host or
                     self.headers.get("Content-Type") != "application/json" or self.headers.get("Transfer-Encoding")):
                 return self.reply(403, {"error": "Same-origin JSON control required"})

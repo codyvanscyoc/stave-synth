@@ -44,8 +44,8 @@ class NativeStageTests(unittest.TestCase):
 
     def test_snapshot_roundtrip_and_action_exclusion(self):
         self.assertEqual(self.store.load(), {})
-        self.store.save(dict(piano=.7, piano_tone=.4))
-        self.assertEqual(self.store.load(), dict(piano=.7, piano_tone=.4))
+        self.store.save(dict(piano=.7, piano_tone=.4, master=.65))
+        self.assertEqual(self.store.load(), dict(piano=.7, piano_tone=.4, master=.65))
         before = self.store.path.read_bytes()
         for key in stage.storage.TRANSIENT:
             with self.assertRaises(ValueError): self.store.save({key: 0})
@@ -56,9 +56,29 @@ class NativeStageTests(unittest.TestCase):
             with self.assertRaises(OSError): self.store.save(dict(piano=.2))
         self.assertEqual(self.store.path.read_bytes(), before)
 
+    def test_five_native_preset_slots_save_prepare_and_queue_master_last(self):
+        self.hub.dispatch('/control', dict(key='piano', value=.72), self.hub.epoch)
+        self.hub.dispatch('/control', dict(key='master', value=.64), self.hub.epoch)
+        result = self.hub.dispatch('/preset-save', dict(slot=2, name='Sunday Piano'), self.hub.epoch)
+        self.assertEqual(result['presets'][2]['name'], 'Sunday Piano')
+        self.hub.dispatch('/control', dict(key='piano', value=.2), self.hub.epoch)
+        self.hub.dispatch('/preset-load', dict(slot=2), self.hub.epoch)
+        self.assertEqual(self.hub.snapshot()['values']['piano'], .72)
+        control = self.attached(); self.hub.reconcile()
+        control.receive(dict(type='status', instance='native-v2-stage', blocks=2,
+                             applied=control.sequence, routed=True, fault=0))
+        self.hub.reconcile()
+        self.hub.dispatch('/control', dict(key='piano', value=.3), self.hub.epoch)
+        control.receive(dict(type='status', instance='native-v2-stage', blocks=3,
+                             applied=control.sequence, routed=True, fault=0))
+        self.hub.dispatch('/preset-load', dict(slot=2), self.hub.epoch)
+        self.assertEqual(list(control.pending.values())[-1], ('master', .64))
+        with self.assertRaises(ValueError):
+            self.hub.dispatch('/preset-save', dict(slot=5, name='Bad'), self.hub.epoch)
+
     def test_malformed_oversized_and_symlink_state_never_loaded(self):
         for data in (b"broken", b" "*16385, b'[]', b'{"schema":true,"controls":{}}',
-                     b'{"schema":1,"controls":{"master":1}}'):
+                     b'{"schema":1,"controls":{"master":2}}'):
             self.store.path.write_bytes(data)
             hub = stage.CandidateHub(self.store, ROUTES)
             self.assertIsNotNone(hub.state_warning)
@@ -207,12 +227,13 @@ class NativeStageTests(unittest.TestCase):
         self.hub.detached('Keyboard disconnected')
         self.assertEqual(self.hub.snapshot()['values']['piano'], .82)
         self.assertEqual(self.hub.snapshot()['values']['cutoff'], 8000)
-        self.assertEqual(self.hub.snapshot()['values']['master'], 0)
+        self.assertEqual(self.hub.snapshot()['values']['master'], .9)
         self.assertFalse(self.store.path.exists())
         self.hub.dispatch('/control', dict(key='piano', value=.63), self.hub.epoch)
         control = self.attached()
         self.hub.reconcile()
         self.assertEqual(dict(control.pending.values())['piano'], .63)
+        self.assertEqual(list(control.pending.values())[-1], ('master', .9))
         self.assertFalse(stage.storage.TRANSIENT & dict(control.pending.values()).keys())
         # A failed restore must keep the prepared sound, not reset it to defaults.
         self.hub.detached('Startup failed')

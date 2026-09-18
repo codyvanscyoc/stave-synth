@@ -169,8 +169,8 @@ class AuditionControlTests(unittest.TestCase):
         html = (ROOT / "native_v2/audition.html").read_text()
         javascript = html.split("<script>", 1)[1].split("</script>", 1)[0]
         subprocess.run(["node", "--check", "-"], input=javascript, text=True, capture_output=True, check=True)
-        self.assertIn("not full stage-release qualification", html)
-        self.assertIn("block-quantized", html)
+        self.assertIn("MIDI mapping and named preset banks are the remaining interface migrations", html)
+        self.assertIn("512 is the accepted listening profile", html)
         self.assertIn("pending.clear()", html)
 
     def test_native_control_names_match_and_no_service_mutation(self):

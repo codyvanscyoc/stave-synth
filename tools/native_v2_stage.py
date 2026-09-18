@@ -3,7 +3,8 @@
 
 Owns HTTP, saved knobs, exact device selection and bounded child recovery.
 The child alone owns audio. Every new audio owner starts MUTED and receives
-only saved absolute knobs: notes/freeze/master/bed triggers are never replayed.
+only saved absolute controls: notes/freeze/bed triggers are never replayed;
+an explicitly saved Master target restores last, after healthy routing and tone.
 Not legacy feature parity or completed stage qualification.
 """
 import argparse
@@ -82,12 +83,13 @@ class CandidateHub:
         self.route_file = store.path.with_name("native_routes.json")
         self.routes = validate_routes(routes)
         self.saved = {}
-        self.save_message = "No native sound saved yet. Every restart starts muted."
+        self.presets = None
+        self.save_message = "No native sound saved yet. Master stays muted until you save a sound with a deliberate level."
         self.state_warning = None
         try:
             self.saved = store.load()
             if self.saved:
-                self.save_message = "Saved native tone controls loaded. Master and performance actions are not restored."
+                self.save_message = "Saved native sound loaded. Master restores last after healthy routing."
             if self.route_file.exists() or self.route_file.is_symlink():
                 fd = os.open(self.route_file, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
                 with os.fdopen(fd, "rb") as source:
@@ -103,6 +105,10 @@ class CandidateHub:
         except (OSError, ValueError, TypeError) as error:
             self.state_warning = "Saved-state warning: " + str(error)
             self.save_message = self.state_warning + "; file preserved. Save only when the new sound is intentional."
+        try:
+            self.presets = storage.PresetStore(store.path.with_name("native_presets.json"), store)
+        except (OSError, ValueError, TypeError) as error:
+            self.state_warning = "Preset warning: " + str(error)
         self.active = None
         # Preparation belongs to the instrument, not to a connected keyboard.
         # Only acknowledged tone values enter this draft; never performance actions.
@@ -133,7 +139,7 @@ class CandidateHub:
             self.restoring = True
             self.restore_sequence = None
             self.restore_started = time.monotonic()
-            self.message = "Starting audio and restoring saved tone controls; output stays muted."
+            self.message = "Starting audio and restoring the saved sound; Master restores last."
             self.restarts += 1
             return self.active
 
@@ -192,7 +198,7 @@ class CandidateHub:
                 raise ValueError("Saved controls were rejected: " + data["error"])
             if not self.restore_sequence or data["status"].get("applied", 0) >= self.restore_sequence:
                 self.restoring = False
-                self.message = "Audio ready. Raise Master deliberately; recovery never replays output gain."
+                self.message = "Audio ready. Saved Master was restored last through the output ramp."
 
     def snapshot(self):
         with self.lock:
@@ -210,8 +216,9 @@ class CandidateHub:
                 recording={"take": self.recording_take.name if self.recording_take else None,
                            "capture": data['status'].get('capture_end', 0),
                            "writer": data['status'].get('writer_state', 0),
-                           "frames": data['status'].get('writer_frames', 0)}, **self.routes,
-                scope="Native512 candidate: selected-device recovery restarts MUTED with saved tone controls. Browser disconnect does not stop audio. No legacy preset/MIDI-map parity or stage-release approval yet."))
+                           "frames": data['status'].get('writer_frames', 0)},
+                presets=self.presets.summary() if self.presets else [None] * 5, **self.routes,
+                scope="Native512 stage engine: selected-device recovery restores saved controls with Master last. Browser disconnect does not stop audio."))
             return data
 
     def dispatch(self, path, data, epoch):
@@ -255,6 +262,36 @@ class CandidateHub:
                 self.restoring = True
                 self.epoch = uuid.uuid4().hex
                 return {"message": f"Saved to {names[data['slot']]}; audio restarting muted with the new pad."}
+            if path == "/preset-load":
+                if not isinstance(data, dict) or set(data) != {"slot"} or not self.presets:
+                    raise ValueError("Choose one native preset")
+                values = self.presets.controls_for(data["slot"])
+                if self.active is None and not self.restart:
+                    self.prepared = values
+                    return {"message": "Preset prepared; it will sound when devices connect."}
+                if not self.active or self.restoring:
+                    raise ValueError("Audio is not ready for a preset change")
+                status = self.active.snapshot()["status"]
+                for key, value in audition.restore_items(values):
+                    if key.startswith("bed_") and not status.get("bed_mask"):
+                        self.prepared[key] = value
+                    else:
+                        self.active.submit({"key": key, "value": value})
+                return {"message": "Preset queued with Master last."}
+            if path == "/preset-save":
+                if not isinstance(data, dict) or set(data) != {"slot", "name"} or not self.presets:
+                    raise ValueError("Choose one native preset slot and name")
+                if self.active is not None:
+                    snapshot = self.active.snapshot()
+                    if self.restoring or snapshot["stale"] or snapshot["pending"] or snapshot["status"].get("fault", 1):
+                        raise ValueError("Wait for healthy acknowledged controls before storing a preset")
+                    values = {k: v for k, v in snapshot["values"].items() if k not in storage.TRANSIENT}
+                elif not self.restart:
+                    values = self.prepared
+                else:
+                    raise ValueError("Wait for audio recovery before storing a preset")
+                summary = self.presets.save_slot(data["slot"], data["name"], values)
+                return {"presets": summary, "message": "Preset stored."}
             if self.active is None and not self.restart:
                 if path == '/control':
                     key, value = audition.validate_control(data)
@@ -267,7 +304,7 @@ class CandidateHub:
                     saved = self.store.save(self.prepared)
                     self.saved = saved
                     self.state_warning = None
-                    self.save_message = 'Prepared sound saved. It will load when the selected devices connect; output starts muted.'
+                    self.save_message = 'Prepared sound saved. If Master is zero, startup remains muted.'
                     return {'saved': True, 'message': self.save_message}
             if not self.active or self.restoring:
                 raise ValueError("Audio is not ready; no queued performance actions")
@@ -291,7 +328,7 @@ class CandidateHub:
             self.saved = self.store.save(values)
             self.prepared = self.saved.copy()
             self.state_warning = None
-            self.save_message = "Native tone snapshot saved. Master, notes, freeze and bed actions excluded."
+            self.save_message = "Native sound saved. Master restores last; notes, freeze and bed actions remain excluded."
             return {"saved": True, "message": self.save_message}
 
     @staticmethod

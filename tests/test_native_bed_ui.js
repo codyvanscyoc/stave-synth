@@ -16,9 +16,11 @@ class Element {
   releasePointerCapture(){this.capture=null;}
 }
 const nodes=new Map();
-const document={activeElement:null,addEventListener(){},createElement:()=>new Element(),getElementById:id=>{
+const presetNodes=Array.from({length:5},()=>new Element());
+const document={activeElement:null,addEventListener(){},createElement:()=>new Element(),querySelectorAll:selector=>selector==='[data-preset]'?presetNodes:[],getElementById:id=>{
   if(!nodes.has(id))nodes.set(id,new Element());return nodes.get(id);
 }};
+for(let i=0;i<3;i++)document.getElementById('transpose-stepper').append(new Element());
 const controls={piano:[0,1,.01,.5],piano_tone:[0,1,.01,1],master:[0,1,.01,0],
   osc1:[0,1,.01,.13],osc2:[0,1,.01,.1],cutoff:[20,20000,1,487],wet:[0,1,.01,.74],
   shimmer:[0,1,1,0],wave1:[0,4,1,0],wave2:[0,4,1,2],attack:[0,10000,10,530],release:[0,30000,10,530],resonance:[.5,10,.01,.7],
@@ -28,6 +30,7 @@ const controls={piano:[0,1,.01,.5],piano_tone:[0,1,.01,1],master:[0,1,.01,0],
 for(const n of [1,2])Object.assign(controls,{['attack'+n]:[0,10000,1,530],['decay'+n]:[0,20000,1,1500],['sustain'+n]:[0,100,.1,80],['release'+n]:[0,30000,1,530]});
 Object.assign(controls,{envelope_link:[0,1,1,0],master_low:[-6,6,.1,0],master_mid:[-6,6,.1,0],master_high:[-6,6,.1,0],master_lowcut:[0,1,1,0],master_lowcut_hz:[20,200,1,80]});
 Object.assign(controls,{piano_room_size:[0,1,.01,.5],piano_room_damp:[0,.99,.01,.6],reverb_decay:[0,30,.1,6],reverb_predelay:[0,150,1,25],reverb_lowcut:[20,20000,1,80],reverb_highcut:[20,20000,1,7000],reverb_damp:[0,.99,.01,.5],delay_time:[1,1000,1,500],delay_lowcut:[20,1000,1,20],delay_highcut:[500,20000,1,18000]});
+Object.assign(controls,{transpose:[-24,24,1,0],piano_octave:[-3,3,1,0],octave1:[-3,3,1,0],octave2:[-3,3,1,0],record_start:[0,1,1,0],record_stop:[0,1,1,0],release_all:[0,1,1,0]});
 let state={stale:false,exited:null,pending:0,error:null,values:Object.fromEntries(Object.entries(controls).map(([k,v])=>[k,v[3]])),
   status:{fault:0,routed:true,frames:512,blocks:100,bed_mask:129,bed_key:7,active_beds:1}};
 const sent=[];
@@ -40,21 +43,21 @@ const fetch=async(url,args)=>({ok:true,json:async()=>{
 }});
 const html=fs.readFileSync(path.join(__dirname,'../native_v2/audition.html'),'utf8');
 const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];
-const context=vm.createContext({document,window:{addEventListener(){}},fetch,AbortSignal,confirm:()=>true,setTimeout:()=>{}});
+const context=vm.createContext({document,window:{addEventListener(){}},fetch,AbortSignal,confirm:()=>true,prompt:()=>null,setTimeout:()=>{}});
 vm.runInContext(script,context);
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 (async()=>{
   await flush();await flush();
   assert.deepEqual(nodes.get('mixer').children.map(n=>n.attributes['data-control']),['osc1','osc2','piano','cutoff','wet','master']);
-  for(const label of nodes.get('mixer').children){const input=label.children.at(-1);assert.equal(input.attributes['aria-orientation'],'vertical');assert.match(input.style['--fill'],/%$/);}
+  for(const label of nodes.get('mixer').children){const input=label.children.find(x=>x.type==='range');assert.equal(input.attributes['aria-orientation'],'vertical');assert.match(input.style['--fill'],/%$/);}
   assert.equal(nodes.get('tone-controls').children[0].attributes['data-control'],'piano_tone');
   assert.equal(sent.length,0); // Rendering saved levels never edits the sound.
   for(const value of [20,100,487,8000,20000])assert.equal(vm.runInContext(`fromSlider('cutoff',toSlider('cutoff',${value}))`,context),value);
   assert.equal(vm.runInContext("fromSlider('cutoff',0)",context),20);
   assert.equal(vm.runInContext("fromSlider('cutoff',1000)",context),20000);
-  const filter=nodes.get('mixer').children[3].children.at(-1);filter.value=500;filter.listeners.input();await flush();
+  const filter=nodes.get('mixer').children[3].children.find(x=>x.type==='range');filter.value=500;filter.listeners.input();await flush();
   assert.deepEqual(sent.at(-1),{key:'cutoff',value:632});assert.equal(filter.attributes['aria-valuetext'],'632 Hz');
-  const fx=nodes.get('mixer').children[4].children.at(-1);
+  const fx=nodes.get('mixer').children[4].children.find(x=>x.type==='range');
   const pointer=(type,y,id=1,x=20)=>{let prevented=false;fx.listeners[type]({button:0,pointerId:id,clientY:y,clientX:x,preventDefault(){prevented=true;}});return prevented;};
   let before=sent.length;
   assert.ok(pointer('pointerdown',200));pointer('pointerup',200);await flush();
@@ -67,7 +70,7 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
   pointer('pointermove',-1000);await flush();assert.equal(Number(fx.value),1,'drag clamps to range');
   pointer('pointercancel',-1000);before=sent.length;pointer('pointermove',200);await flush();assert.equal(sent.length,before,'cancel terminates gesture');
   await vm.runInContext('poll()',context);assert.equal(Number(fx.value),.74,'released focused control follows authoritative state');
-  const tone=nodes.get('tone-controls').children[0].children.at(-1);
+  const tone=nodes.get('tone-controls').children[0].children.find(x=>x.type==='range');
   tone.listeners.pointerdown({button:0,pointerId:3,clientX:100,clientY:50,preventDefault(){}});
   tone.listeners.pointermove({pointerId:3,clientX:80,clientY:50,preventDefault(){}});await flush();
   assert.deepEqual(sent.at(-1),{key:'piano_tone',value:.9},'horizontal pickup moves relative to current value');
@@ -100,17 +103,17 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
   assert.equal(keys.length,12);
   keys.forEach((button,key)=>assert.equal(button.disabled,![0,7].includes(key)));
   assert.equal(keys[7].attributes['aria-pressed'],'true');
-  assert.match(nodes.get('bed-status').textContent,/Selected G/);
+  assert.match(nodes.get('bed-status').textContent,/G · playing/);
   keys[0].onclick();await flush();assert.deepEqual(sent.at(-1),{key:'bed_key',value:0});
   nodes.get('bed-stop').onclick();await flush();assert.deepEqual(sent.at(-1),{key:'bed_release',value:1});
   state={...state,stale:true};await vm.runInContext('poll()',context);
   assert.ok(keys.every(b=>b.disabled));
-  for(const id of ['bed-in','bed-out','bed-stop'])assert.ok(nodes.get(id).disabled);
+  assert.ok(nodes.get('bed-stop').disabled);
   const count=sent.length;
   state={...state,stale:false,status:{...state.status,bed_mask:0,bed_key:-1,active_beds:0}};
   await vm.runInContext('poll()',context);
   assert.equal(sent.length,count);assert.ok(keys.every(b=>b.disabled));
-  assert.match(nodes.get('bed-status').textContent,/No recorded pads loaded/);
+  assert.match(nodes.get('bed-status').textContent,/No pads loaded/);
   for(const label of nodes.get('bed-controls').children)assert.equal(label.children.at(-1).disabled,false,'bed shaping can be prepared before recordings exist');
   nodes.get('nav-system').onclick();assert.equal(nodes.get('system-panel').hidden,false);assert.equal(nodes.get('stage-panel').hidden,true);
   state={...state,epoch:'session-a',runtime:{persistence:true,can_restart:true,restoring:false,devices:{midi:['Keys:midi'],audio:['USB:l','USB:r']},midi_source:'Keys:midi',audio_left:'USB:l',audio_right:'USB:r'}};
@@ -130,8 +133,8 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
   assert.equal(nodes.get('audio-status').textContent,'AUDIO —');
   assert.equal(nodes.get('save').disabled,false);
   assert.equal(fx.disabled,false);
-  assert.equal(nodes.get('edit-osc').children[0].children.at(-1).disabled,false);
-  assert.equal(nodes.get('mixer').children[5].children.at(-1).disabled,true);
+  assert.equal(nodes.get('edit-osc').children[0].children.find(x=>x.type==='range').disabled,false);
+  assert.equal(nodes.get('mixer').children[5].children.find(x=>x.type==='range').disabled,true);
   assert.equal(nodes.get('freeze-toggle').disabled,true);
   assert.ok(keys.every(b=>b.disabled));
   before=sent.length;
