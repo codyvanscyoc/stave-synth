@@ -161,6 +161,19 @@ int main(int argc,char** argv) {
             unsigned count=0; while(capture->pop(block)) ++count;
             check(count==128&&capture->drained());
         }
+        {
+            // One-shot recording transport is armed and stopped only by
+            // acknowledged audio-boundary commands; invalid order is refused.
+            Random random; stave::StageInstrument graph(argv[1],random,frames,0,&random);
+            stave::RecordingCapture<> capture(frames,frames*4,false);
+            stave::AuditionSession session(graph,&capture); std::array<float,512> l{},r{};
+            check(!session.enqueue({1,C::RecordStop,1}));
+            check(session.enqueue({1,C::RecordStart,1})); check(session.process(l.data(),r.data(),frames,nullptr,0));
+            check(capture.end()==stave::CaptureEnd::Open&&capture.frames_written()==frames);
+            check(!session.enqueue({2,C::RecordStart,1}));
+            check(session.enqueue({2,C::RecordStop,1})); check(session.process(l.data(),r.data(),frames,nullptr,0));
+            check(capture.end()==stave::CaptureEnd::Complete&&capture.frames_written()==frames&&session.applied()==2);
+        }
         Random a,b; stave::StageInstrument actual(argv[1],a,frames,0,&a),expected(argv[1],b,frames,0,&b);
         stave::AuditionSession s(actual);
         stave::StageInstrumentConfig p; p.owned_motion=true; p.fader1=p.fader2=0; p.output.volume=0;
@@ -212,6 +225,7 @@ int main(int argc,char** argv) {
         for(unsigned control=0;control<unsigned(C::Count);++control) {
             const auto kind=static_cast<C>(control);
             for(double v:{0.,.5,1.,4.,6.,7.,10.,20.,60.,100.,200.,8000.,20000.,30000.}) if(stave::audition_value_valid(kind,v)) {
+                if(kind==C::RecordStart||kind==C::RecordStop) { check(!controls.enqueue({id,kind,v})); continue; }
                 if((kind==C::ReverbLowcut&&v>=7000)||(kind==C::ReverbHighcut&&v<=80)) continue;
                 if((kind==C::DelayLowcut&&v>=18000)||(kind==C::DelayHighcut&&v<=1000)) continue;
                 if(kind==C::BedKey&&v!=0&&v!=7) { check(!controls.enqueue({id,kind,v})); continue; }
