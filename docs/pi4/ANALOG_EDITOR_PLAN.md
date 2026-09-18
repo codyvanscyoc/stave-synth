@@ -1,5 +1,10 @@
 # Stave native Pi4 — analog editor and recording plan
 
+**Current execution plan:** [UI_FINISH_PLAN.md](UI_FINISH_PLAN.md). The player
+rejected preparation-mode language and considers paired full ADSR diagrams and
+controls essential. This document remains the detailed source/screenshot ledger;
+its original broad sequence and mode proposals are superseded by that plan.
+
 September 17, 2026. This began as a planning ledger against `83fa36c`. The
 focused, browser-only first pass is now deployed as `46a8aadc…cc379c`: Stage
 faders are unchanged, and Sound has OSC / Piano / Space / Delay tabs. OSC has

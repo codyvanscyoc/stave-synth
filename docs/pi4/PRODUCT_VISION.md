@@ -76,6 +76,9 @@ keyboard or audio interface connected. A powered, network-reachable Pi provides
 editable, saveable tone state; attaching the selected devices loads that state.
 MIDI supplies performance events and must not own the sound editor's availability.
 Keep preparation, audio readiness and physical MIDI connectivity distinct.
+Player clarification: preparation is an internal capability, never a separate
+user-facing mode or workflow. The same controls should simply work. Show small
+MIDI/audio connection indicators and keep the original analog instrument feel.
 
 Show four distinct facts: browser control connection; audio-engine progress; connected MIDI device/activity; and the selected physical output/route. Meter traffic alone does not prove that the DAC is connected or audible.
 

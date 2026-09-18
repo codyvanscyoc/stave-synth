@@ -173,6 +173,8 @@ def handler_for(controller, authority):
                 return self.reply(403, {"error": "Use an explicitly configured Stave address"})
             if self.path == "/":
                 return self.reply(200, (ROOT / "native_v2/audition.html").read_bytes(), "text/html; charset=utf-8")
+            if self.path == "/logo.png":
+                return self.reply(200, (ROOT / "ui/logo.png").read_bytes(), "image/png")
             if self.path == "/status":
                 return self.reply(200, controller.snapshot())
             if self.path == "/controls":

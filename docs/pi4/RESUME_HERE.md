@@ -4,6 +4,45 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
+## September 17: one continuous UI, reference Stage proportions restored
+
+The player rejected the newly introduced preparation-mode language. There must
+be one continuous instrument UI: controls work regardless of MIDI availability;
+device state is a small independent indicator. The controller's device-free
+draft remains an internal implementation detail. No Prepare screen, banner,
+extra workflow or requirement to Save before connecting a keyboard.
+
+Deployed UI restores the exact original `ui/logo.png`, much longer filled Stage
+faders (544px at tested1366x1024 versus374px previously; phone grows from180px to
+about287px at390x844), compact separate MIDI/audio indicators, analog pointer
+knobs with240px drag travel, reduced instructional copy and short musical labels.
+Six visible faders retain OSC2 visibility. Save is the existing optional sound
+memory action, briefly confirmed without a mode instruction. All current tone
+controls still work with no MIDI connected; output actions require audio.
+
+Source/UI-only install adds the fixed `/logo.png` route. Reloaded the idle
+controller with current unsaved tone values captured and restored; saved JSON
+files remain byte-identical. Accepted native binary/48k512 are unchanged.
+Backup and before/after report:
+`/home/codyvanscyoc/stave-native-boot-backup-20260917/ui-stage-finish-h9ov6e46`.
+HTML SHA256 `2c6b44513dcc162897f66372b7fd0147ae4e20983308c83112f73b49c341b17b`;
+HTTP module SHA256 `9cab3ca758b5261649e3a3a0b999e165aa7962db03a61a9bb7038c938e42765a`.
+Logo served hash matches original `2f6bf7fcf9188a5f2bb1baf5b771f0b3c0f4e0c706debed64c1348e684a9561f`.
+
+Validation:12 existing isolated UI/HTTP tests pass, actual-script JS tests pass;
+real local browser checks original logo loading, fader dimensions, mouse pickup,
+phone-touch knob pickup/relative edits, controller state/save/reload without any
+devices, and phone overflow. Tablet/phone images inspected. Artifacts:
+`/private/tmp/stave-stage-finish.wHL8DZ` (browser script retained under
+`/private/tmp/stave-preparation.5NNiGy`). No live notes injected; real Safari
+player feedback and physical MIDI replug remain distinct checks.
+
+**Next: [UI_FINISH_PLAN.md](UI_FINISH_PLAN.md).** It supersedes the broad plan's
+sequence. Separate OSC1/OSC2 ADSR plus envelope diagrams and correct LINK are the
+next essential functional milestone. Current shared AR controls are explicitly
+interim. Avoid calling this UI finished until real ADSR controls and diagrams are
+connected; don't expand unrelated effects or add another workflow mode first.
+
 ## September 17: edit/save without keyboard or audio devices deployed
 
 The player explicitly requires travel/setup editing independent of MIDI input.
