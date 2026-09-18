@@ -54,6 +54,7 @@ nav{border-bottom:0;margin:0;padding:0;gap:8px}nav button{min-width:92px;border-
 .bed-panel{border-width:1px 0 0;background:transparent;padding:16px 0 0}.bed-panel .section-head{margin-bottom:8px}.bed-panel h2{font-size:12px;letter-spacing:.15em;text-transform:uppercase}.bed-panel .section-head p{font-size:11px}
 #bed-keys{gap:8px}#bed-keys button{min-height:64px;background:color-mix(in srgb,var(--key-color) 53%,var(--bg));color:#d5e4dd;border:1px solid transparent;font-size:17px;font-weight:bold}#bed-keys button:disabled{background:transparent;border-color:var(--line);color:var(--muted)}#bed-keys button[aria-pressed=true]{color:var(--bg);border-color:white}
 .bed-actions{justify-content:flex-end}.bed-actions button{flex:0 1 auto;min-width:125px;font-size:12px}
+.record-pad{margin-top:14px;padding-top:14px;border-top:1px solid var(--line);display:flex;align-items:center;gap:10px;flex-wrap:wrap}.record-pad select{min-width:90px;padding:10px}.record-pad button{min-height:44px}.record-pad #record-status{flex:1 1 220px;font-size:12px;color:var(--muted)}
 .edit-groups{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.edit-group{padding:18px;border:1px solid var(--line);min-width:0}.edit-group h2{font-size:14px;text-transform:uppercase;letter-spacing:.16em}.edit-group>p{font-size:12px;margin:7px 0 16px}.edit-group .control-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.edit-group label.control{padding:12px;border-color:#253229}.edit-group output{float:none;display:block;margin-top:4px}#edit{display:none}
 input[type=range]{touch-action:pan-y}#mixer input[type=range]{touch-action:none}input[type=range]:disabled{cursor:default}.footer-note{font-size:10px;margin-top:22px}
 @media(max-width:700px){body{padding:14px 14px 24px}header{flex-wrap:wrap;gap:12px}.brand{font-size:23px}.header-actions{margin-left:auto}.header-actions button{min-width:85px;padding:8px}nav{width:100%;order:3}nav button{flex:1}.statusbar{font-size:11px;gap:8px}#mixer{grid-template-columns:repeat(3,minmax(0,1fr));gap:20px 18px}#mixer input[type=range]{height:180px}.performance-actions{display:grid;grid-template-columns:1fr 1fr}.performance-actions button{min-width:0}#mute{margin-left:0}.edit-groups{grid-template-columns:1fr}.edit-group{padding:14px}#bed-keys{grid-template-columns:repeat(6,minmax(0,1fr))}#bed-keys button{min-height:52px}.bed-actions button{min-width:90px;flex:1;padding:8px 4px}#tone-controls{max-width:none}}
@@ -94,6 +95,7 @@ header{margin-bottom:10px}.statusbar{gap:16px;font-size:11px;padding-top:8px}.de
 <p id="bed-status">Checking loaded recordings…</p>
 <div id="bed-keys"></div>
 <div class="actions bed-actions"><button id="bed-out" disabled>Fade out · 5s</button><button id="bed-in" disabled>Fade in · 5s</button><button id="bed-stop" disabled>Release bed · 4s</button></div>
+<div class="record-pad"><button id="record-start" disabled>Record current sound</button><button id="record-stop" disabled>Stop</button><label>Save to <select id="record-slot" aria-label="Recorded pad destination"></select></label><button id="record-assign" disabled>Save pad · restarts muted</button><span id="record-status">Recorder idle.</span></div>
 <details><summary>Bed level & shaping</summary><div id="bed-controls"></div><p class="small">Concert-key recordings, independent of your keyboard and sustain. Rise applies on the next key trigger and uses its own filter. A new key releases the previous bed. Fade in restores a deliberately faded bed.</p></details></section>
 </section>
 <section id="edit-panel" aria-label="Shape sound" hidden><div class="panel"><div class="section-head"><div><h1>Sound</h1><p>Drag knobs sideways to adjust.</p></div></div><div class="sound-tabs" role="group" aria-label="Sound sections"><button id="sound-tab-osc" aria-pressed="true">OSC</button><button id="sound-tab-piano" aria-pressed="false">PIANO</button><button id="sound-tab-reverb" aria-pressed="false">REVERB</button><button id="sound-tab-delay" aria-pressed="false">DELAY</button></div><div class="edit-groups">
@@ -107,7 +109,7 @@ header{margin-bottom:10px}.statusbar{gap:16px;font-size:11px;padding-top:8px}.de
 <div class="system-grid"><div class="panel"><h2>Connections</h2><p id="device-status">Waiting for connection details…</p><div id="route-picker" hidden><label>MIDI keyboard<select id="route-midi" aria-label="MIDI keyboard"></select></label><label>Audio left<select id="route-left" aria-label="Audio left"></select></label><label>Audio right<select id="route-right" aria-label="Audio right"></select></label><p><button id="apply-routes" disabled>Apply connections · returns muted</button></p></div><p class="small">Only the explicitly selected MIDI and stereo output are used. No arbitrary fallback output. Choose one MIDI port per keyboard, not both aliases.</p><button id="restart-audio" disabled>Restart audio · returns muted</button></div>
 <div class="panel"><h2>Sound snapshot</h2><p id="save-status">This session starts muted. Raise Master gradually with monitoring low.</p><p class="small">A saved native sound is separate from your original Stave presets. A restart restores knobs, not notes or performance actions.</p></div></div>
 <div class="panel"><h2>Audio diagnostics</h2><div id="health">Waiting for native audio owner…</div><p class="small">Timing measures processing, not physical keyboard-to-speaker latency. Full-scale piano counts are a headroom warning, not proof of audible clipping.512 is the accepted listening profile; no buffer switch is exposed.</p></div>
-<div class="support"><h2>Candidate scope</h2><p class="small">Piano, OSC1/OSC2, filter, effects and prepared recorded-pad playback are connected. Recording/record-to-pad, organ, legacy presets/MIDI maps, pitch bend, macros, scenes and program changes are not yet migrated. MIDI channels share one keyboard; MIDI offsets are block-quantized. The original working application remains recoverable. This is not full stage-release qualification.</p><p class="small" id="runtime-scope">Temporary audition: loss of the selected device stops audio. Closing this browser does not stop audio.</p></div>
+<div class="support"><h2>Candidate scope</h2><p class="small">Piano, OSC1/OSC2, filter, effects and recorded-pad capture/playback are connected. Organ, legacy presets/MIDI maps, pitch bend, macros, scenes and program changes are not yet migrated. MIDI channels share one keyboard; MIDI offsets are block-quantized. The original working application remains recoverable. This is not full stage-release qualification.</p><p class="small" id="runtime-scope">Temporary audition: loss of the selected device stops audio. Closing this browser does not stop audio.</p></div>
 </section></main>
 <p class="footer-note">STAVE / PI4 · Touch to pick up, drag to blend · Trusted private Wi-Fi</p>
 <script>
@@ -121,7 +123,7 @@ choices.bed_mellow=['Off','On'];
 const keyNames=['C','C♯','D','E♭','E','F','F♯','G','A♭','A','B♭','B'];
 const bedKeys=[],bedActions=['bed-out','bed-in','bed-stop'];
 const fields={},pending=new Map();let ready=false,audioReady=false,busy=false,epoch=null,lastValues={},lastRuntime={},actionBusy=false;
-const performanceActions=new Set(['master','freeze','release_all','bed_key','bed_fade','bed_release']);
+const performanceActions=new Set(['master','freeze','release_all','bed_key','bed_fade','bed_release','record_start','record_stop']);
 const performanceKeys=['osc1','osc2','piano','cutoff','wet','master'];
 const performanceLabels={osc1:'OSC 1',osc2:'OSC 2',piano:'PIANO',cutoff:'FILTER',wet:'FX',master:'MASTER'};
 const editGroups={wave1:'wave1',wave2:'wave2',attack:'osc',release:'osc',resonance:'osc',piano_room:'piano',piano_reverb:'piano',reverb:'reverb',shimmer:'reverb',shimmer_mix:'reverb',freeze:'reverb',delay_wet:'delay',delay_feedback:'delay'};
@@ -266,7 +268,7 @@ async function setup(){
   const order=[...performanceKeys,'piano_tone'];
   const entries=[...order.filter(k=>k in definitions),...Object.keys(definitions).filter(k=>!order.includes(k))];
   for(const key of entries){const [min,max,step,value]=definitions[key];
-    if(['release_all','bed_key','bed_fade','bed_release','attack','release'].includes(key))continue;
+    if(['release_all','bed_key','bed_fade','bed_release','record_start','record_stop','attack','release'].includes(key))continue;
     const label=document.createElement('label');label.className='control'+(performanceKeys.includes(key)?' performance':'')+(knobKeys.has(key)?' knob-control':'')+(choices[key]?' choice-control':'');label.setAttribute('data-control',key);
     const name=document.createElement('span');name.className='control-name';name.textContent=performanceLabels[key]||labels[key];label.append(name);
     const out=document.createElement('output');out.textContent=formatted(key,value);label.append(out);
@@ -285,9 +287,13 @@ async function setup(){
     label.append(input);document.getElementById(key.startsWith('bed_')?'bed-controls':key==='piano_tone'?'tone-controls':performanceKeys.includes(key)?'mixer':editGroups[key]?'edit-'+editGroups[key]:'edit').append(label);fields[key]={input,out,dial};paint(key,value);
   }
   keyNames.forEach((name,key)=>{const b=document.createElement('button');b.textContent=name;b.disabled=true;b.onclick=()=>send('bed_key',key);b.setAttribute('aria-pressed','false');b.style.setProperty('--key-color','hsl('+(170+10*key)+' 65% 65%)');document.getElementById('bed-keys').append(b);bedKeys.push(b);});
+  keyNames.forEach((name,key)=>{const o=document.createElement('option');o.value=key;o.textContent=name;document.getElementById('record-slot').append(o);});
   document.getElementById('bed-out').onclick=()=>send('bed_fade',1);
   document.getElementById('bed-in').onclick=()=>send('bed_fade',0);
   document.getElementById('bed-stop').onclick=()=>send('bed_release',1);
+  document.getElementById('record-start').onclick=()=>send('record_start',1);
+  document.getElementById('record-stop').onclick=()=>send('record_stop',1);
+  document.getElementById('record-assign').onclick=()=>{const slot=Number(document.getElementById('record-slot').value);if(confirm('Save this take to '+keyNames[slot]+'? Any pad already in that slot is kept as an undo file. Audio will restart muted.'))action('/record-assign',{slot});};
   document.getElementById('release').onclick=()=>send('release_all',1);
   document.getElementById('mute').onclick=()=>send('master',0);
   document.getElementById('freeze-toggle').onclick=()=>send('freeze',lastValues.freeze?0:1);
@@ -349,7 +355,13 @@ async function poll(){
     for(const id of bedActions)document.getElementById(id).disabled=!audioReady||!s.bed_mask;
     document.getElementById('bed-status').textContent=!s.bed_mask?'No recorded pads loaded. Piano and oscillators remain available.':
       'Selected '+(s.bed_key>=0?keyNames[s.bed_key]:'none')+' · '+(s.active_beds||0)+' sounding/releasing beds · '+(d.values.bed_fade?'fading/faded out':'fade target full');
-  }catch(e){ready=false;pending.clear();cancelGestures();notice.textContent='Disconnected — audio may still be playing. No control replay.';document.getElementById('connection').textContent='Browser disconnected';for(const f of Object.values(fields))f.input.disabled=true;for(const id of ['release','mute','shimmer-toggle','freeze-toggle','save','restart-audio','apply-routes',...bedActions])document.getElementById(id).disabled=true;for(const b of bedKeys)b.disabled=true;}
+    const recording=lastRuntime.recording||{},writer=Number(recording.writer||0),capture=Number(recording.capture||0),seconds=Number(recording.frames||0)/48000;
+    document.getElementById('record-start').disabled=!audioReady||writer!==0||capture!==0;
+    document.getElementById('record-stop').disabled=!audioReady||writer!==1||capture!==1;
+    document.getElementById('record-assign').disabled=!audioReady||writer!==2||capture!==2||actionBusy;
+    document.getElementById('record-slot').disabled=writer!==2||capture!==2;
+    document.getElementById('record-status').textContent=writer===1?'Recording… '+seconds.toFixed(1)+' s':writer===2?'Take ready · '+seconds.toFixed(1)+' s · choose a key and save':writer===3?'Recording failed safely; audio continued. Restart audio to try again.':'Recorder idle · captures piano, synth and effects (not an old pad or Master gain).';
+  }catch(e){ready=false;pending.clear();cancelGestures();notice.textContent='Disconnected — audio may still be playing. No control replay.';document.getElementById('connection').textContent='Browser disconnected';for(const f of Object.values(fields))f.input.disabled=true;for(const id of ['release','mute','shimmer-toggle','freeze-toggle','save','restart-audio','apply-routes','record-start','record-stop','record-assign',...bedActions])document.getElementById(id).disabled=true;for(const b of bedKeys)b.disabled=true;}
   setTimeout(poll,750);
 }
 setup().catch(e=>{notice.textContent='Audition setup failed: '+e.message;});

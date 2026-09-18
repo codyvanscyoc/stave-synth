@@ -2,6 +2,7 @@
 // sink selection. Run only with explicit maintenance authorization and ports.
 #include "stave/audition_session.hpp"
 #include "stave/bed_assets.hpp"
+#include "stave/recording_writer.hpp"
 #include <jack/jack.h>
 #include <jack/midiport.h>
 #include <chrono>
@@ -30,6 +31,7 @@ struct Host {
     stave::AuditionSession& session;
     unsigned frames;
     const char* instance{"native-v2-audition"};
+    stave::RecordingWriter* writer{};
     jack_port_t *left{},*right{},*midi{};
     std::atomic<bool> armed{false};
     std::atomic<std::uint64_t> xruns{0},callbacks{0},over_budget{0},max_ns{0};
@@ -82,6 +84,9 @@ struct Host {
             <<",\"unsupported_midi\":"<<session.unsupported_midi()<<",\"quantized_midi\":"<<session.quantized_midi()
             <<",\"piano_full_scale\":"<<session.piano_full_scale()<<",\"xruns\":"<<xruns.load()
             <<",\"bed_mask\":"<<session.bed_mask()<<",\"active_beds\":"<<session.active_beds()<<",\"bed_key\":"<<session.bed_key()
+            <<",\"capture_end\":"<<unsigned(session.capture_end())<<",\"capture_frames\":"<<session.capture_frames()
+            <<",\"writer_state\":"<<unsigned(writer?writer->state():stave::WriterState::Idle)
+            <<",\"writer_frames\":"<<(writer?writer->frames_written():0)
             <<",\"over_budget\":"<<over_budget.load()<<",\"max_callback_ms\":"<<max_ns.load()/1e6<<"}"<<std::endl;
     }
 };
@@ -93,10 +98,18 @@ bool unsigned_text(const std::string& text,std::uint64_t& result) {
 }
 int main(int argc,char** argv) {
     try {
-        require(argc==9||argc==11,"Usage: audition FONT FRAMES CLIENT MIDI_SOURCE AUDIO_LEFT AUDIO_RIGHT SECONDS --allow-live-audition [--bed-bank PREPARED_FILE]");
+        require(argc>=9&&(argc-9)%2==0,"Usage: audition FONT FRAMES CLIENT MIDI_SOURCE AUDIO_LEFT AUDIO_RIGHT SECONDS MODE [--bed-bank FILE] [--record-dir DIR --record-name TAKE.wav]");
         const bool candidate=std::string(argv[8])=="--allow-stage-candidate";
         require(candidate||std::string(argv[8])=="--allow-live-audition","Explicit live mode opt-in required");
-        require(argc==9||std::string(argv[9])=="--bed-bank","Explicit prepared bank flag required");
+        const char *bed_path=nullptr,*record_dir=nullptr,*record_name=nullptr;
+        for(int i=9;i<argc;i+=2) {
+            const std::string option=argv[i];
+            if(option=="--bed-bank"&&!bed_path) bed_path=argv[i+1];
+            else if(option=="--record-dir"&&!record_dir) record_dir=argv[i+1];
+            else if(option=="--record-name"&&!record_name) record_name=argv[i+1];
+            else throw std::runtime_error("Unknown, duplicate or incomplete optional argument");
+        }
+        require(bool(record_dir)==bool(record_name),"Recording directory and take name are an inseparable pair");
         std::uint64_t frame_arg{},second_arg{};
         require(unsigned_text(argv[2],frame_arg)&&unsigned_text(argv[7],second_arg)&&
                 (candidate?(frame_arg==512&&second_arg==0):((frame_arg==512||frame_arg==256)&&second_arg>=10&&second_arg<=3600)),"Invalid cadence/duration for selected mode");
@@ -104,9 +117,12 @@ int main(int argc,char** argv) {
         const std::string name=argv[3];
         require(name.rfind(candidate?"stave-v2-stage-":"stave-v2-audition-",0)==0&&name.size()<48,"Isolated exact client prefix required");
         require(std::string(argv[5])!=argv[6],"Distinct explicit stereo output ports required");
-        auto bed=argc==11?stave::load_prepared_bed_bank(argv[10]):nullptr;
+        auto bed=bed_path?stave::load_prepared_bed_bank(bed_path):nullptr;
         AuditionRandom random; stave::StageInstrument graph(argv[1],random,frames,0,&random,std::move(bed));
-        stave::AuditionSession session(graph); Host host{session,frames}; Client client;
+        auto capture=record_dir?std::make_unique<stave::RecordingCapture<>>(frames,40ULL*48000,false):nullptr;
+        auto writer=capture?std::make_unique<stave::RecordingWriter>(*capture,record_dir,record_name,frames):nullptr;
+        if(writer) writer->start();
+        stave::AuditionSession session(graph,capture.get()); Host host{session,frames}; host.writer=writer.get(); Client client;
         if(candidate) host.instance="native-v2-stage";
         jack_status_t status{};
         client.value=jack_client_open(name.c_str(),static_cast<jack_options_t>(JackNoStartServer|JackUseExactName),&status);

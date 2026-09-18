@@ -15,7 +15,7 @@ enum class AuditionControl : unsigned {
     Attack1, Decay1, Sustain1, Release1, Attack2, Decay2, Sustain2, Release2, EnvelopeLink,
     MasterLow, MasterMid, MasterHigh, MasterLowcut, MasterLowcutHz,
     PianoRoomSize, PianoRoomDamp, ReverbDecay, ReverbPredelay, ReverbLowcut, ReverbHighcut, ReverbDamp,
-    DelayTime, DelayLowcut, DelayHighcut, Count
+    DelayTime, DelayLowcut, DelayHighcut, RecordStart, RecordStop, Count
 };
 inline constexpr std::array<const char*,unsigned(AuditionControl::Count)> audition_names{
     "piano","osc1","osc2","cutoff","wet","master","wave1","wave2","attack","release",
@@ -25,7 +25,7 @@ inline constexpr std::array<const char*,unsigned(AuditionControl::Count)> auditi
     "attack1","decay1","sustain1","release1","attack2","decay2","sustain2","release2","envelope_link",
     "master_low","master_mid","master_high","master_lowcut","master_lowcut_hz",
     "piano_room_size","piano_room_damp","reverb_decay","reverb_predelay","reverb_lowcut","reverb_highcut","reverb_damp",
-    "delay_time","delay_lowcut","delay_highcut"};
+    "delay_time","delay_lowcut","delay_highcut","record_start","record_stop"};
 inline bool audition_value_valid(AuditionControl c,double v) noexcept {
     if(!std::isfinite(v)) return false;
     switch(c) {
@@ -53,6 +53,7 @@ inline bool audition_value_valid(AuditionControl c,double v) noexcept {
     case AuditionControl::Shimmer: case AuditionControl::Freeze: case AuditionControl::ReleaseAll:
     case AuditionControl::EnvelopeLink: case AuditionControl::MasterLowcut:
     case AuditionControl::BedMellow: case AuditionControl::BedFade: case AuditionControl::BedRelease:
+    case AuditionControl::RecordStart: case AuditionControl::RecordStop:
         return v==0||v==1;
     case AuditionControl::DelayFeedback: return v>=0&&v<=.99;
     case AuditionControl::Count: return false;
@@ -85,6 +86,9 @@ public:
     // acknowledged as applied; no MIDI note-off can be lost in this queue.
     bool enqueue(AuditionCommand c) noexcept {
         if(fault()!=AuditionFault::None||!c.id||c.id<=previous_id_||!audition_value_valid(c.control,c.value)) return false;
+        if((c.control==AuditionControl::RecordStart||c.control==AuditionControl::RecordStop)&&!capture_) return false;
+        if(c.control==AuditionControl::RecordStart&&capture_->end()!=CaptureEnd::Idle) return false;
+        if(c.control==AuditionControl::RecordStop&&capture_->end()!=CaptureEnd::Open) return false;
         if(c.control>=AuditionControl::BedLevel&&c.control<=AuditionControl::BedRelease&&(!bed_mask_||
            (c.control==AuditionControl::BedKey&&!(bed_mask_&(1u<<unsigned(c.value)))))) return false;
         const auto h=head_.load(std::memory_order_relaxed),t=tail_.load(std::memory_order_acquire);
@@ -106,6 +110,8 @@ public:
     unsigned bed_mask() const noexcept { return bed_mask_; } // immutable before publication
     unsigned active_beds() const noexcept { return active_beds_.load(std::memory_order_relaxed); }
     int bed_key() const noexcept { return bed_key_.load(std::memory_order_relaxed); }
+    CaptureEnd capture_end() const noexcept { return capture_?capture_->end():CaptureEnd::Idle; }
+    std::uint64_t capture_frames() const noexcept { return capture_?capture_->frames_written():0; }
     // Invalid output pointers leave memory untouched. Driver must obtain valid
     // JACK buffers and silence them on graph-size/rate mismatch itself.
     bool process(float* l,float* r,unsigned frames,const AuditionMidi* events,unsigned count) noexcept {
@@ -140,9 +146,11 @@ public:
         }
         full_scale_.store(graph_.stats().full_scale_piano_samples,std::memory_order_relaxed);
         active_beds_.store(graph_.active_beds(),std::memory_order_relaxed);
-        // Same pre-volume/BTL tap as v1. Recorder failures are separate from
-        // instrument faults: a stalled disk must never interrupt playing.
-        if(capture_) capture_->push(graph_.recording_tap(0),graph_.recording_tap(1),frames);
+        // Dedicated pad-source tap includes piano/synth/effects but excludes
+        // an existing sampled bed and global master. Recorder failure remains
+        // separate from instrument health: a stalled disk cannot stop playing.
+        if(capture_&&capture_->active())
+            capture_->push(graph_.pad_recording_tap(0),graph_.pad_recording_tap(1),frames);
         std::copy_n(graph_.pcm(0),frames,l); std::copy_n(graph_.pcm(1),frames,r);
         // Legacy output smoothing starts at .85; setting its target to zero
         // is not an immediate mute. Separate startup gate prevents even dither
@@ -229,6 +237,8 @@ private:
         case C::DelayTime: config_.delay.division=DelayDivision::Free; config_.delay.milliseconds=v; break;
         case C::DelayLowcut: config_.delay.lowcut=v; break;
         case C::DelayHighcut: config_.delay.highcut=v; break;
+        case C::RecordStart: return v==0||capture_->start();
+        case C::RecordStop: if(v!=0) capture_->request_stop(); return true;
         case C::Resonance: config_.buses.pad.resonance=v; break;
         case C::PianoRoom: config_.buses.room.wet=v; break;
         case C::PianoReverb: config_.piano_reverb_send=v; break;
@@ -241,7 +251,7 @@ private:
         return graph_.configure(config_);
     }
     bool silence(float* l,float* r,unsigned n) noexcept {
-        if(capture_) capture_->finish(CaptureEnd::EngineStopped);
+        if(capture_&&capture_->active()) capture_->finish(CaptureEnd::EngineStopped);
         active_beds_.store(0,std::memory_order_relaxed); bed_key_.store(-1,std::memory_order_relaxed);
         graph_.stop(); std::fill_n(l,n,0); std::fill_n(r,n,0); return false;
     }

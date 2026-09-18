@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("stave_atomic_state", ROOT / "stave_synth/state_store.py")
 atomic = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(atomic)
-TRANSIENT = frozenset(("master", "freeze", "release_all", "bed_key", "bed_fade", "bed_release"))
+TRANSIENT = frozenset(("master", "freeze", "release_all", "bed_key", "bed_fade", "bed_release", "record_start", "record_stop"))
 
 
 class ControlStore:

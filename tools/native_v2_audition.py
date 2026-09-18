@@ -48,8 +48,9 @@ CONTROLS = {
     "reverb_decay": (0, 30, .1, 6), "reverb_predelay": (0, 150, 1, 25),
     "reverb_lowcut": (20, 20000, 1, 80), "reverb_highcut": (20, 20000, 1, 7000), "reverb_damp": (0, .99, .01, .5),
     "delay_time": (1, 1000, 1, 500), "delay_lowcut": (20, 1000, 1, 20), "delay_highcut": (500, 20000, 1, 18000),
+    "record_start": (0, 1, 1, 0), "record_stop": (0, 1, 1, 0),
 }
-INTEGRAL = {"wave1", "wave2", "shimmer", "reverb", "freeze", "release_all", "bed_key", "bed_mellow", "bed_fade", "bed_release", "envelope_link", "master_lowcut"}
+INTEGRAL = {"wave1", "wave2", "shimmer", "reverb", "freeze", "release_all", "bed_key", "bed_mellow", "bed_fade", "bed_release", "envelope_link", "master_lowcut", "record_start", "record_stop"}
 
 
 def apply_value(values, key, value):
@@ -230,7 +231,7 @@ def handler_for(controller, authority):
 
         def do_POST(self):
             host = self.headers.get("Host", "").lower()
-            if (self.path not in ("/control", "/save", "/restart-audio", "/routes") or host not in authorities or
+            if (self.path not in ("/control", "/save", "/restart-audio", "/routes", "/record-assign") or host not in authorities or
                     self.headers.get("Origin", "").lower() != "http://" + host or
                     self.headers.get("Content-Type") != "application/json" or self.headers.get("Transfer-Encoding")):
                 return self.reply(403, {"error": "Same-origin JSON control required"})

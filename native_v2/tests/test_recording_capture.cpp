@@ -27,6 +27,12 @@ int main() {
         std::array<float,512> left{},right{};
         Q::Block block;
         for(unsigned i=0;i<frames;++i) { left[i]=float(i)/512; right[i]=-left[i]; }
+        Q idle(frames,frames*2,false);
+        require(idle.end()==E::Idle&&!idle.active()&&!idle.push(left.data(),right.data(),frames));
+        require(idle.start()&&idle.active()&&!idle.start());
+        require(idle.push(left.data(),right.data(),frames)&&idle.frames_written()==frames);
+        idle.request_stop(); require(!idle.push(left.data(),right.data(),frames)&&idle.end()==E::Complete);
+        require(idle.pop(block)&&idle.drained());
         Q overflow(frames);
         tracking=true;
         require(overflow.push(left.data(),right.data(),frames));

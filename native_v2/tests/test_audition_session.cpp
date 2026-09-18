@@ -87,6 +87,7 @@ int main(int argc,char** argv) {
             check(!owner.enqueue({id+1,C::DelayTime,0}));
             check(!owner.enqueue({id+1,C::DelayHighcut,499}));
             check(!owner.enqueue({id+1,C::ReverbPredelay,151}));
+            check(!owner.enqueue({id+1,C::RecordStart,1}));
         }
         {
             Random random;
@@ -114,6 +115,25 @@ int main(int argc,char** argv) {
             check(session.active_beds()==0);
         }
         {
+            // Pad capture never recursively records an already-playing pad.
+            Random random;
+            stave::StageInstrument graph(argv[1],random,frames,0,&random,test_bank());
+            stave::RecordingCapture<> capture(frames);
+            stave::AuditionSession session(graph,&capture);
+            std::array<float,512> l{},r{}; stave::RecordingCapture<>::Block block;
+            check(session.enqueue({1,C::BedKey,0}));
+            bool existing_bed_heard=false;
+            for(unsigned n=0;n<4;++n) {
+                check(session.process(l.data(),r.data(),frames,nullptr,0)); check(capture.pop(block));
+                for(unsigned i=0;i<frames;++i) {
+                    check(block.channel[0][i]==graph.pad_recording_tap(0)[i]);
+                    check(block.channel[1][i]==graph.pad_recording_tap(1)[i]);
+                    existing_bed_heard|=std::abs(graph.recording_tap(0)[i]-graph.pad_recording_tap(0)[i])>1e-6;
+                }
+            }
+            check(existing_bed_heard);
+        }
+        {
             // Actual graph tap stays pre-master: muted physical PCM does not
             // mute a take. Disk overflow ends only capture, not the synth.
             Random random;
@@ -129,7 +149,7 @@ int main(int argc,char** argv) {
                 check(capture->pop(block));
                 for(unsigned i=0;i<frames;++i) {
                     check(l[i]==0&&r[i]==0);
-                    check(block.channel[0][i]==graph.recording_tap(0)[i]&&block.channel[1][i]==graph.recording_tap(1)[i]);
+                    check(block.channel[0][i]==graph.pad_recording_tap(0)[i]&&block.channel[1][i]==graph.pad_recording_tap(1)[i]);
                     captured_sound|=std::abs(block.channel[0][i])>1e-5;
                 }
             }

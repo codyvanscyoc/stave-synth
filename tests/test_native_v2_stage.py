@@ -239,6 +239,45 @@ class NativeStageTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.hub.dispatch('/control', dict(key='bed_key', value=0), self.hub.epoch)
 
+    def test_completed_take_installs_one_slot_with_undo_and_muted_restart(self):
+        root = Path(self.temp.name); recordings = root/'recordings'; pads = root/'pads'
+        recordings.mkdir(); pads.mkdir()
+        self.hub = stage.CandidateHub(self.store, ROUTES, recordings, pads)
+        take = recordings/'take-test.wav'; take.write_bytes(b'R'*58)
+        old = pads/'pad_C.wav'; old.write_bytes(b'O'*58)
+        child = mock.Mock(); child.poll.return_value = None
+        control = self.hub.attach(child, take)
+        control.receive(dict(type='status', instance='native-v2-stage', blocks=1, applied=0,
+                             routed=True, fault=0, writer_state=2, capture_end=2, writer_frames=512))
+        self.hub.reconcile(); epoch = self.hub.epoch
+        result = self.hub.dispatch('/record-assign', {'slot': 0}, epoch)
+        self.assertEqual(old.read_bytes(), b'R'*58)
+        undo = list(pads.glob('undo-pad_C-*.wav'))
+        self.assertEqual(len(undo), 1); self.assertEqual(undo[0].read_bytes(), b'O'*58)
+        self.assertTrue(self.hub.restart); self.assertTrue(self.hub.restoring)
+        self.assertIn('restarting muted', result['message'])
+        self.assertNotEqual(epoch, self.hub.epoch)
+
+    def test_take_assignment_rejects_incomplete_and_symlink_target(self):
+        root = Path(self.temp.name); recordings = root/'recordings'; pads = root/'pads'
+        recordings.mkdir(); pads.mkdir()
+        self.hub = stage.CandidateHub(self.store, ROUTES, recordings, pads)
+        take = recordings/'take-test.wav'; take.write_bytes(b'R'*58)
+        child = mock.Mock(); child.poll.return_value = None
+        control = self.hub.attach(child, take)
+        control.receive(dict(type='status', instance='native-v2-stage', blocks=1, applied=0,
+                             routed=True, fault=0, writer_state=1, capture_end=1))
+        self.hub.reconcile()
+        with self.assertRaisesRegex(ValueError, 'wait for Ready'):
+            self.hub.dispatch('/record-assign', {'slot': 0}, self.hub.epoch)
+        control.receive(dict(type='status', instance='native-v2-stage', blocks=2, applied=0,
+                             routed=True, fault=0, writer_state=2, capture_end=2))
+        outside = root/'outside.wav'; outside.write_bytes(b'O'*58)
+        (pads/'pad_C.wav').symlink_to(outside)
+        with self.assertRaisesRegex(ValueError, 'Symlink'):
+            self.hub.dispatch('/record-assign', {'slot': 0}, self.hub.epoch)
+        self.assertEqual(outside.read_bytes(), b'O'*58)
+
     def test_startup_timeout_includes_missing_telemetry(self):
         child = mock.Mock(); child.poll.return_value = None
         self.hub.attach(child)

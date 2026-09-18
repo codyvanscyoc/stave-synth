@@ -76,7 +76,7 @@ def validate_routes(routes, ports=None):
 
 
 class CandidateHub:
-    def __init__(self, store, routes):
+    def __init__(self, store, routes, recording_dir=None, pad_library=None):
         self.lock = threading.RLock()
         self.store = store
         self.route_file = store.path.with_name("native_routes.json")
@@ -116,10 +116,19 @@ class CandidateHub:
         self.ports = {}
         self.restarts = 0
         self.network = {}
+        self.recording_dir = Path(recording_dir) if recording_dir else None
+        self.pad_library = Path(pad_library) if pad_library else None
+        self.recording_take = None
+        if self.recording_dir is not None:
+            completed = [p for p in self.recording_dir.glob("take-*.wav") if p.is_file() and not p.is_symlink()]
+            if completed:
+                self.recording_take = max(completed, key=lambda p: p.stat().st_mtime_ns)
 
-    def attach(self, child):
+    def attach(self, child, recording_take=None):
         with self.lock:
             self.active = audition.Controller(child, instance="native-v2-stage")
+            if recording_take is not None:
+                self.recording_take = Path(recording_take)
             self.epoch = uuid.uuid4().hex
             self.restoring = True
             self.restore_sequence = None
@@ -197,8 +206,12 @@ class CandidateHub:
             data.update(epoch=self.epoch, runtime=dict(restoring=self.restoring, message=self.message,
                 preparation=self.active is None and not self.restart,
                 persistence=True, save_message=self.save_message, state_warning=self.state_warning, can_restart=True,
-                attempts=self.restarts, network=dict(self.network), devices={"midi": midi, "audio": audio}, **self.routes,
-                scope="Native512 candidate: selected-device recovery restarts MUTED with saved tone controls. Browser disconnect does not stop audio. No legacy preset/recording parity or stage-release approval yet."))
+                attempts=self.restarts, network=dict(self.network), devices={"midi": midi, "audio": audio},
+                recording={"take": self.recording_take.name if self.recording_take else None,
+                           "capture": data['status'].get('capture_end', 0),
+                           "writer": data['status'].get('writer_state', 0),
+                           "frames": data['status'].get('writer_frames', 0)}, **self.routes,
+                scope="Native512 candidate: selected-device recovery restarts MUTED with saved tone controls. Browser disconnect does not stop audio. No legacy preset/MIDI-map parity or stage-release approval yet."))
             return data
 
     def dispatch(self, path, data, epoch):
@@ -224,6 +237,24 @@ class CandidateHub:
                 self.restoring = True
                 self.epoch = uuid.uuid4().hex
                 return {"message": "Selected routes saved; audio restarting muted."}
+            if path == "/record-assign":
+                if (not isinstance(data, dict) or set(data) != {"slot"} or type(data["slot"]) is not int
+                        or not 0 <= data["slot"] < 12):
+                    raise ValueError("Choose one pad key slot")
+                if not self.active or self.restoring:
+                    raise ValueError("Audio must be ready before assigning a take")
+                status = self.active.snapshot()["status"]
+                if status.get("writer_state") != 2 or status.get("capture_end") != 2:
+                    raise ValueError("Stop the recording and wait for Ready before assigning it")
+                if self.recording_take is None or self.pad_library is None:
+                    raise ValueError("Recording library is not configured")
+                names = ("C", "Cs", "D", "Ds", "E", "F", "Fs", "G", "Gs", "A", "As", "B")
+                self._install_take(self.recording_take, self.pad_library / f"pad_{names[data['slot']]}.wav")
+                self.remember_tone()
+                self.restart = True
+                self.restoring = True
+                self.epoch = uuid.uuid4().hex
+                return {"message": f"Saved to {names[data['slot']]}; audio restarting muted with the new pad."}
             if self.active is None and not self.restart:
                 if path == '/control':
                     key, value = audition.validate_control(data)
@@ -262,6 +293,47 @@ class CandidateHub:
             self.state_warning = None
             self.save_message = "Native tone snapshot saved. Master, notes, freeze and bed actions excluded."
             return {"saved": True, "message": self.save_message}
+
+    @staticmethod
+    def _install_take(source, target):
+        source, target = Path(source), Path(target)
+        if source.is_symlink() or target.is_symlink():
+            raise ValueError("Symlink recording destinations are refused")
+        fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        backup = target.with_name(f"undo-{target.stem}-{uuid.uuid4().hex}.wav")
+        out = -1
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or not 58 <= info.st_size <= 64 * 1024 * 1024:
+                raise ValueError("Invalid or oversized finalized recording")
+            out = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            remaining = info.st_size
+            while remaining:
+                block = os.read(fd, min(1024 * 1024, remaining))
+                if not block:
+                    raise OSError("Short recording read")
+                view = memoryview(block)
+                while view:
+                    written = os.write(out, view)
+                    if written <= 0:
+                        raise OSError("Short recording write")
+                    view = view[written:]
+                remaining -= len(block)
+            os.fsync(out); os.close(out); out = -1
+            if target.exists():
+                os.link(target, backup, follow_symlinks=False)
+            os.replace(temp, target)
+            directory = os.open(target.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                try: os.fsync(directory)
+                except OSError: pass  # file payload was fsynced before atomic replacement
+            finally: os.close(directory)
+        finally:
+            os.close(fd)
+            if out >= 0: os.close(out)
+            try: temp.unlink()
+            except FileNotFoundError: pass
 
 
 class BoundedHTTPServer(socketserver.ThreadingMixIn, audition.HTTPServer):
@@ -323,8 +395,13 @@ def main():
     except OSError:
         os.close(lock_fd)
         parser.error("Candidate state is already owned by another controller")
+    recording_root = state_root / "recordings"
+    recording_root.mkdir(mode=0o700, exist_ok=True)
+    if args.pad_library is not None:
+        args.pad_library.mkdir(mode=0o700, parents=True, exist_ok=True)
     hub = CandidateHub(storage.ControlStore(state_root/"native_controls.json", audition.validate_control),
-                       {k: getattr(args, k) for k in ("midi_source", "audio_left", "audio_right")})
+                       {k: getattr(args, k) for k in ("midi_source", "audio_left", "audio_right")},
+                       recording_root, args.pad_library)
     slots = threading.BoundedSemaphore(4)
     def listener(address):
         allowed = audition.authority_set(address, args.port, args.hostname)
@@ -341,7 +418,7 @@ def main():
         stopped = True
     prior = {s: signal.signal(s, stop) for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
     def stop_child():
-        nonlocal child, workers
+        nonlocal child, workers, prepared
         if child is not None:
             if child.poll() is None:
                 child.terminate()
@@ -351,17 +428,12 @@ def main():
                 worker.join(timeout=2)
             child.stdin.close(); child.stdout.close()
             child = None; workers = []
+        if prepared is not None:
+            prepared.cleanup(); prepared = None
     try:
         # Audio does not depend on DHCP/Wi-Fi or a successful HTTP bind.
         # No wildcard listener: LAN addresses are explicitly inventoried.
         listeners.reconcile({str(address)})
-        bed_args = []
-        if args.pad_library is not None:
-            prepared = tempfile.TemporaryDirectory(prefix="stave-native-bank-")
-            assets = module("stave_candidate_assets", ROOT/"native_v2/bed_assets.py")
-            bank = Path(prepared.name)/"prepared.bank"
-            assets.prepare_bank(args.pad_library, bank)
-            bed_args = ["--bed-bank", str(bank)]
         next_inventory = next_launch = next_network = next_notify = 0
         lifecycle.notify('READY=1\nSTATUS=Native controller running; audio readiness is reported separately')
         print("NATIVE512 CANDIDATE: "+", ".join("http://"+a for a in sorted(authorities))+" — starts/restarts MUTED", flush=True)
@@ -393,19 +465,30 @@ def main():
                     hub.inventory({})
                 next_inventory = now + (5 if child else 1)
             if child is None and now >= next_launch and not hub.restart:
+                launching_bank = None
                 try:
                     with hub.lock:
                         routes = validate_routes(hub.routes, hub.ports)
                         if any(name.startswith(("StaveSynth:", "stave-v2-stage-", "stave-v2-audition-")) for name in hub.ports):
                             raise ValueError("Another Stave audio owner is present; not taking its devices")
+                    bed_args = []
+                    if args.pad_library is not None:
+                        launching_bank = tempfile.TemporaryDirectory(prefix="stave-native-bank-")
+                        assets = module("stave_candidate_assets", ROOT/"native_v2/bed_assets.py")
+                        bank = Path(launching_bank.name)/"prepared.bank"
+                        assets.prepare_bank(args.pad_library, bank)
+                        bed_args = ["--bed-bank", str(bank)]
+                    take = recording_root / f"take-{uuid.uuid4().hex}.wav"
                     child = subprocess.Popen(["/usr/bin/pw-jack", str(args.binary.resolve()), str(args.soundfont.resolve()),
                         "512", "stave-v2-stage-candidate", routes["midi_source"], routes["audio_left"], routes["audio_right"],
-                        "0", "--allow-stage-candidate", *bed_args], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                        "0", "--allow-stage-candidate", *bed_args, "--record-dir", str(recording_root), "--record-name", take.name], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                         text=True, bufsize=1, start_new_session=True)
-                    control = hub.attach(child)
+                    prepared = launching_bank; launching_bank = None
+                    control = hub.attach(child, take)
                     workers = [threading.Thread(target=control.read, daemon=True), threading.Thread(target=control.write, daemon=True)]
                     for worker in workers: worker.start()
                 except (OSError, ValueError) as error:
+                    if launching_bank is not None: launching_bank.cleanup()
                     hub.message = str(error); next_launch = now + 2
             try:
                 hub.reconcile()
@@ -421,7 +504,6 @@ def main():
         lifecycle.notify('STOPPING=1')
         listeners.close()
         stop_child()
-        if prepared is not None: prepared.cleanup()
         for s, previous in prior.items(): signal.signal(s, previous)
         os.close(lock_fd)
 

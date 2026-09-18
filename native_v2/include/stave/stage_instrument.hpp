@@ -5,6 +5,7 @@
 #include "stave/stage_output.hpp"
 #include "stave/stage_splits.hpp"
 #include "stave/bed_bus.hpp"
+#include <limits>
 
 namespace stave {
 // Reuse the established source/room configuration without constructing a
@@ -133,6 +134,14 @@ public:
             config_.owned_motion?&motion_:nullptr,config_.owned_motion?&filter_motion_:nullptr)) { stop(); return false; }
         std::array<const double*,6> pad{};
         for(unsigned c=0;c<6;++c) pad[c]=ambience_.channel(c);
+        // Dedicated pad-capture tap: current piano + synth ambience, before
+        // the existing recorded bed and before global master/output processing.
+        // This prevents recursive bed capture and double master processing.
+        for(unsigned c=0;c<2;++c) for(unsigned i=0;i<block_frames();++i) {
+            const double sample=pad[c][i]+piano[c][i];
+            if(!std::isfinite(sample)||std::abs(sample)>std::numeric_limits<float>::max()) { stop(); return false; }
+            pad_recording_[c][i]=static_cast<float>(sample);
+        }
         if(bed_) {
             if(!bed_->process()) { stop(); return false; }
             // Recorded bed already contains its sound/effects. Add only to
@@ -155,6 +164,7 @@ public:
         if(bed_) bed_->stop();
         for(auto& c:bed_mix_) c.fill(0);
         for(auto& c:piano_) c.fill(0);
+        for(auto& c:pad_recording_) c.fill(0);
     }
     bool healthy() const noexcept { return !stopped_&&(!bed_||bed_->healthy())&&motion_.healthy()&&filter_motion_.healthy()&&sources_.healthy()&&room_.healthy()&&ambience_.healthy()&&master_.healthy()&&output_.healthy(); }
     MotionState motion_state(unsigned j) const noexcept { return motion_.state(j); }
@@ -162,6 +172,7 @@ public:
     const double* channel(unsigned c) const noexcept { return master_.channel(c); }
     const float* pcm(unsigned c) const noexcept { return output_.channel(c); }
     const float* recording_tap(unsigned c) const noexcept { return output_.recording_tap(c); }
+    const float* pad_recording_tap(unsigned c) const noexcept { return c<2?pad_recording_[c].data():nullptr; }
 #ifdef STAVE_OFFLINE_TRACE
     const double* trace(unsigned c) const noexcept { return ambience_.trace(c); }
 #endif
@@ -183,6 +194,7 @@ private:
     StageSources sources_; PianoRoom room_; SourceMix mix_; PadAmbience ambience_; StageMaster master_; StageOutput output_;
     StageInstrumentConfig config_{}; PreparedSourceMix prepared_{}; bool stopped_{};
     std::array<std::array<double,512>,2> piano_{},reverb_send_{},delay_send_{};
+    std::array<std::array<float,512>,2> pad_recording_{};
     std::array<std::array<StageLowpass,2>,2> piano_filter_{};
     std::unique_ptr<BedBus> bed_;
     std::array<std::array<double,512>,4> bed_mix_{};
