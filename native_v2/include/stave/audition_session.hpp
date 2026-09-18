@@ -192,7 +192,7 @@ private:
         case C::Reverb: return graph_.reverb_type(static_cast<ReverbType>(unsigned(v)));
         case C::Freeze: return graph_.freeze(v!=0);
         case C::ReleaseAll: return v==0||graph_.key_command(graph_.frame_position(),StageAction::ReleaseAll,0,0);
-        case C::Piano: config_.piano.volume=v; config_.piano.enabled=v>0; break;
+        case C::Piano: config_.piano.volume=v; break;
         case C::BedLevel: config_.bed.level=v; break;
         case C::BedMellow: config_.bed.mellow=v!=0; break;
         case C::BedMellowCutoff: config_.bed.mellow_hz=v; break;
