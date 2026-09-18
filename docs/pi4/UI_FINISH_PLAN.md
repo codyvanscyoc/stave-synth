@@ -85,8 +85,9 @@ September17 candidate now exposes the existing first-line Piano/Reverb/Delay
 tone operations without adding DSP stages: piano room size/damping; reverb
 decay, pre-delay, low/high cut and damping; delay free time and low/high cut.
 Existing room/send, character, shimmer/freeze, feedback and mix remain present.
-Paired tone filters reject crossed cutoffs before audio ownership. Real Chrome
-and native exact-PCM checks pass; Pi installation and player listening remain.
+Paired tone filters reject crossed cutoffs before audio ownership. Real Chrome,
+native exact-PCM and Pi target checks pass; `9403664` is installed. Player
+listening and sustained-note transition checks remain.
 Musical tempo-sync selection, advanced motion, presets and recording stay later
 milestones rather than decorative controls.
 

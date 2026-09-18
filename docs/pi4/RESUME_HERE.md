@@ -4,7 +4,7 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
-## September 17: musical menu controls validated, Pi install pending
+## September 17: musical menu controls deployed
 
 The next candidate keeps the accepted DSP graph and 48k/512 scheduling intact.
 It exposes existing piano-room size/damping, shared-reverb decay/pre-delay/
@@ -27,11 +27,19 @@ This is not live256 or physical transition qualification. A new master-bus high
 cut was deliberately not added: piano, reverb and delay high cuts are exposed,
 while Global retains the existing flat-by-default high shelf and low cut.
 
-Last Pi check before installation:56.9°C, throttle flags0x0; native service and
-HTTP controller healthy but no audio child because the saved Clavinova route is
-absent. Current unsaved tone differs from the earlier checkpoint (notably wet
-.77, sustain1/2 100%, decay2 3777ms and master mid -0.8dB) and must be preserved
-exactly through installation. Saved state must remain byte-identical.
+Commit `9403664` is pushed and installed. Pi target build passed all ten short
+512/256 scenarios with zero over-budget blocks; worst512 block5.194ms of10.667ms
+and worst256 block2.947ms of5.333ms. This is not live256 qualification. Installed
+HTML SHA256 `c02233ce…5e59fe9`; adapter binary SHA256 `45ff8dce…5e879ae`.
+Rollback/report: `/home/codyvanscyoc/stave-native-boot-backup-20260917/musical-controls-vo9uvcuk`.
+Postinstall epoch
+`94132e2555564296815c8810d1439325`; service active, NRestarts0,59.9°C,
+throttle flags0x0.
+
+No audio child was active because the saved Clavinova route is absent. Exact
+unsaved tone was restored (including wet.77, sustain1/2 100%, decay2 3777ms and
+master mid -0.8dB); saved controls/routes stayed byte-identical. The ten new
+controls initialized to graph-equivalent defaults. Output remains muted.
 
 ## September 17: independent ADSR / Global tone b049d23 deployed
 
