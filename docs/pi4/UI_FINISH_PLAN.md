@@ -34,15 +34,16 @@ paragraphs and implementation details on the playing surface.
 - Normal controls communicate musical names and units. Diagnostics stay in
   System. An error or acknowledged Save may briefly show a message.
 
-## 2. Oscillator instrument panel — next functional milestone
+## 2. Oscillator instrument panel — implemented, player check next
 
 September17 candidate implemented: eight independent ADSR controls, acknowledged
 schematic diagrams, musical time-knob scaling, and native single-command LINK.
 Legacy shared AR is expanded on load; explicit independent values take precedence.
 Restore applies LINK last so enabling it never rewrites unequal contours.
 Local UBSan/native PCM equivalence,604 reviewed regressions, actual browser
-mouse/touch/device-free/save checks passed. Pi build/deployment is a separate gate;
-see RESUME_HERE for the installed version, not this candidate statement.
+mouse/touch/device-free/save checks passed. Pi target guards/build passed and
+the idle-only installation preserved saved/current tone. See RESUME_HERE for
+hashes and evidence. Real Safari/keyboard transition checks remain open.
 
 Reference screenshot 3. Full ADSR is an essential part of the requested sound
 editor, not optional decoration. Finish this before adding more menu categories.

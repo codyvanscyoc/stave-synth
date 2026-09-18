@@ -4,6 +4,67 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
+## September 17: independent ADSR / Global tone b049d23 deployed
+
+Installed successfully after target validation, with no keyboard/audio child
+active. Exact current unsaved tone restored; native_controls/native_routes
+remain byte-identical. Source/UI/controller and native adapter binary updated
+together; underlying DSP algorithms, audio routes and48k/512 unchanged.
+New native binary SHA256:
+`37fd228fefcecffbb0d6dd8267f5d38d7a58335154b70003ba74d56cb2874999`.
+UI SHA256 `45bb5fd907c29f87257bc677052489a5b629092dde81cac07994454723056e86`.
+Rollback files, old binary, before/after tone and saved files:
+`/home/codyvanscyoc/stave-native-boot-backup-20260917/analog-controls-_17pn0cp`.
+Postinstall epoch `79ca2cbe3ed248deb1a2345f84bb06e9`; no output was unmuted.
+Same URL `http://stavepi4.local:8082` / `http://192.168.4.33:8082`.
+
+Pi target guard/PCM/fake-JACK checks passed. Ten short unpaced throughput cases
+(100 measured blocks each after100 warm-up,512 and256) completed with no
+over-budget blocks;512 maximum across cases5.354ms. Heavy512 scenarios3/4
+each retain one raw piano-full-scale sample warning. This is not a new sound
+quality pass, live256 qualification, physical latency or long-load evidence.
+Final temperature65.244°C, firmware throttle flags0x0. No compiler/probe left
+running. Next: real keyboard/Safari checks of new controls and transitions,
+then remaining Piano/Reverb/Delay integration and actual recording-to-pad.
+
+Candidate source is committed and pushed on Pi4 only. Eight per-OSC ADSR
+parameters, acknowledged SVG diagrams, logarithmic time gestures and LINK
+are integrated through the existing bounded native queue. LINK is a native
+editing relationship: enabling it copies nothing; a subsequent envelope edit
+changes both configurations before one graph configure. Waveforms stay independent.
+Legacy saved shared AR expands to independent keys; explicit per-OSC values
+win. Reconnection restores LINK last while output stays muted.
+
+System now includes existing master200/1000/5000Hz EQ gains, limited to±6dB,
+and existing12dB/oct low cut20–200Hz. Flat/off defaults preserve tone. No
+compression enabled, DSP algorithm change, new lookahead or48k/512 change.
+Low-cut enable uses the existing hard switch: between-song adjustment, not a
+claim of click-free transitions. Existing sustain edits affect held levels;
+player listening/gesture checks remain distinct from PCM equivalence.
+
+Mac validation:604 reviewed regression tests, actual-script JS tests, real
+browser mouse/touch and device-free independent/link controls, acknowledged
+diagrams, Global EQ, Save/reload, tablet/phone overflow checks. Native UBSan
+tests verify PCM exactly matches direct existing graph operations at512/256,
+including held notes/pedal/linked changes; this does not qualify live256.
+Evidence `Documents/stave-synth-pi4-backups/native-v2-analog-controls-20260917`;
+browser screenshots/script `/private/tmp/stave-analog-ui.WXL5VU`.
+
+Pi build is isolated at `/home/codyvanscyoc/stave-analog-controls-ON8rYI`.
+Initial reuse of a later bed report was rejected before compilation because
+it lacked original object compilation provenance. Retrying against original
+`stave-native-probe-20260917.gpQ10J/evidence` passed object checks and completed
+in `evidence-original` with80°C guard. Local `pi-report.json` and
+`install-report.json` reside beside the Mac native report above.
+Idle-only installer staged at that candidate's `install.py` validates source,
+binary, old installed hashes and idle status, backs up all replacements and
+current/saved tone, then restores the draft without Save. It refuses active
+audio and rolls files back on failure. Installation succeeded as recorded above.
+
+Last observed Pi: keyboard absent, no audio child, current tone piano.92,
+OSC1.27,OSC2.29,cutoff811,wet.74,AR530ms. Both per-OSC decay1500ms/sustain80%,
+LINK off, master EQ0dB, low cut off; these retain the preceding sound.
+
 ## September 17: one continuous UI, reference Stage proportions restored
 
 The player rejected the newly introduced preparation-mode language. There must
