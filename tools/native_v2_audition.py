@@ -53,6 +53,26 @@ CONTROLS = {
     "octave1": (-3, 3, 1, 0), "octave2": (-3, 3, 1, 0),
 }
 INTEGRAL = {"wave1", "wave2", "shimmer", "reverb", "freeze", "release_all", "bed_key", "bed_mellow", "bed_fade", "bed_release", "envelope_link", "master_lowcut", "record_start", "record_stop", "transpose", "piano_octave", "octave1", "octave2"}
+MIDI_RESERVED = frozenset((64, 66, 120, 123))
+MIDI_UNMAPPABLE = frozenset(("release_all", "bed_key", "bed_fade", "bed_release", "record_start", "record_stop",
+                             "reverb_lowcut", "reverb_highcut", "delay_lowcut", "delay_highcut"))
+MIDI_MAPPABLE = frozenset(CONTROLS) - MIDI_UNMAPPABLE
+
+
+def midi_value(key, raw):
+    if key not in MIDI_MAPPABLE or type(raw) is not int or not 0 <= raw <= 127:
+        raise ValueError("Invalid MIDI mapping value")
+    minimum, maximum, step, _ = CONTROLS[key]
+    value = minimum + (maximum - minimum) * raw / 127
+    value = min(maximum, max(minimum, minimum + math.floor((value - minimum) / step + .5) * step))
+    return int(value) if key in INTEGRAL else round(value, 8)
+
+
+def validate_midi_mapping(data):
+    if (not isinstance(data, dict) or set(data) != {"key", "cc"} or data["key"] not in MIDI_MAPPABLE or
+            type(data["cc"]) is not int or not 0 <= data["cc"] < 128 or data["cc"] in MIDI_RESERVED):
+        raise ValueError("Choose a mappable control and a non-reserved MIDI CC")
+    return data["key"], data["cc"]
 
 
 def apply_value(values, key, value):
@@ -124,6 +144,8 @@ class Controller:
         self.outgoing = queue.Queue(maxsize=64)
         self.sequence = 0
         self.pending = {}
+        self.map_pending = {}
+        self.mapped_serials = [0] * len(CONTROLS)
         self.values = {k: v[3] for k, v in CONTROLS.items()}
         self.status = {}
         self.last_status = 0
@@ -151,6 +173,19 @@ class Controller:
             self.outgoing.put_nowait((self.sequence, key, value))
             return self.sequence
 
+    def map_cc(self, data):
+        key, cc = validate_midi_mapping(data)
+        with self.lock:
+            if (self.child.poll() is not None or self.status.get("fault", 1) or not self.status.get("routed") or
+                    time.monotonic() - self.last_status > 3 or time.monotonic() - self.last_progress > 3):
+                raise ValueError("Audio owner is not ready for MIDI mapping")
+            if len(self.pending) + len(self.map_pending) >= 64 or self.outgoing.full():
+                raise ValueError("Control backlog full; wait for acknowledgment")
+            self.sequence += 1
+            self.map_pending[self.sequence] = (key, cc)
+            self.outgoing.put_nowait(("map", self.sequence, cc, key))
+            return self.sequence
+
     def receive(self, message):
         with self.lock:
             if message.get("type") == "accepted":
@@ -158,6 +193,11 @@ class Controller:
                 if not message.get("ok"):
                     self.pending.pop(seq, None)
                     self.error = f"Native owner rejected control {seq}"
+            elif message.get("type") == "mapped":
+                seq = message.get("id")
+                self.map_pending.pop(seq, None)
+                if not message.get("ok"):
+                    self.error = f"Native owner rejected MIDI mapping {seq}"
             elif message.get("type") == "status" and message.get("instance") == self.instance:
                 if message.get("blocks", 0) > self.status.get("blocks", 0):
                     self.last_progress = time.monotonic()
@@ -169,11 +209,19 @@ class Controller:
                         apply_value(self.values, key, value)
                 if "bed_key" in message:
                     self.values["bed_key"] = message["bed_key"]
+                raw, serials = message.get("midi_mapped_raw"), message.get("midi_mapped_serial")
+                if (isinstance(raw, list) and isinstance(serials, list) and
+                        len(raw) == len(CONTROLS) and len(serials) == len(CONTROLS)):
+                    for index, (key, value, serial) in enumerate(zip(CONTROLS, raw, serials)):
+                        if (type(value) is int and value >= 0 and type(serial) is int and
+                                serial > self.mapped_serials[index] and key in MIDI_MAPPABLE):
+                            apply_value(self.values, key, midi_value(key, value))
+                            self.mapped_serials[index] = serial
 
     def snapshot(self):
         with self.lock:
             return dict(instance=self.instance, status=self.status.copy(), values=self.values.copy(),
-                        pending=len(self.pending), error=self.error, exited=self.child.poll(),
+                        pending=len(self.pending) + len(self.map_pending), map_pending=len(self.map_pending), error=self.error, exited=self.child.poll(),
                         stale=time.monotonic() - self.last_status > 3 or time.monotonic() - self.last_progress > 3)
 
     def read(self):
@@ -193,10 +241,15 @@ class Controller:
         try:
             while self.child.poll() is None:
                 try:
-                    seq, key, value = self.outgoing.get(timeout=.2)
+                    item = self.outgoing.get(timeout=.2)
                 except queue.Empty:
                     continue
-                self.child.stdin.write(f"{seq} {key} {value}\n")
+                if item[0] == "map":
+                    _, seq, cc, key = item
+                    self.child.stdin.write(f"map {seq} {cc} {key}\n")
+                else:
+                    seq, key, value = item
+                    self.child.stdin.write(f"{seq} {key} {value}\n")
                 self.child.stdin.flush()
         except (OSError, ValueError) as error:
             with self.lock:
@@ -250,7 +303,7 @@ def handler_for(controller, authority):
 
         def do_POST(self):
             host = self.headers.get("Host", "").lower()
-            if (self.path not in ("/control", "/save", "/restart-audio", "/routes", "/record-assign", "/preset-save", "/preset-load") or host not in authorities or
+            if (self.path not in ("/control", "/save", "/restart-audio", "/routes", "/record-assign", "/preset-save", "/preset-load", "/midi-map") or host not in authorities or
                     self.headers.get("Origin", "").lower() != "http://" + host or
                     self.headers.get("Content-Type") != "application/json" or self.headers.get("Transfer-Encoding")):
                 return self.reply(403, {"error": "Same-origin JSON control required"})

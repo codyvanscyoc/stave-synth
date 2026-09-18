@@ -82,12 +82,22 @@ struct Host {
             <<",\"routed\":"<<(routed?"true":"false")<<",\"fault\":"<<unsigned(session.fault())
             <<",\"applied\":"<<session.applied()<<",\"blocks\":"<<session.blocks()<<",\"notes\":"<<session.notes()
             <<",\"unsupported_midi\":"<<session.unsupported_midi()<<",\"quantized_midi\":"<<session.quantized_midi()
+            <<",\"midi_cc_serial\":"<<session.midi_cc_serial()<<",\"midi_cc\":"<<session.midi_cc()<<",\"midi_cc_value\":"<<session.midi_cc_value()
+            <<",\"midi_apply_serial\":"<<session.midi_apply_serial()<<",\"midi_apply_control\":"<<session.midi_apply_control()<<",\"midi_apply_value\":"<<session.midi_apply_value()
             <<",\"piano_full_scale\":"<<session.piano_full_scale()<<",\"xruns\":"<<xruns.load()
             <<",\"bed_mask\":"<<session.bed_mask()<<",\"active_beds\":"<<session.active_beds()<<",\"bed_key\":"<<session.bed_key()
             <<",\"capture_end\":"<<unsigned(session.capture_end())<<",\"capture_frames\":"<<session.capture_frames()
             <<",\"writer_state\":"<<unsigned(writer?writer->state():stave::WriterState::Idle)
             <<",\"writer_frames\":"<<(writer?writer->frames_written():0)
-            <<",\"over_budget\":"<<over_budget.load()<<",\"max_callback_ms\":"<<max_ns.load()/1e6<<"}"<<std::endl;
+            <<",\"over_budget\":"<<over_budget.load()<<",\"max_callback_ms\":"<<max_ns.load()/1e6
+            <<",\"midi_mapped_serial\":[";
+        for(unsigned c=0;c<unsigned(stave::AuditionControl::Count);++c) std::cout<<(c?",":"")<<session.midi_mapped_serial(c);
+        // Acquire each serial before its raw value. A concurrent MIDI update
+        // may then be deferred to the next status, but can never pair a new
+        // serial with an older raw value.
+        std::cout<<"],\"midi_mapped_raw\":[";
+        for(unsigned c=0;c<unsigned(stave::AuditionControl::Count);++c) std::cout<<(c?",":"")<<session.midi_mapped_raw(c);
+        std::cout<<"]}"<<std::endl;
     }
 };
 void require(bool ok,const char* message) { if(!ok) throw std::runtime_error(message); }
@@ -173,8 +183,16 @@ int main(int argc,char** argv) {
                 for(ssize_t i=0;i<n;++i) {
                     if(buffer[i]!='\n') { if(line.size()>=255) throw std::runtime_error("Control line exceeds bound"); line+=buffer[i]; continue; }
                     if(line=="stop") { session.request_stop(); quit=true; line.clear(); break; }
-                    std::istringstream parser(line); std::uint64_t id{}; std::string id_text,key,extra; double value{};
+                    std::istringstream parser(line); std::uint64_t id{},cc{}; std::string first,id_text,key,extra; double value{};
                     bool accepted=false;
+                    parser>>first;
+                    if(first=="map"&&parser>>id_text>>cc>>key&&!(parser>>extra)&&unsigned_text(id_text,id)&&cc<128) {
+                        for(unsigned c=0;c<stave::audition_names.size();++c) if(key==stave::audition_names[c])
+                            accepted=session.map_cc(unsigned(cc),static_cast<stave::AuditionControl>(c));
+                        std::cout<<"{\"type\":\"mapped\",\"id\":"<<id<<",\"ok\":"<<(accepted?"true":"false")<<"}"<<std::endl;
+                        line.clear(); continue;
+                    }
+                    parser.clear(); parser.str(line);
                     if(parser>>id_text>>key>>value&&!(parser>>extra)&&unsigned_text(id_text,id)) {
                         for(unsigned c=0;c<stave::audition_names.size();++c) if(key==stave::audition_names[c])
                             accepted=session.enqueue({id,static_cast<stave::AuditionControl>(c),value});

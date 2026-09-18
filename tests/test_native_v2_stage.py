@@ -76,6 +76,28 @@ class NativeStageTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.hub.dispatch('/preset-save', dict(slot=5, name='Bad'), self.hub.epoch)
 
+    def test_midi_map_is_unique_persistent_and_restored_before_controls(self):
+        control = self.attached(); self.hub.reconcile()
+        result = self.hub.dispatch('/midi-map', dict(key='osc1', cc=21), self.hub.epoch)
+        self.assertEqual(result['midi_maps'], {'osc1': 21})
+        control.receive(dict(type='mapped', id=result['queued'], ok=True))
+        result = self.hub.dispatch('/midi-map', dict(key='piano', cc=21), self.hub.epoch)
+        self.assertEqual(result['midi_maps'], {'piano': 21}, 'one hardware CC owns one target')
+        path = Path(self.temp.name) / 'native_midi_map.json'
+        self.assertEqual(json.loads(path.read_text())['mappings'], {'piano': 21})
+        for data in (dict(key='master', cc=64), dict(key='record_start', cc=22), dict(key='master', cc=True)):
+            with self.assertRaises(ValueError):
+                self.hub.dispatch('/midi-map', data, self.hub.epoch)
+
+        self.hub = stage.CandidateHub(self.store, ROUTES); self.hub.inventory(stage.parse_ports(INVENTORY))
+        restored = self.attached(); self.hub.reconcile()
+        self.assertEqual(restored.snapshot()['map_pending'], 1)
+        self.assertEqual(restored.outgoing.get_nowait(), ('map', 1, 21, 'piano'))
+        self.assertEqual(restored.pending, {}, 'sound restore waits for MIDI-map acknowledgment')
+        restored.receive(dict(type='mapped', id=1, ok=True)); self.hub.reconcile()
+        self.assertFalse(self.hub.restoring)
+        self.assertEqual(self.hub.snapshot()['runtime']['midi_maps'], {'piano': 21})
+
     def test_malformed_oversized_and_symlink_state_never_loaded(self):
         for data in (b"broken", b" "*16385, b'[]', b'{"schema":true,"controls":{}}',
                      b'{"schema":1,"controls":{"master":2}}'):

@@ -87,6 +87,7 @@ header{margin-bottom:10px}.statusbar{gap:16px;font-size:11px;padding-top:8px}.de
 header{position:relative}.header-actions{gap:7px}.header-actions button{min-width:72px;min-height:42px;padding:5px 9px;font-size:11px}.header-stack{display:grid;gap:3px}.header-stack button{min-height:20px;height:20px;padding:0 7px;font-size:9px}#mute{margin-left:0;min-width:72px}#connections{min-width:62px}
 .statusbar{flex-wrap:nowrap;white-space:nowrap;overflow:hidden;min-height:27px}.statusbar>*{flex:none}#warning-count{cursor:pointer}
 #notice{position:fixed;z-index:40;top:78px;left:50%;transform:translateX(-50%);max-width:min(92vw,760px);margin:0;padding:6px 12px;background:#180f0d;border:1px solid var(--gold);color:var(--gold);box-shadow:0 5px 24px #000;pointer-events:none;text-align:center}#notice:empty{display:none}
+#midi-map-banner{position:fixed;z-index:50;top:8px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:12px;width:min(94vw,850px);padding:9px 12px;background:#19120b;border:2px dashed var(--gold);box-shadow:0 6px 30px #000;color:var(--gold)}#midi-map-banner strong{white-space:nowrap;letter-spacing:.14em}#midi-map-banner span{flex:1;color:var(--ink)}#midi-map-done{width:auto;min-height:34px;padding:3px 12px}.midi-map-mode [data-map-key]{outline:1px dashed color-mix(in srgb,var(--gold) 72%,transparent);outline-offset:3px;cursor:crosshair!important}.midi-map-mode [data-map-key][data-midi-selected=true]{outline:4px dashed var(--gold);background-color:color-mix(in srgb,var(--gold) 13%,transparent)}.midi-map-mode [data-map-key][data-midi-mapped=true]{box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--gold) 48%,transparent)}
 .pitch-strip{display:flex;align-items:center;justify-content:center;gap:8px;margin:3px 0 8px}.pitch-strip>span{color:var(--muted);font-size:10px;letter-spacing:.12em}.stepper{display:inline-grid;grid-template-columns:34px 48px 34px;align-items:center}.stepper button{min-height:32px;height:32px;padding:0}.stepper output{float:none;text-align:center;color:var(--ink)}
 .layer-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0 auto 8px;max-width:580px}.layer-strip button{min-height:34px;padding:3px 8px;font-size:10px;letter-spacing:.12em}.layer-strip button[aria-pressed=true]{background:var(--mint);color:var(--bg)}
 .preset-strip{display:grid;grid-template-columns:repeat(5,minmax(0,1fr)) auto;gap:7px;margin:6px 0 10px}.preset-strip button{min-height:38px;padding:4px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:10px}.preset-strip button[data-selected=true]{border-color:var(--gold);color:var(--gold)}#preset-store{min-width:62px}
@@ -97,12 +98,13 @@ header{position:relative}.header-actions{gap:7px}.header-actions button{min-widt
 </style>
 <header><div class="brand-lockup"><img class="retro-logo" src="/logo.png" alt="Stave"><div><div class="brand">STAVE</div><div class="eyebrow">PIANO + SYNTH</div></div></div>
 <nav aria-label="Work areas"><button id="nav-stage" aria-pressed="true">Stage</button><button id="nav-edit" aria-pressed="false">Sound</button><button id="nav-system" aria-pressed="false">System</button></nav>
-<div class="header-actions"><div class="header-stack"><button id="shimmer-toggle" disabled aria-pressed="false">SHIM</button><button id="freeze-toggle" disabled aria-pressed="false">FREEZE</button></div><button id="mute" disabled>MUTE</button><button id="save" disabled>SAVE</button><button id="connections">CONN</button></div></header>
+<div class="header-actions"><div class="header-stack"><button id="shimmer-toggle" data-map-key="shimmer" disabled aria-pressed="false">SHIM</button><button id="freeze-toggle" data-map-key="freeze" disabled aria-pressed="false">FREEZE</button></div><button id="mute" disabled>MUTE</button><button id="save" disabled>SAVE</button><button id="connections">CONN</button></div></header>
 <div class="statusbar"><span class="pill" id="connection">Connecting</span><span class="device-state" id="midi-status">MIDI —</span><span class="device-state" id="audio-status">AUDIO —</span><span id="profile" class="muted"></span><span id="warning-count"></span></div>
 <p id="notice" role="status"></p>
+<div id="midi-map-banner" hidden><strong>MIDI MAP</strong><span id="midi-map-instruction">Tap an outlined Stave control, then move one hardware knob or fader.</span><button id="midi-map-done">DONE</button></div>
 <main>
 <section id="stage-panel" aria-label="Stage">
-<div class="pitch-strip"><span>TRANSPOSE</span><div id="transpose-stepper" class="stepper" data-stepper="transpose"><button aria-label="Transpose down">−</button><output>0 st</output><button aria-label="Transpose up">+</button></div></div>
+<div class="pitch-strip"><span>TRANSPOSE</span><div id="transpose-stepper" class="stepper" data-stepper="transpose" data-map-key="transpose"><button aria-label="Transpose down">−</button><output>0 st</output><button aria-label="Transpose up">+</button></div></div>
 <div class="layer-strip"><button id="layer-osc1" aria-pressed="true">OSC 1</button><button id="layer-osc2" aria-pressed="true">OSC 2</button><button id="layer-piano" aria-pressed="true">PIANO</button></div>
 <div class="panel performance-panel"><div class="section-head"><div><h1>Live mix</h1><p>Touch to pick up. Drag to blend.</p></div></div><div id="mixer"></div><div id="tone-controls"></div></div>
 <div class="preset-strip" aria-label="Sound presets"><button data-preset="0">1 · EMPTY</button><button data-preset="1">2 · EMPTY</button><button data-preset="2">3 · EMPTY</button><button data-preset="3">4 · EMPTY</button><button data-preset="4">5 · EMPTY</button><button id="preset-store">STORE</button></div>
@@ -122,9 +124,9 @@ header{position:relative}.header-actions{gap:7px}.header-actions button{min-widt
 <section id="system-panel" aria-label="System" hidden>
 <section class="panel edit-group" data-open="true"><h2>GLOBAL TONE</h2><p class="global-note">Master EQ · gentle room correction. Flat EQ and low cut off preserve your original sound. Set low cut between songs.</p><div id="edit-global" class="control-grid"></div></section>
 <div class="system-grid"><div class="panel"><h2>Connections</h2><p id="device-status">Waiting for connection details…</p><div id="route-picker" hidden><label>MIDI keyboard<select id="route-midi" aria-label="MIDI keyboard"></select></label><label>Audio left<select id="route-left" aria-label="Audio left"></select></label><label>Audio right<select id="route-right" aria-label="Audio right"></select></label><p><button id="apply-routes" disabled>Apply connections</button></p></div><p class="small">Only the explicitly selected MIDI and stereo output are used. Choose one MIDI port per keyboard, not both aliases.</p><button id="restart-audio" disabled>Restart audio</button></div>
-<div class="panel"><h2>Saved startup sound</h2><p id="save-status">Save your preferred power-on sound and Master level.</p><p class="small">The saved sound restores only after the selected devices and audio route are healthy. Notes, pads, and freeze never restart.</p><button id="midi-map" disabled>MIDI MAP · COMING NEXT</button></div></div>
+<div class="panel"><h2>Saved startup sound</h2><p id="save-status">Save your preferred power-on sound and Master level.</p><p class="small">The saved sound restores only after the selected devices and audio route are healthy. Notes, pads, and freeze never restart.</p><button id="midi-map" disabled>MIDI MAP</button></div></div>
 <div class="panel"><h2>Audio diagnostics</h2><div id="health">Waiting for native audio owner…</div><p class="small">Timing measures processing, not physical keyboard-to-speaker latency. Full-scale piano counts are a headroom warning, not proof of audible clipping.512 is the accepted listening profile; no buffer switch is exposed.</p></div>
-<div class="support"><h2>Stage build</h2><p class="small">Piano, OSC1/OSC2, filter, effects, global tone and recorded pads use the native Pi4 engine. MIDI mapping and named preset banks are the remaining interface migrations.</p><p class="small" id="runtime-scope">Loss of the selected device stops audio safely. Closing this browser does not stop audio.</p></div>
+<div class="support"><h2>Stage build</h2><p class="small">Piano, OSC1/OSC2, filter, effects, global tone, recorded pads, five sound presets and MIDI Learn use the native Pi4 engine.</p><p class="small" id="runtime-scope">Loss of the selected device stops audio safely. Closing this browser does not stop audio.</p></div>
 </section></main>
 <p class="footer-note">STAVE / PI4 · Touch to pick up, drag to blend · Trusted private Wi-Fi</p>
 <script>
@@ -142,6 +144,8 @@ let activeBed=-1,bedFaded=false;
 const lastLayerValues={osc1:.7,osc2:.5,piano:.7};
 const stepperRoots={};
 const presetButtons=[...document.querySelectorAll('[data-preset]')];let selectedPreset=0;
+const midiUnmappable=new Set(['release_all','bed_key','bed_fade','bed_release','record_start','record_stop','reverb_lowcut','reverb_highcut','delay_lowcut','delay_highcut']);
+let midiMapMode=false,midiTarget=null,midiBaseline=0,midiLearning=false,lastMidiCcSerial=0;
 const performanceActions=new Set(['master','freeze','release_all','bed_key','bed_fade','bed_release','record_start','record_stop']);
 const performanceKeys=['osc1','osc2','piano','cutoff','wet','master'];
 const performanceLabels={osc1:'OSC 1',osc2:'OSC 2',piano:'PIANO',cutoff:'FILTER',wet:'FX',master:'MASTER'};
@@ -265,11 +269,11 @@ function formatted(key,value){
   return Math.round(Number(value)*100)+'%';
 }
 async function action(path,data={}){
-  if(path==='/save'&&(busy||pending.size)){notice.textContent='Wait for your last adjustment to finish, then save.';return;}
-  if(actionBusy||!epoch)return;actionBusy=true;
+  if(path==='/save'&&(busy||pending.size)){notice.textContent='Wait for your last adjustment to finish, then save.';return null;}
+  if(actionBusy||!epoch)return null;actionBusy=true;
   try{const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Stave-Epoch':epoch},body:JSON.stringify(data),signal:AbortSignal.timeout(3000)});
-    const d=await r.json();if(!r.ok)throw Error(d.error||'Action refused');announce(path==='/save'?'Sound saved':d.message||'Action accepted');
-  }catch(e){announce(e.message+' — no automatic retry');}finally{actionBusy=false;}
+    const d=await r.json();if(!r.ok)throw Error(d.error||'Action refused');announce(path==='/save'?'Sound saved':d.message||'Action accepted');return d;
+  }catch(e){announce(e.message+' — no automatic retry');return null;}finally{actionBusy=false;}
 }
 async function send(key,value){
   if(!ready||(!audioReady&&performanceActions.has(key)))return;
@@ -291,7 +295,7 @@ async function setup(){
   const entries=[...order.filter(k=>k in definitions),...Object.keys(definitions).filter(k=>!order.includes(k))];
   for(const key of entries){const [min,max,step,value]=definitions[key];
     if(['release_all','bed_key','bed_fade','bed_release','record_start','record_stop','attack','release','transpose','piano_octave','octave1','octave2'].includes(key))continue;
-    const label=document.createElement('label');label.className='control'+(performanceKeys.includes(key)?' performance':'')+(knobKeys.has(key)?' knob-control':'')+(choices[key]?' choice-control':'');label.setAttribute('data-control',key);
+    const label=document.createElement('label');label.className='control'+(performanceKeys.includes(key)?' performance':'')+(knobKeys.has(key)?' knob-control':'')+(choices[key]?' choice-control':'');label.setAttribute('data-control',key);if(!midiUnmappable.has(key))label.setAttribute('data-map-key',key);
     const name=document.createElement('span');name.className='control-name';name.textContent=performanceLabels[key]||labels[key];label.append(name);
     const out=document.createElement('output');out.textContent=formatted(key,value);label.append(out);
     const input=document.createElement(choices[key]?'select':'input');
@@ -323,6 +327,8 @@ async function setup(){
   document.getElementById('save').onclick=()=>action('/save');
   document.getElementById('connections').onclick=()=>view('system');
   document.getElementById('warning-count').onclick=()=>view('system');
+  document.getElementById('midi-map').onclick=()=>setMidiMapMode(!midiMapMode);
+  document.getElementById('midi-map-done').onclick=()=>setMidiMapMode(false);
   presetButtons.forEach((button,slot)=>button.onclick=()=>{selectedPreset=slot;updatePresetSelection();if(lastRuntime.presets?.[slot])action('/preset-load',{slot});});
   document.getElementById('preset-store').onclick=()=>{const current=lastRuntime.presets?.[selectedPreset]?.name||('Sound '+(selectedPreset+1));const name=prompt('Preset name',current);if(name!==null)action('/preset-save',{slot:selectedPreset,name});};
   document.getElementById('restart-audio').onclick=()=>{if(confirm('Restart audio? Sound will stop briefly and restore the current acknowledged controls.'))action('/restart-audio');};
@@ -335,11 +341,29 @@ function bindStepper(root,key,min,max){
   down.onclick=()=>step(-1);up.onclick=()=>step(1);root._buttons=[down,up];
 }
 function attachOctave(label,key){
-  const root=document.createElement('div');root.className='channel-foot';root.setAttribute('data-stepper',key);
+  const root=document.createElement('div');root.className='channel-foot';root.setAttribute('data-stepper',key);root.setAttribute('data-map-key',key);
   const down=document.createElement('button'),out=document.createElement('output'),up=document.createElement('button');down.textContent='−';up.textContent='+';out.textContent='0 oct';down.setAttribute('aria-label',labels[key]+' down');up.setAttribute('aria-label',labels[key]+' up');root.append(down);root.append(out);root.append(up);label.append(root);bindStepper(root,key,-3,3);
 }
 function toggleLayer(key){const value=Number(lastValues[key]||0);if(value>0){lastLayerValues[key]=value;lastValues[key]=0;send(key,0);}else{lastValues[key]=lastLayerValues[key]||.5;send(key,lastValues[key]);}}
 function updatePresetSelection(){presetButtons.forEach((button,slot)=>button.setAttribute('data-selected',String(slot===selectedPreset)));}
+function setMidiMapMode(enabled){
+  midiMapMode=Boolean(enabled&&audioReady);midiTarget=null;midiLearning=false;
+  midiBaseline=lastMidiCcSerial;
+  document.body.classList.toggle('midi-map-mode',midiMapMode);
+  document.getElementById('midi-map-banner').hidden=!midiMapMode;
+  const button=document.getElementById('midi-map');button.setAttribute('aria-pressed',String(midiMapMode));button.textContent=midiMapMode?'MIDI MAP ON':'MIDI MAP';
+  document.getElementById('midi-map-instruction').textContent=midiMapMode?'Tap an outlined Stave control, then move one hardware knob, fader, or switch.':'Tap an outlined Stave control, then move one hardware knob or fader.';
+  for(const node of document.querySelectorAll('[data-map-key]'))node.setAttribute('data-midi-selected','false');
+}
+document.addEventListener('pointerdown',event=>{
+  if(!midiMapMode||midiLearning)return;
+  const target=event.target.closest?.('[data-map-key]');if(!target)return;
+  event.preventDefault();event.stopImmediatePropagation();
+  for(const node of document.querySelectorAll('[data-map-key]'))node.setAttribute('data-midi-selected','false');
+  target.setAttribute('data-midi-selected','true');midiTarget=target.getAttribute('data-map-key');
+  midiBaseline=lastMidiCcSerial;
+  document.getElementById('midi-map-instruction').textContent='Learning '+(labels[midiTarget]||midiTarget)+' — move one hardware control now.';
+},true);
 async function poll(){
   try{
     const r=await fetch('/status',{signal:AbortSignal.timeout(2000)});if(!r.ok)throw Error('Status unavailable');
@@ -348,6 +372,7 @@ async function poll(){
     audioReady=!d.stale&&d.exited===null&&s.fault===0&&s.routed===true&&!lastRuntime.restoring;
     const preparing=lastRuntime.preparation===true;
     ready=audioReady||preparing;
+    if(midiMapMode&&!audioReady)setMidiMapMode(false);
     document.getElementById('connection').textContent='Connected';
     const midiPresent=Boolean(lastRuntime.devices?.midi?.includes(lastRuntime.midi_source));
     document.getElementById('midi-status').textContent=midiPresent?'MIDI connected':'MIDI —';
@@ -383,6 +408,22 @@ async function poll(){
     document.getElementById('freeze-toggle').textContent=d.values.freeze?'UNFREEZE':'FREEZE';
     document.getElementById('save').disabled=!ready||busy||Boolean(pending.size)||Boolean(d.pending)||!lastRuntime.persistence||actionBusy;
     document.getElementById('restart-audio').disabled=!lastRuntime.can_restart||actionBusy;
+    const mapButton=document.getElementById('midi-map');mapButton.disabled=!audioReady||actionBusy;
+    const maps=lastRuntime.midi_maps||{};
+    for(const node of document.querySelectorAll('[data-map-key]'))node.setAttribute('data-midi-mapped',String(Object.prototype.hasOwnProperty.call(maps,node.getAttribute('data-map-key'))));
+    const ccSerial=Number(s.midi_cc_serial||0);lastMidiCcSerial=ccSerial;
+    if(midiMapMode&&midiTarget&&!midiLearning&&ccSerial>midiBaseline){
+      midiBaseline=ccSerial;const cc=Number(s.midi_cc);
+      if([64,66,120,123].includes(cc))document.getElementById('midi-map-instruction').textContent='CC '+cc+' is reserved for sustain, sostenuto, or safety. Move a different control.';
+      else{
+        const target=midiTarget;midiLearning=true;document.getElementById('midi-map-instruction').textContent='Saving CC '+cc+' → '+(labels[target]||target)+'…';
+        action('/midi-map',{key:target,cc}).then(result=>{
+          if(result){document.getElementById('midi-map-instruction').textContent='Mapped CC '+cc+' to '+(labels[target]||target)+'. Tap another control, or Done.';for(const node of document.querySelectorAll('[data-map-key]'))node.setAttribute('data-midi-selected','false');midiTarget=null;}
+          else document.getElementById('midi-map-instruction').textContent='Mapping was not saved. Tap the control and try again.';
+          midiLearning=false;
+        });
+      }
+    }
     updateRoutes(lastRuntime);
     presetButtons.forEach((button,slot)=>{const preset=lastRuntime.presets?.[slot];button.textContent=(slot+1)+' · '+(preset?.name||'EMPTY');button.disabled=actionBusy||!ready;});updatePresetSelection();
     document.getElementById('save-status').textContent=lastRuntime.state_warning||(lastRuntime.persistence?'Save remembers your sound for the next power-on.':'Sound saving is unavailable.');
@@ -401,7 +442,7 @@ async function poll(){
     document.getElementById('record-assign').disabled=!audioReady||writer!==2||capture!==2||actionBusy;
     document.getElementById('record-slot').disabled=writer!==2||capture!==2;
     document.getElementById('record-status').textContent=writer===1?'Recording… '+seconds.toFixed(1)+' s':writer===2?'Take ready · '+seconds.toFixed(1)+' s · choose a key and save':writer===3?'Recording failed safely; audio continued. Restart audio to try again.':'Recorder idle · captures piano, synth and effects (not an old pad or Master gain).';
-  }catch(e){ready=false;pending.clear();cancelGestures();notice.textContent='Disconnected — audio may still be playing. No control replay.';document.getElementById('connection').textContent='Browser disconnected';for(const f of Object.values(fields))f.input.disabled=true;for(const root of Object.values(stepperRoots))for(const b of root._buttons||[])b.disabled=true;for(const id of ['mute','shimmer-toggle','freeze-toggle','save','restart-audio','apply-routes','record-start','record-stop','record-assign',...bedActions])document.getElementById(id).disabled=true;for(const b of bedKeys)b.disabled=true;}
+  }catch(e){ready=false;audioReady=false;setMidiMapMode(false);pending.clear();cancelGestures();notice.textContent='Disconnected — audio may still be playing. No control replay. '+e.message;document.getElementById('connection').textContent='Browser disconnected';for(const f of Object.values(fields))f.input.disabled=true;for(const root of Object.values(stepperRoots))for(const b of root._buttons||[])b.disabled=true;for(const id of ['mute','shimmer-toggle','freeze-toggle','save','restart-audio','apply-routes','record-start','record-stop','record-assign','midi-map',...bedActions])document.getElementById(id).disabled=true;for(const b of bedKeys)b.disabled=true;}
   setTimeout(poll,750);
 }
 setup().catch(e=>{notice.textContent='Audition setup failed: '+e.message;});

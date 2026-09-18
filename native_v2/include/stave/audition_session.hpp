@@ -65,6 +65,44 @@ inline bool audition_value_valid(AuditionControl c,double v) noexcept {
     default: return unsigned(c)<unsigned(AuditionControl::Count)&&v>=0&&v<=1;
     }
 }
+inline bool audition_mappable(AuditionControl c) noexcept {
+    using C=AuditionControl;
+    return c!=C::ReleaseAll&&c!=C::BedKey&&c!=C::BedFade&&c!=C::BedRelease&&
+           c!=C::RecordStart&&c!=C::RecordStop&&c!=C::ReverbLowcut&&c!=C::ReverbHighcut&&
+           c!=C::DelayLowcut&&c!=C::DelayHighcut&&c!=C::Count;
+}
+inline double audition_midi_value(AuditionControl c,unsigned raw) noexcept {
+    using C=AuditionControl; double lo=0,hi=1,step=.01;
+    switch(c) {
+    case C::Cutoff: lo=20; hi=20000; step=1; break;
+    case C::Wave1: case C::Wave2: lo=0; hi=4; step=1; break;
+    case C::Attack: case C::Attack1: case C::Attack2: lo=0; hi=10000; step=1; break;
+    case C::Decay1: case C::Decay2: lo=0; hi=20000; step=1; break;
+    case C::Sustain1: case C::Sustain2: lo=0; hi=100; step=.1; break;
+    case C::Release: case C::Release1: case C::Release2: lo=0; hi=30000; step=1; break;
+    case C::Resonance: lo=.5; hi=10; step=.01; break;
+    case C::Reverb: lo=0; hi=6; step=1; break;
+    case C::DelayFeedback: case C::PianoRoomDamp: case C::ReverbDamp: hi=.99; break;
+    case C::BedRise: hi=60; step=.5; break;
+    case C::BedRiseCutoff: lo=200; hi=20000; step=1; break;
+    case C::BedMellowCutoff: lo=100; hi=8000; step=1; break;
+    case C::MasterLow: case C::MasterMid: case C::MasterHigh: lo=-6; hi=6; step=.1; break;
+    case C::MasterLowcutHz: lo=20; hi=200; step=1; break;
+    case C::ReverbDecay: hi=30; step=.1; break;
+    case C::ReverbPredelay: hi=150; step=1; break;
+    case C::ReverbLowcut: case C::ReverbHighcut: lo=20; hi=20000; step=1; break;
+    case C::DelayTime: lo=1; hi=1000; step=1; break;
+    case C::DelayLowcut: lo=20; hi=1000; step=1; break;
+    case C::DelayHighcut: lo=500; hi=20000; step=1; break;
+    case C::Transpose: lo=-24; hi=24; step=1; break;
+    case C::PianoOctave: case C::Octave1: case C::Octave2: lo=-3; hi=3; step=1; break;
+    case C::Shimmer: case C::Freeze: case C::EnvelopeLink: case C::MasterLowcut: case C::BedMellow:
+        step=1; break;
+    default: break;
+    }
+    const double value=lo+(hi-lo)*std::min(raw,127u)/127.;
+    return std::clamp(lo+std::round((value-lo)/step)*step,lo,hi);
+}
 enum class AuditionFault : unsigned { None, Stop, GraphContract, MidiOverflow, InvalidMidi, Engine };
 struct AuditionCommand { std::uint64_t id{}; AuditionControl control{}; double value{}; };
 struct AuditionMidi { unsigned offset{},size{}; std::array<unsigned char,3> bytes{}; };
@@ -80,6 +118,9 @@ public:
     // Optional one-take transport must outlive this session and its callback.
     // Attaching is pre-activation only; file worker/start/stop UI is separate.
     explicit AuditionSession(StageInstrument& instrument,RecordingCapture<>* capture=nullptr):graph_(instrument),capture_(capture) {
+        for(auto& mapped:cc_map_) mapped.store(-1,std::memory_order_relaxed);
+        for(auto& raw:mapped_raw_) raw.store(-1,std::memory_order_relaxed);
+        for(auto& serial:mapped_serial_) serial.store(0,std::memory_order_relaxed);
         for(unsigned i=0;i<12;++i) if(graph_.bed_loaded(i)) bed_mask_|=1u<<i;
         config_.owned_motion=true;
         config_.fader1=config_.fader2=0; // start piano-only; no saved patch imported
@@ -112,6 +153,30 @@ public:
     std::uint64_t unsupported_midi() const noexcept { return unsupported_.load(std::memory_order_relaxed); }
     std::uint64_t quantized_midi() const noexcept { return quantized_.load(std::memory_order_relaxed); }
     std::uint64_t piano_full_scale() const noexcept { return full_scale_.load(std::memory_order_relaxed); }
+    std::uint64_t midi_cc_serial() const noexcept { return midi_cc_serial_.load(std::memory_order_relaxed); }
+    unsigned midi_cc() const noexcept { return midi_cc_.load(std::memory_order_relaxed); }
+    unsigned midi_cc_value() const noexcept { return midi_cc_value_.load(std::memory_order_relaxed); }
+    std::uint64_t midi_apply_serial() const noexcept { return midi_apply_serial_.load(std::memory_order_relaxed); }
+    int midi_apply_control() const noexcept { return midi_apply_control_.load(std::memory_order_relaxed); }
+    unsigned midi_apply_value() const noexcept { return midi_apply_value_.load(std::memory_order_relaxed); }
+    int midi_mapped_raw(unsigned control) const noexcept {
+        return control<unsigned(AuditionControl::Count)?mapped_raw_[control].load(std::memory_order_relaxed):-1;
+    }
+    std::uint64_t midi_mapped_serial(unsigned control) const noexcept {
+        return control<unsigned(AuditionControl::Count)?mapped_serial_[control].load(std::memory_order_acquire):0;
+    }
+    bool map_cc(unsigned cc,AuditionControl control) noexcept {
+        if(cc>=128||cc==64||cc==66||cc==120||cc==123||!audition_mappable(control)) return false;
+        for(auto& mapped:cc_map_) if(mapped.load(std::memory_order_relaxed)==int(control))
+            mapped.store(-1,std::memory_order_release);
+        const int old=cc_map_[cc].exchange(int(control),std::memory_order_acq_rel);
+        if(old>=0&&old<int(AuditionControl::Count)) {
+            mapped_raw_[unsigned(old)].store(-1,std::memory_order_relaxed);
+            mapped_serial_[unsigned(old)].store(0,std::memory_order_release);
+        }
+        mapped_raw_[unsigned(control)].store(-1,std::memory_order_relaxed);
+        mapped_serial_[unsigned(control)].store(0,std::memory_order_release); return true;
+    }
     unsigned bed_mask() const noexcept { return bed_mask_; } // immutable before publication
     unsigned active_beds() const noexcept { return active_beds_.load(std::memory_order_relaxed); }
     int bed_key() const noexcept { return bed_key_.load(std::memory_order_relaxed); }
@@ -142,9 +207,30 @@ public:
             ++t; tail_.store(t,std::memory_order_release);
             applied_.store(c.id,std::memory_order_release);
         }
+        std::array<double,unsigned(AuditionControl::Count)> mapped_values{};
+        std::array<bool,unsigned(AuditionControl::Count)> mapped_seen{};
         for(unsigned i=0;i<count;++i) {
+            const auto& event=events[i];
+            if((event.bytes[0]&0xf0)==0xb0) {
+                const unsigned cc=event.bytes[1],raw=event.bytes[2];
+                midi_cc_.store(cc,std::memory_order_relaxed); midi_cc_value_.store(raw,std::memory_order_relaxed);
+                midi_cc_serial_.fetch_add(1,std::memory_order_release);
+                const int mapped=cc_map_[cc].load(std::memory_order_acquire);
+                if(mapped>=0&&mapped<int(AuditionControl::Count)) {
+                    const auto control=static_cast<AuditionControl>(mapped);
+                    mapped_values[unsigned(control)]=audition_midi_value(control,raw); mapped_seen[unsigned(control)]=true;
+                    mapped_raw_[unsigned(control)].store(int(raw),std::memory_order_relaxed);
+                    midi_apply_control_.store(mapped,std::memory_order_relaxed); midi_apply_value_.store(raw,std::memory_order_relaxed);
+                    const auto serial=midi_apply_serial_.fetch_add(1,std::memory_order_relaxed)+1;
+                    mapped_serial_[unsigned(control)].store(serial,std::memory_order_release);
+                }
+            }
             if(!midi(events[i])) { request_stop(AuditionFault::Engine); return silence(l,r,frames); }
             if(events[i].offset) quantized_.fetch_add(1,std::memory_order_relaxed);
+        }
+        for(unsigned c=0;c<unsigned(AuditionControl::Count);++c) if(mapped_seen[c]&&
+           !apply({0,static_cast<AuditionControl>(c),mapped_values[c]})) {
+            request_stop(AuditionFault::Engine); return silence(l,r,frames);
         }
         if(fault()!=AuditionFault::None||!graph_.render_block()) {
             request_stop(AuditionFault::Engine); return silence(l,r,frames);
@@ -183,6 +269,8 @@ private:
             if(note==64||note==66) return send(note==64?StageAction::Sustain:StageAction::Sostenuto,0,v>=64);
             if(note==123) return send(StageAction::ReleaseAll,0,0);
             if(note==120) { request_stop(); return true; }
+            // Learned CCs were coalesced and applied earlier in this callback.
+            if(cc_map_[unsigned(note)].load(std::memory_order_acquire)>=0) return true;
         }
         unsupported_.fetch_add(1,std::memory_order_relaxed); return true;
     }
@@ -280,5 +368,11 @@ private:
     bool envelope_link_{};
     std::atomic<AuditionFault> fault_{AuditionFault::None};
     std::atomic<std::uint64_t> applied_{0},blocks_{0},notes_{0},unsupported_{0},quantized_{0},full_scale_{0};
+    std::array<std::atomic<int>,128> cc_map_{};
+    std::array<std::atomic<int>,unsigned(AuditionControl::Count)> mapped_raw_{};
+    std::array<std::atomic<std::uint64_t>,unsigned(AuditionControl::Count)> mapped_serial_{};
+    std::atomic<std::uint64_t> midi_cc_serial_{0},midi_apply_serial_{0};
+    std::atomic<unsigned> midi_cc_{0},midi_cc_value_{0},midi_apply_value_{0};
+    std::atomic<int> midi_apply_control_{-1};
 };
 } // namespace stave

@@ -246,6 +246,25 @@ int main(int argc,char** argv) {
         while(!done.load(std::memory_order_acquire)||controls.applied()!=first+1999)
             check(controls.process(l.data(),r.data(),frames,nullptr,0));
         producer.join(); controls.request_stop(); check(!controls.process(l.data(),r.data(),frames,nullptr,0));
+        // Learned MIDI stays inside the audio owner: one CC is coalesced per
+        // control/block, safety pedals remain reserved, and telemetry is
+        // versioned so a later browser edit is not overwritten by stale data.
+        {
+            Random d; stave::StageInstrument g2(argv[1],d,frames,0,&d); stave::AuditionSession learned(g2);
+            check(!learned.map_cc(64,C::Master)&&!learned.map_cc(120,C::Master));
+            check(!learned.map_cc(21,C::ReleaseAll)&&learned.map_cc(21,C::Master));
+            stave::AuditionMidi e{0,3,{0xb0,21,127}};
+            check(learned.process(l.data(),r.data(),frames,&e,1));
+            check(learned.midi_cc()==21&&learned.midi_cc_value()==127&&learned.midi_cc_serial()==1);
+            check(learned.midi_apply_control()==int(C::Master)&&learned.midi_apply_value()==127&&learned.midi_apply_serial()==1);
+            check(learned.midi_mapped_raw(unsigned(C::Master))==127&&learned.midi_mapped_serial(unsigned(C::Master))==1);
+            check(learned.unsupported_midi()==0);
+            check(learned.map_cc(21,C::Cutoff));
+            check(learned.midi_mapped_raw(unsigned(C::Master))==-1&&learned.midi_mapped_serial(unsigned(C::Master))==0);
+            e.bytes={0xb0,21,0}; check(learned.process(l.data(),r.data(),frames,&e,1));
+            check(learned.midi_mapped_raw(unsigned(C::Cutoff))==0&&learned.midi_mapped_serial(unsigned(C::Cutoff))==2);
+            check(stave::audition_midi_value(C::Cutoff,0)==20&&stave::audition_midi_value(C::Cutoff,127)==20000);
+        }
         // MIDI edge/fault paths on fresh instances.
         for(unsigned mode=0;mode<6;++mode) {
             Random d; stave::StageInstrument g2(argv[1],d,frames,0,&d); stave::AuditionSession midi(g2);

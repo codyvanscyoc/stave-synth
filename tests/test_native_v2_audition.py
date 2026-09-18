@@ -145,6 +145,30 @@ class AuditionControlTests(unittest.TestCase):
         self.assertEqual(c.values["piano_tone"], .5)
         self.assertEqual(c.values["cutoff"], 8000)  # independent synth filter
 
+    def test_midi_learn_validation_queue_and_one_time_reconciliation(self):
+        for bad in ({"key": "master", "cc": 64}, {"key": "release_all", "cc": 21},
+                    {"key": "master", "cc": True}, {"key": "master", "cc": 128},
+                    {"key": "missing", "cc": 21}, {"key": "master"}):
+            with self.assertRaises(ValueError):
+                audition.validate_midi_mapping(bad)
+        self.assertEqual(audition.validate_midi_mapping({"key": "master", "cc": 21}), ("master", 21))
+        self.assertEqual(audition.midi_value("cutoff", 0), 20)
+        self.assertEqual(audition.midi_value("cutoff", 127), 20000)
+        c = self.controller()
+        sequence = c.map_cc({"key": "osc1", "cc": 21})
+        self.assertEqual(c.outgoing.get_nowait(), ("map", sequence, 21, "osc1"))
+        c.receive({"type": "mapped", "id": sequence, "ok": True})
+        self.assertEqual(c.snapshot()["map_pending"], 0)
+        raw = [-1] * len(audition.CONTROLS); serials = [0] * len(audition.CONTROLS)
+        index = list(audition.CONTROLS).index("osc1"); raw[index] = 127; serials[index] = 1
+        c.receive({"type": "status", "instance": "native-v2-audition", "fault": 0, "applied": 0,
+                   "routed": True, "blocks": 2, "midi_mapped_raw": raw, "midi_mapped_serial": serials})
+        self.assertEqual(c.snapshot()["values"]["osc1"], 1)
+        change = c.submit({"key": "osc1", "value": .2})
+        c.receive({"type": "status", "instance": "native-v2-audition", "fault": 0, "applied": change,
+                   "routed": True, "blocks": 3, "midi_mapped_raw": raw, "midi_mapped_serial": serials})
+        self.assertEqual(c.snapshot()["values"]["osc1"], .2, "old MIDI telemetry must not overwrite a newer UI edit")
+
     def test_same_origin_and_host_guards(self):
         c = self.controller()
         server = audition.HTTPServer(("127.0.0.1", 0), audition.BaseHTTPRequestHandler)
@@ -169,7 +193,8 @@ class AuditionControlTests(unittest.TestCase):
         html = (ROOT / "native_v2/audition.html").read_text()
         javascript = html.split("<script>", 1)[1].split("</script>", 1)[0]
         subprocess.run(["node", "--check", "-"], input=javascript, text=True, capture_output=True, check=True)
-        self.assertIn("MIDI mapping and named preset banks are the remaining interface migrations", html)
+        self.assertIn("Tap an outlined Stave control, then move one hardware knob", html)
+        self.assertIn("data-midi-selected", html)
         self.assertIn("512 is the accepted listening profile", html)
         self.assertIn("pending.clear()", html)
 

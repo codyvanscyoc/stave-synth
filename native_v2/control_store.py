@@ -127,3 +127,54 @@ class PresetStore:
             atomic.atomic_write_json(self.path, {"schema": 1, "slots": next_slots}, max_bytes=65536)
         self.slots = next_slots
         return self.summary()
+
+
+class MidiMapStore:
+    """Bounded CC learn assignments; notes and pedal-safety CCs stay untouched."""
+    def __init__(self, path, validate_mapping):
+        self.path = Path(path)
+        if self.path.name != "native_midi_map.json" or self.path.is_symlink():
+            raise ValueError("Separate native_midi_map.json required")
+        self.validate_mapping = validate_mapping
+        self.lock = threading.Lock()
+        self.mappings = {}
+        self.load()
+
+    def validated(self, value):
+        if not isinstance(value, dict) or len(value) > 48:
+            raise ValueError("Bounded MIDI map required")
+        result = {}
+        used = set()
+        for key, cc in value.items():
+            valid_key, valid_cc = self.validate_mapping({"key": key, "cc": cc})
+            if valid_cc in used:
+                raise ValueError("Each MIDI CC can control only one Stave parameter")
+            used.add(valid_cc); result[valid_key] = valid_cc
+        return result
+
+    def load(self):
+        try:
+            fd = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            return self.mappings
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > 16384:
+                raise ValueError("Invalid/oversized native MIDI map")
+            data = json.loads(stream.read(16385))
+        if not isinstance(data, dict) or set(data) != {"schema", "mappings"} or type(data["schema"]) is not int or data["schema"] != 1:
+            raise ValueError("Unsupported native MIDI-map schema")
+        self.mappings = self.validated(data["mappings"])
+        return self.mappings
+
+    def assign(self, key, cc):
+        key, cc = self.validate_mapping({"key": key, "cc": cc})
+        next_map = {old_key: old_cc for old_key, old_cc in self.mappings.items() if old_key != key and old_cc != cc}
+        next_map[key] = cc
+        next_map = self.validated(next_map)
+        with self.lock:
+            if self.path.is_symlink():
+                raise ValueError("Symlink MIDI-map destination refused")
+            atomic.atomic_write_json(self.path, {"schema": 1, "mappings": next_map}, max_bytes=16384)
+        self.mappings = next_map
+        return dict(self.mappings)

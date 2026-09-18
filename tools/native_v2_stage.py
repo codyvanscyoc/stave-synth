@@ -84,6 +84,7 @@ class CandidateHub:
         self.routes = validate_routes(routes)
         self.saved = {}
         self.presets = None
+        self.midi_map = None
         self.save_message = "No native sound saved yet. Master stays muted until you save a sound with a deliberate level."
         self.state_warning = None
         try:
@@ -109,6 +110,10 @@ class CandidateHub:
             self.presets = storage.PresetStore(store.path.with_name("native_presets.json"), store)
         except (OSError, ValueError, TypeError) as error:
             self.state_warning = "Preset warning: " + str(error)
+        try:
+            self.midi_map = storage.MidiMapStore(store.path.with_name("native_midi_map.json"), audition.validate_midi_mapping)
+        except (OSError, ValueError, TypeError) as error:
+            self.state_warning = "MIDI-map warning: " + str(error)
         self.active = None
         # Preparation belongs to the instrument, not to a connected keyboard.
         # Only acknowledged tone values enter this draft; never performance actions.
@@ -116,6 +121,8 @@ class CandidateHub:
         self.epoch = uuid.uuid4().hex
         self.restoring = True
         self.restore_sequence = None
+        self.map_restore_queued = False
+        self.map_restored = False
         self.restore_started = 0
         self.message = "Waiting for selected devices."
         self.restart = False
@@ -138,6 +145,8 @@ class CandidateHub:
             self.epoch = uuid.uuid4().hex
             self.restoring = True
             self.restore_sequence = None
+            self.map_restore_queued = False
+            self.map_restored = False
             self.restore_started = time.monotonic()
             self.message = "Starting audio and restoring the saved sound; Master restores last."
             self.restarts += 1
@@ -187,6 +196,17 @@ class CandidateHub:
             data = self.active.snapshot()
             if data["stale"] or data["status"].get("fault", 1) or not data["status"].get("routed"):
                 return
+            if not self.map_restored:
+                if not self.map_restore_queued:
+                    for key, cc in (self.midi_map.mappings.items() if self.midi_map else ()):
+                        self.active.map_cc({"key": key, "cc": cc})
+                    self.map_restore_queued = True
+                mapped = self.active.snapshot()
+                if mapped["error"]:
+                    raise ValueError("Saved MIDI mapping was rejected: " + mapped["error"])
+                if mapped.get("map_pending"):
+                    return
+                self.map_restored = True
             if self.restore_sequence is None:
                 last = 0
                 for key, value in audition.restore_items(self.prepared):
@@ -218,6 +238,7 @@ class CandidateHub:
                            "writer": data['status'].get('writer_state', 0),
                            "frames": data['status'].get('writer_frames', 0)},
                 presets=self.presets.summary() if self.presets else [None] * 5, **self.routes,
+                midi_maps=dict(self.midi_map.mappings) if self.midi_map else {},
                 scope="Native512 stage engine: selected-device recovery restores saved controls with Master last. Browser disconnect does not stop audio."))
             return data
 
@@ -292,6 +313,15 @@ class CandidateHub:
                     raise ValueError("Wait for audio recovery before storing a preset")
                 summary = self.presets.save_slot(data["slot"], data["name"], values)
                 return {"presets": summary, "message": "Preset stored."}
+            if path == "/midi-map":
+                key, cc = audition.validate_midi_mapping(data)
+                if not self.midi_map:
+                    raise ValueError("MIDI-map persistence is unavailable")
+                if not self.active or self.restoring:
+                    raise ValueError("Connect MIDI and wait for audio before learning a control")
+                sequence = self.active.map_cc({"key": key, "cc": cc})
+                mappings = self.midi_map.assign(key, cc)
+                return {"queued": sequence, "midi_maps": mappings, "message": f"Mapped CC {cc} to {key}."}
             if self.active is None and not self.restart:
                 if path == '/control':
                     key, value = audition.validate_control(data)

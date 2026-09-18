@@ -8,16 +8,26 @@ class Element {
   append(child){this.children.push(child);}
   replaceChildren(){this.children=[];}
   setAttribute(key,value){this.attributes[key]=value;}
+  getAttribute(key){return this.attributes[key];}
   addEventListener(key,fn){this.listeners[key]=fn;}
   focus(){document.activeElement=this;}
   getBoundingClientRect(){return {height:208,width:208};}
   setPointerCapture(id){this.capture=id;}
   hasPointerCapture(id){return this.capture===id;}
   releasePointerCapture(){this.capture=null;}
+  closest(selector){return selector==='[data-map-key]'&&this.attributes['data-map-key']?this:null;}
 }
 const nodes=new Map();
 const presetNodes=Array.from({length:5},()=>new Element());
-const document={activeElement:null,addEventListener(){},createElement:()=>new Element(),querySelectorAll:selector=>selector==='[data-preset]'?presetNodes:[],getElementById:id=>{
+const documentListeners={};const bodyClasses=new Set();
+const document={activeElement:null,body:{classList:{toggle(name,on){if(on)bodyClasses.add(name);else bodyClasses.delete(name);}}},addEventListener(key,fn){documentListeners[key]=fn;},createElement:()=>new Element(),querySelectorAll:selector=>{
+  if(selector==='[data-preset]')return presetNodes;
+  if(selector==='[data-map-key]'){
+    const result=[];const visit=node=>{if(node.attributes?.['data-map-key'])result.push(node);for(const child of node.children||[])visit(child);};
+    for(const node of nodes.values())visit(node);return [...new Set(result)];
+  }
+  return [];
+},getElementById:id=>{
   if(!nodes.has(id))nodes.set(id,new Element());return nodes.get(id);
 }};
 for(let i=0;i<3;i++)document.getElementById('transpose-stepper').append(new Element());
@@ -56,7 +66,7 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
   assert.equal(vm.runInContext("fromSlider('cutoff',0)",context),20);
   assert.equal(vm.runInContext("fromSlider('cutoff',1000)",context),20000);
   const filter=nodes.get('mixer').children[3].children.find(x=>x.type==='range');filter.value=500;filter.listeners.input();await flush();
-  assert.deepEqual(sent.at(-1),{key:'cutoff',value:632});assert.equal(filter.attributes['aria-valuetext'],'632 Hz');
+  assert.deepEqual(sent.at(-1),{key:'cutoff',value:632},nodes.get('notice').textContent);assert.equal(filter.attributes['aria-valuetext'],'632 Hz');
   const fx=nodes.get('mixer').children[4].children.find(x=>x.type==='range');
   const pointer=(type,y,id=1,x=20)=>{let prevented=false;fx.listeners[type]({button:0,pointerId:id,clientY:y,clientX:x,preventDefault(){prevented=true;}});return prevented;};
   let before=sent.length;
@@ -119,6 +129,15 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
   state={...state,epoch:'session-a',runtime:{persistence:true,can_restart:true,restoring:false,devices:{midi:['Keys:midi'],audio:['USB:l','USB:r']},midi_source:'Keys:midi',audio_left:'USB:l',audio_right:'USB:r'}};
   await vm.runInContext('poll()',context);
   assert.equal(nodes.get('save').disabled,false);assert.equal(nodes.get('route-picker').hidden,false);
+  assert.equal(nodes.get('midi-map').disabled,false);
+  nodes.get('midi-map').onclick();assert.ok(bodyClasses.has('midi-map-mode'));assert.equal(nodes.get('midi-map-banner').hidden,false);
+  const osc1=nodes.get('mixer').children[0];
+  documentListeners.pointerdown({target:osc1,preventDefault(){},stopImmediatePropagation(){}});
+  assert.equal(osc1.attributes['data-midi-selected'],'true');
+  state={...state,status:{...state.status,midi_cc_serial:1,midi_cc:23,midi_cc_value:99}};
+  await vm.runInContext('poll()',context);await flush();
+  assert.deepEqual(actions.at(-1).body,{key:'osc1',cc:23});assert.equal(actions.at(-1).url,'/midi-map');
+  nodes.get('midi-map-done').onclick();assert.ok(!bodyClasses.has('midi-map-mode'));assert.equal(nodes.get('midi-map-banner').hidden,true);
   nodes.get('save').onclick();await flush();assert.equal(actions.at(-1).url,'/save');assert.equal(actions.at(-1).epoch,'session-a');
   nodes.get('apply-routes').onclick();await flush();assert.deepEqual(actions.at(-1).body,{midi_source:'Keys:midi',audio_left:'USB:l',audio_right:'USB:r'});
   state={...state,epoch:'session-b',runtime:{...state.runtime,restoring:true}};
