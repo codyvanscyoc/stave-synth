@@ -44,6 +44,10 @@ CONTROLS = {
     "envelope_link": (0, 1, 1, 0),
     "master_low": (-6, 6, .1, 0), "master_mid": (-6, 6, .1, 0), "master_high": (-6, 6, .1, 0),
     "master_lowcut": (0, 1, 1, 0), "master_lowcut_hz": (20, 200, 1, 80),
+    "piano_room_size": (0, 1, .01, .5), "piano_room_damp": (0, .99, .01, .6),
+    "reverb_decay": (0, 30, .1, 6), "reverb_predelay": (0, 150, 1, 25),
+    "reverb_lowcut": (20, 20000, 1, 80), "reverb_highcut": (20, 20000, 1, 7000), "reverb_damp": (0, .99, .01, .5),
+    "delay_time": (1, 1000, 1, 500), "delay_lowcut": (20, 1000, 1, 20), "delay_highcut": (500, 20000, 1, 18000),
 }
 INTEGRAL = {"wave1", "wave2", "shimmer", "reverb", "freeze", "release_all", "bed_key", "bed_mellow", "bed_fade", "bed_release", "envelope_link", "master_lowcut"}
 
@@ -51,6 +55,11 @@ INTEGRAL = {"wave1", "wave2", "shimmer", "reverb", "freeze", "release_all", "bed
 def apply_value(values, key, value):
     """Mirror one acknowledged native transaction (also used without devices)."""
     values[key] = value
+    if key == "reverb":
+        preset = ((6, 25, 80, 7000, .5), (9, 45, 120, 8500, .35), (1.5, 8, 200, 10000, .7),
+                  (3, 5, 150, 11000, .3), (7, 30, 150, 7000, .55), (10, 15, 50, 4000, .3), (8, 20, 100, 6500, .5))[int(value)]
+        for name, setting in zip(("reverb_decay", "reverb_predelay", "reverb_lowcut", "reverb_highcut", "reverb_damp"), preset):
+            values[name] = setting
     if key in ("attack", "release"):
         values[key + "1"] = values[key + "2"] = value
     elif key in {p + n for p in ("attack", "decay", "sustain", "release") for n in ("1", "2")}:
@@ -62,7 +71,7 @@ def restore_items(values):
     # A newly attached native owner starts unlinked. Legacy aliases first,
     # explicit independent values next, LINK last: unequal linked patches
     # remain unequal until the player's next linked edit.
-    return sorted(values.items(), key=lambda item: 0 if item[0] in ("attack", "release") else 2 if item[0] == "envelope_link" else 1)
+    return sorted(values.items(), key=lambda item: 0 if item[0] in ("attack", "release", "reverb") else 2 if item[0] == "envelope_link" else 1)
 
 
 def validate_control(data):
@@ -75,6 +84,16 @@ def validate_control(data):
     if not low <= value <= high or not math.isfinite(value) or (key in INTEGRAL and value != int(value)):
         raise ValueError("Control outside audition range")
     return key, value
+
+
+def validate_control_pair(values, key, value):
+    """Reject crossed tone filters before they can reach the audio owner."""
+    pairs = {"reverb_lowcut": "reverb_highcut", "delay_lowcut": "delay_highcut"}
+    reverse = {high: low for low, high in pairs.items()}
+    if key in pairs and value >= values.get(pairs[key], CONTROLS[pairs[key]][3]):
+        raise ValueError("Low cut must remain below high cut")
+    if key in reverse and value <= values.get(reverse[key], CONTROLS[reverse[key]][3]):
+        raise ValueError("High cut must remain above low cut")
 
 
 class Controller:
@@ -100,6 +119,10 @@ class Controller:
                 raise ValueError("Audio owner is not ready; no control replay")
             if len(self.pending) >= 64 or self.outgoing.full():
                 raise ValueError("Control backlog full; wait for acknowledgment")
+            effective = self.values.copy()
+            for pending_key, pending_value in self.pending.values():
+                apply_value(effective, pending_key, pending_value)
+            validate_control_pair(effective, key, value)
             mask = self.status.get("bed_mask", 0)
             if key.startswith("bed_") and (not mask or (key == "bed_key" and not mask & (1 << int(value)))):
                 raise ValueError("No recording loaded for this pad/key")

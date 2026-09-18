@@ -229,6 +229,7 @@ class CandidateHub:
                     key, value = audition.validate_control(data)
                     if key in storage.TRANSIENT:
                         raise ValueError('Output and performance actions require audio; tone controls can be prepared now')
+                    audition.validate_control_pair(self.prepared, key, value)
                     audition.apply_value(self.prepared, key, value)
                     return {'prepared': True, 'applied': False}
                 if path == '/save' and data == {}:

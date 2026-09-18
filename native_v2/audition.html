@@ -72,7 +72,7 @@ body{max-width:1800px;padding:18px 28px 24px}.brand-lockup{display:flex;align-it
 header{margin-bottom:10px}.statusbar{gap:16px;font-size:11px;padding-top:8px}.device-state{color:var(--muted)}.device-state[data-connected=true]{color:var(--mint)}#notice:empty{display:none}#notice{min-height:0;margin:8px 0;color:var(--gold)}
 #mixer{gap:clamp(14px,2.8vw,44px)}#mixer input[type=range]{height:clamp(300px,calc(100svh - 480px),880px)}#mixer .control-name{font-size:15px;letter-spacing:.15em}#mixer output{font-size:14px}.performance-panel{margin-top:20px}
 #tone-controls{margin:10px auto}.performance-actions{margin:8px 0 14px}.performance-actions button{font-size:12px;min-height:44px}.bed-panel{padding-top:10px}.bed-panel .section-head p{display:none}#bed-status{font-size:11px;margin-bottom:8px}#bed-keys button{min-height:54px}.bed-actions{margin:8px 0 0}.bed-actions button{min-height:44px}.footer-note{margin-top:12px}
-.edit-group>p{margin:6px 0 16px}.osc-layout .control-grid{grid-template-columns:minmax(0,1fr)}.edit-group label.control{background:transparent;border:0}.osc-layout .voice{padding:18px}.osc-layout .control-name{display:none!important}.choice-control output{display:none!important}.edit-group label.knob-control{position:relative;min-height:166px;padding:12px 6px}.edit-group label.knob-control .control-name{min-height:32px}.edit-group label.knob-control input[type=range]{width:90px;height:90px;min-height:90px;opacity:0;margin-top:4px;box-shadow:none}.knob-dial{position:absolute;top:48px;left:calc(50% - 45px);width:90px;height:90px;border:2px solid var(--mint);border-radius:50%;pointer-events:none;background:var(--bg)}.knob-dial::after{content:'';position:absolute;top:9px;left:calc(50% - 1.5px);width:3px;height:23px;background:var(--mint);transform-origin:50% 34px;transform:rotate(var(--knob-turn,-135deg))}.knob-control:focus-within .knob-dial{outline:2px solid var(--gold);outline-offset:5px}.knob-control:has(input:disabled) .knob-dial{opacity:.35}
+.edit-group>p{margin:6px 0 16px}.osc-layout .control-grid{grid-template-columns:minmax(0,1fr)}.edit-group label.control{background:transparent;border:0}.osc-layout .voice{padding:18px}.osc-layout .control-name{display:none!important}.choice-control output{display:none!important}.edit-group label.knob-control{position:relative;min-height:166px;padding:12px 6px}.edit-group label.knob-control .control-name{min-height:32px}.edit-group label.knob-control input[type=range]{width:90px;height:90px;min-height:90px;opacity:0;margin-top:4px;box-shadow:none}.knob-dial{position:absolute;top:48px;left:calc(50% - 45px);width:90px;height:90px;border:2px solid var(--mint);border-radius:50%;pointer-events:none;background:var(--bg)}.knob-dial::after{content:'';position:absolute;top:9px;left:calc(50% - 1.5px);width:3px;height:23px;background:var(--mint);transform-origin:50% 34px;transform:rotate(var(--knob-turn,-135deg))}.knob-control[data-active=true] .knob-dial,.knob-control:has(input:focus-visible) .knob-dial{outline:2px solid var(--gold);outline-offset:5px}.knob-control:has(input:disabled) .knob-dial{opacity:.35}
 @media(max-width:700px){body{padding:12px 14px 24px}.brand-lockup{gap:10px}.retro-logo{width:46px;height:46px}.brand{font-size:20px}header{gap:10px}.statusbar{gap:8px 12px}.header-actions button{min-width:70px}#mixer{gap:18px 16px}#mixer input[type=range]{height:clamp(210px,34svh,360px)}#mixer .control-name{font-size:12px}#mixer output{font-size:12px}#tone-controls{margin:12px auto}.performance-actions{margin-top:12px}.edit-group label.knob-control input[type=range]{width:82px;height:82px;min-height:82px}.knob-dial{width:82px;height:82px;left:calc(50% - 41px)}.knob-dial::after{height:21px;transform-origin:50% 30px}.bed-actions button{min-width:90px}}
 @media(min-width:701px) and (max-height:600px){#mixer input[type=range]{height:300px}}
 @media(min-width:701px){#tone-controls{max-width:640px}#tone-controls label{display:grid;grid-template-columns:auto minmax(140px,1fr) auto;gap:14px;align-items:center}#tone-controls .control-name{font-size:11px}#tone-controls input{order:1;min-height:36px;height:36px}#tone-controls output{order:2;font-size:12px}}
@@ -133,22 +133,28 @@ for(const n of [1,2])for(const [part,max] of [['attack',10000],['decay',20000],[
 Object.assign(labels,{envelope_link:'Link envelopes',master_low:'Low · 200 Hz',master_mid:'Mid · 1 kHz',master_high:'High · 5 kHz',master_lowcut:'Low cut',master_lowcut_hz:'Low cut frequency'});
 editGroups.envelope_link='link';choices.envelope_link=['Independent','Linked edits'];choices.master_lowcut=['Off','On'];
 for(const key of ['master_low','master_mid','master_high','master_lowcut','master_lowcut_hz']){editGroups[key]='global';if(key!=='master_lowcut')knobKeys.add(key);}
+Object.assign(labels,{piano_room_size:'Room size',piano_room_damp:'Room warmth',reverb_decay:'Decay',reverb_predelay:'Pre-delay',reverb_lowcut:'Low cut',reverb_highcut:'High cut',reverb_damp:'Damping',delay_time:'Time',delay_lowcut:'Low cut',delay_highcut:'High cut'});
+for(const key of ['piano_room_size','piano_room_damp']){editGroups[key]='piano';knobKeys.add(key);}
+for(const key of ['reverb_decay','reverb_predelay','reverb_lowcut','reverb_highcut','reverb_damp']){editGroups[key]='reverb';knobKeys.add(key);}
+for(const key of ['delay_time','delay_lowcut','delay_highcut']){editGroups[key]='delay';knobKeys.add(key);}
+const frequencyKeys=new Set(['cutoff','reverb_lowcut','reverb_highcut','delay_lowcut','delay_highcut']);
+const frequencyRanges={cutoff:[20,20000],reverb_lowcut:[20,20000],reverb_highcut:[20,20000],delay_lowcut:[20,1000],delay_highcut:[500,20000]};
 const gestures=new Map();
 function cancelGestures(){for(const cancel of [...gestures.values()])cancel();}
 // Relative pickup prevents a track tap from sending a sudden parameter jump.
 // Keyboard and assistive range input continue to use the browser's input event.
-function bindPickup(input,key){
+function bindPickup(input,key,label){
   let drag=null;
   // Some range widgets also handle legacy touch events after pointerdown.
   // Suppress that native track-seeking path as well as mouse defaults.
   input.addEventListener('touchstart',e=>{if(ready&&!input.disabled)e.preventDefault();},{passive:false});
   input.addEventListener('touchmove',e=>{if(drag)e.preventDefault();},{passive:false});
-  const finish=()=>{if(!drag)return;const id=drag.id;drag=null;gestures.delete(key);if(input.hasPointerCapture(id))input.releasePointerCapture(id);};
+  const finish=()=>{if(!drag)return;const {id,pointerType}=drag;drag=null;gestures.delete(key);label.setAttribute('data-active','false');if(input.hasPointerCapture(id))input.releasePointerCapture(id);if(pointerType==='touch'&&typeof input.blur==='function')input.blur();};
   input.addEventListener('pointerdown',e=>{
     if(input.disabled||!ready||e.button!==0)return;
     e.preventDefault();if(drag)return;
-    input.focus({preventScroll:true});const vertical=performanceKeys.includes(key),rect=input.getBoundingClientRect();
-    drag={id:e.pointerId,position:vertical?e.clientY:e.clientX,value:Number(input.value),span:knobKeys.has(key)?240:Math.max(1,(vertical?rect.height:rect.width)-8),vertical,epoch};
+    input.focus({preventScroll:true});label.setAttribute('data-active','true');const vertical=performanceKeys.includes(key),rect=input.getBoundingClientRect();
+    drag={id:e.pointerId,pointerType:e.pointerType||'',position:vertical?e.clientY:e.clientX,value:Number(input.value),span:knobKeys.has(key)?240:Math.max(1,(vertical?rect.height:rect.width)-8),vertical,epoch};
     gestures.set(key,finish);input.setPointerCapture(e.pointerId);
   });
   input.addEventListener('pointermove',e=>{
@@ -168,18 +174,35 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden)cancelGestu
 window.addEventListener('blur',cancelGestures);
 // Original Stave's filter gesture was logarithmic. Wire values remain Hz;
 // render/restore never quantizes or sends the saved value back to the engine.
-function toSlider(key,value){if(envelopeTimes[key])return 1000*Math.log1p(value/10)/Math.log1p(envelopeTimes[key]/10);return key==='cutoff'?1000*Math.log(Math.max(20,Math.min(20000,value))/20)/Math.log(1000):value;}
-function fromSlider(key,value){if(envelopeTimes[key])return Math.round(10*Math.expm1(Number(value)/1000*Math.log1p(envelopeTimes[key]/10)));return key==='cutoff'?Math.round(20*Math.pow(1000,Math.max(0,Math.min(1000,Number(value)))/1000)):Number(value);}
+function toSlider(key,value){if(envelopeTimes[key])return 1000*Math.log1p(value/10)/Math.log1p(envelopeTimes[key]/10);if(frequencyKeys.has(key)){const [min,max]=frequencyRanges[key];return 1000*Math.log(Math.max(min,Math.min(max,value))/min)/Math.log(max/min);}return value;}
+function fromSlider(key,value){if(envelopeTimes[key])return Math.round(10*Math.expm1(Number(value)/1000*Math.log1p(envelopeTimes[key]/10)));if(frequencyKeys.has(key)){const [min,max]=frequencyRanges[key];return Math.round(min*Math.pow(max/min,Math.max(0,Math.min(1000,Number(value)))/1000));}return Number(value);}
+const envelopeCurrent={},envelopeTarget={},envelopeFrame={};
+function envelopePoints(values,n){
+  const a=Number(values['attack'+n]),d=Number(values['decay'+n]),s=Number(values['sustain'+n]),r=Number(values['release'+n]);
+  if(![a,d,s,r].every(Number.isFinite))return null;
+  const widths=[a,d,r].map(v=>14+Math.log1p(v/10)*12),scale=300/widths.reduce((x,y)=>x+y,0);
+  const x1=10+widths[0]*scale,x2=x1+widths[1]*scale,x3=x2+80,y=120-110*s/100;
+  return [10,120,x1,10,x2,y,x3,y,390,120];
+}
+function writeEnvelope(n,points){document.getElementById('envelope'+n).setAttribute('points',points.reduce((s,v,i)=>s+(i%2?',':i?' ':'')+v.toFixed(2),''));}
+function animateEnvelope(n){
+  envelopeFrame[n]=null;const current=envelopeCurrent[n],target=envelopeTarget[n];let moving=false;
+  for(let i=0;i<current.length;i++){const delta=target[i]-current[i];current[i]+=delta*.48;if(Math.abs(delta)>.08)moving=true;else current[i]=target[i];}
+  writeEnvelope(n,current);if(moving&&window.requestAnimationFrame)envelopeFrame[n]=window.requestAnimationFrame(()=>animateEnvelope(n));
+}
 function drawEnvelopes(values){
-  for(const n of [1,2]){
-    const a=Number(values['attack'+n]),d=Number(values['decay'+n]),s=Number(values['sustain'+n]),r=Number(values['release'+n]);
-    if(![a,d,s,r].every(Number.isFinite))continue;
-    const widths=[a,d,r].map(v=>14+Math.log1p(v/10)*12),scale=300/widths.reduce((x,y)=>x+y,0);
-    const x1=10+widths[0]*scale,x2=x1+widths[1]*scale,x3=x2+80,y=120-110*s/100;
-    document.getElementById('envelope'+n).setAttribute('points',`10,120 ${x1},10 ${x2},${y} ${x3},${y} 390,120`);
+  for(const n of [1,2]){const target=envelopePoints(values,n);if(!target)continue;envelopeTarget[n]=target;
+    if(!envelopeCurrent[n]||!window.requestAnimationFrame){envelopeCurrent[n]=[...target];writeEnvelope(n,target);continue;}
+    if(!envelopeFrame[n])envelopeFrame[n]=window.requestAnimationFrame(()=>animateEnvelope(n));
   }
 }
-function paint(key,value){const f=fields[key];if(!f)return;f.out.textContent=formatted(key,value);f.input.setAttribute('aria-valuetext',formatted(key,value));if(f.input.type==='range'){const p=Math.max(0,Math.min(1,(Number(f.input.value)-Number(f.input.min))/(Number(f.input.max)-Number(f.input.min))));f.input.style.setProperty('--fill',(p*100)+'%');if(f.dial)f.dial.style.setProperty('--knob-turn',(p*270-135)+'deg');}}
+function visibleEnvelopeValues(key,value){
+  const values={};for(const n of [1,2])for(const part of ['attack','decay','sustain','release']){const k=part+n;if(fields[k])values[k]=fromSlider(k,fields[k].input.value);}
+  if(key in values)values[key]=value;
+  if(key&&/[12]$/.test(key)&&Number(fields.envelope_link?.input.value)===1)values[key.slice(0,-1)+(key.endsWith('1')?'2':'1')]=value;
+  return values;
+}
+function paint(key,value){const f=fields[key];if(!f)return;f.out.textContent=formatted(key,value);f.input.setAttribute('aria-valuetext',formatted(key,value));if(f.input.type==='range'){const p=Math.max(0,Math.min(1,(Number(f.input.value)-Number(f.input.min))/(Number(f.input.max)-Number(f.input.min))));f.input.style.setProperty('--fill',(p*100)+'%');if(f.dial)f.dial.style.setProperty('--knob-turn',(p*270-135)+'deg');}if(/^(attack|decay|sustain|release)[12]$/.test(key))drawEnvelopes(visibleEnvelopeValues(key,value));}
 const notice=document.getElementById('notice');
 let noticeExpires=0;
 function announce(message){notice.textContent=message;noticeExpires=Date.now()+5000;}
@@ -207,10 +230,12 @@ function soundSection(name){cancelGestures();for(const tab of ['osc','piano','re
 for(const tab of ['osc','piano','reverb','delay'])document.getElementById('sound-tab-'+tab).onclick=()=>soundSection(tab);
 function formatted(key,value){
   if(choices[key])return choices[key][Number(value)]||String(value);
-  if(['cutoff','bed_rise_cutoff','bed_mellow_cutoff','master_lowcut_hz'].includes(key))return value>=1000?(value/1000).toFixed(1)+' kHz':Math.round(value)+' Hz';
+  if(['cutoff','bed_rise_cutoff','bed_mellow_cutoff','master_lowcut_hz','reverb_lowcut','reverb_highcut','delay_lowcut','delay_highcut'].includes(key))return value>=1000?(value/1000).toFixed(1)+' kHz':Math.round(value)+' Hz';
   if(['attack','release'].includes(key)||envelopeTimes[key])return value>=1000?(value/1000).toFixed(2)+' s':Math.round(value)+' ms';
   if(key==='sustain1'||key==='sustain2')return Number(value).toFixed(1)+'%';
   if(['master_low','master_mid','master_high'].includes(key))return (value>0?'+':'')+Number(value).toFixed(1)+' dB';
+  if(key==='reverb_decay')return Number(value).toFixed(1)+' s';
+  if(key==='reverb_predelay'||key==='delay_time')return Math.round(value)+' ms';
   if(key==='bed_rise')return Number(value)===0?'Normal':Number(value).toFixed(1)+' s';
   if(key==='resonance')return Number(value).toFixed(2);
   return Math.round(Number(value)*100)+'%';
@@ -247,10 +272,10 @@ async function setup(){
     const out=document.createElement('output');out.textContent=formatted(key,value);label.append(out);
     const input=document.createElement(choices[key]?'select':'input');
     if(choices[key])choices[key].forEach((name,i)=>{const o=document.createElement('option');o.value=i;o.textContent=name;input.append(o)});
-    else{const mapped=key==='cutoff'||envelopeTimes[key];input.type='range';input.min=mapped?0:min;input.max=mapped?1000:max;input.step=mapped?1:step;}
+    else{const mapped=frequencyKeys.has(key)||envelopeTimes[key];input.type='range';input.min=mapped?0:min;input.max=mapped?1000:max;input.step=mapped?1:step;}
     input.value=toSlider(key,value);input.disabled=true;input.setAttribute('aria-label',labels[key]);
     if(performanceKeys.includes(key))input.setAttribute('aria-orientation','vertical');
-    if(!choices[key])bindPickup(input,key);
+    if(!choices[key])bindPickup(input,key,label);
     input.addEventListener('input',()=>{const value=fromSlider(key,input.value);paint(key,value);if(!choices[key])send(key,value);});
     // One request in flight; pending absolute values coalesce by parameter.
     // Reconnect never replays one-shot actions or stale gestures.
@@ -303,7 +328,7 @@ async function poll(){
       input.disabled=!ready||(!audioReady&&performanceActions.has(key));
       if(!gestures.has(key)&&!busy&&!pending.has(key)&&!d.pending){input.value=toSlider(key,d.values[key]);paint(key,d.values[key]);}
     }
-    drawEnvelopes(d.values);
+    drawEnvelopes(visibleEnvelopeValues());
     document.getElementById('release').disabled=!audioReady;
     document.getElementById('mute').disabled=!audioReady;
     document.getElementById('freeze-toggle').disabled=!audioReady;

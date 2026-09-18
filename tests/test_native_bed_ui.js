@@ -27,6 +27,7 @@ const controls={piano:[0,1,.01,.5],piano_tone:[0,1,.01,1],master:[0,1,.01,0],
   bed_mellow:[0,1,1,0],bed_mellow_cutoff:[100,8000,1,400],bed_fade:[0,1,1,0],bed_release:[0,1,1,0]};
 for(const n of [1,2])Object.assign(controls,{['attack'+n]:[0,10000,1,530],['decay'+n]:[0,20000,1,1500],['sustain'+n]:[0,100,.1,80],['release'+n]:[0,30000,1,530]});
 Object.assign(controls,{envelope_link:[0,1,1,0],master_low:[-6,6,.1,0],master_mid:[-6,6,.1,0],master_high:[-6,6,.1,0],master_lowcut:[0,1,1,0],master_lowcut_hz:[20,200,1,80]});
+Object.assign(controls,{piano_room_size:[0,1,.01,.5],piano_room_damp:[0,.99,.01,.6],reverb_decay:[0,30,.1,6],reverb_predelay:[0,150,1,25],reverb_lowcut:[20,20000,1,80],reverb_highcut:[20,20000,1,7000],reverb_damp:[0,.99,.01,.5],delay_time:[1,1000,1,500],delay_lowcut:[20,1000,1,20],delay_highcut:[500,20000,1,18000]});
 let state={stale:false,exited:null,pending:0,error:null,values:Object.fromEntries(Object.entries(controls).map(([k,v])=>[k,v[3]])),
   status:{fault:0,routed:true,frames:512,blocks:100,bed_mask:129,bed_key:7,active_beds:1}};
 const sent=[];
@@ -58,6 +59,7 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
   let before=sent.length;
   assert.ok(pointer('pointerdown',200));pointer('pointerup',200);await flush();
   assert.equal(Number(fx.value),.74);assert.equal(sent.length,before,'tap anywhere does not change FX');
+  assert.equal(nodes.get('mixer').children[4].attributes['data-active'],'false','released pointer clears active highlight');
   pointer('pointerdown',200);pointer('pointermove',200);assert.equal(sent.length,before,'stationary touch sends nothing');
   pointer('pointermove',180,2);assert.equal(sent.length,before,'another finger cannot hijack this fader');
   pointer('pointermove',180);await flush();assert.deepEqual(sent.at(-1),{key:'wet',value:.84});
@@ -83,6 +85,10 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
   }
   assert.equal(nodes.get('edit-link').children[0].attributes['data-control'],'envelope_link');
   assert.equal(nodes.get('edit-global').children.length,5);
+  assert.deepEqual(nodes.get('edit-piano').children.slice(-2).map(x=>x.attributes['data-control']),['piano_room_size','piano_room_damp']);
+  assert.deepEqual(nodes.get('edit-reverb').children.slice(-5).map(x=>x.attributes['data-control']),['reverb_decay','reverb_predelay','reverb_lowcut','reverb_highcut','reverb_damp']);
+  assert.deepEqual(nodes.get('edit-delay').children.slice(-3).map(x=>x.attributes['data-control']),['delay_time','delay_lowcut','delay_highcut']);
+  for(const [key,values] of Object.entries({reverb_lowcut:[20,80,1000,20000],reverb_highcut:[20,7000,20000],delay_lowcut:[20,100,1000],delay_highcut:[500,18000,20000]}))for(const value of values)assert.equal(vm.runInContext(`fromSlider('${key}',toSlider('${key}',${value}))`,context),value);
   assert.equal(nodes.get('edit-osc').children[0].className.includes('knob-control'),true);
   assert.match(nodes.get('edit-osc').children[0].children.at(-2).style['--knob-turn'],/deg$/);
   assert.equal(nodes.get('edit-delay').children[0].attributes['data-control'],'delay_wet');

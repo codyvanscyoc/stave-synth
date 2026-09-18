@@ -4,6 +4,35 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
+## September 17: musical menu controls validated, Pi install pending
+
+The next candidate keeps the accepted DSP graph and 48k/512 scheduling intact.
+It exposes existing piano-room size/damping, shared-reverb decay/pre-delay/
+low-cut/high-cut/damping, and delay time/low-cut/high-cut operations through the
+same bounded native control queue. Reverb character changes truthfully update
+the five displayed recipe values; saved explicit values restore after the recipe.
+Crossed low/high filter pairs are rejected before reaching the audio owner.
+
+OSC envelope plots now retarget on the local knob event and ease visually over
+animation frames instead of waiting for the status poll or teleporting. This is
+browser-only presentation; it adds no audio smoothing, buffer or render work.
+The orange pointer focus ring is owned only while a touch/pointer gesture is
+active, then clears on release; keyboard focus-visible remains accessible.
+
+Validation:605 reviewed offline regressions; actual-script UI test; real Chrome
+touch/animation and tablet/phone overflow; native UBSan whole-block PCM equality
+at512/256 including every new control. Evidence:
+`Documents/stave-synth-pi4-backups/native-v2-musical-controls-final-20260917`.
+This is not live256 or physical transition qualification. A new master-bus high
+cut was deliberately not added: piano, reverb and delay high cuts are exposed,
+while Global retains the existing flat-by-default high shelf and low cut.
+
+Last Pi check before installation:56.9°C, throttle flags0x0; native service and
+HTTP controller healthy but no audio child because the saved Clavinova route is
+absent. Current unsaved tone differs from the earlier checkpoint (notably wet
+.77, sustain1/2 100%, decay2 3777ms and master mid -0.8dB) and must be preserved
+exactly through installation. Saved state must remain byte-identical.
+
 ## September 17: independent ADSR / Global tone b049d23 deployed
 
 Installed successfully after target validation, with no keyboard/audio child

@@ -41,7 +41,7 @@ int main(int argc,char** argv) {
             auto send=[&](C c,double v){check(owner.enqueue({++id,c,v}));};
             send(C::Master,.6); p.output.volume=.6;
             send(C::Osc1,.5); p.fader1=.5; send(C::Osc2,.4); p.fader2=.4;
-            for(unsigned block=0;block<160;++block) {
+            for(unsigned block=0;block<180;++block) {
                 if(block==5) { send(C::Attack1,120); p.env1.attack_ms=120; }
                 if(block==10) { send(C::Attack2,770); p.env2.attack_ms=770; }
                 if(block==15) { send(C::Decay1,900); p.env1.decay_ms=900; }
@@ -60,6 +60,16 @@ int main(int argc,char** argv) {
                 if(block==80) { send(C::MasterHigh,-3.1); p.master.eq[2].gain=-3.1; }
                 if(block==85) { send(C::MasterLowcutHz,43); p.master.cutoff=43; }
                 if(block==90) { send(C::MasterLowcut,1); p.master.highpass=true; }
+                if(block==115) { send(C::PianoRoomSize,.72); p.buses.room.size=.72; }
+                if(block==120) { send(C::PianoRoomDamp,.81); p.buses.room.damp=.81; }
+                if(block==125) { send(C::DelayTime,417); p.delay.division=stave::DelayDivision::Free; p.delay.milliseconds=417; }
+                if(block==130) { send(C::DelayLowcut,95); p.delay.lowcut=95; }
+                if(block==135) { send(C::DelayHighcut,9200); p.delay.highcut=9200; }
+                if(block==140) { send(C::ReverbDecay,7.4); check(b.reverb_control(stave::ReverbControl::Decay,7.4)); }
+                if(block==145) { send(C::ReverbPredelay,33); check(b.reverb_control(stave::ReverbControl::Predelay,33)); }
+                if(block==150) { send(C::ReverbLowcut,120); check(b.reverb_control(stave::ReverbControl::LowCut,120)); }
+                if(block==155) { send(C::ReverbHighcut,6500); check(b.reverb_control(stave::ReverbControl::HighCut,6500)); }
+                if(block==160) { send(C::ReverbDamp,.64); check(b.reverb_control(stave::ReverbControl::Damp,.64)); }
                 check(b.configure(p));
                 stave::AuditionMidi e{0,3,{0x90,60,100}}; unsigned count=0;
                 if(block==0||block==95) { count=1; check(b.key_command(b.frame_position(),stave::StageAction::NoteOn,60,100)); }
@@ -74,6 +84,9 @@ int main(int argc,char** argv) {
             check(!owner.enqueue({id+1,C::Sustain1,101}));
             check(!owner.enqueue({id+1,C::MasterLow,6.1}));
             check(!owner.enqueue({id+1,C::EnvelopeLink,.5}));
+            check(!owner.enqueue({id+1,C::DelayTime,0}));
+            check(!owner.enqueue({id+1,C::DelayHighcut,499}));
+            check(!owner.enqueue({id+1,C::ReverbPredelay,151}));
         }
         {
             Random random;
@@ -179,9 +192,13 @@ int main(int argc,char** argv) {
         for(unsigned control=0;control<unsigned(C::Count);++control) {
             const auto kind=static_cast<C>(control);
             for(double v:{0.,.5,1.,4.,6.,7.,10.,20.,60.,100.,200.,8000.,20000.,30000.}) if(stave::audition_value_valid(kind,v)) {
+                if((kind==C::ReverbLowcut&&v>=7000)||(kind==C::ReverbHighcut&&v<=80)) continue;
+                if((kind==C::DelayLowcut&&v>=18000)||(kind==C::DelayHighcut&&v<=1000)) continue;
                 if(kind==C::BedKey&&v!=0&&v!=7) { check(!controls.enqueue({id,kind,v})); continue; }
                 check(controls.enqueue({id,kind,v}));
-                check(controls.process(l.data(),r.data(),frames,nullptr,0)); check(controls.applied()==id++);
+                const bool rendered=controls.process(l.data(),r.data(),frames,nullptr,0);
+                if(!rendered) std::fprintf(stderr,"Control endpoint failed: %s=%g\n",stave::audition_names[control],v);
+                check(rendered); check(controls.applied()==id++);
             }
         }
         // Concurrent single producer/audio owner, no shared graph access.

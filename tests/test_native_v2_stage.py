@@ -173,6 +173,30 @@ class NativeStageTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.hub.dispatch('/control', dict(key=key, value=value), self.hub.epoch)
 
+    def test_musical_effect_controls_prepare_and_reverb_type_updates_preset(self):
+        values = [('piano_room_size', .72), ('piano_room_damp', .81), ('delay_time', 417),
+                  ('delay_lowcut', 95), ('delay_highcut', 9200), ('reverb', 1)]
+        for key, value in values:
+            self.hub.dispatch('/control', dict(key=key, value=value), self.hub.epoch)
+        current = self.hub.snapshot()['values']
+        self.assertEqual(tuple(current[k] for k in ('reverb_decay', 'reverb_predelay', 'reverb_lowcut', 'reverb_highcut', 'reverb_damp')),
+                         (9, 45, 120, 8500, .35))
+        self.hub.dispatch('/control', dict(key='reverb_decay', value=7.4), self.hub.epoch)
+        self.assertEqual(self.hub.snapshot()['values']['reverb_decay'], 7.4)
+        self.hub.dispatch('/save', {}, self.hub.epoch)
+        loaded = self.store.load()
+        self.assertEqual(loaded['delay_time'], 417)
+        self.assertEqual(loaded['reverb_decay'], 7.4)
+        for key, value in [('piano_room_damp', 1), ('delay_time', 0), ('delay_highcut', 499),
+                           ('reverb_predelay', 151), ('reverb_lowcut', 19)]:
+            with self.assertRaises(ValueError):
+                self.hub.dispatch('/control', dict(key=key, value=value), self.hub.epoch)
+        self.hub.dispatch('/control', dict(key='delay_lowcut', value=900), self.hub.epoch)
+        self.hub.dispatch('/control', dict(key='reverb_lowcut', value=8000), self.hub.epoch)
+        for key, value in [('delay_highcut', 800), ('reverb_highcut', 7000)]:
+            with self.assertRaisesRegex(ValueError, 'cut'):
+                self.hub.dispatch('/control', dict(key=key, value=value), self.hub.epoch)
+
     def test_device_loss_keeps_acknowledged_unsaved_tone_not_actions_or_pending(self):
         control = self.attached()
         self.hub.reconcile()

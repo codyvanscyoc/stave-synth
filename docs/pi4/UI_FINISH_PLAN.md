@@ -81,6 +81,15 @@ voice count, routing graph or render scheduling for this editor.
 
 ## 3. Finish the remaining musical menus
 
+September17 candidate now exposes the existing first-line Piano/Reverb/Delay
+tone operations without adding DSP stages: piano room size/damping; reverb
+decay, pre-delay, low/high cut and damping; delay free time and low/high cut.
+Existing room/send, character, shimmer/freeze, feedback and mix remain present.
+Paired tone filters reject crossed cutoffs before audio ownership. Real Chrome
+and native exact-PCM checks pass; Pi installation and player listening remain.
+Musical tempo-sync selection, advanced motion, presets and recording stay later
+milestones rather than decorative controls.
+
 | Reference | Finished first-release surface | Leave out of this UI pass |
 | --- | --- | --- |
 | Piano, screenshot 6 | Piano tone/brightness, room, ambience send; then a small clearly named voicing/EQ section using existing piano processing | PERFECT button, organ/soundfont switching, dense compressor controls |
