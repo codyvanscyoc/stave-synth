@@ -41,7 +41,7 @@ CONTROLS = {
     "sustain1": (0, 100, .1, 80), "release1": (0, 30000, 1, 500),
     "attack2": (0, 10000, 1, 200), "decay2": (0, 20000, 1, 1500),
     "sustain2": (0, 100, .1, 80), "release2": (0, 30000, 1, 500),
-    "envelope_link": (0, 1, 1, 0),
+    "envelope_link": (0, 1, 1, 0), "volume_link": (0, 1, 1, 0),
     "master_low": (-6, 6, .1, 0), "master_mid": (-6, 6, .1, 0), "master_high": (-6, 6, .1, 0),
     "master_lowcut": (0, 1, 1, 0), "master_lowcut_hz": (20, 200, 1, 80),
     "piano_room_size": (0, 1, .01, .5), "piano_room_damp": (0, .99, .01, .6),
@@ -59,7 +59,7 @@ CONTROLS = {
     "piano_filter": (0, 1, 1, 0), "bpm": (40, 240, 1, 120),
     "delay_division": (0, 8, 1, 3),
 }
-INTEGRAL = {"wave1", "wave2", "shimmer", "reverb", "freeze", "release_all", "bed_key", "bed_mellow", "bed_fade", "bed_release", "envelope_link", "master_lowcut", "record_start", "record_stop", "transpose", "piano_octave", "octave1", "octave2", "filter_slope", "piano_filter", "delay_division"}
+INTEGRAL = {"wave1", "wave2", "shimmer", "reverb", "freeze", "release_all", "bed_key", "bed_mellow", "bed_fade", "bed_release", "envelope_link", "volume_link", "master_lowcut", "record_start", "record_stop", "transpose", "piano_octave", "octave1", "octave2", "filter_slope", "piano_filter", "delay_division"}
 MIDI_RESERVED = frozenset((64, 66, 120, 123))
 MIDI_UNMAPPABLE = frozenset(("release_all", "bed_key", "bed_fade", "bed_release", "record_start", "record_stop",
                              "reverb_lowcut", "reverb_highcut", "delay_lowcut", "delay_highcut",
@@ -83,14 +83,22 @@ def validate_midi_mapping(data):
     return data["key"], data["cc"]
 
 
-def apply_value(values, key, value):
+def apply_value(values, key, value, volume_offset=None):
     """Mirror one acknowledged native transaction (also used without devices)."""
+    if key in ("osc1", "osc2") and values.get("volume_link", 0) and volume_offset is None:
+        volume_offset = values.get("osc1", 0) - values.get("osc2", 0)
     values[key] = value
     if key == "reverb":
         preset = ((6, 25, 80, 7000, .5), (9, 45, 120, 8500, .35), (1.5, 8, 200, 10000, .7),
                   (3, 5, 150, 11000, .3), (7, 30, 150, 7000, .55), (10, 15, 50, 4000, .3), (8, 20, 100, 6500, .5))[int(value)]
         for name, setting in zip(("reverb_decay", "reverb_predelay", "reverb_lowcut", "reverb_highcut", "reverb_damp"), preset):
             values[name] = setting
+    if key == "volume_link":
+        return values.get("osc1", 0) - values.get("osc2", 0) if value else None
+    if key in ("osc1", "osc2") and values.get("volume_link", 0):
+        other = "osc2" if key == "osc1" else "osc1"
+        linked = value - volume_offset if key == "osc1" else value + volume_offset
+        values[other] = min(1, max(0, linked))
     if key in ("attack", "release"):
         values[key + "1"] = values[key + "2"] = value
     elif key == "delay_time":
@@ -98,6 +106,7 @@ def apply_value(values, key, value):
     elif key in {p + n for p in ("attack", "decay", "sustain", "release") for n in ("1", "2")}:
         if values.get("envelope_link", 0):
             values[key[:-1] + ("2" if key[-1] == "1" else "1")] = value
+    return volume_offset
 
 
 def restore_items(values):
@@ -112,7 +121,7 @@ def restore_items(values):
         if low in values:
             result.append((low, CONTROLS[low][0]))
     result.extend(sorted(((k, v) for k, v in values.items() if k not in
-                          ("reverb_lowcut", "delay_lowcut", "envelope_link", "master")),
+                          ("reverb_lowcut", "delay_lowcut", "envelope_link", "volume_link", "master")),
                          key=lambda item: (0 if item[0] in ("attack", "release", "reverb") else
                                            1 if item[0] == "delay_time" else
                                            3 if item[0] == "delay_division" else 2)))
@@ -121,6 +130,8 @@ def restore_items(values):
             result.append((low, values[low]))
     if "envelope_link" in values:
         result.append(("envelope_link", values["envelope_link"]))
+    if "volume_link" in values:
+        result.append(("volume_link", values["volume_link"]))
     if "master" in values:
         result.append(("master", values["master"]))
     return result
@@ -163,6 +174,7 @@ class Controller:
         self.last_status = 0
         self.last_progress = 0
         self.error = None
+        self.volume_link_offset = None
 
     def submit(self, data):
         key, value = validate_control(data)
@@ -174,8 +186,9 @@ class Controller:
             if len(self.pending) >= 64 or self.outgoing.full():
                 raise ValueError("Control backlog full; wait for acknowledgment")
             effective = self.values.copy()
+            effective_offset = self.volume_link_offset
             for pending_key, pending_value in self.pending.values():
-                apply_value(effective, pending_key, pending_value)
+                effective_offset = apply_value(effective, pending_key, pending_value, effective_offset)
             validate_control_pair(effective, key, value)
             mask = self.status.get("bed_mask", 0)
             if key.startswith("bed_") and (not mask or (key == "bed_key" and not mask & (1 << int(value)))):
@@ -218,7 +231,8 @@ class Controller:
                 for seq in sorted(list(self.pending)):
                     if seq <= message.get("applied", 0):
                         key, value = self.pending.pop(seq)
-                        apply_value(self.values, key, value)
+                        self.volume_link_offset = apply_value(
+                            self.values, key, value, self.volume_link_offset)
                 if "bed_key" in message:
                     self.values["bed_key"] = message["bed_key"]
                 raw, serials = message.get("midi_mapped_raw"), message.get("midi_mapped_serial")
@@ -227,7 +241,8 @@ class Controller:
                     for index, (key, value, serial) in enumerate(zip(CONTROLS, raw, serials)):
                         if (type(value) is int and value >= 0 and type(serial) is int and
                                 serial > self.mapped_serials[index] and key in MIDI_MAPPABLE):
-                            apply_value(self.values, key, midi_value(key, value))
+                            self.volume_link_offset = apply_value(
+                                self.values, key, midi_value(key, value), self.volume_link_offset)
                             self.mapped_serials[index] = serial
 
     def snapshot(self):

@@ -12,7 +12,7 @@ enum class AuditionControl : unsigned {
     Resonance, PianoRoom, PianoReverb, DelayWet, DelayFeedback, Shimmer,
     ShimmerMix, Reverb, Freeze, ReleaseAll, PianoTone,
     BedLevel, BedKey, BedRise, BedRiseCutoff, BedMellow, BedMellowCutoff, BedFade, BedRelease,
-    Attack1, Decay1, Sustain1, Release1, Attack2, Decay2, Sustain2, Release2, EnvelopeLink,
+    Attack1, Decay1, Sustain1, Release1, Attack2, Decay2, Sustain2, Release2, EnvelopeLink, VolumeLink,
     MasterLow, MasterMid, MasterHigh, MasterLowcut, MasterLowcutHz,
     PianoRoomSize, PianoRoomDamp, ReverbDecay, ReverbPredelay, ReverbLowcut, ReverbHighcut, ReverbDamp,
     DelayTime, DelayLowcut, DelayHighcut, RecordStart, RecordStop,
@@ -25,7 +25,7 @@ inline constexpr std::array<const char*,unsigned(AuditionControl::Count)> auditi
     "resonance","piano_room","piano_reverb","delay_wet","delay_feedback","shimmer",
     "shimmer_mix","reverb","freeze","release_all","piano_tone",
     "bed_level","bed_key","bed_rise","bed_rise_cutoff","bed_mellow","bed_mellow_cutoff","bed_fade","bed_release",
-    "attack1","decay1","sustain1","release1","attack2","decay2","sustain2","release2","envelope_link",
+    "attack1","decay1","sustain1","release1","attack2","decay2","sustain2","release2","envelope_link","volume_link",
     "master_low","master_mid","master_high","master_lowcut","master_lowcut_hz",
     "piano_room_size","piano_room_damp","reverb_decay","reverb_predelay","reverb_lowcut","reverb_highcut","reverb_damp",
     "delay_time","delay_lowcut","delay_highcut","record_start","record_stop",
@@ -65,7 +65,7 @@ inline bool audition_value_valid(AuditionControl c,double v) noexcept {
     case AuditionControl::DelayDivision: return v>=0&&v<=8&&v==std::floor(v);
     case AuditionControl::Reverb: return v>=0&&v<=6&&v==std::floor(v);
     case AuditionControl::Shimmer: case AuditionControl::Freeze: case AuditionControl::ReleaseAll:
-    case AuditionControl::EnvelopeLink: case AuditionControl::MasterLowcut:
+    case AuditionControl::EnvelopeLink: case AuditionControl::VolumeLink: case AuditionControl::MasterLowcut:
     case AuditionControl::FilterSlope: case AuditionControl::PianoFilter:
     case AuditionControl::BedMellow: case AuditionControl::BedFade: case AuditionControl::BedRelease:
     case AuditionControl::RecordStart: case AuditionControl::RecordStop:
@@ -112,7 +112,7 @@ inline double audition_midi_value(AuditionControl c,unsigned raw) noexcept {
     case C::PianoVelocity: lo=1; hi=4; step=.01; break;
     case C::Bpm: lo=40; hi=240; step=1; break;
     case C::DelayDivision: lo=0; hi=8; step=1; break;
-    case C::Shimmer: case C::Freeze: case C::EnvelopeLink: case C::MasterLowcut: case C::BedMellow:
+    case C::Shimmer: case C::Freeze: case C::EnvelopeLink: case C::VolumeLink: case C::MasterLowcut: case C::BedMellow:
     case C::FilterSlope: case C::PianoFilter:
         step=1; break;
     default: break;
@@ -312,8 +312,14 @@ private:
             return true;
         // Brightness0..1 ->200..20000Hz; full bright is the auditioned default.
         case C::PianoTone: config_.piano.highcut_hz=v==1?20000:200*std::pow(100.,v); break;
-        case C::Osc1: config_.fader1=v; break;
-        case C::Osc2: config_.fader2=v; break;
+        case C::Osc1:
+            config_.fader1=v;
+            if(volume_link_) config_.fader2=std::clamp(v-volume_link_offset_,0.,1.);
+            break;
+        case C::Osc2:
+            config_.fader2=v;
+            if(volume_link_) config_.fader1=std::clamp(v+volume_link_offset_,0.,1.);
+            break;
         case C::Cutoff: config_.buses.pad.cutoff=v; break;
         case C::Wet: config_.wet=v; break;
         case C::Master: config_.output.volume=v; if(v>0) audition_unmuted_=true; break;
@@ -324,6 +330,12 @@ private:
         // LINK changes editing behavior only. One command changes both existing
         // envelopes before a single configure; no intermediate rendered state.
         case C::EnvelopeLink: envelope_link_=v!=0; return true;
+        // Capture the player's current balance when linking. Later moves retain
+        // that offset even after either fader reaches an endpoint.
+        case C::VolumeLink:
+            volume_link_=v!=0;
+            if(volume_link_) volume_link_offset_=config_.fader1-config_.fader2;
+            return true;
         case C::Attack1: config_.env1.attack_ms=v; if(envelope_link_) config_.env2.attack_ms=v; break;
         case C::Decay1: config_.env1.decay_ms=v; if(envelope_link_) config_.env2.decay_ms=v; break;
         case C::Sustain1: config_.env1.sustain_percent=v; if(envelope_link_) config_.env2.sustain_percent=v; break;
@@ -396,6 +408,8 @@ private:
     std::uint64_t previous_id_{};
     bool audition_unmuted_{}; // audio owner only; not a live mute toggle
     bool envelope_link_{};
+    bool volume_link_{};
+    double volume_link_offset_{};
     std::atomic<AuditionFault> fault_{AuditionFault::None};
     std::atomic<std::uint64_t> applied_{0},blocks_{0},notes_{0},unsupported_{0},quantized_{0},full_scale_{0};
     std::array<std::atomic<int>,128> cc_map_{};

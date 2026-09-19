@@ -118,6 +118,8 @@ class CandidateHub:
         # Preparation belongs to the instrument, not to a connected keyboard.
         # Only acknowledged tone values enter this draft; never performance actions.
         self.prepared = self.saved.copy()
+        self.prepared_volume_link_offset = (self.prepared.get("osc1", 0) - self.prepared.get("osc2", 0)
+                                            if self.prepared.get("volume_link", 0) else None)
         self.epoch = uuid.uuid4().hex
         self.restoring = True
         self.restore_sequence = None
@@ -169,6 +171,7 @@ class CandidateHub:
         for key, value in data['values'].items():
             if key not in storage.TRANSIENT and (not key.startswith('bed_') or data['status'].get('bed_mask')):
                 self.prepared[key] = value
+        self.prepared_volume_link_offset = self.active.volume_link_offset
 
     def inventory(self, ports):
         with self.lock:
@@ -289,6 +292,8 @@ class CandidateHub:
                 values = self.presets.controls_for(data["slot"])
                 if self.active is None and not self.restart:
                     self.prepared = values
+                    self.prepared_volume_link_offset = (values.get("osc1", 0) - values.get("osc2", 0)
+                                                        if values.get("volume_link", 0) else None)
                     return {"message": "Preset prepared; it will sound when devices connect."}
                 if not self.active or self.restoring:
                     raise ValueError("Audio is not ready for a preset change")
@@ -328,7 +333,8 @@ class CandidateHub:
                     if key in storage.TRANSIENT:
                         raise ValueError('Output and performance actions require audio; tone controls can be prepared now')
                     audition.validate_control_pair(self.prepared, key, value)
-                    audition.apply_value(self.prepared, key, value)
+                    self.prepared_volume_link_offset = audition.apply_value(
+                        self.prepared, key, value, self.prepared_volume_link_offset)
                     return {'prepared': True, 'applied': False}
                 if path == '/save' and data == {}:
                     saved = self.store.save(self.prepared)
@@ -357,6 +363,7 @@ class CandidateHub:
                         values[key] = value
             self.saved = self.store.save(values)
             self.prepared = self.saved.copy()
+            self.prepared_volume_link_offset = self.active.volume_link_offset
             self.state_warning = None
             self.save_message = "Native sound saved. Master restores last; notes, freeze and bed actions remain excluded."
             return {"saved": True, "message": self.save_message}

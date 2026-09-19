@@ -42,6 +42,10 @@ int main(int argc,char** argv) {
             send(C::Master,.6); p.output.volume=.6;
             send(C::Osc1,.5); p.fader1=.5; send(C::Osc2,.4); p.fader2=.4;
             for(unsigned block=0;block<180;++block) {
+                if(block==1) { send(C::VolumeLink,1); } // capture the existing .1 balance without a level jump
+                if(block==2) { send(C::Osc1,.8); p.fader1=.8; p.fader2=.7; }
+                if(block==3) { send(C::Osc1,0); p.fader1=p.fader2=0; }
+                if(block==4) { send(C::Osc1,.5); p.fader1=.5; p.fader2=.4; } // balance survives clipping
                 if(block==5) { send(C::Attack1,120); p.env1.attack_ms=120; }
                 if(block==10) { send(C::Attack2,770); p.env2.attack_ms=770; }
                 if(block==15) { send(C::Decay1,900); p.env1.decay_ms=900; }
@@ -93,6 +97,7 @@ int main(int argc,char** argv) {
             check(!owner.enqueue({id+1,C::Sustain1,101}));
             check(!owner.enqueue({id+1,C::MasterLow,6.1}));
             check(!owner.enqueue({id+1,C::EnvelopeLink,.5}));
+            check(!owner.enqueue({id+1,C::VolumeLink,.5}));
             check(!owner.enqueue({id+1,C::DelayTime,0}));
             check(!owner.enqueue({id+1,C::DelayHighcut,499}));
             check(!owner.enqueue({id+1,C::ReverbPredelay,151}));

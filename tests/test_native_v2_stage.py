@@ -206,6 +206,31 @@ class NativeStageTests(unittest.TestCase):
         self.hub.dispatch('/control', dict(key='release2', value=1350), self.hub.epoch)
         self.assertEqual(self.hub.snapshot()['values']['release1'], 500)
 
+    def test_volume_link_preserves_balance_through_edges_and_restore(self):
+        epoch = self.hub.epoch
+        for key, value in [('osc1', .7), ('osc2', .4), ('volume_link', 1)]:
+            self.hub.dispatch('/control', dict(key=key, value=value), epoch)
+        self.hub.dispatch('/control', dict(key='osc1', value=.9), epoch)
+        self.assertAlmostEqual(self.hub.prepared['osc1'], .9)
+        self.assertAlmostEqual(self.hub.prepared['osc2'], .6)
+        self.hub.dispatch('/control', dict(key='osc1', value=0), epoch)
+        self.assertEqual((self.hub.prepared['osc1'], self.hub.prepared['osc2']), (0, 0))
+        self.hub.dispatch('/control', dict(key='osc1', value=.7), epoch)
+        self.assertEqual((self.hub.prepared['osc1'], self.hub.prepared['osc2']), (.7, .4))
+        self.hub.dispatch('/save', {}, epoch)
+
+        self.hub = stage.CandidateHub(self.store, ROUTES)
+        control = self.attached(); self.hub.reconcile()
+        self.assertEqual(list(control.pending.values())[-1], ('volume_link', 1))
+        control.receive(dict(type='status', instance='native-v2-stage', blocks=2,
+                             applied=control.sequence, routed=True, fault=0))
+        self.hub.reconcile()
+        sequence = control.submit(dict(key='osc2', value=.2))
+        control.receive(dict(type='status', instance='native-v2-stage', blocks=3,
+                             applied=sequence, routed=True, fault=0))
+        self.assertAlmostEqual(control.values['osc1'], .5)
+        self.assertAlmostEqual(control.values['osc2'], .2)
+
     def test_global_tone_is_bounded_and_saved_without_devices(self):
         for key, value in [('master_low', -2.3), ('master_mid', 1.4), ('master_high', 0), ('master_lowcut', 1), ('master_lowcut_hz', 43)]:
             self.hub.dispatch('/control', dict(key=key, value=value), self.hub.epoch)

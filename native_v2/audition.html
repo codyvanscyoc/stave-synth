@@ -89,7 +89,7 @@ header{position:relative}.header-actions{gap:7px}.header-actions button{min-widt
 #notice{position:fixed;z-index:40;top:78px;left:50%;transform:translateX(-50%);max-width:min(92vw,760px);margin:0;padding:6px 12px;background:#180f0d;border:1px solid var(--gold);color:var(--gold);box-shadow:0 5px 24px #000;pointer-events:none;text-align:center}#notice:empty{display:none}
 #midi-map-banner{position:fixed;z-index:50;top:8px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:12px;width:min(94vw,850px);padding:9px 12px;background:#19120b;border:2px dashed var(--gold);box-shadow:0 6px 30px #000;color:var(--gold)}#midi-map-banner strong{white-space:nowrap;letter-spacing:.14em}#midi-map-banner span{flex:1;color:var(--ink)}#midi-map-done{width:auto;min-height:34px;padding:3px 12px}.midi-map-mode [data-map-key]{outline:1px dashed color-mix(in srgb,var(--gold) 72%,transparent);outline-offset:3px;cursor:crosshair!important}.midi-map-mode [data-map-key][data-midi-selected=true]{outline:4px dashed var(--gold);background-color:color-mix(in srgb,var(--gold) 13%,transparent)}.midi-map-mode [data-map-key][data-midi-mapped=true]{box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--gold) 48%,transparent)}
 .pitch-strip{display:flex;align-items:center;justify-content:center;gap:8px;margin:3px 0 8px}.pitch-strip>span{color:var(--muted);font-size:10px;letter-spacing:.12em}.stepper{display:inline-grid;grid-template-columns:34px 48px 34px;align-items:center}.stepper button{min-height:32px;height:32px;padding:0}.stepper output{float:none;text-align:center;color:var(--ink)}
-.layer-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0 auto 8px;max-width:580px}.layer-strip button{min-height:34px;padding:3px 8px;font-size:10px;letter-spacing:.12em}.layer-strip button[aria-pressed=true]{background:var(--mint);color:var(--bg)}
+.layer-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:0 auto 8px;max-width:720px}.layer-strip button{min-height:34px;padding:3px 8px;font-size:10px;letter-spacing:.12em}.layer-strip button[aria-pressed=true]{background:var(--mint);color:var(--bg)}#volume-link-stage{border-color:var(--gold);color:var(--gold)}#volume-link-stage[aria-pressed=true]{background:var(--gold);color:var(--bg)}
 .preset-strip{display:grid;grid-template-columns:repeat(5,minmax(0,1fr)) auto;gap:7px;margin:6px 0 10px}.preset-strip button{min-height:38px;padding:4px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:10px}.preset-strip button[data-selected=true]{border-color:var(--gold);color:var(--gold)}#preset-store{min-width:62px}
 .channel-foot{order:3;display:grid;grid-template-columns:32px 46px 32px;justify-content:center;align-items:center;gap:4px;height:30px;margin-top:-2px}.channel-foot button{width:32px;min-width:32px;min-height:30px;height:30px;padding:0;font-size:13px}.channel-foot output{float:none;text-align:center;font-size:10px;color:var(--muted)}.channel-foot.placeholder{visibility:hidden;pointer-events:none}
 .bed-actions{justify-content:flex-end}.bed-actions button{min-width:100px}.record-pad #record-status,#bed-status{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:18px}.record-pad{flex-wrap:nowrap}.record-pad label{display:flex;align-items:center;gap:7px;white-space:nowrap}.record-pad select{margin:0;width:75px}.record-pad button{width:auto;white-space:nowrap}
@@ -107,7 +107,7 @@ header{position:relative}.header-actions{gap:7px}.header-actions button{min-widt
 <main>
 <section id="stage-panel" aria-label="Stage">
 <div class="pitch-strip"><span>TRANSPOSE</span><div id="transpose-stepper" class="stepper" data-stepper="transpose" data-map-key="transpose"><button aria-label="Transpose down">−</button><output>0 st</output><button aria-label="Transpose up">+</button></div></div>
-<div class="layer-strip"><button id="layer-osc1" aria-pressed="true">OSC 1</button><button id="layer-osc2" aria-pressed="true">OSC 2</button><button id="layer-piano" aria-pressed="true">PIANO</button></div>
+<div class="layer-strip"><button id="layer-osc1" aria-pressed="true">OSC 1</button><button id="layer-osc2" aria-pressed="true">OSC 2</button><button id="volume-link-stage" data-map-key="volume_link" aria-pressed="false">LINK VOL</button><button id="layer-piano" aria-pressed="true">PIANO</button></div>
 <div class="panel performance-panel"><div class="section-head"><div><h1>Live mix</h1><p>Touch to pick up. Drag to blend.</p></div></div><div id="mixer"></div><div id="tone-controls"></div></div>
 <div class="preset-strip" aria-label="Sound presets"><button data-preset="0">1 · EMPTY</button><button data-preset="1">2 · EMPTY</button><button data-preset="2">3 · EMPTY</button><button data-preset="3">4 · EMPTY</button><button data-preset="4">5 · EMPTY</button><button id="preset-store">STORE</button></div>
 <section class="panel bed-panel" aria-label="Recorded pad bed"><div class="section-head"><div><h2>Background pad</h2><p>Recorded ambience in the song’s key.</p></div></div>
@@ -140,7 +140,7 @@ Object.assign(labels,{bed_level:'Bed level',bed_rise:'Next trigger rise · secon
 choices.bed_mellow=['Off','On'];
 const keyNames=['C','C♯','D','E♭','E','F','F♯','G','A♭','A','B♭','B'];
 const bedKeys=[],bedActions=['bed-stop'];
-const fields={},pending=new Map();let ready=false,audioReady=false,busy=false,epoch=null,lastValues={},lastRuntime={},actionBusy=false;
+const fields={},pending=new Map(),displayValues={};let ready=false,audioReady=false,busy=false,epoch=null,lastValues={},lastRuntime={},actionBusy=false,volumeLinkOffset=null;
 const visualToggles=new Map();
 let activeBed=-1,bedFaded=false;
 const lastLayerValues={osc1:.7,osc2:.5,piano:.7};
@@ -157,11 +157,11 @@ const envelopeTimes={};
 for(const n of [1,2])for(const [part,max] of [['attack',10000],['decay',20000],['sustain',100],['release',30000]]){
   const key=part+n;labels[key]=part[0].toUpperCase()+part.slice(1);editGroups[key]='env'+n;knobKeys.add(key);if(part!=='sustain')envelopeTimes[key]=max;
 }
-Object.assign(labels,{envelope_link:'Link envelopes',master_low:'Low · 200 Hz',master_mid:'Mid · 1 kHz',master_high:'High · 5 kHz',master_lowcut:'Low cut',master_lowcut_hz:'Low cut frequency'});
+Object.assign(labels,{envelope_link:'Link envelopes',volume_link:'Link OSC volumes',master_low:'Low · 200 Hz',master_mid:'Mid · 1 kHz',master_high:'High · 5 kHz',master_lowcut:'Low cut',master_lowcut_hz:'Low cut frequency'});
 Object.assign(labels,{transpose:'Transpose',piano_octave:'Piano octave',octave1:'OSC 1 octave',octave2:'OSC 2 octave'});
 Object.assign(labels,{pan1:'OSC 1 pan · L ↔ R',pan2:'OSC 2 pan · L ↔ R',detune:'Unison detune',spread:'Unison stereo width'});
 Object.assign(labels,{piano_lowcut:'Piano low cut',piano_velocity:'Velocity response',osc1_reverb:'OSC 1 reverb send',osc2_reverb:'OSC 2 reverb send',piano_delay:'Piano delay send',filter_slope:'Filter slope',piano_filter:'Filter piano',bpm:'Tempo',delay_division:'Delay division'});
-editGroups.envelope_link='link';choices.envelope_link=['Independent','Linked edits'];choices.master_lowcut=['Off','On'];
+editGroups.envelope_link='link';editGroups.volume_link='link';choices.envelope_link=['Independent','Linked edits'];choices.volume_link=['Independent','Preserve balance'];choices.master_lowcut=['Off','On'];
 choices.filter_slope=['12 dB / octave','24 dB / octave'];choices.piano_filter=['Off','On'];
 choices.delay_division=['Free time','1/2','Dotted 1/4','1/4','1/4 triplet','Dotted 1/8','1/8','1/8 triplet','1/16'];
 for(const key of ['pan1','pan2','detune','spread']){editGroups[key]='osc';knobKeys.add(key);}
@@ -203,7 +203,7 @@ function bindPickup(input,key,label){
     const raw=Math.max(min,Math.min(max,drag.value+delta/drag.span*(max-min)));
     const next=Number((min+Math.round((raw-min)/step)*step).toFixed(8));
     if(next===Number(input.value))return;
-    input.value=next;const value=fromSlider(key,input.value);paint(key,value);send(key,value);
+    input.value=next;const value=fromSlider(key,input.value);if(key==='osc1'||key==='osc2')previewVolume(key,value);else paint(key,value);send(key,value);
   });
   for(const event of ['pointerup','pointercancel','lostpointercapture'])input.addEventListener(event,e=>{if(drag&&e.pointerId===drag.id)finish();});
   input.addEventListener('click',e=>e.preventDefault());
@@ -240,7 +240,20 @@ function visibleEnvelopeValues(key,value){
   if(key&&/[12]$/.test(key)&&Number(fields.envelope_link?.input.value)===1)values[key.slice(0,-1)+(key.endsWith('1')?'2':'1')]=value;
   return values;
 }
-function paint(key,value){const f=fields[key];if(!f)return;f.out.textContent=formatted(key,value);f.input.setAttribute('aria-valuetext',formatted(key,value));if(f.input.type==='range'){const p=Math.max(0,Math.min(1,(Number(f.input.value)-Number(f.input.min))/(Number(f.input.max)-Number(f.input.min))));f.input.style.setProperty('--fill',(p*100)+'%');if(f.dial)f.dial.style.setProperty('--knob-turn',(p*270-135)+'deg');}if(/^(attack|decay|sustain|release)[12]$/.test(key))drawEnvelopes(visibleEnvelopeValues(key,value));}
+function paint(key,value){displayValues[key]=Number(value);const f=fields[key];if(!f)return;f.out.textContent=formatted(key,value);f.input.setAttribute('aria-valuetext',formatted(key,value));if(f.input.type==='range'){const p=Math.max(0,Math.min(1,(Number(f.input.value)-Number(f.input.min))/(Number(f.input.max)-Number(f.input.min))));f.input.style.setProperty('--fill',(p*100)+'%');if(f.dial)f.dial.style.setProperty('--knob-turn',(p*270-135)+'deg');}if(/^(attack|decay|sustain|release)[12]$/.test(key))drawEnvelopes(visibleEnvelopeValues(key,value));}
+function volumeLinkVisual(value,capture=true){
+  const linked=Number(value)===1;
+  if(linked&&capture&&volumeLinkOffset===null)volumeLinkOffset=Number(displayValues.osc1||0)-Number(displayValues.osc2||0);
+  if(!linked)volumeLinkOffset=null;
+  const button=document.getElementById('volume-link-stage');button.setAttribute('aria-pressed',String(linked));button.textContent=linked?'VOL LINKED':'LINK VOL';
+}
+function previewVolume(key,value){
+  fields[key].input.value=toSlider(key,value);paint(key,value);
+  if(Number(fields.volume_link?.input.value)!==1)return;
+  if(volumeLinkOffset===null)volumeLinkOffset=Number(displayValues.osc1||0)-Number(displayValues.osc2||0);
+  const other=key==='osc1'?'osc2':'osc1';const linked=Math.max(0,Math.min(1,key==='osc1'?value-volumeLinkOffset:value+volumeLinkOffset));
+  fields[other].input.value=toSlider(other,linked);paint(other,linked);
+}
 const notice=document.getElementById('notice');
 let noticeExpires=0;
 function announce(message){notice.textContent=message;noticeExpires=Date.now()+5000;}
@@ -320,7 +333,7 @@ async function setup(){
     input.value=toSlider(key,value);input.disabled=true;input.setAttribute('aria-label',labels[key]);
     if(performanceKeys.includes(key))input.setAttribute('aria-orientation','vertical');
     if(!choices[key])bindPickup(input,key,label);
-    input.addEventListener('input',()=>{const value=fromSlider(key,input.value);paint(key,value);if(!choices[key])send(key,value);});
+    input.addEventListener('input',()=>{const value=fromSlider(key,input.value);if(key==='osc1'||key==='osc2')previewVolume(key,value);else paint(key,value);if(key==='volume_link')volumeLinkVisual(value);if(!choices[key])send(key,value);});
     // One request in flight; pending absolute values coalesce by parameter.
     // Reconnect never replays one-shot actions or stale gestures.
     input.addEventListener('change',()=>send(key,fromSlider(key,input.value)));
@@ -332,6 +345,7 @@ async function setup(){
   for(const [mix,pitch] of [['osc1','octave1'],['osc2','octave2'],['piano','piano_octave']])attachOctave(fields[mix].label,pitch);
   for(const key of ['cutoff','wet','master']){const spacer=document.createElement('div');spacer.className='channel-foot placeholder';spacer.setAttribute('aria-hidden','true');fields[key].label.append(spacer);}
   for(const key of ['osc1','osc2','piano'])document.getElementById('layer-'+key).onclick=()=>toggleLayer(key);
+  document.getElementById('volume-link-stage').onclick=()=>{const value=Number(fields.volume_link.input.value)===1?0:1;fields.volume_link.input.value=value;paint('volume_link',value);volumeLinkVisual(value);send('volume_link',value);};
   keyNames.forEach((name,key)=>{const b=document.createElement('button');b.textContent=name;b.disabled=true;b.onclick=()=>{if(activeBed===key)send('bed_fade',bedFaded?0:1);else{if(bedFaded)send('bed_fade',0);send('bed_key',key);}};b.setAttribute('aria-pressed','false');b.style.setProperty('--key-color','hsl('+(170+10*key)+' 65% 65%)');document.getElementById('bed-keys').append(b);bedKeys.push(b);});
   keyNames.forEach((name,key)=>{const o=document.createElement('option');o.value=key;o.textContent=name;document.getElementById('record-slot').append(o);});
   document.getElementById('bed-stop').onclick=()=>send('bed_release',1);
@@ -361,7 +375,7 @@ function attachOctave(label,key){
   const root=document.createElement('div');root.className='channel-foot';root.setAttribute('data-stepper',key);root.setAttribute('data-map-key',key);
   const down=document.createElement('button'),out=document.createElement('output'),up=document.createElement('button');down.textContent='−';up.textContent='+';out.textContent='0 oct';down.setAttribute('aria-label',labels[key]+' down');up.setAttribute('aria-label',labels[key]+' up');root.append(down);root.append(out);root.append(up);label.append(root);bindStepper(root,key,-3,3);
 }
-function toggleLayer(key){const value=Number(lastValues[key]||0);if(value>0){lastLayerValues[key]=value;lastValues[key]=0;send(key,0);}else{lastValues[key]=lastLayerValues[key]||.5;send(key,lastValues[key]);}}
+function toggleLayer(key){const value=Number(lastValues[key]||0);if(value>0){lastLayerValues[key]=value;lastValues[key]=0;if(key==='osc1'||key==='osc2')previewVolume(key,0);send(key,0);}else{lastValues[key]=lastLayerValues[key]||.5;if(key==='osc1'||key==='osc2')previewVolume(key,lastValues[key]);send(key,lastValues[key]);}}
 function updatePresetSelection(){presetButtons.forEach((button,slot)=>button.setAttribute('data-selected',String(slot===selectedPreset)));}
 function setMidiMapMode(enabled){
   midiMapMode=Boolean(enabled&&audioReady);midiTarget=null;midiLearning=false;
@@ -385,7 +399,7 @@ async function poll(){
   try{
     const r=await fetch('/status',{signal:AbortSignal.timeout(2000)});if(!r.ok)throw Error('Status unavailable');
     const d=await r.json(),s=d.status;lastRuntime=d.runtime||{};lastValues=d.values;
-    if(epoch!==null&&d.epoch!==epoch){pending.clear();cancelGestures();}epoch=d.epoch||null;
+    if(epoch!==null&&d.epoch!==epoch){pending.clear();cancelGestures();volumeLinkOffset=null;}epoch=d.epoch||null;
     audioReady=!d.stale&&d.exited===null&&s.fault===0&&s.routed===true&&!lastRuntime.restoring;
     const preparing=lastRuntime.preparation===true;
     ready=audioReady||preparing;
@@ -413,6 +427,7 @@ async function poll(){
       input.disabled=!ready||(!audioReady&&performanceActions.has(key));
       if(!gestures.has(key)&&!busy&&!pending.has(key)&&!d.pending){input.value=toSlider(key,d.values[key]);paint(key,d.values[key]);}
     }
+    volumeLinkVisual(d.values.volume_link);
     for(const key of ['transpose','piano_octave','octave1','octave2']){const root=stepperRoots[key];if(root){root.children[1].textContent=formatted(key,d.values[key]);for(const b of root._buttons||[])b.disabled=!ready;}}
     for(const key of ['osc1','osc2','piano']){const value=Number(d.values[key]||0);if(value>0)lastLayerValues[key]=value;document.getElementById('layer-'+key).setAttribute('aria-pressed',String(value>0));document.getElementById('layer-'+key).disabled=!ready;}
     drawEnvelopes(visibleEnvelopeValues());

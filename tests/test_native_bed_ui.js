@@ -38,7 +38,7 @@ const controls={piano:[0,1,.01,.5],piano_tone:[0,1,.01,1],master:[0,1,.01,0],
   bed_level:[0,1,.01,1],bed_key:[0,11,1,-1],bed_rise:[0,60,.5,0],bed_rise_cutoff:[200,20000,1,3000],
   bed_mellow:[0,1,1,0],bed_mellow_cutoff:[100,8000,1,400],bed_fade:[0,1,1,0],bed_release:[0,1,1,0]};
 for(const n of [1,2])Object.assign(controls,{['attack'+n]:[0,10000,1,530],['decay'+n]:[0,20000,1,1500],['sustain'+n]:[0,100,.1,80],['release'+n]:[0,30000,1,530]});
-Object.assign(controls,{envelope_link:[0,1,1,0],master_low:[-6,6,.1,0],master_mid:[-6,6,.1,0],master_high:[-6,6,.1,0],master_lowcut:[0,1,1,0],master_lowcut_hz:[20,200,1,80]});
+Object.assign(controls,{envelope_link:[0,1,1,0],volume_link:[0,1,1,0],master_low:[-6,6,.1,0],master_mid:[-6,6,.1,0],master_high:[-6,6,.1,0],master_lowcut:[0,1,1,0],master_lowcut_hz:[20,200,1,80]});
 Object.assign(controls,{piano_room_size:[0,1,.01,.5],piano_room_damp:[0,.99,.01,.6],reverb_decay:[0,30,.1,6],reverb_predelay:[0,150,1,25],reverb_lowcut:[20,20000,1,80],reverb_highcut:[20,20000,1,7000],reverb_damp:[0,.99,.01,.5],delay_time:[1,1000,1,500],delay_lowcut:[20,1000,1,20],delay_highcut:[500,20000,1,18000]});
 Object.assign(controls,{transpose:[-24,24,1,0],piano_octave:[-3,3,1,0],octave1:[-3,3,1,0],octave2:[-3,3,1,0],record_start:[0,1,1,0],record_stop:[0,1,1,0],release_all:[0,1,1,0]});
 Object.assign(controls,{pan1:[-1,1,.01,0],pan2:[-1,1,.01,0],detune:[0,1,.001,.07],spread:[0,1,.001,.85]});
@@ -99,7 +99,16 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
     assert.ok(!nodes.get('envelope'+n).attributes.points.includes('NaN'));
     for(const [key,max] of [['attack',10000],['decay',20000],['release',30000]])for(const v of [0,1,70,530,max])assert.equal(vm.runInContext(`fromSlider('${key+n}',toSlider('${key+n}',${v}))`,context),v);
   }
-  assert.equal(nodes.get('edit-link').children[0].attributes['data-control'],'envelope_link');
+  assert.deepEqual(nodes.get('edit-link').children.map(x=>x.attributes['data-control']),['envelope_link','volume_link']);
+  nodes.get('volume-link-stage').onclick();await flush();
+  assert.deepEqual(sent.at(-1),{key:'volume_link',value:1});assert.equal(nodes.get('volume-link-stage').attributes['aria-pressed'],'true');
+  const osc1Fader=nodes.get('mixer').children[0].children.find(x=>x.type==='range');
+  const osc2Fader=nodes.get('mixer').children[1].children.find(x=>x.type==='range');
+  osc1Fader.listeners.pointerdown({button:0,pointerId:22,clientY:200,clientX:10,preventDefault(){}});
+  osc1Fader.listeners.pointermove({pointerId:22,clientY:180,clientX:10,preventDefault(){}});await flush();
+  assert.equal(Number(osc1Fader.value),.23);assert.equal(Number(osc2Fader.value),.2,'linked OSC faders preserve their .03 balance immediately');
+  assert.deepEqual(sent.at(-1),{key:'osc1',value:.23},'one acknowledged control moves the linked pair');
+  osc1Fader.listeners.pointerup({pointerId:22});
   assert.equal(nodes.get('edit-global').children.length,5);
   assert.deepEqual(nodes.get('edit-piano').children.slice(-5).map(x=>x.attributes['data-control']),['piano_room_size','piano_room_damp','piano_lowcut','piano_velocity','piano_delay']);
   assert.deepEqual(nodes.get('edit-reverb').children.slice(-5).map(x=>x.attributes['data-control']),['reverb_decay','reverb_predelay','reverb_lowcut','reverb_highcut','reverb_damp']);
