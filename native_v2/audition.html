@@ -94,7 +94,7 @@ header{position:relative}.header-actions{gap:7px}.header-actions button{min-widt
 .channel-foot{order:3;display:grid;grid-template-columns:32px 46px 32px;justify-content:center;align-items:center;gap:4px;height:30px;margin-top:-2px}.channel-foot button{width:32px;min-width:32px;min-height:30px;height:30px;padding:0;font-size:13px}.channel-foot output{float:none;text-align:center;font-size:10px;color:var(--muted)}.channel-foot.placeholder{visibility:hidden;pointer-events:none}
 .bed-actions{justify-content:flex-end}.bed-actions button{min-width:100px}.record-pad #record-status,#bed-status{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:18px}.record-pad{flex-wrap:nowrap}.record-pad label{display:flex;align-items:center;gap:7px;white-space:nowrap}.record-pad select{margin:0;width:75px}.record-pad button{width:auto;white-space:nowrap}
 .pad-edit{margin-top:5px}.pad-edit summary{min-height:32px;padding:4px 0;font-size:10px;letter-spacing:.12em}.pad-edit[open]{border-top:1px solid var(--line);margin-top:9px;padding-top:5px}
-.edit-group .control-grid{grid-template-columns:repeat(4,minmax(0,1fr))}.contour .control-grid{grid-template-columns:repeat(5,minmax(0,1fr));max-width:none}.edit-group label.knob-control{min-height:135px}.edit-group label.knob-control input[type=range]{width:70px;height:70px;min-height:70px}.knob-dial{top:43px;width:70px;height:70px;left:calc(50% - 35px)}.knob-dial::after{height:17px;transform-origin:50% 25px}.osc-layout .voice{padding:10px}.envelope-plot{height:100px;margin:6px 0 3px}.osc-layout .envelope-controls label.knob-control{min-height:116px}.osc-layout .envelope-controls .knob-dial{top:38px}.sound-tabs{margin-bottom:10px}.edit-group>p{margin-bottom:9px}
+.edit-group .control-grid{grid-template-columns:repeat(4,minmax(0,1fr))}.contour .control-grid{grid-template-columns:repeat(9,minmax(0,1fr));max-width:none}.contour label.control{padding-left:4px;padding-right:4px}.contour .control-name{font-size:9px}.edit-group label.knob-control{min-height:135px}.edit-group label.knob-control input[type=range]{width:70px;height:70px;min-height:70px}.knob-dial{top:43px;width:70px;height:70px;left:calc(50% - 35px)}.knob-dial::after{height:17px;transform-origin:50% 25px}.osc-layout .voice{padding:10px}.envelope-plot{height:100px;margin:6px 0 3px}.osc-layout .envelope-controls label.knob-control{min-height:116px}.osc-layout .envelope-controls .knob-dial{top:38px}.sound-tabs{margin-bottom:10px}.edit-group>p{margin-bottom:9px}
 @media(max-width:700px){.header-actions{order:2}.header-stack{grid-template-columns:1fr 1fr}.header-stack button{height:26px}.pitch-strip{justify-content:flex-start}.preset-strip{grid-template-columns:repeat(5,minmax(0,1fr))}.preset-strip #preset-store{grid-column:1/-1}.record-pad{flex-wrap:wrap}.edit-group .control-grid,.contour .control-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.osc-layout .envelope-controls{grid-template-columns:repeat(4,minmax(0,1fr))}.osc-layout .envelope-controls label.knob-control{min-height:108px}.osc-layout .envelope-controls .knob-dial{width:60px;height:60px;left:calc(50% - 30px)}}
 @media(min-width:701px){body{padding-bottom:8px}#stage-panel{min-height:0}.performance-panel{margin:4px 0 2px}#mixer input[type=range]{height:clamp(190px,calc(100svh - 610px),650px)}#tone-controls{margin:4px auto}.preset-strip{margin:3px 0 5px}.bed-panel{padding-top:5px}.bed-panel .section-head{margin-bottom:2px}#bed-status{margin-bottom:3px}#bed-keys button{min-height:48px}.bed-actions{margin:3px 0 0}.bed-actions button{min-height:34px}.footer-note{display:none}}
 </style>
@@ -146,7 +146,7 @@ let activeBed=-1,bedFaded=false;
 const lastLayerValues={osc1:.7,osc2:.5,piano:.7};
 const stepperRoots={};
 const presetButtons=[...document.querySelectorAll('[data-preset]')];let selectedPreset=0;
-const midiUnmappable=new Set(['release_all','bed_key','bed_fade','bed_release','record_start','record_stop','reverb_lowcut','reverb_highcut','delay_lowcut','delay_highcut']);
+const midiUnmappable=new Set(['release_all','bed_key','bed_fade','bed_release','record_start','record_stop','reverb_lowcut','reverb_highcut','delay_lowcut','delay_highcut','piano_lowcut','piano_velocity','filter_slope','piano_filter']);
 let midiMapMode=false,midiTarget=null,midiBaseline=0,midiLearning=false,lastMidiCcSerial=0;
 const performanceActions=new Set(['master','freeze','release_all','bed_key','bed_fade','bed_release','record_start','record_stop']);
 const performanceKeys=['osc1','osc2','piano','cutoff','wet','master'];
@@ -160,15 +160,23 @@ for(const n of [1,2])for(const [part,max] of [['attack',10000],['decay',20000],[
 Object.assign(labels,{envelope_link:'Link envelopes',master_low:'Low · 200 Hz',master_mid:'Mid · 1 kHz',master_high:'High · 5 kHz',master_lowcut:'Low cut',master_lowcut_hz:'Low cut frequency'});
 Object.assign(labels,{transpose:'Transpose',piano_octave:'Piano octave',octave1:'OSC 1 octave',octave2:'OSC 2 octave'});
 Object.assign(labels,{pan1:'OSC 1 pan · L ↔ R',pan2:'OSC 2 pan · L ↔ R',detune:'Unison detune',spread:'Unison stereo width'});
+Object.assign(labels,{piano_lowcut:'Piano low cut',piano_velocity:'Velocity response',osc1_reverb:'OSC 1 reverb send',osc2_reverb:'OSC 2 reverb send',piano_delay:'Piano delay send',filter_slope:'Filter slope',piano_filter:'Filter piano',bpm:'Tempo',delay_division:'Delay division'});
 editGroups.envelope_link='link';choices.envelope_link=['Independent','Linked edits'];choices.master_lowcut=['Off','On'];
+choices.filter_slope=['12 dB / octave','24 dB / octave'];choices.piano_filter=['Off','On'];
+choices.delay_division=['Free time','1/2','Dotted 1/4','1/4','1/4 triplet','Dotted 1/8','1/8','1/8 triplet','1/16'];
 for(const key of ['pan1','pan2','detune','spread']){editGroups[key]='osc';knobKeys.add(key);}
+for(const key of ['osc1_reverb','osc2_reverb']){editGroups[key]='osc';knobKeys.add(key);}
+for(const key of ['filter_slope','piano_filter'])editGroups[key]='osc';
+for(const key of ['piano_lowcut','piano_velocity','piano_delay']){editGroups[key]='piano';knobKeys.add(key);}
 for(const key of ['master_low','master_mid','master_high','master_lowcut','master_lowcut_hz']){editGroups[key]='global';if(key!=='master_lowcut')knobKeys.add(key);}
 Object.assign(labels,{piano_room_size:'Room size',piano_room_damp:'Room warmth',reverb_decay:'Decay',reverb_predelay:'Pre-delay',reverb_lowcut:'Low cut',reverb_highcut:'High cut',reverb_damp:'Damping',delay_time:'Time',delay_lowcut:'Low cut',delay_highcut:'High cut'});
 for(const key of ['piano_room_size','piano_room_damp']){editGroups[key]='piano';knobKeys.add(key);}
 for(const key of ['reverb_decay','reverb_predelay','reverb_lowcut','reverb_highcut','reverb_damp']){editGroups[key]='reverb';knobKeys.add(key);}
 for(const key of ['delay_time','delay_lowcut','delay_highcut']){editGroups[key]='delay';knobKeys.add(key);}
-const frequencyKeys=new Set(['cutoff','reverb_lowcut','reverb_highcut','delay_lowcut','delay_highcut']);
-const frequencyRanges={cutoff:[20,20000],reverb_lowcut:[20,20000],reverb_highcut:[20,20000],delay_lowcut:[20,1000],delay_highcut:[500,20000]};
+for(const key of ['bpm','delay_division'])editGroups[key]='delay';
+knobKeys.add('bpm');
+const frequencyKeys=new Set(['cutoff','piano_lowcut','reverb_lowcut','reverb_highcut','delay_lowcut','delay_highcut']);
+const frequencyRanges={cutoff:[20,20000],piano_lowcut:[20,500],reverb_lowcut:[20,20000],reverb_highcut:[20,20000],delay_lowcut:[20,1000],delay_highcut:[500,20000]};
 const gestures=new Map();
 function cancelGestures(){for(const cancel of [...gestures.values()])cancel();}
 // Relative pickup prevents a track tap from sending a sudden parameter jump.
@@ -260,7 +268,7 @@ function soundSection(name){cancelGestures();for(const tab of ['osc','piano','re
 for(const tab of ['osc','piano','reverb','delay'])document.getElementById('sound-tab-'+tab).onclick=()=>soundSection(tab);
 function formatted(key,value){
   if(choices[key])return choices[key][Number(value)]||String(value);
-  if(['cutoff','bed_rise_cutoff','bed_mellow_cutoff','master_lowcut_hz','reverb_lowcut','reverb_highcut','delay_lowcut','delay_highcut'].includes(key))return value>=1000?(value/1000).toFixed(1)+' kHz':Math.round(value)+' Hz';
+  if(['cutoff','piano_lowcut','bed_rise_cutoff','bed_mellow_cutoff','master_lowcut_hz','reverb_lowcut','reverb_highcut','delay_lowcut','delay_highcut'].includes(key))return value>=1000?(value/1000).toFixed(1)+' kHz':Math.round(value)+' Hz';
   if(['attack','release'].includes(key)||envelopeTimes[key])return value>=1000?(value/1000).toFixed(2)+' s':Math.round(value)+' ms';
   if(key==='sustain1'||key==='sustain2')return Number(value).toFixed(1)+'%';
   if(['master_low','master_mid','master_high'].includes(key))return (value>0?'+':'')+Number(value).toFixed(1)+' dB';
@@ -268,6 +276,8 @@ function formatted(key,value){
   if(key==='reverb_predelay'||key==='delay_time')return Math.round(value)+' ms';
   if(key==='bed_rise')return Number(value)===0?'Normal':Number(value).toFixed(1)+' s';
   if(key==='transpose')return (value>0?'+':'')+Math.round(value)+' st';
+  if(key==='bpm')return Math.round(value)+' BPM';
+  if(key==='piano_velocity')return Number(value).toFixed(2)+'×';
   if(['piano_octave','octave1','octave2'].includes(key))return (value>0?'+':'')+Math.round(value)+' oct';
   if(key==='pan1'||key==='pan2')return Math.abs(value)<.005?'C':(value<0?'L ':'R ')+Math.round(Math.abs(value)*100);
   if(key==='detune')return Number(value).toFixed(3);

@@ -88,8 +88,12 @@ Existing room/send, character, shimmer/freeze, feedback and mix remain present.
 Paired tone filters reject crossed cutoffs before audio ownership. Real Chrome,
 native exact-PCM and Pi target checks pass; `9403664` is installed. Player
 listening and sustained-note transition checks remain.
-Musical tempo-sync selection, advanced motion, presets and recording stay later
-milestones rather than decorative controls.
+September18 local candidate also connects the existing piano low cut/velocity
+response, OSC source sends, piano delay send, filter slope/piano routing, BPM
+and musical delay division. Defaults preserve the accepted graph. Setup/topology
+controls are not MIDI-learn targets, and optional24dB/piano filtering still
+requires Pi load/listen qualification. Advanced motion remains a later focused
+milestone rather than a decorative control dump.
 
 | Reference | Finished first-release surface | Leave out of this UI pass |
 | --- | --- | --- |

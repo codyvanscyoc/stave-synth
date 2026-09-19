@@ -27,7 +27,7 @@ class ControlStore:
         self.lock = threading.Lock()
 
     def validated(self, values):
-        if not isinstance(values, dict) or len(values) > 64:
+        if not isinstance(values, dict) or len(values) > 96:
             raise ValueError("Bounded control object required")
         result = {}
         for key, value in values.items():
@@ -141,7 +141,7 @@ class MidiMapStore:
         self.load()
 
     def validated(self, value):
-        if not isinstance(value, dict) or len(value) > 64:
+        if not isinstance(value, dict) or len(value) > 96:
             raise ValueError("Bounded MIDI map required")
         result = {}
         used = set()

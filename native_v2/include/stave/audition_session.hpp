@@ -16,7 +16,9 @@ enum class AuditionControl : unsigned {
     MasterLow, MasterMid, MasterHigh, MasterLowcut, MasterLowcutHz,
     PianoRoomSize, PianoRoomDamp, ReverbDecay, ReverbPredelay, ReverbLowcut, ReverbHighcut, ReverbDamp,
     DelayTime, DelayLowcut, DelayHighcut, RecordStart, RecordStop,
-    Transpose, PianoOctave, Octave1, Octave2, Pan1, Pan2, Detune, Spread, Count
+    Transpose, PianoOctave, Octave1, Octave2, Pan1, Pan2, Detune, Spread,
+    PianoLowcut, PianoVelocity, Osc1Reverb, Osc2Reverb, PianoDelay,
+    FilterSlope, PianoFilter, Bpm, DelayDivision, Count
 };
 inline constexpr std::array<const char*,unsigned(AuditionControl::Count)> audition_names{
     "piano","osc1","osc2","cutoff","wet","master","wave1","wave2","attack","release",
@@ -27,7 +29,9 @@ inline constexpr std::array<const char*,unsigned(AuditionControl::Count)> auditi
     "master_low","master_mid","master_high","master_lowcut","master_lowcut_hz",
     "piano_room_size","piano_room_damp","reverb_decay","reverb_predelay","reverb_lowcut","reverb_highcut","reverb_damp",
     "delay_time","delay_lowcut","delay_highcut","record_start","record_stop",
-    "transpose","piano_octave","octave1","octave2","pan1","pan2","detune","spread"};
+    "transpose","piano_octave","octave1","octave2","pan1","pan2","detune","spread",
+    "piano_lowcut","piano_velocity","osc1_reverb","osc2_reverb","piano_delay",
+    "filter_slope","piano_filter","bpm","delay_division"};
 inline bool audition_value_valid(AuditionControl c,double v) noexcept {
     if(!std::isfinite(v)) return false;
     switch(c) {
@@ -55,9 +59,14 @@ inline bool audition_value_valid(AuditionControl c,double v) noexcept {
     case AuditionControl::PianoOctave: case AuditionControl::Octave1: case AuditionControl::Octave2:
         return v>=-3&&v<=3&&v==std::floor(v);
     case AuditionControl::Pan1: case AuditionControl::Pan2: return v>=-1&&v<=1;
+    case AuditionControl::PianoLowcut: return v>=20&&v<=500;
+    case AuditionControl::PianoVelocity: return v>=1&&v<=4;
+    case AuditionControl::Bpm: return v>=40&&v<=240;
+    case AuditionControl::DelayDivision: return v>=0&&v<=8&&v==std::floor(v);
     case AuditionControl::Reverb: return v>=0&&v<=6&&v==std::floor(v);
     case AuditionControl::Shimmer: case AuditionControl::Freeze: case AuditionControl::ReleaseAll:
     case AuditionControl::EnvelopeLink: case AuditionControl::MasterLowcut:
+    case AuditionControl::FilterSlope: case AuditionControl::PianoFilter:
     case AuditionControl::BedMellow: case AuditionControl::BedFade: case AuditionControl::BedRelease:
     case AuditionControl::RecordStart: case AuditionControl::RecordStop:
         return v==0||v==1;
@@ -70,7 +79,8 @@ inline bool audition_mappable(AuditionControl c) noexcept {
     using C=AuditionControl;
     return c!=C::ReleaseAll&&c!=C::BedKey&&c!=C::BedFade&&c!=C::BedRelease&&
            c!=C::RecordStart&&c!=C::RecordStop&&c!=C::ReverbLowcut&&c!=C::ReverbHighcut&&
-           c!=C::DelayLowcut&&c!=C::DelayHighcut&&c!=C::Count;
+           c!=C::DelayLowcut&&c!=C::DelayHighcut&&c!=C::PianoLowcut&&
+           c!=C::PianoVelocity&&c!=C::FilterSlope&&c!=C::PianoFilter&&c!=C::Count;
 }
 inline double audition_midi_value(AuditionControl c,unsigned raw) noexcept {
     using C=AuditionControl; double lo=0,hi=1,step=.01;
@@ -98,7 +108,12 @@ inline double audition_midi_value(AuditionControl c,unsigned raw) noexcept {
     case C::Transpose: lo=-24; hi=24; step=1; break;
     case C::PianoOctave: case C::Octave1: case C::Octave2: lo=-3; hi=3; step=1; break;
     case C::Pan1: case C::Pan2: lo=-1; hi=1; step=.01; break;
+    case C::PianoLowcut: lo=20; hi=500; step=1; break;
+    case C::PianoVelocity: lo=1; hi=4; step=.01; break;
+    case C::Bpm: lo=40; hi=240; step=1; break;
+    case C::DelayDivision: lo=0; hi=8; step=1; break;
     case C::Shimmer: case C::Freeze: case C::EnvelopeLink: case C::MasterLowcut: case C::BedMellow:
+    case C::FilterSlope: case C::PianoFilter:
         step=1; break;
     default: break;
     }
@@ -342,6 +357,15 @@ private:
         case C::Pan2: config_.pan2=v; break;
         case C::Detune: config_.detune=v; break;
         case C::Spread: config_.spread=v; break;
+        case C::PianoLowcut: config_.piano.lowcut_hz=v; break;
+        case C::PianoVelocity: config_.piano_velocity_curve=v; break;
+        case C::Osc1Reverb: config_.buses.pad.send1=v; break;
+        case C::Osc2Reverb: config_.buses.pad.send2=v; break;
+        case C::PianoDelay: config_.piano_delay_send=v; break;
+        case C::FilterSlope: config_.buses.pad.slope24=v!=0; break;
+        case C::PianoFilter: config_.piano_filter=v!=0; break;
+        case C::Bpm: config_.motion.bpm=v; config_.modulation.bpm=v; break;
+        case C::DelayDivision: config_.delay.division=static_cast<DelayDivision>(unsigned(v)); break;
         case C::Resonance: config_.buses.pad.resonance=v; break;
         case C::PianoRoom: config_.buses.room.wet=v; break;
         case C::PianoReverb: config_.piano_reverb_send=v; break;

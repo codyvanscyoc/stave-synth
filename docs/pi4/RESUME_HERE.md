@@ -4,6 +4,33 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
+## September 18: low-cost musical control contract ready for Pi validation
+
+Local candidate exposes nine parameters already owned by the accepted native
+graph: piano low cut and velocity response, independent OSC1/OSC2 reverb sends,
+piano delay send,12/24dB shared-filter slope, optional piano-through-filter,
+BPM and delay division. No DSP algorithm, buffer, sample rate, voice count,
+audio thread, scheduling or default value changed. Existing defaults therefore
+retain the accepted sound and processing load. Enabling24dB filtering or piano
+filtering is an explicit extra-processing choice and still needs Pi4 load/listen
+qualification; those topology/setup controls and the piano setup controls are
+deliberately excluded from MIDI Learn.
+
+Free delay time truthfully selects FREE mode; saved restoration applies time
+before the saved musical division. The existing bounded queue, preparation,
+Save/preset and MIDI Learn paths own the new values. Control-state bounds rose
+from64 to96 entries to accommodate the expanded fixed schema without becoming
+unbounded. The OSC shared strip fits one row at1366x1024; phone layouts retain
+no horizontal overflow.
+
+Validation so far:611 reviewed offline regressions pass using the pinned test
+environment; actual-script UI tests and isolated real-Chrome mouse/touch/tablet/
+phone checks pass. Native tests now compare every new control against direct
+graph configuration at both512 and256 frames. Target compilation, temperature
+guard, timing measurement and installation remain pending because the Pi was
+not reachable on the local network at this checkpoint. Do not claim deployment
+or Pi timing qualification from the Mac results.
+
 ## September 17: musical menu controls deployed
 
 The next candidate keeps the accepted DSP graph and 48k/512 scheduling intact.

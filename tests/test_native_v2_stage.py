@@ -239,6 +239,27 @@ class NativeStageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'cut'):
                 self.hub.dispatch('/control', dict(key=key, value=value), self.hub.epoch)
 
+    def test_existing_low_cost_engine_controls_prepare_save_and_restore(self):
+        values = [('piano_lowcut', 48), ('piano_velocity', 1.7),
+                  ('osc1_reverb', .74), ('osc2_reverb', .39), ('piano_delay', .31),
+                  ('filter_slope', 1), ('piano_filter', 1), ('bpm', 93),
+                  ('delay_time', 417), ('delay_division', 5)]
+        for key, value in values:
+            self.hub.dispatch('/control', dict(key=key, value=value), self.hub.epoch)
+        self.assertEqual(self.hub.snapshot()['values']['delay_division'], 5)
+        self.hub.dispatch('/save', {}, self.hub.epoch)
+        loaded = self.store.load()
+        for key, value in values:
+            self.assertEqual(loaded[key], value)
+        items = list(stage.audition.restore_items(loaded))
+        restored = dict(items)
+        self.assertEqual(restored['delay_time'], 417)
+        self.assertLess(items.index(('delay_time', 417)), items.index(('delay_division', 5)))
+        for key, value in [('piano_lowcut', 501), ('piano_velocity', .9),
+                           ('filter_slope', .5), ('bpm', 39), ('delay_division', 9)]:
+            with self.assertRaises(ValueError):
+                self.hub.dispatch('/control', dict(key=key, value=value), self.hub.epoch)
+
     def test_device_loss_keeps_acknowledged_unsaved_tone_not_actions_or_pending(self):
         control = self.attached()
         self.hub.reconcile()

@@ -60,6 +60,10 @@ int main(int argc,char** argv) {
                 if(block==80) { send(C::MasterHigh,-3.1); p.master.eq[2].gain=-3.1; }
                 if(block==85) { send(C::MasterLowcutHz,43); p.master.cutoff=43; }
                 if(block==90) { send(C::MasterLowcut,1); p.master.highpass=true; }
+                if(block==91) { send(C::PianoLowcut,48); p.piano.lowcut_hz=48; }
+                if(block==92) { send(C::PianoVelocity,1.7); p.piano_velocity_curve=1.7; }
+                if(block==93) { send(C::Osc1Reverb,.74); p.buses.pad.send1=.74; }
+                if(block==94) { send(C::Osc2Reverb,.39); p.buses.pad.send2=.39; }
                 if(block==115) { send(C::PianoRoomSize,.72); p.buses.room.size=.72; }
                 if(block==120) { send(C::PianoRoomDamp,.81); p.buses.room.damp=.81; }
                 if(block==125) { send(C::DelayTime,417); p.delay.division=stave::DelayDivision::Free; p.delay.milliseconds=417; }
@@ -70,6 +74,11 @@ int main(int argc,char** argv) {
                 if(block==150) { send(C::ReverbLowcut,120); check(b.reverb_control(stave::ReverbControl::LowCut,120)); }
                 if(block==155) { send(C::ReverbHighcut,6500); check(b.reverb_control(stave::ReverbControl::HighCut,6500)); }
                 if(block==160) { send(C::ReverbDamp,.64); check(b.reverb_control(stave::ReverbControl::Damp,.64)); }
+                if(block==165) { send(C::PianoDelay,.31); p.piano_delay_send=.31; }
+                if(block==166) { send(C::FilterSlope,1); p.buses.pad.slope24=true; }
+                if(block==167) { send(C::PianoFilter,1); p.piano_filter=true; }
+                if(block==168) { send(C::Bpm,93); p.motion.bpm=p.modulation.bpm=93; }
+                if(block==169) { send(C::DelayDivision,5); p.delay.division=stave::DelayDivision::DottedEighth; }
                 check(b.configure(p));
                 stave::AuditionMidi e{0,3,{0x90,60,100}}; unsigned count=0;
                 if(block==0||block==95) { count=1; check(b.key_command(b.frame_position(),stave::StageAction::NoteOn,60,100)); }
@@ -87,6 +96,10 @@ int main(int argc,char** argv) {
             check(!owner.enqueue({id+1,C::DelayTime,0}));
             check(!owner.enqueue({id+1,C::DelayHighcut,499}));
             check(!owner.enqueue({id+1,C::ReverbPredelay,151}));
+            check(!owner.enqueue({id+1,C::PianoLowcut,501}));
+            check(!owner.enqueue({id+1,C::PianoVelocity,.99}));
+            check(!owner.enqueue({id+1,C::Bpm,39}));
+            check(!owner.enqueue({id+1,C::DelayDivision,2.5}));
             check(!owner.enqueue({id+1,C::RecordStart,1}));
         }
         {

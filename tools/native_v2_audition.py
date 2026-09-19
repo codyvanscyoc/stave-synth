@@ -53,11 +53,17 @@ CONTROLS = {
     "octave1": (-3, 3, 1, 0), "octave2": (-3, 3, 1, 0),
     "pan1": (-1, 1, .01, 0), "pan2": (-1, 1, .01, 0),
     "detune": (0, 1, .001, .07), "spread": (0, 1, .001, .85),
+    "piano_lowcut": (20, 500, 1, 20), "piano_velocity": (1, 4, .01, 1),
+    "osc1_reverb": (0, 1, .01, 1), "osc2_reverb": (0, 1, .01, 1),
+    "piano_delay": (0, 1, .01, 0), "filter_slope": (0, 1, 1, 0),
+    "piano_filter": (0, 1, 1, 0), "bpm": (40, 240, 1, 120),
+    "delay_division": (0, 8, 1, 3),
 }
-INTEGRAL = {"wave1", "wave2", "shimmer", "reverb", "freeze", "release_all", "bed_key", "bed_mellow", "bed_fade", "bed_release", "envelope_link", "master_lowcut", "record_start", "record_stop", "transpose", "piano_octave", "octave1", "octave2"}
+INTEGRAL = {"wave1", "wave2", "shimmer", "reverb", "freeze", "release_all", "bed_key", "bed_mellow", "bed_fade", "bed_release", "envelope_link", "master_lowcut", "record_start", "record_stop", "transpose", "piano_octave", "octave1", "octave2", "filter_slope", "piano_filter", "delay_division"}
 MIDI_RESERVED = frozenset((64, 66, 120, 123))
 MIDI_UNMAPPABLE = frozenset(("release_all", "bed_key", "bed_fade", "bed_release", "record_start", "record_stop",
-                             "reverb_lowcut", "reverb_highcut", "delay_lowcut", "delay_highcut"))
+                             "reverb_lowcut", "reverb_highcut", "delay_lowcut", "delay_highcut",
+                             "piano_lowcut", "piano_velocity", "filter_slope", "piano_filter"))
 MIDI_MAPPABLE = frozenset(CONTROLS) - MIDI_UNMAPPABLE
 
 
@@ -87,6 +93,8 @@ def apply_value(values, key, value):
             values[name] = setting
     if key in ("attack", "release"):
         values[key + "1"] = values[key + "2"] = value
+    elif key == "delay_time":
+        values["delay_division"] = 0
     elif key in {p + n for p in ("attack", "decay", "sustain", "release") for n in ("1", "2")}:
         if values.get("envelope_link", 0):
             values[key[:-1] + ("2" if key[-1] == "1" else "1")] = value
@@ -105,7 +113,9 @@ def restore_items(values):
             result.append((low, CONTROLS[low][0]))
     result.extend(sorted(((k, v) for k, v in values.items() if k not in
                           ("reverb_lowcut", "delay_lowcut", "envelope_link", "master")),
-                         key=lambda item: 0 if item[0] in ("attack", "release", "reverb") else 1))
+                         key=lambda item: (0 if item[0] in ("attack", "release", "reverb") else
+                                           1 if item[0] == "delay_time" else
+                                           3 if item[0] == "delay_division" else 2)))
     for low in ("reverb_lowcut", "delay_lowcut"):
         if low in values:
             result.append((low, values[low]))
