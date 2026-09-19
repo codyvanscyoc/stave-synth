@@ -4,7 +4,7 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
-## September 19: balance-preserving OSC volume link ready for target validation
+## September 19: balance-preserving OSC volume link deployed
 
 Commit `38a8708` adds a separate saved `volume_link` control. Enabling it captures
 the current OSC1/OSC2 level difference without changing either level. Moving
@@ -15,11 +15,32 @@ setting, immediate paired fader paint, preset/Save restoration and MIDI Learn
 all use the same acknowledged control owner.
 
 This adds no DSP stage, per-sample work, buffer change, voice change or audio
-thread.612 pinned offline regressions, the actual UI script, and real-Chrome
-tablet/phone mouse/touch/no-overflow checks pass. Pi target build, exact-PCM
-guard and install are deliberately pending: at the checkpoint the Pi had live
-Clavinova MIDI, built-in stereo output, Master1.0 and an active audio child.
-Do not interrupt or compile beside that session without a new safe/muted window.
+thread. 612 pinned offline regressions, the actual UI script, and real-Chrome
+tablet/phone mouse/touch/no-overflow checks pass. The Pi target build reused the
+original hash/toolchain-verified DSP objects and passed the native graph,
+exact-PCM, fake-JACK and 34 applicable controller guards. All ten 400-block
+throughput cases at both 512 and 256 frames completed with zero over-budget
+blocks. Worst tested 512 block was 5.943787ms of 10.667ms; worst tested 256
+block was 3.586517ms of 5.333ms. Peak target build/test temperature was below
+73°C. This remains offline throughput and exact-PCM evidence, not a physical
+interface latency or live-transition listening qualification.
+
+Commits `38a8708` and `fe832f6` are pushed; `fe832f6` is installed on the Pi4.
+Installed HTML SHA256 is `b3ad52ff…ef32b`; native adapter SHA256 is
+`bf1f2137…974dc`. Postinstall epoch is
+`7904864cc1c547b8ace38a2f5e617f86`; the enabled service is active/running with
+zero restarts. Exact pre-build tone was restored, including piano1, OSC1.45,
+OSC2.44, wet.69, shimmer on, spread.83, hard-left/right OSC pans and Master1.
+All saved state files remained byte-identical. `volume_link` is deliberately
+off until the player enables LINK VOL. Rollback, before/after tone and install
+evidence are at
+`/home/codyvanscyoc/stave-native-boot-backup-20260919/volume-link-26nk_00j`.
+
+The controller is in safe preparation/recovery because the saved Clavinova
+MIDI route is absent; the UI is available at `http://stavepi4.local:8082` or
+`http://192.168.4.33:8082`. On the next physical test, enable LINK VOL at the
+current unequal levels, confirm no level jump, move either fader, then lower
+both to zero and raise either one to confirm the captured balance returns.
 
 ## September 18: low-cost musical control contract deployed
 
