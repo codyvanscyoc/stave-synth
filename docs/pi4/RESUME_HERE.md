@@ -4,7 +4,7 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
-## September 18: low-cost musical control contract ready for Pi validation
+## September 18: low-cost musical control contract deployed
 
 Local candidate exposes nine parameters already owned by the accepted native
 graph: piano low cut and velocity response, independent OSC1/OSC2 reverb sends,
@@ -23,13 +23,27 @@ from64 to96 entries to accommodate the expanded fixed schema without becoming
 unbounded. The OSC shared strip fits one row at1366x1024; phone layouts retain
 no horizontal overflow.
 
-Validation so far:611 reviewed offline regressions pass using the pinned test
+Validation:611 reviewed offline regressions pass using the pinned test
 environment; actual-script UI tests and isolated real-Chrome mouse/touch/tablet/
-phone checks pass. Native tests now compare every new control against direct
-graph configuration at both512 and256 frames. Target compilation, temperature
-guard, timing measurement and installation remain pending because the Pi was
-not reachable on the local network at this checkpoint. Do not claim deployment
-or Pi timing qualification from the Mac results.
+phone checks pass. Native tests compare every new control against direct graph
+configuration at both512 and256 frames. The Pi4 target build reused the original
+hash/toolchain-verified DSP objects, passed native graph/PCM/fake-JACK guards and
+33 applicable controller tests, and completed all ten400-block throughput cases
+with zero over-budget blocks. Worst tested512 block was5.590648ms of10.667ms;
+worst tested256 block was3.596945ms of5.333ms. Peak build/test temperature was
+below70°C. This remains an offline throughput probe, not physical interface
+latency, live256, transition-listening or service-length qualification.
+
+Commit `6fcf9e3` is pushed and installed on the Pi4. Installed HTML SHA256 is
+`fba796e1…1967a`; native adapter SHA256 is `c3ff0858…b506`. Postinstall epoch is
+`823426fe35e549c5a02661ae8d706808`; service is active/running with zero restarts.
+Exact unsaved tone, saved controls and saved routes were preserved, and Master
+remains0. New controls are at graph-equivalent defaults; replaying the previous
+explicit500ms delay correctly leaves delay division in FREE mode. Rollback and
+before/after evidence live at
+`/home/codyvanscyoc/stave-native-boot-backup-20260918/controls-6fcf9e3-jkvw9q_m`.
+The first guarded install attempt rejected transient record action fields; it
+atomically restored the prior files and exact tone before the corrected install.
 
 ## September 17: musical menu controls deployed
 
