@@ -4,6 +4,23 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
+## September 19: balance-preserving OSC volume link ready for target validation
+
+Commit `38a8708` adds a separate saved `volume_link` control. Enabling it captures
+the current OSC1/OSC2 level difference without changing either level. Moving
+either Stage fader then moves both in one native transaction while preserving
+that balance, including after both faders clip at zero and are raised again.
+Envelope LINK remains independent. A Stage `LINK VOL` button, matching Sound
+setting, immediate paired fader paint, preset/Save restoration and MIDI Learn
+all use the same acknowledged control owner.
+
+This adds no DSP stage, per-sample work, buffer change, voice change or audio
+thread.612 pinned offline regressions, the actual UI script, and real-Chrome
+tablet/phone mouse/touch/no-overflow checks pass. Pi target build, exact-PCM
+guard and install are deliberately pending: at the checkpoint the Pi had live
+Clavinova MIDI, built-in stereo output, Master1.0 and an active audio child.
+Do not interrupt or compile beside that session without a new safe/muted window.
+
 ## September 18: low-cost musical control contract deployed
 
 Local candidate exposes nine parameters already owned by the accepted native
