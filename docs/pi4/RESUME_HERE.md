@@ -20,8 +20,14 @@ entries so a full expanded state can still restore in one acknowledged batch;
 the native SPSC capacity remains128.
 
 The actual UI interaction test, real-Chrome tablet/phone layout and no-overflow
-checks, focused controller tests and 613 pinned offline regressions pass. This
-candidate is not yet Pi-built, physically listened, committed or deployed.
+checks, focused controller tests and 613 pinned offline regressions pass. Commit
+`a8b99f6` is pushed. Its backward-compatible browser smoothing is installed
+without an audio restart (served HTML SHA256 `0c922d60…f268`); PID1101, epoch
+`c62a164f204946fb8fc87313fa6dda98`, tone, zero xruns and zero over-budget
+callbacks were preserved. UI rollback is at
+`/home/codyvanscyoc/stave-native-boot-backup-20260921/midi-smooth-a8b99f6/audition.html`.
+The synchronized native/filter-limit portion is not yet Pi-built, physically
+listened or installed and therefore remains hidden until the engine is updated.
 
 ## September 21: MIDI Learn promoted to the Stage header
 
