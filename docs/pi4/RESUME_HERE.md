@@ -18,7 +18,12 @@ sustain, sostenuto and safety CCs remain unavailable.
 This change only promotes and clarifies the already-qualified control path; it
 does not add polling, processing or work to the audio callback. The actual UI
 interaction test, 612 pinned offline regressions, and real-Chrome tablet/phone
-layout and no-overflow checks pass. Pi deployment is pending at this checkpoint.
+layout and no-overflow checks pass. Commit `9b20f4c` is pushed and its UI is
+installed on the Pi4 without restarting audio. Installed/served HTML SHA256 is
+`e1fef045…e85c`. The native service retained PID1101, epoch
+`c62a164f204946fb8fc87313fa6dda98`, zero restarts, zero xruns and zero
+over-budget callbacks. Exact live tone and Master1 were untouched. Rollback UI
+is at `/home/codyvanscyoc/stave-native-boot-backup-20260921/midi-map-ui-9b20f4c/audition.html`.
 
 ## September 19: balance-preserving OSC volume link deployed
 
