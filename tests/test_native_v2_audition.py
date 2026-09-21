@@ -64,10 +64,10 @@ class AuditionControlTests(unittest.TestCase):
 
     def test_bounded_backlog(self):
         c = self.controller()
-        for _ in range(64): c.submit({"key": "osc1", "value": .2})
+        for _ in range(96): c.submit({"key": "osc1", "value": .2})
         with self.assertRaises(ValueError): c.submit({"key": "osc1", "value": .3})
-        self.assertEqual(len(c.pending), 64)
-        self.assertEqual(c.outgoing.qsize(), 64)
+        self.assertEqual(len(c.pending), 96)
+        self.assertEqual(c.outgoing.qsize(), 96)
 
     def test_recorded_keys_require_loaded_asset_and_authoritative_ack(self):
         c = self.controller()
@@ -145,8 +145,20 @@ class AuditionControlTests(unittest.TestCase):
         self.assertEqual(c.values["piano_tone"], .5)
         self.assertEqual(c.values["cutoff"], 8000)  # independent synth filter
 
+    def test_filter_sweep_bounds_are_ordered_and_clamp_authoritative_cutoff(self):
+        prepared = {key: definition[3] for key, definition in audition.CONTROLS.items()}
+        audition.validate_control_pair(prepared, "cutoff_min", 300)
+        audition.apply_value(prepared, "cutoff_min", 300)
+        audition.validate_control_pair(prepared, "cutoff_max", 4000)
+        audition.apply_value(prepared, "cutoff_max", 4000)
+        self.assertEqual((prepared["cutoff_min"], prepared["cutoff_max"], prepared["cutoff"]), (300, 4000, 4000))
+        with self.assertRaises(ValueError):
+            audition.validate_control_pair(prepared, "cutoff_min", 4000)
+        with self.assertRaises(ValueError):
+            audition.validate_control_pair(prepared, "cutoff_max", 300)
+
     def test_midi_learn_validation_queue_and_one_time_reconciliation(self):
-        for bad in ({"key": "master", "cc": 64}, {"key": "release_all", "cc": 21},
+        for bad in ({"key": "master", "cc": 64}, {"key": "release_all", "cc": 21}, {"key": "cutoff_min", "cc": 22},
                     {"key": "master", "cc": True}, {"key": "master", "cc": 128},
                     {"key": "missing", "cc": 21}, {"key": "master"}):
             with self.assertRaises(ValueError):
@@ -154,6 +166,8 @@ class AuditionControlTests(unittest.TestCase):
         self.assertEqual(audition.validate_midi_mapping({"key": "master", "cc": 21}), ("master", 21))
         self.assertEqual(audition.midi_value("cutoff", 0), 20)
         self.assertEqual(audition.midi_value("cutoff", 127), 20000)
+        self.assertEqual(audition.midi_value("cutoff", 0, {"cutoff_min": 200, "cutoff_max": 5000}), 200)
+        self.assertEqual(audition.midi_value("cutoff", 127, {"cutoff_min": 200, "cutoff_max": 5000}), 5000)
         c = self.controller()
         sequence = c.map_cc({"key": "osc1", "cc": 21})
         self.assertEqual(c.outgoing.get_nowait(), ("map", sequence, 21, "osc1"))

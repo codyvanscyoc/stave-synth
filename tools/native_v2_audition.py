@@ -25,7 +25,8 @@ ROOT = Path(__file__).resolve().parents[1]
 # audition_session.hpp, not the production preset schema.
 CONTROLS = {
     "piano": (0, 1, .01, .5), "osc1": (0, 1, .01, 0), "osc2": (0, 1, .01, 0),
-    "cutoff": (20, 20000, 1, 8000), "wet": (0, 1, .01, .75), "master": (0, 1, .01, 0),
+    "cutoff": (20, 20000, 1, 8000), "cutoff_min": (20, 20000, 1, 20),
+    "cutoff_max": (20, 20000, 1, 20000), "wet": (0, 1, .01, .75), "master": (0, 1, .01, 0),
     "wave1": (0, 4, 1, 0), "wave2": (0, 4, 1, 1), "attack": (0, 10000, 10, 200),
     "release": (0, 30000, 10, 500), "resonance": (.5, 10, .01, .707),
     "piano_room": (0, 1, .01, .4), "piano_reverb": (0, 1, .01, 0),
@@ -63,15 +64,21 @@ INTEGRAL = {"wave1", "wave2", "shimmer", "reverb", "freeze", "release_all", "bed
 MIDI_RESERVED = frozenset((64, 66, 120, 123))
 MIDI_UNMAPPABLE = frozenset(("release_all", "bed_key", "bed_fade", "bed_release", "record_start", "record_stop",
                              "reverb_lowcut", "reverb_highcut", "delay_lowcut", "delay_highcut",
-                             "piano_lowcut", "piano_velocity", "filter_slope", "piano_filter"))
+                             "piano_lowcut", "piano_velocity", "filter_slope", "piano_filter",
+                             "cutoff_min", "cutoff_max"))
 MIDI_MAPPABLE = frozenset(CONTROLS) - MIDI_UNMAPPABLE
 
 
-def midi_value(key, raw):
+def midi_value(key, raw, values=None):
     if key not in MIDI_MAPPABLE or type(raw) is not int or not 0 <= raw <= 127:
         raise ValueError("Invalid MIDI mapping value")
     minimum, maximum, step, _ = CONTROLS[key]
-    value = minimum + (maximum - minimum) * raw / 127
+    if key == "cutoff" and values is not None:
+        minimum = values.get("cutoff_min", minimum)
+        maximum = values.get("cutoff_max", maximum)
+        value = minimum + (maximum - minimum) * raw / 127
+    else:
+        value = minimum + (maximum - minimum) * raw / 127
     value = min(maximum, max(minimum, minimum + math.floor((value - minimum) / step + .5) * step))
     return int(value) if key in INTEGRAL else round(value, 8)
 
@@ -87,7 +94,11 @@ def apply_value(values, key, value, volume_offset=None):
     """Mirror one acknowledged native transaction (also used without devices)."""
     if key in ("osc1", "osc2") and values.get("volume_link", 0) and volume_offset is None:
         volume_offset = values.get("osc1", 0) - values.get("osc2", 0)
+    if key == "cutoff":
+        value = min(values.get("cutoff_max", 20000), max(values.get("cutoff_min", 20), value))
     values[key] = value
+    if key in ("cutoff_min", "cutoff_max"):
+        values["cutoff"] = min(values.get("cutoff_max", 20000), max(values.get("cutoff_min", 20), values.get("cutoff", 8000)))
     if key == "reverb":
         preset = ((6, 25, 80, 7000, .5), (9, 45, 120, 8500, .35), (1.5, 8, 200, 10000, .7),
                   (3, 5, 150, 11000, .3), (7, 30, 150, 7000, .55), (10, 15, 50, 4000, .3), (8, 20, 100, 6500, .5))[int(value)]
@@ -117,15 +128,15 @@ def restore_items(values):
     result = []
     # Cross linked cutoff pairs through their safe minimum so either endpoint
     # can move past the old range without an invalid intermediate state.
-    for low in ("reverb_lowcut", "delay_lowcut"):
+    for low in ("reverb_lowcut", "delay_lowcut", "cutoff_min"):
         if low in values:
             result.append((low, CONTROLS[low][0]))
     result.extend(sorted(((k, v) for k, v in values.items() if k not in
-                          ("reverb_lowcut", "delay_lowcut", "envelope_link", "volume_link", "master")),
+                          ("reverb_lowcut", "delay_lowcut", "cutoff_min", "envelope_link", "volume_link", "master")),
                          key=lambda item: (0 if item[0] in ("attack", "release", "reverb") else
                                            1 if item[0] == "delay_time" else
                                            3 if item[0] == "delay_division" else 2)))
-    for low in ("reverb_lowcut", "delay_lowcut"):
+    for low in ("reverb_lowcut", "delay_lowcut", "cutoff_min"):
         if low in values:
             result.append((low, values[low]))
     if "envelope_link" in values:
@@ -151,7 +162,7 @@ def validate_control(data):
 
 def validate_control_pair(values, key, value):
     """Reject crossed tone filters before they can reach the audio owner."""
-    pairs = {"reverb_lowcut": "reverb_highcut", "delay_lowcut": "delay_highcut"}
+    pairs = {"reverb_lowcut": "reverb_highcut", "delay_lowcut": "delay_highcut", "cutoff_min": "cutoff_max"}
     reverse = {high: low for low, high in pairs.items()}
     if key in pairs and value >= values.get(pairs[key], CONTROLS[pairs[key]][3]):
         raise ValueError("Low cut must remain below high cut")
@@ -164,7 +175,7 @@ class Controller:
         self.child = child
         self.instance = instance
         self.lock = threading.Lock()
-        self.outgoing = queue.Queue(maxsize=64)
+        self.outgoing = queue.Queue(maxsize=96)
         self.sequence = 0
         self.pending = {}
         self.map_pending = {}
@@ -183,7 +194,7 @@ class Controller:
                     not self.status.get("routed") or time.monotonic() - self.last_status > 3 or
                     time.monotonic() - self.last_progress > 3):
                 raise ValueError("Audio owner is not ready; no control replay")
-            if len(self.pending) >= 64 or self.outgoing.full():
+            if len(self.pending) >= 96 or self.outgoing.full():
                 raise ValueError("Control backlog full; wait for acknowledgment")
             effective = self.values.copy()
             effective_offset = self.volume_link_offset
@@ -204,7 +215,7 @@ class Controller:
             if (self.child.poll() is not None or self.status.get("fault", 1) or not self.status.get("routed") or
                     time.monotonic() - self.last_status > 3 or time.monotonic() - self.last_progress > 3):
                 raise ValueError("Audio owner is not ready for MIDI mapping")
-            if len(self.pending) + len(self.map_pending) >= 64 or self.outgoing.full():
+            if len(self.pending) + len(self.map_pending) >= 96 or self.outgoing.full():
                 raise ValueError("Control backlog full; wait for acknowledgment")
             self.sequence += 1
             self.map_pending[self.sequence] = (key, cc)
@@ -242,7 +253,7 @@ class Controller:
                         if (type(value) is int and value >= 0 and type(serial) is int and
                                 serial > self.mapped_serials[index] and key in MIDI_MAPPABLE):
                             self.volume_link_offset = apply_value(
-                                self.values, key, midi_value(key, value), self.volume_link_offset)
+                                self.values, key, midi_value(key, value, self.values), self.volume_link_offset)
                             self.mapped_serials[index] = serial
 
     def snapshot(self):

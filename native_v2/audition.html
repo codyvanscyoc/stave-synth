@@ -140,14 +140,15 @@ Object.assign(labels,{bed_level:'Bed level',bed_rise:'Next trigger rise · secon
 choices.bed_mellow=['Off','On'];
 const keyNames=['C','C♯','D','E♭','E','F','F♯','G','A♭','A','B♭','B'];
 const bedKeys=[],bedActions=['bed-stop'];
-const fields={},pending=new Map(),displayValues={};let ready=false,audioReady=false,busy=false,epoch=null,lastValues={},lastRuntime={},actionBusy=false,volumeLinkOffset=null;
+const fields={},pending=new Map(),displayValues={};let ready=false,audioReady=false,busy=false,epoch=null,lastValues={},lastRuntime={},actionBusy=false,volumeLinkOffset=null,controlOrder=[];
 const visualToggles=new Map();
 let activeBed=-1,bedFaded=false;
 const lastLayerValues={osc1:.7,osc2:.5,piano:.7};
 const stepperRoots={};
 const presetButtons=[...document.querySelectorAll('[data-preset]')];let selectedPreset=0;
-const midiUnmappable=new Set(['release_all','bed_key','bed_fade','bed_release','record_start','record_stop','reverb_lowcut','reverb_highcut','delay_lowcut','delay_highcut','piano_lowcut','piano_velocity','filter_slope','piano_filter']);
+const midiUnmappable=new Set(['release_all','bed_key','bed_fade','bed_release','record_start','record_stop','reverb_lowcut','reverb_highcut','delay_lowcut','delay_highcut','piano_lowcut','piano_velocity','filter_slope','piano_filter','cutoff_min','cutoff_max']);
 let midiMapMode=false,midiTarget=null,midiBaseline=0,midiLearning=false,lastMidiCcSerial=0;
+const lastMappedSerials=new Map(),midiAnimations=new Map();
 const performanceActions=new Set(['master','freeze','release_all','bed_key','bed_fade','bed_release','record_start','record_stop']);
 const performanceKeys=['osc1','osc2','piano','cutoff','wet','master'];
 const performanceLabels={osc1:'OSC 1',osc2:'OSC 2',piano:'PIANO',cutoff:'FILTER',wet:'FX',master:'MASTER'};
@@ -160,11 +161,13 @@ for(const n of [1,2])for(const [part,max] of [['attack',10000],['decay',20000],[
 Object.assign(labels,{envelope_link:'Link envelopes',volume_link:'Link OSC volumes',master_low:'Low · 200 Hz',master_mid:'Mid · 1 kHz',master_high:'High · 5 kHz',master_lowcut:'Low cut',master_lowcut_hz:'Low cut frequency'});
 Object.assign(labels,{transpose:'Transpose',piano_octave:'Piano octave',octave1:'OSC 1 octave',octave2:'OSC 2 octave'});
 Object.assign(labels,{pan1:'OSC 1 pan · L ↔ R',pan2:'OSC 2 pan · L ↔ R',detune:'Unison detune',spread:'Unison stereo width'});
+Object.assign(labels,{cutoff_min:'Filter sweep minimum',cutoff_max:'Filter sweep maximum'});
 Object.assign(labels,{piano_lowcut:'Piano low cut',piano_velocity:'Velocity response',osc1_reverb:'OSC 1 reverb send',osc2_reverb:'OSC 2 reverb send',piano_delay:'Piano delay send',filter_slope:'Filter slope',piano_filter:'Filter piano',bpm:'Tempo',delay_division:'Delay division'});
 editGroups.envelope_link='link';editGroups.volume_link='link';choices.envelope_link=['Independent','Linked edits'];choices.volume_link=['Independent','Preserve balance'];choices.master_lowcut=['Off','On'];
 choices.filter_slope=['12 dB / octave','24 dB / octave'];choices.piano_filter=['Off','On'];
 choices.delay_division=['Free time','1/2','Dotted 1/4','1/4','1/4 triplet','Dotted 1/8','1/8','1/8 triplet','1/16'];
 for(const key of ['pan1','pan2','detune','spread']){editGroups[key]='osc';knobKeys.add(key);}
+for(const key of ['cutoff_min','cutoff_max']){editGroups[key]='osc';knobKeys.add(key);}
 for(const key of ['osc1_reverb','osc2_reverb']){editGroups[key]='osc';knobKeys.add(key);}
 for(const key of ['filter_slope','piano_filter'])editGroups[key]='osc';
 for(const key of ['piano_lowcut','piano_velocity','piano_delay']){editGroups[key]='piano';knobKeys.add(key);}
@@ -175,8 +178,8 @@ for(const key of ['reverb_decay','reverb_predelay','reverb_lowcut','reverb_highc
 for(const key of ['delay_time','delay_lowcut','delay_highcut']){editGroups[key]='delay';knobKeys.add(key);}
 for(const key of ['bpm','delay_division'])editGroups[key]='delay';
 knobKeys.add('bpm');
-const frequencyKeys=new Set(['cutoff','piano_lowcut','reverb_lowcut','reverb_highcut','delay_lowcut','delay_highcut']);
-const frequencyRanges={cutoff:[20,20000],piano_lowcut:[20,500],reverb_lowcut:[20,20000],reverb_highcut:[20,20000],delay_lowcut:[20,1000],delay_highcut:[500,20000]};
+const frequencyKeys=new Set(['cutoff','cutoff_min','cutoff_max','piano_lowcut','reverb_lowcut','reverb_highcut','delay_lowcut','delay_highcut']);
+const frequencyRanges={cutoff:[20,20000],cutoff_min:[20,20000],cutoff_max:[20,20000],piano_lowcut:[20,500],reverb_lowcut:[20,20000],reverb_highcut:[20,20000],delay_lowcut:[20,1000],delay_highcut:[500,20000]};
 const gestures=new Map();
 function cancelGestures(){for(const cancel of [...gestures.values()])cancel();}
 // Relative pickup prevents a track tap from sending a sudden parameter jump.
@@ -212,8 +215,9 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden)cancelGestu
 window.addEventListener('blur',cancelGestures);
 // Original Stave's filter gesture was logarithmic. Wire values remain Hz;
 // render/restore never quantizes or sends the saved value back to the engine.
-function toSlider(key,value){if(envelopeTimes[key])return 1000*Math.log1p(value/10)/Math.log1p(envelopeTimes[key]/10);if(frequencyKeys.has(key)){const [min,max]=frequencyRanges[key];return 1000*Math.log(Math.max(min,Math.min(max,value))/min)/Math.log(max/min);}return value;}
-function fromSlider(key,value){if(envelopeTimes[key])return Math.round(10*Math.expm1(Number(value)/1000*Math.log1p(envelopeTimes[key]/10)));if(frequencyKeys.has(key)){const [min,max]=frequencyRanges[key];return Math.round(min*Math.pow(max/min,Math.max(0,Math.min(1000,Number(value)))/1000));}return Number(value);}
+function frequencyRange(key){if(key!=='cutoff')return frequencyRanges[key];const min=Number(displayValues.cutoff_min??lastValues.cutoff_min??20),max=Number(displayValues.cutoff_max??lastValues.cutoff_max??20000);return min<max?[min,max]:frequencyRanges.cutoff;}
+function toSlider(key,value){if(envelopeTimes[key])return 1000*Math.log1p(value/10)/Math.log1p(envelopeTimes[key]/10);if(frequencyKeys.has(key)){const [min,max]=frequencyRange(key);return 1000*Math.log(Math.max(min,Math.min(max,value))/min)/Math.log(max/min);}return value;}
+function fromSlider(key,value){if(envelopeTimes[key])return Math.round(10*Math.expm1(Number(value)/1000*Math.log1p(envelopeTimes[key]/10)));if(frequencyKeys.has(key)){const [min,max]=frequencyRange(key);return Math.round(min*Math.pow(max/min,Math.max(0,Math.min(1000,Number(value)))/1000));}return Number(value);}
 const envelopeCurrent={},envelopeTarget={},envelopeFrame={};
 function envelopePoints(values,n){
   const a=Number(values['attack'+n]),d=Number(values['decay'+n]),s=Number(values['sustain'+n]),r=Number(values['release'+n]);
@@ -241,6 +245,19 @@ function visibleEnvelopeValues(key,value){
   return values;
 }
 function paint(key,value){displayValues[key]=Number(value);const f=fields[key];if(!f)return;f.out.textContent=formatted(key,value);f.input.setAttribute('aria-valuetext',formatted(key,value));if(f.input.type==='range'){const p=Math.max(0,Math.min(1,(Number(f.input.value)-Number(f.input.min))/(Number(f.input.max)-Number(f.input.min))));f.input.style.setProperty('--fill',(p*100)+'%');if(f.dial)f.dial.style.setProperty('--knob-turn',(p*270-135)+'deg');}if(/^(attack|decay|sustain|release)[12]$/.test(key))drawEnvelopes(visibleEnvelopeValues(key,value));}
+function animateMidiField(key,target){
+  const f=fields[key],start=Number(displayValues[key]);target=Number(target);if(!f||!Number.isFinite(start)||!Number.isFinite(target)||start===target||typeof window.requestAnimationFrame!=='function'){if(f){f.input.value=toSlider(key,target);paint(key,target);}return;}
+  const token={};midiAnimations.set(key,token);const began=performance.now(),duration=420;
+  const frame=now=>{if(midiAnimations.get(key)!==token||gestures.has(key))return;const t=Math.min(1,(now-began)/duration),eased=1-Math.pow(1-t,3),value=start+(target-start)*eased;f.input.value=toSlider(key,value);paint(key,value);if(t<1)window.requestAnimationFrame(frame);else midiAnimations.delete(key);};
+  window.requestAnimationFrame(frame);
+}
+function previewCutoffBound(key,value){
+  const other=key==='cutoff_min'?'cutoff_max':'cutoff_min',otherValue=Number(displayValues[other]??lastValues[other]??(other==='cutoff_min'?20:20000));
+  value=key==='cutoff_min'?Math.min(value,otherValue-1):Math.max(value,otherValue+1);
+  fields[key].input.value=toSlider(key,value);paint(key,value);
+  const cutoff=Math.max(key==='cutoff_min'?value:otherValue,Math.min(key==='cutoff_max'?value:otherValue,Number(displayValues.cutoff??lastValues.cutoff??8000)));
+  fields.cutoff.input.value=toSlider('cutoff',cutoff);paint('cutoff',cutoff);return value;
+}
 function volumeLinkVisual(value,capture=true){
   const linked=Number(value)===1;
   if(linked&&capture&&volumeLinkOffset===null)volumeLinkOffset=Number(displayValues.osc1||0)-Number(displayValues.osc2||0);
@@ -281,7 +298,7 @@ function soundSection(name){cancelGestures();for(const tab of ['osc','piano','re
 for(const tab of ['osc','piano','reverb','delay'])document.getElementById('sound-tab-'+tab).onclick=()=>soundSection(tab);
 function formatted(key,value){
   if(choices[key])return choices[key][Number(value)]||String(value);
-  if(['cutoff','piano_lowcut','bed_rise_cutoff','bed_mellow_cutoff','master_lowcut_hz','reverb_lowcut','reverb_highcut','delay_lowcut','delay_highcut'].includes(key))return value>=1000?(value/1000).toFixed(1)+' kHz':Math.round(value)+' Hz';
+  if(['cutoff','cutoff_min','cutoff_max','piano_lowcut','bed_rise_cutoff','bed_mellow_cutoff','master_lowcut_hz','reverb_lowcut','reverb_highcut','delay_lowcut','delay_highcut'].includes(key))return value>=1000?(value/1000).toFixed(1)+' kHz':Math.round(value)+' Hz';
   if(['attack','release'].includes(key)||envelopeTimes[key])return value>=1000?(value/1000).toFixed(2)+' s':Math.round(value)+' ms';
   if(key==='sustain1'||key==='sustain2')return Number(value).toFixed(1)+'%';
   if(['master_low','master_mid','master_high'].includes(key))return (value>0?'+':'')+Number(value).toFixed(1)+' dB';
@@ -320,6 +337,7 @@ async function setup(){
   let definitions;
   try{const response=await fetch('/controls',{signal:AbortSignal.timeout(2000)});if(!response.ok)throw Error('Controls unavailable');definitions=await response.json();}
   catch(e){notice.textContent='Connecting to Stave… retrying control definitions.';setTimeout(setup,2000);return;}
+  controlOrder=Object.keys(definitions);
   const order=[...performanceKeys,'piano_tone'];
   const entries=[...order.filter(k=>k in definitions),...Object.keys(definitions).filter(k=>!order.includes(k))];
   for(const key of entries){const [min,max,step,value]=definitions[key];
@@ -333,7 +351,7 @@ async function setup(){
     input.value=toSlider(key,value);input.disabled=true;input.setAttribute('aria-label',labels[key]);
     if(performanceKeys.includes(key))input.setAttribute('aria-orientation','vertical');
     if(!choices[key])bindPickup(input,key,label);
-    input.addEventListener('input',()=>{const value=fromSlider(key,input.value);if(key==='osc1'||key==='osc2')previewVolume(key,value);else paint(key,value);if(key==='volume_link')volumeLinkVisual(value);if(!choices[key])send(key,value);});
+    input.addEventListener('input',()=>{let value=fromSlider(key,input.value);if(key==='osc1'||key==='osc2')previewVolume(key,value);else if(key==='cutoff_min'||key==='cutoff_max')value=previewCutoffBound(key,value);else paint(key,value);if(key==='volume_link')volumeLinkVisual(value);if(!choices[key])send(key,value);});
     // One request in flight; pending absolute values coalesce by parameter.
     // Reconnect never replays one-shot actions or stale gestures.
     input.addEventListener('change',()=>send(key,fromSlider(key,input.value)));
@@ -424,9 +442,12 @@ async function poll(){
     else notice.textContent='';
     }
     if(!ready){pending.clear();cancelGestures();}
+    const maps=lastRuntime.midi_maps||{},mappedUpdates=new Set(),mappedSerials=Array.isArray(s.midi_mapped_serial)?s.midi_mapped_serial:[];
+    for(const key of Object.keys(maps)){const index=controlOrder.indexOf(key),serial=Number(mappedSerials[index]||0),previous=Number(lastMappedSerials.get(key)||0);if(serial>previous){mappedUpdates.add(key);if(Number(d.values.volume_link)===1&&(key==='osc1'||key==='osc2'))mappedUpdates.add(key==='osc1'?'osc2':'osc1');if(Number(d.values.envelope_link)===1&&/^(attack|decay|sustain|release)[12]$/.test(key))mappedUpdates.add(key.slice(0,-1)+(key.endsWith('1')?'2':'1'));}lastMappedSerials.set(key,serial);}
+    for(const key of ['cutoff_min','cutoff_max'])if(fields[key]&&!gestures.has(key)&&!pending.has(key)){fields[key].input.value=toSlider(key,d.values[key]);paint(key,d.values[key]);}
     for(const [key,{input,out}] of Object.entries(fields)){
       input.disabled=!ready||(!audioReady&&performanceActions.has(key));
-      if(!gestures.has(key)&&!busy&&!pending.has(key)&&!d.pending){input.value=toSlider(key,d.values[key]);paint(key,d.values[key]);}
+      if(!gestures.has(key)&&!busy&&!pending.has(key)&&!d.pending){if(mappedUpdates.has(key))animateMidiField(key,d.values[key]);else if(!midiAnimations.has(key)){input.value=toSlider(key,d.values[key]);paint(key,d.values[key]);}}
     }
     volumeLinkVisual(d.values.volume_link);
     for(const key of ['transpose','piano_octave','octave1','octave2']){const root=stepperRoots[key];if(root){root.children[1].textContent=formatted(key,d.values[key]);for(const b of root._buttons||[])b.disabled=!ready;}}
@@ -445,7 +466,6 @@ async function poll(){
     document.getElementById('save').disabled=!ready||busy||Boolean(pending.size)||Boolean(d.pending)||!lastRuntime.persistence||actionBusy;
     document.getElementById('restart-audio').disabled=!lastRuntime.can_restart||actionBusy;
     const mapButton=document.getElementById('midi-map');mapButton.disabled=!audioReady||actionBusy;
-    const maps=lastRuntime.midi_maps||{};
     for(const node of document.querySelectorAll('[data-map-key]'))node.setAttribute('data-midi-mapped',String(Object.prototype.hasOwnProperty.call(maps,node.getAttribute('data-map-key'))));
     const ccSerial=Number(s.midi_cc_serial||0);lastMidiCcSerial=ccSerial;
     if(midiMapMode&&midiTarget&&!midiLearning&&ccSerial>midiBaseline){

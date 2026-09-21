@@ -32,7 +32,7 @@ const document={activeElement:null,body:{classList:{toggle(name,on){if(on)bodyCl
 }};
 for(let i=0;i<3;i++)document.getElementById('transpose-stepper').append(new Element());
 const controls={piano:[0,1,.01,.5],piano_tone:[0,1,.01,1],master:[0,1,.01,0],
-  osc1:[0,1,.01,.13],osc2:[0,1,.01,.1],cutoff:[20,20000,1,487],wet:[0,1,.01,.74],
+  osc1:[0,1,.01,.13],osc2:[0,1,.01,.1],cutoff:[20,20000,1,487],cutoff_min:[20,20000,1,20],cutoff_max:[20,20000,1,20000],wet:[0,1,.01,.74],
   shimmer:[0,1,1,0],wave1:[0,4,1,0],wave2:[0,4,1,2],attack:[0,10000,10,530],release:[0,30000,10,530],resonance:[.5,10,.01,.7],
   delay_wet:[0,1,.01,0],delay_feedback:[0,.99,.01,.35],piano_room:[0,1,.01,.4],piano_reverb:[0,1,.01,.13],reverb:[0,6,1,0],shimmer_mix:[0,1,.01,.07],freeze:[0,1,1,0],
   bed_level:[0,1,.01,1],bed_key:[0,11,1,-1],bed_rise:[0,60,.5,0],bed_rise_cutoff:[200,20000,1,3000],
@@ -67,8 +67,12 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
   for(const value of [20,100,487,8000,20000])assert.equal(vm.runInContext(`fromSlider('cutoff',toSlider('cutoff',${value}))`,context),value);
   assert.equal(vm.runInContext("fromSlider('cutoff',0)",context),20);
   assert.equal(vm.runInContext("fromSlider('cutoff',1000)",context),20000);
+  assert.equal(nodes.get('edit-osc').children.slice(0,2).map(x=>x.attributes['data-control']).join(','),'cutoff_min,cutoff_max');
   const filter=nodes.get('mixer').children[3].children.find(x=>x.type==='range');filter.value=500;filter.listeners.input();await flush();
   assert.deepEqual(sent.at(-1),{key:'cutoff',value:632},nodes.get('notice').textContent);assert.equal(filter.attributes['aria-valuetext'],'632 Hz');
+  const filterMin=nodes.get('edit-osc').children[0].children.find(x=>x.type==='range');
+  filterMin.value=vm.runInContext("toSlider('cutoff_min',300)",context);filterMin.listeners.input();await flush();
+  assert.deepEqual(sent.at(-1),{key:'cutoff_min',value:300});assert.equal(vm.runInContext("fromSlider('cutoff',0)",context),300,'Stage filter bottom follows the saved sweep minimum');
   const fx=nodes.get('mixer').children[4].children.find(x=>x.type==='range');
   const pointer=(type,y,id=1,x=20)=>{let prevented=false;fx.listeners[type]({button:0,pointerId:id,clientY:y,clientX:x,preventDefault(){prevented=true;}});return prevented;};
   let before=sent.length;
@@ -92,7 +96,7 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
   pointer('pointerdown',100);nodes.get('nav-edit').onclick();pointer('pointermove',80);await flush();assert.equal(sent.length,before,'changing view cancels gesture');
   assert.equal(nodes.get('edit-wave1').children[0].attributes['data-control'],'wave1');
   assert.equal(nodes.get('edit-wave2').children[0].attributes['data-control'],'wave2');
-  assert.equal(nodes.get('edit-osc').children[0].attributes['data-control'],'resonance');
+  assert.equal(nodes.get('edit-osc').children[2].attributes['data-control'],'resonance');
   assert.deepEqual(nodes.get('edit-osc').children.slice(-8).map(x=>x.attributes['data-control']),['pan1','pan2','detune','spread','osc1_reverb','osc2_reverb','filter_slope','piano_filter']);
   for(const n of [1,2]){
     assert.deepEqual(nodes.get('edit-env'+n).children.map(x=>x.attributes['data-control']),['attack','decay','sustain','release'].map(x=>x+n));
@@ -114,8 +118,8 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
   assert.deepEqual(nodes.get('edit-reverb').children.slice(-5).map(x=>x.attributes['data-control']),['reverb_decay','reverb_predelay','reverb_lowcut','reverb_highcut','reverb_damp']);
   assert.deepEqual(nodes.get('edit-delay').children.slice(-5).map(x=>x.attributes['data-control']),['delay_time','delay_lowcut','delay_highcut','bpm','delay_division']);
   for(const [key,values] of Object.entries({reverb_lowcut:[20,80,1000,20000],reverb_highcut:[20,7000,20000],delay_lowcut:[20,100,1000],delay_highcut:[500,18000,20000]}))for(const value of values)assert.equal(vm.runInContext(`fromSlider('${key}',toSlider('${key}',${value}))`,context),value);
-  assert.equal(nodes.get('edit-osc').children[0].className.includes('knob-control'),true);
-  assert.match(nodes.get('edit-osc').children[0].children.at(-2).style['--knob-turn'],/deg$/);
+  assert.equal(nodes.get('edit-osc').children[2].className.includes('knob-control'),true);
+  assert.match(nodes.get('edit-osc').children[2].children.at(-2).style['--knob-turn'],/deg$/);
   assert.equal(nodes.get('edit-delay').children[0].attributes['data-control'],'delay_wet');
   assert.equal(nodes.get('edit-piano').children[0].attributes['data-control'],'piano_room');
   nodes.get('sound-tab-piano').onclick();assert.equal(nodes.get('sound-piano').attributes['data-open'],'true');assert.equal(nodes.get('sound-osc').attributes['data-open'],'false');
@@ -149,6 +153,9 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
   state={...state,status:{...state.status,midi_cc_serial:1,midi_cc:23,midi_cc_value:99}};
   await vm.runInContext('poll()',context);await flush();
   assert.deepEqual(actions.at(-1).body,{key:'osc1',cc:23});assert.equal(actions.at(-1).url,'/midi-map');
+  const mappedRaw=Array(Object.keys(controls).length).fill(-1),mappedSerial=Array(Object.keys(controls).length).fill(0),osc1Index=Object.keys(controls).indexOf('osc1');
+  mappedRaw[osc1Index]=112;mappedSerial[osc1Index]=1;state={...state,values:{...state.values,osc1:.88},status:{...state.status,midi_mapped_raw:mappedRaw,midi_mapped_serial:mappedSerial},runtime:{...state.runtime,midi_maps:{osc1:23}}};
+  await vm.runInContext('poll()',context);assert.equal(Number(osc1Fader.value),.88,'mapped hardware telemetry repaints the authoritative value');
   nodes.get('midi-map-done').onclick();assert.ok(!bodyClasses.has('midi-map-mode'));assert.equal(nodes.get('midi-map-banner').hidden,true);
   nodes.get('save').onclick();await flush();assert.equal(actions.at(-1).url,'/save');assert.equal(actions.at(-1).epoch,'session-a');
   nodes.get('apply-routes').onclick();await flush();assert.deepEqual(actions.at(-1).body,{midi_source:'Keys:midi',audio_left:'USB:l',audio_right:'USB:r'});

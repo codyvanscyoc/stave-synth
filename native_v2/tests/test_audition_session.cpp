@@ -246,6 +246,7 @@ int main(int argc,char** argv) {
                 if(kind==C::RecordStart||kind==C::RecordStop) { check(!controls.enqueue({id,kind,v})); continue; }
                 if((kind==C::ReverbLowcut&&v>=7000)||(kind==C::ReverbHighcut&&v<=80)) continue;
                 if((kind==C::DelayLowcut&&v>=18000)||(kind==C::DelayHighcut&&v<=1000)) continue;
+                if((kind==C::CutoffMin&&v>=20000)||(kind==C::CutoffMax&&v<=8000)) continue;
                 if(kind==C::BedKey&&v!=0&&v!=7) { check(!controls.enqueue({id,kind,v})); continue; }
                 check(controls.enqueue({id,kind,v}));
                 const bool rendered=controls.process(l.data(),r.data(),frames,nullptr,0);
@@ -278,6 +279,7 @@ int main(int argc,char** argv) {
             check(learned.midi_mapped_raw(unsigned(C::Master))==127&&learned.midi_mapped_serial(unsigned(C::Master))==1);
             check(learned.unsupported_midi()==0);
             check(learned.map_cc(21,C::Cutoff));
+            check(!learned.map_cc(22,C::CutoffMin)&&!learned.map_cc(22,C::CutoffMax));
             check(learned.midi_mapped_raw(unsigned(C::Master))==-1&&learned.midi_mapped_serial(unsigned(C::Master))==0);
             e.bytes={0xb0,21,0}; check(learned.process(l.data(),r.data(),frames,&e,1));
             check(learned.midi_mapped_raw(unsigned(C::Cutoff))==0&&learned.midi_mapped_serial(unsigned(C::Cutoff))==2);

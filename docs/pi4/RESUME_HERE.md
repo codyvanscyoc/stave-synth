@@ -4,6 +4,25 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
+## September 21: smooth mapped display and filter sweep limits candidate
+
+Mapped MIDI still reaches the native owner at the audio-block boundary, but the
+browser now eases between authoritative MIDI telemetry snapshots instead of
+visually teleporting. This is display-only smoothing: no MIDI delay, audio
+smoothing, render-ahead, buffer or DSP work was added.
+
+Two saved setup controls, `cutoff_min` and `cutoff_max`, define the Stage filter
+fader and mapped-CC sweep endpoints. They default to the existing 20Hz–20kHz
+range, are deliberately not MIDI-mappable themselves, cannot cross, and clamp
+the current cutoff when narrowed. Direct UI edits and native mapped MIDI share
+the same acknowledged bounds. The bounded controller queue rises from64 to96
+entries so a full expanded state can still restore in one acknowledged batch;
+the native SPSC capacity remains128.
+
+The actual UI interaction test, real-Chrome tablet/phone layout and no-overflow
+checks, focused controller tests and 613 pinned offline regressions pass. This
+candidate is not yet Pi-built, physically listened, committed or deployed.
+
 ## September 21: MIDI Learn promoted to the Stage header
 
 The existing native, persistent MIDI Learn path is now directly available as

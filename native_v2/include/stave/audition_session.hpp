@@ -8,7 +8,7 @@ namespace stave {
 // Deliberately small audition protocol, NOT the saved-preset/UI schema. Only
 // absolute controls cross this SPSC queue; MIDI stays on the audio owner.
 enum class AuditionControl : unsigned {
-    Piano, Osc1, Osc2, Cutoff, Wet, Master, Wave1, Wave2, Attack, Release,
+    Piano, Osc1, Osc2, Cutoff, CutoffMin, CutoffMax, Wet, Master, Wave1, Wave2, Attack, Release,
     Resonance, PianoRoom, PianoReverb, DelayWet, DelayFeedback, Shimmer,
     ShimmerMix, Reverb, Freeze, ReleaseAll, PianoTone,
     BedLevel, BedKey, BedRise, BedRiseCutoff, BedMellow, BedMellowCutoff, BedFade, BedRelease,
@@ -21,7 +21,7 @@ enum class AuditionControl : unsigned {
     FilterSlope, PianoFilter, Bpm, DelayDivision, Count
 };
 inline constexpr std::array<const char*,unsigned(AuditionControl::Count)> audition_names{
-    "piano","osc1","osc2","cutoff","wet","master","wave1","wave2","attack","release",
+    "piano","osc1","osc2","cutoff","cutoff_min","cutoff_max","wet","master","wave1","wave2","attack","release",
     "resonance","piano_room","piano_reverb","delay_wet","delay_feedback","shimmer",
     "shimmer_mix","reverb","freeze","release_all","piano_tone",
     "bed_level","bed_key","bed_rise","bed_rise_cutoff","bed_mellow","bed_mellow_cutoff","bed_fade","bed_release",
@@ -35,7 +35,7 @@ inline constexpr std::array<const char*,unsigned(AuditionControl::Count)> auditi
 inline bool audition_value_valid(AuditionControl c,double v) noexcept {
     if(!std::isfinite(v)) return false;
     switch(c) {
-    case AuditionControl::Cutoff: return v>=20&&v<=20000;
+    case AuditionControl::Cutoff: case AuditionControl::CutoffMin: case AuditionControl::CutoffMax: return v>=20&&v<=20000;
     case AuditionControl::Attack: case AuditionControl::Attack1: case AuditionControl::Attack2: return v>=0&&v<=10000;
     case AuditionControl::Release: case AuditionControl::Release1: case AuditionControl::Release2: return v>=0&&v<=30000;
     case AuditionControl::Decay1: case AuditionControl::Decay2: return v>=0&&v<=20000;
@@ -80,7 +80,8 @@ inline bool audition_mappable(AuditionControl c) noexcept {
     return c!=C::ReleaseAll&&c!=C::BedKey&&c!=C::BedFade&&c!=C::BedRelease&&
            c!=C::RecordStart&&c!=C::RecordStop&&c!=C::ReverbLowcut&&c!=C::ReverbHighcut&&
            c!=C::DelayLowcut&&c!=C::DelayHighcut&&c!=C::PianoLowcut&&
-           c!=C::PianoVelocity&&c!=C::FilterSlope&&c!=C::PianoFilter&&c!=C::Count;
+           c!=C::PianoVelocity&&c!=C::FilterSlope&&c!=C::PianoFilter&&
+           c!=C::CutoffMin&&c!=C::CutoffMax&&c!=C::Count;
 }
 inline double audition_midi_value(AuditionControl c,unsigned raw) noexcept {
     using C=AuditionControl; double lo=0,hi=1,step=.01;
@@ -235,7 +236,11 @@ public:
                 const int mapped=cc_map_[cc].load(std::memory_order_acquire);
                 if(mapped>=0&&mapped<int(AuditionControl::Count)) {
                     const auto control=static_cast<AuditionControl>(mapped);
-                    mapped_values[unsigned(control)]=audition_midi_value(control,raw); mapped_seen[unsigned(control)]=true;
+                    if(control==AuditionControl::Cutoff) {
+                        const auto value=cutoff_min_+(cutoff_max_-cutoff_min_)*std::min(raw,127u)/127.;
+                        mapped_values[unsigned(control)]=std::clamp(std::round(value),cutoff_min_,cutoff_max_);
+                    } else mapped_values[unsigned(control)]=audition_midi_value(control,raw);
+                    mapped_seen[unsigned(control)]=true;
                     mapped_raw_[unsigned(control)].store(int(raw),std::memory_order_relaxed);
                     midi_apply_control_.store(mapped,std::memory_order_relaxed); midi_apply_value_.store(raw,std::memory_order_relaxed);
                     const auto serial=midi_apply_serial_.fetch_add(1,std::memory_order_relaxed)+1;
@@ -320,7 +325,13 @@ private:
             config_.fader2=v;
             if(volume_link_) config_.fader1=std::clamp(v+volume_link_offset_,0.,1.);
             break;
-        case C::Cutoff: config_.buses.pad.cutoff=v; break;
+        case C::Cutoff: config_.buses.pad.cutoff=std::clamp(v,cutoff_min_,cutoff_max_); break;
+        case C::CutoffMin:
+            if(v>=cutoff_max_) return false;
+            cutoff_min_=v; config_.buses.pad.cutoff=std::max(config_.buses.pad.cutoff,v); break;
+        case C::CutoffMax:
+            if(v<=cutoff_min_) return false;
+            cutoff_max_=v; config_.buses.pad.cutoff=std::min(config_.buses.pad.cutoff,v); break;
         case C::Wet: config_.wet=v; break;
         case C::Master: config_.output.volume=v; if(v>0) audition_unmuted_=true; break;
         case C::Wave1: config_.wave1=int(v); break;
@@ -399,7 +410,7 @@ private:
     StageInstrument& graph_;
     RecordingCapture<>* capture_{};
     unsigned bed_mask_{};
-    double bed_rise_{},bed_rise_cutoff_{3000};
+    double bed_rise_{},bed_rise_cutoff_{3000},cutoff_min_{20},cutoff_max_{20000};
     std::atomic<unsigned> active_beds_{0};
     std::atomic<int> bed_key_{-1};
     StageInstrumentConfig config_{};
