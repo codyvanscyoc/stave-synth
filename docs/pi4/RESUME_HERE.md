@@ -4,7 +4,7 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
-## September 21: smooth mapped display and filter sweep limits candidate
+## September 21: smooth mapped display and filter sweep limits deployed
 
 Mapped MIDI still reaches the native owner at the audio-block boundary, but the
 browser now eases between authoritative MIDI telemetry snapshots instead of
@@ -21,13 +21,30 @@ the native SPSC capacity remains128.
 
 The actual UI interaction test, real-Chrome tablet/phone layout and no-overflow
 checks, focused controller tests and 613 pinned offline regressions pass. Commit
-`a8b99f6` is pushed. Its backward-compatible browser smoothing is installed
-without an audio restart (served HTML SHA256 `0c922d60…f268`); PID1101, epoch
-`c62a164f204946fb8fc87313fa6dda98`, tone, zero xruns and zero over-budget
-callbacks were preserved. UI rollback is at
+`a8b99f6` is pushed. Its backward-compatible browser smoothing was first
+installed without an audio restart (served HTML SHA256 `0c922d60…f268`). UI
+rollback is at
 `/home/codyvanscyoc/stave-native-boot-backup-20260921/midi-smooth-a8b99f6/audition.html`.
-The synchronized native/filter-limit portion is not yet Pi-built, physically
-listened or installed and therefore remains hidden until the engine is updated.
+
+The synchronized native portion was subsequently built on the Pi4 from commit
+`2272138` with the original hash/toolchain-verified DSP objects. The target
+graph, exact-PCM and fake-JACK guards, and all41 Pi-applicable controller/state
+tests pass. All ten400-block throughput cases at512 and256 frames completed
+with zero over-budget blocks. The worst measured512 block was5.55756ms of a
+10.667ms deadline; the worst256 block was3.564513ms of a5.333ms deadline. Peak
+reported target test temperature was73.036C.
+
+The filter-limit binary/controller is installed as the default native service.
+Postinstall PID23627, epoch `38c709b25b744b4c80f885898fd81768`,512 frames,
+route, fault0, zero restarts, zero xruns and zero over-budget callbacks were
+verified. The exact pre-restart tone was restored with Master1 last, the cutoff
+CC71 map and saved controls/routes remained byte-identical, and the legacy and
+candidate services remain inactive. Installed adapter SHA256 is
+`7e997031…347ac`; rollback and complete before/after evidence are at
+`/home/codyvanscyoc/stave-native-boot-backup-20260921/filter-bounds-2272138`
+and `/home/codyvanscyoc/stave-filter-bounds-20260921-150054`. This is target
+build/runtime evidence, not a new physical listening qualification of the
+bounded sweep.
 
 ## September 21: MIDI Learn promoted to the Stage header
 
