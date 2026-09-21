@@ -4,6 +4,22 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
+## September 21: MIDI Learn promoted to the Stage header
+
+The existing native, persistent MIDI Learn path is now directly available as
+`MIDI MAP` in the top header from Stage, Sound or System. Entering map mode adds
+dashed outlines to every supported target; tap one control, then move one
+hardware knob, fader or switch. The native owner learns the incoming CC, the
+assignment is written immediately to the separate bounded MIDI-map store, and
+it is restored before sound controls after audio reconnect or reboot. Selecting
+an already mapped target identifies its current CC before replacement. Reserved
+sustain, sostenuto and safety CCs remain unavailable.
+
+This change only promotes and clarifies the already-qualified control path; it
+does not add polling, processing or work to the audio callback. The actual UI
+interaction test, 612 pinned offline regressions, and real-Chrome tablet/phone
+layout and no-overflow checks pass. Pi deployment is pending at this checkpoint.
+
 ## September 19: balance-preserving OSC volume link deployed
 
 Commit `38a8708` adds a separate saved `volume_link` control. Enabling it captures
