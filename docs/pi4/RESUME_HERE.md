@@ -4,6 +4,32 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
+## September 25: professional control-surface release ready for Pi deployment
+
+The native engine, 48kHz/512-frame profile, control protocol and saved sound are
+unchanged. The browser now presents a cleaner performance editor by default and
+keeps existing calibration/routing parameters behind one `SHOW ADVANCED`
+control. Advanced exposes only controls the native engine already owns; this
+batch adds no DSP, voices, buffers, audio-thread work or audio restart.
+
+The System page now includes browser-only normal/fine knob travel, an inventory
+of persistent MIDI CC assignments, and the same advanced-control preference.
+Mapped controls show their CC number, Mute truthfully shows `MUTED` when Master
+is zero, and the former unexplained warning count is labeled as `XRUN` and/or
+`LATE`. The analog dual-envelope diagrams, long Stage faders, presets, recorded
+pad controls, connection routing and global tone remain intact.
+
+The actual-script control test passes, the real-Chrome 1366x1024 and 390x844
+interaction/overflow check passes, and all 613 pinned offline regressions pass
+in the SciPy test environment. This is browser/control validation, not new
+physical audio qualification. The Pi was unreachable at handoff: Tailscale
+`100.109.54.80` timed out, `stavepi4.local` did not resolve, and the last home
+address `192.168.4.33` did not answer although the Mac was on `192.168.4.28/22`.
+No Pi file, process, state, route, service or sound was changed. Deploy only the
+tested `native_v2/audition.html` (SHA-256
+`bf9ffca35933a91b0c18ff97d851442d0837d942baf8dea7d3c760ab10cce33c`)
+atomically when the Pi returns; do not restart audio for this UI-only release.
+
 ## September 21: smooth mapped display and filter sweep limits deployed
 
 Mapped MIDI still reaches the native owner at the audio-block boundary, but the

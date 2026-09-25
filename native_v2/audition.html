@@ -88,6 +88,7 @@ header{position:relative}.header-actions{gap:7px}.header-actions button{min-widt
 .statusbar{flex-wrap:nowrap;white-space:nowrap;overflow:hidden;min-height:27px}.statusbar>*{flex:none}#warning-count{cursor:pointer}
 #notice{position:fixed;z-index:40;top:78px;left:50%;transform:translateX(-50%);max-width:min(92vw,760px);margin:0;padding:6px 12px;background:#180f0d;border:1px solid var(--gold);color:var(--gold);box-shadow:0 5px 24px #000;pointer-events:none;text-align:center}#notice:empty{display:none}
 #midi-map-banner{position:fixed;z-index:50;top:8px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:12px;width:min(94vw,850px);padding:9px 12px;background:#19120b;border:2px dashed var(--gold);box-shadow:0 6px 30px #000;color:var(--gold)}#midi-map-banner strong{white-space:nowrap;letter-spacing:.14em}#midi-map-banner span{flex:1;color:var(--ink)}#midi-map-done{width:auto;min-height:34px;padding:3px 12px}#midi-map[aria-pressed=true]{background:var(--gold);border-color:var(--gold);color:var(--bg)}.midi-map-mode [data-map-key]{outline:1px dashed color-mix(in srgb,var(--gold) 72%,transparent);outline-offset:3px;cursor:crosshair!important}.midi-map-mode [data-map-key][data-midi-selected=true]{outline:4px dashed var(--gold);background-color:color-mix(in srgb,var(--gold) 13%,transparent)}.midi-map-mode [data-map-key][data-midi-mapped=true]{box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--gold) 48%,transparent)}
+.control[data-midi-mapped=true]{position:relative}.control[data-midi-mapped=true]::after{content:'CC ' attr(data-midi-cc);position:absolute;top:4px;right:5px;color:var(--gold);font-size:8px;letter-spacing:.08em}.midi-map-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px;margin:12px 0}.midi-map-list span{border-bottom:1px solid var(--line);padding:4px 0;font-size:11px;color:var(--muted)}.midi-map-list strong{color:var(--mint);font-weight:normal}.midi-map-list .empty{grid-column:1/-1;border:0}.surface-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.surface-actions button{width:auto;min-width:145px}.surface-actions button[aria-pressed=true],#sound-advanced[aria-pressed=true]{background:var(--mint);color:var(--bg)}
 .pitch-strip{display:flex;align-items:center;justify-content:center;gap:8px;margin:3px 0 8px}.pitch-strip>span{color:var(--muted);font-size:10px;letter-spacing:.12em}.stepper{display:inline-grid;grid-template-columns:34px 48px 34px;align-items:center}.stepper button{min-height:32px;height:32px;padding:0}.stepper output{float:none;text-align:center;color:var(--ink)}
 .layer-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:0 auto 8px;max-width:720px}.layer-strip button{min-height:34px;padding:3px 8px;font-size:10px;letter-spacing:.12em}.layer-strip button[aria-pressed=true]{background:var(--mint);color:var(--bg)}#volume-link-stage{border-color:var(--gold);color:var(--gold)}#volume-link-stage[aria-pressed=true]{background:var(--gold);color:var(--bg)}
 .preset-strip{display:grid;grid-template-columns:repeat(5,minmax(0,1fr)) auto;gap:7px;margin:6px 0 10px}.preset-strip button{min-height:38px;padding:4px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:10px}.preset-strip button[data-selected=true]{border-color:var(--gold);color:var(--gold)}#preset-store{min-width:62px}
@@ -95,6 +96,7 @@ header{position:relative}.header-actions{gap:7px}.header-actions button{min-widt
 .bed-actions{justify-content:flex-end}.bed-actions button{min-width:100px}.record-pad #record-status,#bed-status{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:18px}.record-pad{flex-wrap:nowrap}.record-pad label{display:flex;align-items:center;gap:7px;white-space:nowrap}.record-pad select{margin:0;width:75px}.record-pad button{width:auto;white-space:nowrap}
 .pad-edit{margin-top:5px}.pad-edit summary{min-height:32px;padding:4px 0;font-size:10px;letter-spacing:.12em}.pad-edit[open]{border-top:1px solid var(--line);margin-top:9px;padding-top:5px}
 .edit-group .control-grid{grid-template-columns:repeat(4,minmax(0,1fr))}.contour .control-grid{grid-template-columns:repeat(9,minmax(0,1fr));max-width:none}.contour label.control{padding-left:4px;padding-right:4px}.contour .control-name{font-size:9px}.edit-group label.knob-control{min-height:135px}.edit-group label.knob-control input[type=range]{width:70px;height:70px;min-height:70px}.knob-dial{top:43px;width:70px;height:70px;left:calc(50% - 35px)}.knob-dial::after{height:17px;transform-origin:50% 25px}.osc-layout .voice{padding:10px}.envelope-plot{height:100px;margin:6px 0 3px}.osc-layout .envelope-controls label.knob-control{min-height:116px}.osc-layout .envelope-controls .knob-dial{top:38px}.sound-tabs{margin-bottom:10px}.edit-group>p{margin-bottom:9px}
+.sound-heading{align-items:flex-end}.sound-heading .surface-actions{margin:0}.sound-heading button{min-height:36px;padding:4px 10px;font-size:10px;letter-spacing:.08em}body:not(.show-advanced) .edit-group label.control[data-advanced=true]{display:none}.show-advanced .control[data-advanced=true]{display:block}.show-advanced .knob-control[data-advanced=true],.show-advanced #edit-link .control.choice-control[data-advanced=true]{display:flex}.advanced-note{display:none;color:var(--gold);font-size:10px;letter-spacing:.08em}.show-advanced .advanced-note{display:block}.surface-setting{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding:7px 0}.surface-setting button{width:auto;min-width:160px}.fine-controls #fine-controls{background:var(--gold);border-color:var(--gold);color:var(--bg)}
 @media(max-width:700px){.header-actions{order:2}.header-stack{grid-template-columns:1fr 1fr}.header-stack button{height:26px}.pitch-strip{justify-content:flex-start}.preset-strip{grid-template-columns:repeat(5,minmax(0,1fr))}.preset-strip #preset-store{grid-column:1/-1}.record-pad{flex-wrap:wrap}.edit-group .control-grid,.contour .control-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.osc-layout .envelope-controls{grid-template-columns:repeat(4,minmax(0,1fr))}.osc-layout .envelope-controls label.knob-control{min-height:108px}.osc-layout .envelope-controls .knob-dial{width:60px;height:60px;left:calc(50% - 30px)}}
 @media(min-width:701px){body{padding-bottom:8px}#stage-panel{min-height:0}.performance-panel{margin:4px 0 2px}#mixer input[type=range]{height:clamp(190px,calc(100svh - 610px),650px)}#tone-controls{margin:4px auto}.preset-strip{margin:3px 0 5px}.bed-panel{padding-top:5px}.bed-panel .section-head{margin-bottom:2px}#bed-status{margin-bottom:3px}#bed-keys button{min-height:48px}.bed-actions{margin:3px 0 0}.bed-actions button{min-height:34px}.footer-note{display:none}}
 </style>
@@ -116,7 +118,7 @@ header{position:relative}.header-actions{gap:7px}.header-actions button{min-widt
 <div class="actions bed-actions"><button id="bed-stop" disabled>STOP PAD</button></div>
 <details class="pad-edit"><summary>PAD RECORD / SHAPE</summary><div class="record-pad"><button id="record-start" disabled>RECORD</button><button id="record-stop" disabled>STOP</button><label>KEY <select id="record-slot" aria-label="Recorded pad destination"></select></label><button id="record-assign" disabled>SAVE PAD</button><span id="record-status">Recorder idle.</span></div><div id="bed-controls"></div><p class="small">Tap a loaded key to fade it in. Tap it again to fade it out. Selecting a different key crossfades to the new pad.</p></details></section>
 </section>
-<section id="edit-panel" aria-label="Shape sound" hidden><div class="panel"><div class="section-head"><div><h1>Sound</h1><p>Drag knobs sideways to adjust.</p></div></div><div class="sound-tabs" role="group" aria-label="Sound sections"><button id="sound-tab-osc" aria-pressed="true">OSC</button><button id="sound-tab-piano" aria-pressed="false">PIANO</button><button id="sound-tab-reverb" aria-pressed="false">REVERB</button><button id="sound-tab-delay" aria-pressed="false">DELAY</button></div><div class="edit-groups">
+<section id="edit-panel" aria-label="Shape sound" hidden><div class="panel"><div class="section-head sound-heading"><div><h1>Sound</h1><p>Drag knobs sideways to adjust. These controls use the existing native engine.</p></div><div class="surface-actions"><button id="sound-advanced" aria-pressed="false">SHOW ADVANCED</button></div></div><div class="sound-tabs" role="group" aria-label="Sound sections"><button id="sound-tab-osc" aria-pressed="true">OSC</button><button id="sound-tab-piano" aria-pressed="false">PIANO</button><button id="sound-tab-reverb" aria-pressed="false">REVERB</button><button id="sound-tab-delay" aria-pressed="false">DELAY</button></div><p class="advanced-note">ADVANCED · calibration and routing controls already present in the engine</p><div class="edit-groups">
 <section id="sound-osc" class="edit-group" data-group="osc" data-open="true"><h2>OSCILLATORS</h2><div id="edit-link" class="control-grid"></div><div class="osc-layout"><div class="voice"><h3>OSC 1</h3><div id="edit-wave1" class="control-grid"></div><svg class="envelope-plot" viewBox="0 0 400 130" role="img" aria-label="OSC 1 envelope contour"><polyline id="envelope1" points="10,120 80,10 170,32 270,32 390,120"/></svg><div class="envelope-caption">ADSR · schematic</div><div id="edit-env1" class="control-grid envelope-controls"></div></div><div class="voice"><h3>OSC 2</h3><div id="edit-wave2" class="control-grid"></div><svg class="envelope-plot" viewBox="0 0 400 130" role="img" aria-label="OSC 2 envelope contour"><polyline id="envelope2" points="10,120 80,10 170,32 270,32 390,120"/></svg><div class="envelope-caption">ADSR · schematic</div><div id="edit-env2" class="control-grid envelope-controls"></div></div></div><div class="contour"><h3>SHARED FILTER</h3><div id="edit-osc" class="control-grid"></div></div></section>
 <section id="sound-piano" class="edit-group" data-group="piano"><h2>PIANO</h2><p>Room and ambience. Brightness is beside the Stage faders.</p><div id="edit-piano" class="control-grid"></div></section>
 <section id="sound-reverb" class="edit-group" data-group="reverb"><h2>REVERB &amp; SHIMMER</h2><p>Shape your space. Blend it live with the FX fader.</p><div id="edit-reverb" class="control-grid"></div></section>
@@ -125,7 +127,9 @@ header{position:relative}.header-actions{gap:7px}.header-actions button{min-widt
 <section id="system-panel" aria-label="System" hidden>
 <section class="panel edit-group" data-open="true"><h2>GLOBAL TONE</h2><p class="global-note">Master EQ · gentle room correction. Flat EQ and low cut off preserve your original sound. Set low cut between songs.</p><div id="edit-global" class="control-grid"></div></section>
 <div class="system-grid"><div class="panel"><h2>Connections</h2><p id="device-status">Waiting for connection details…</p><div id="route-picker" hidden><label>MIDI keyboard<select id="route-midi" aria-label="MIDI keyboard"></select></label><label>Audio left<select id="route-left" aria-label="Audio left"></select></label><label>Audio right<select id="route-right" aria-label="Audio right"></select></label><p><button id="apply-routes" disabled>Apply connections</button></p></div><p class="small">Only the explicitly selected MIDI and stereo output are used. Choose one MIDI port per keyboard, not both aliases.</p><button id="restart-audio" disabled>Restart audio</button></div>
-<div class="panel"><h2>Saved startup sound</h2><p id="save-status">Save your preferred power-on sound and Master level.</p><p class="small">The saved sound restores only after the selected devices and audio route are healthy. Notes, pads, and freeze never restart.</p><p class="small">MIDI MAP in the top bar learns hardware controls and saves every assignment automatically.</p></div></div>
+<div class="panel"><h2>Saved startup sound</h2><p id="save-status">Save your preferred power-on sound and Master level.</p><p class="small">The saved sound restores only after the selected devices and audio route are healthy. Notes, pads, and freeze never restart.</p><p class="small">MIDI MAP in the top bar learns hardware controls and saves every assignment automatically.</p></div>
+<div class="panel"><h2>Control surface</h2><div class="surface-setting"><span>Detailed calibration controls</span><button id="system-advanced" aria-pressed="false">SHOW ADVANCED</button></div><div class="surface-setting"><span>Slower knob travel for precise edits</span><button id="fine-controls" aria-pressed="false">NORMAL KNOBS</button></div><p class="small">These are browser preferences only. They do not change latency, buffer size, voices, routing, or DSP.</p></div>
+<div class="panel"><h2>MIDI assignments</h2><div id="midi-map-list" class="midi-map-list"><span class="empty">No hardware controls mapped.</span></div><div class="surface-actions"><button id="system-midi-map">OPEN MIDI MAP</button></div></div></div>
 <div class="panel"><h2>Audio diagnostics</h2><div id="health">Waiting for native audio owner…</div><p class="small">Timing measures processing, not physical keyboard-to-speaker latency. Full-scale piano counts are a headroom warning, not proof of audible clipping.512 is the accepted listening profile; no buffer switch is exposed.</p></div>
 <div class="support"><h2>Stage build</h2><p class="small">Piano, OSC1/OSC2, filter, effects, global tone, recorded pads, five sound presets and MIDI Learn use the native Pi4 engine.</p><p class="small" id="runtime-scope">Loss of the selected device stops audio safely. Closing this browser does not stop audio.</p></div>
 </section></main>
@@ -147,11 +151,15 @@ const lastLayerValues={osc1:.7,osc2:.5,piano:.7};
 const stepperRoots={};
 const presetButtons=[...document.querySelectorAll('[data-preset]')];let selectedPreset=0;
 const midiUnmappable=new Set(['release_all','bed_key','bed_fade','bed_release','record_start','record_stop','reverb_lowcut','reverb_highcut','delay_lowcut','delay_highcut','piano_lowcut','piano_velocity','filter_slope','piano_filter','cutoff_min','cutoff_max']);
-let midiMapMode=false,midiTarget=null,midiBaseline=0,midiLearning=false,lastMidiCcSerial=0;
+let midiMapMode=false,midiTarget=null,midiBaseline=0,midiLearning=false,lastMidiCcSerial=0,midiMapSignature='';
 const lastMappedSerials=new Map(),midiAnimations=new Map();
 const performanceActions=new Set(['master','freeze','release_all','bed_key','bed_fade','bed_release','record_start','record_stop']);
 const performanceKeys=['osc1','osc2','piano','cutoff','wet','master'];
 const performanceLabels={osc1:'OSC 1',osc2:'OSC 2',piano:'PIANO',cutoff:'FILTER',wet:'FX',master:'MASTER'};
+const advancedKeys=new Set(['cutoff_min','cutoff_max','osc1_reverb','osc2_reverb','filter_slope','piano_filter','piano_room_size','piano_room_damp','piano_lowcut','piano_velocity','piano_delay','reverb_predelay','reverb_lowcut','reverb_highcut','delay_lowcut','delay_highcut']);
+function uiSetting(key,value){try{if(typeof localStorage==='undefined')return false;if(value!==undefined)localStorage.setItem(key,value?'1':'0');return localStorage.getItem(key)==='1';}catch(_){return false;}}
+let showAdvanced=uiSetting('stave-show-advanced');
+let fineControls=uiSetting('stave-fine-controls');
 const editGroups={wave1:'wave1',wave2:'wave2',attack:'osc',release:'osc',resonance:'osc',piano_room:'piano',piano_reverb:'piano',reverb:'reverb',shimmer:'reverb',shimmer_mix:'reverb',freeze:'reverb',delay_wet:'delay',delay_feedback:'delay'};
 const knobKeys=new Set(['attack','release','resonance','piano_room','piano_reverb','shimmer_mix','delay_wet','delay_feedback']);
 const envelopeTimes={};
@@ -195,7 +203,7 @@ function bindPickup(input,key,label){
     if(input.disabled||!ready||e.button!==0)return;
     e.preventDefault();if(drag)return;
     input.focus({preventScroll:true});label.setAttribute('data-active','true');const vertical=performanceKeys.includes(key),rect=input.getBoundingClientRect();
-    drag={id:e.pointerId,pointerType:e.pointerType||'',position:vertical?e.clientY:e.clientX,value:Number(input.value),span:knobKeys.has(key)?240:Math.max(1,(vertical?rect.height:rect.width)-8),vertical,epoch};
+    drag={id:e.pointerId,pointerType:e.pointerType||'',position:vertical?e.clientY:e.clientX,value:Number(input.value),span:knobKeys.has(key)?(fineControls?440:240):Math.max(1,(vertical?rect.height:rect.width)-8),vertical,epoch};
     gestures.set(key,finish);input.setPointerCapture(e.pointerId);
   });
   input.addEventListener('pointermove',e=>{
@@ -263,6 +271,18 @@ function volumeLinkVisual(value,capture=true){
   if(linked&&capture&&volumeLinkOffset===null)volumeLinkOffset=Number(displayValues.osc1||0)-Number(displayValues.osc2||0);
   if(!linked)volumeLinkOffset=null;
   const button=document.getElementById('volume-link-stage');button.setAttribute('aria-pressed',String(linked));button.textContent=linked?'VOL LINKED':'LINK VOL';
+}
+function updateSurfacePreferences(){
+  document.body.classList.toggle('show-advanced',showAdvanced);document.body.classList.toggle('fine-controls',fineControls);
+  for(const id of ['sound-advanced','system-advanced']){const button=document.getElementById(id);button.setAttribute('aria-pressed',String(showAdvanced));button.textContent=showAdvanced?'HIDE ADVANCED':'SHOW ADVANCED';}
+  const fine=document.getElementById('fine-controls');fine.setAttribute('aria-pressed',String(fineControls));fine.textContent=fineControls?'FINE KNOBS':'NORMAL KNOBS';
+  uiSetting('stave-show-advanced',showAdvanced);uiSetting('stave-fine-controls',fineControls);
+}
+function updateMidiMapList(maps){
+  const signature=JSON.stringify(maps||{});if(signature===midiMapSignature)return;midiMapSignature=signature;
+  const root=document.getElementById('midi-map-list'),entries=Object.entries(maps||{}).sort((a,b)=>(labels[a[0]]||a[0]).localeCompare(labels[b[0]]||b[0]));root.replaceChildren();
+  if(!entries.length){const empty=document.createElement('span');empty.className='empty';empty.textContent='No hardware controls mapped.';root.append(empty);return;}
+  for(const [key,cc] of entries){const row=document.createElement('span'),name=document.createElement('strong');name.textContent=labels[key]||key;row.append(name);const detail=document.createElement('span');detail.textContent=' · CC '+cc;row.append(detail);root.append(row);}
 }
 function previewVolume(key,value){
   fields[key].input.value=toSlider(key,value);paint(key,value);
@@ -342,7 +362,7 @@ async function setup(){
   const entries=[...order.filter(k=>k in definitions),...Object.keys(definitions).filter(k=>!order.includes(k))];
   for(const key of entries){const [min,max,step,value]=definitions[key];
     if(['release_all','bed_key','bed_fade','bed_release','record_start','record_stop','attack','release','transpose','piano_octave','octave1','octave2'].includes(key))continue;
-    const label=document.createElement('label');label.className='control'+(performanceKeys.includes(key)?' performance':'')+(knobKeys.has(key)?' knob-control':'')+(choices[key]?' choice-control':'');label.setAttribute('data-control',key);if(!midiUnmappable.has(key))label.setAttribute('data-map-key',key);
+    const label=document.createElement('label');label.className='control'+(performanceKeys.includes(key)?' performance':'')+(knobKeys.has(key)?' knob-control':'')+(choices[key]?' choice-control':'');label.setAttribute('data-control',key);if(advancedKeys.has(key))label.setAttribute('data-advanced','true');if(!midiUnmappable.has(key))label.setAttribute('data-map-key',key);
     const name=document.createElement('span');name.className='control-name';name.textContent=performanceLabels[key]||labels[key];label.append(name);
     const out=document.createElement('output');out.textContent=formatted(key,value);label.append(out);
     const input=document.createElement(choices[key]?'select':'input');
@@ -378,11 +398,15 @@ async function setup(){
   document.getElementById('warning-count').onclick=()=>view('system');
   document.getElementById('midi-map').onclick=()=>setMidiMapMode(!midiMapMode);
   document.getElementById('midi-map-done').onclick=()=>setMidiMapMode(false);
+  document.getElementById('sound-advanced').onclick=()=>{showAdvanced=!showAdvanced;updateSurfacePreferences();};
+  document.getElementById('system-advanced').onclick=()=>{showAdvanced=!showAdvanced;updateSurfacePreferences();};
+  document.getElementById('fine-controls').onclick=()=>{fineControls=!fineControls;updateSurfacePreferences();};
+  document.getElementById('system-midi-map').onclick=()=>{view('stage');setMidiMapMode(true);};
   presetButtons.forEach((button,slot)=>button.onclick=()=>{selectedPreset=slot;updatePresetSelection();if(lastRuntime.presets?.[slot])action('/preset-load',{slot});});
   document.getElementById('preset-store').onclick=()=>{const current=lastRuntime.presets?.[selectedPreset]?.name||('Sound '+(selectedPreset+1));const name=prompt('Preset name',current);if(name!==null)action('/preset-save',{slot:selectedPreset,name});};
   document.getElementById('restart-audio').onclick=()=>{if(confirm('Restart audio? Sound will stop briefly and restore the current acknowledged controls.'))action('/restart-audio');};
   document.getElementById('apply-routes').onclick=()=>{if(confirm('Change connections? Sound will stop briefly and restore the current acknowledged controls on the new route.'))action('/routes',Object.fromEntries(Object.entries(routeFields).map(([key,id])=>[key,document.getElementById(id).value])));};
-  poll();
+  updateSurfacePreferences();poll();
 }
 function bindStepper(root,key,min,max){
   const [down,out,up]=root.children;stepperRoots[key]=root;
@@ -430,8 +454,9 @@ async function poll(){
     document.getElementById('audio-status').textContent=audioReady?'AUDIO on':'AUDIO —';
     document.getElementById('audio-status').setAttribute('data-connected',String(audioReady));
     document.getElementById('profile').textContent=audioReady?(Number(d.values.master)>0?'':'Muted'):'';
-    const warnings=(s.xruns||0)+(s.over_budget||0);
-    document.getElementById('warning-count').textContent=warnings?'WARN '+warnings:'';
+    const warningParts=[];if(s.xruns)warningParts.push('XRUN '+s.xruns);if(s.over_budget)warningParts.push('LATE '+s.over_budget);
+    document.getElementById('warning-count').textContent=warningParts.join(' · ');
+    document.getElementById('warning-count').title='Audio xruns and callbacks that exceeded one buffer period';
     document.getElementById('health').textContent=(audioReady?'Audio running':'Audio is waiting for the selected devices; sound controls remain available.')+'\n'+
       (s.frames||'?')+' frames / 48 kHz · played notes '+(s.notes||0)+' · callbacks '+(s.blocks||0)+'\n'+
       'Xruns '+(s.xruns||0)+' · over-budget callbacks '+(s.over_budget||0)+' · worst '+Number(s.max_callback_ms||0).toFixed(2)+' ms\n'+
@@ -453,7 +478,7 @@ async function poll(){
     for(const key of ['transpose','piano_octave','octave1','octave2']){const root=stepperRoots[key];if(root){root.children[1].textContent=formatted(key,d.values[key]);for(const b of root._buttons||[])b.disabled=!ready;}}
     for(const key of ['osc1','osc2','piano']){const value=Number(d.values[key]||0);if(value>0)lastLayerValues[key]=value;document.getElementById('layer-'+key).setAttribute('aria-pressed',String(value>0));document.getElementById('layer-'+key).disabled=!ready;}
     drawEnvelopes(visibleEnvelopeValues());
-    document.getElementById('mute').disabled=!audioReady;
+    const muted=Number(d.values.master)<=0;document.getElementById('mute').disabled=!audioReady;document.getElementById('mute').textContent=muted?'MUTED':'MUTE';document.getElementById('mute').setAttribute('aria-pressed',String(muted));
     document.getElementById('freeze-toggle').disabled=!audioReady;
     document.getElementById('shimmer-toggle').disabled=!ready;
     if(!d.pending&&!busy){visualToggles.delete('shimmer');visualToggles.delete('freeze');}
@@ -466,7 +491,8 @@ async function poll(){
     document.getElementById('save').disabled=!ready||busy||Boolean(pending.size)||Boolean(d.pending)||!lastRuntime.persistence||actionBusy;
     document.getElementById('restart-audio').disabled=!lastRuntime.can_restart||actionBusy;
     const mapButton=document.getElementById('midi-map');mapButton.disabled=!audioReady||actionBusy;
-    for(const node of document.querySelectorAll('[data-map-key]'))node.setAttribute('data-midi-mapped',String(Object.prototype.hasOwnProperty.call(maps,node.getAttribute('data-map-key'))));
+    for(const node of document.querySelectorAll('[data-map-key]')){const key=node.getAttribute('data-map-key'),mapped=Object.prototype.hasOwnProperty.call(maps,key);node.setAttribute('data-midi-mapped',String(mapped));node.setAttribute('data-midi-cc',mapped?String(maps[key]):'');}
+    updateMidiMapList(maps);
     const ccSerial=Number(s.midi_cc_serial||0);lastMidiCcSerial=ccSerial;
     if(midiMapMode&&midiTarget&&!midiLearning&&ccSerial>midiBaseline){
       midiBaseline=ccSerial;const cc=Number(s.midi_cc);
