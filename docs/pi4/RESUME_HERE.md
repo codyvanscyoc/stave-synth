@@ -4,7 +4,7 @@ Saved 2026-09-14 evening, America/Chicago (2026-09-15 UTC).
 This is the current operational handoff, **not stage-release approval**.
 Read this first; earlier review/deployment notes describe historical checkpoints.
 
-## September 25: professional control-surface release ready for Pi deployment
+## September 25: professional control-surface release deployed
 
 The native engine, 48kHz/512-frame profile, control protocol and saved sound are
 unchanged. The browser now presents a cleaner performance editor by default and
@@ -22,13 +22,17 @@ pad controls, connection routing and global tone remain intact.
 The actual-script control test passes, the real-Chrome 1366x1024 and 390x844
 interaction/overflow check passes, and all 613 pinned offline regressions pass
 in the SciPy test environment. This is browser/control validation, not new
-physical audio qualification. The Pi was unreachable at handoff: Tailscale
-`100.109.54.80` timed out, `stavepi4.local` did not resolve, and the last home
-address `192.168.4.33` did not answer although the Mac was on `192.168.4.28/22`.
-No Pi file, process, state, route, service or sound was changed. Deploy only the
-tested `native_v2/audition.html` (SHA-256
-`bf9ffca35933a91b0c18ff97d851442d0837d942baf8dea7d3c760ab10cce33c`)
-atomically when the Pi returns; do not restart audio for this UI-only release.
+physical audio qualification. The Pi4 was identified on local Wi-Fi at
+`192.168.4.24` by exact saved SSH host-key match and hostname `stavepi4`; the
+Pi5 at the previous `.33` address was not changed. The tested
+`native_v2/audition.html` was installed atomically with SHA-256
+`bf9ffca35933a91b0c18ff97d851442d0837d942baf8dea7d3c760ab10cce33c`.
+The served document has the same hash from both the Pi and Mac. Native PID1096,
+epoch `c055876ce014419c9cc4e7bc3484de59`, zero service restarts, all control
+values, saved routes and Master1 remained unchanged. The engine is safely in
+preparation because the saved Yamaha MIDI/audio devices are unplugged. Rollback
+HTML is `/home/codyvanscyoc/stave-native-boot-backup-20260925/pro-ui-da786f6/audition.html`
+with its original SHA-256 `0c922d60…f268`. No audio restart occurred.
 
 ## September 21: smooth mapped display and filter sweep limits deployed
 
