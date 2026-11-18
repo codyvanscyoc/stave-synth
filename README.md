@@ -1,10 +1,14 @@
 # Stave Synth
 
-Live MIDI synthesizer for Raspberry Pi 5 — worship ambient pad with piano layer.
+Live MIDI synthesizer for Raspberry Pi with ambient pads and layered piano.
+
+## Raspberry Pi 4
+
+On a Pi 4 running 64-bit Raspberry Pi OS Trixie, use the ARM64 beta bundle. Its setup guide covers installation, choosing your MIDI keyboard and stereo output, and opening the browser controls on port `8082`. [Pi 4 download and setup guide](https://github.com/codyvanscyoc/stave-synth/blob/pi4-shareable-native/README.md)
 
 ## Install
 
-There are two install modes depending on how you plan to use the synth:
+On a Raspberry Pi 5, choose the install mode that fits how you plan to use the synth.
 
 ### Casual / "just want to try it" — no auto-start
 
