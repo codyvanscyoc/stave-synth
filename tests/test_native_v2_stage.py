@@ -397,8 +397,32 @@ class NativeStageTests(unittest.TestCase):
     def test_startup_timeout_includes_missing_telemetry(self):
         child = mock.Mock(); child.poll.return_value = None
         self.hub.attach(child)
-        self.hub.restore_started = time.monotonic()-11
+        self.hub.startup_started = time.monotonic()-61
         with self.assertRaisesRegex(ValueError, "timed out"): self.hub.reconcile()
+
+    def test_slow_soundfont_startup_has_a_separate_restore_acknowledgment_budget(self):
+        self.hub.prepared = {'piano': .4}
+        child = mock.Mock(); child.poll.return_value = None
+        control = self.hub.attach(child)
+        self.hub.startup_started = time.monotonic()-55
+        self.hub.reconcile()
+        self.assertIsNone(self.hub.restore_started)
+        control.receive(dict(type='status', instance='native-v2-stage', blocks=1, applied=0, routed=True, fault=0))
+        self.hub.reconcile()
+        self.assertTrue(self.hub.restoring)
+        self.hub.startup_started = time.monotonic()-61
+        control.receive(dict(type='status', instance='native-v2-stage', blocks=2, applied=control.sequence, routed=True, fault=0))
+        self.hub.reconcile()
+        self.assertFalse(self.hub.restoring)
+        self.assertEqual(control.values['piano'], .4)
+
+    def test_saved_control_acknowledgment_still_times_out_after_ten_seconds(self):
+        self.hub.prepared = {'piano': .4}
+        self.attached()
+        self.hub.reconcile()
+        self.hub.restore_started = time.monotonic()-11
+        with self.assertRaisesRegex(ValueError, "acknowledgment timed out"):
+            self.hub.reconcile()
 
     def test_running_audio_progress_is_supervised_after_restore(self):
         for mode in ('stale', 'exited', 'fault', 'route'):
