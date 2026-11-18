@@ -238,7 +238,7 @@ if network.get("discovery_error"):
 for address, error in network.get("errors", {}).items():
     print(f"Listener {address}: {error}")
 PYTHON
-echo "In System, select one MIDI input and the left and right audio outputs."
+echo "For first-time setup, open Soundcheck, choose your MIDI input and stereo output, then select Apply connections."
 if "$change_group"; then
     echo "Reboot the Pi once to give the instrument user access to headless audio devices."
 fi
