@@ -1,5 +1,15 @@
 # Raspberry Pi 4 native release review
 
+## Beta 4 · analog Sound editor
+
+The Sound view now places each oscillator’s waveform, octave and amplitude envelope together. The shared filter and stereo controls follow the voices. Cutoff, piano brightness, oscillator octaves and reverb mix update across their Stage and Sound controls. Existing presets use the same parameters and units.
+
+An iPad WebKit simulator showed both oscillators and the full shared filter in a 1024 × 650 viewport, including all four single-line filter labels. The filter controls were spaced 238.5 CSS pixels center to center, the dials had 48 × 48 touch targets, and the two link groups had a 26-pixel gap. The full basic oscillator panel fit at 1180 × 700. Chromium exercised Oscillators, Piano, Reverb and Delay in both basic and advanced modes at five sizes, along with the landscape Stage layout.
+
+The regression suite passed 642 Python tests and both offline JavaScript suites. Browser interaction tests checked independent and linked edits, MIDI Learn, pickup after interrupting a moving dial, keyboard adjustment, mirrored controls and preset recall.
+
+A browser connected to a separate synth session on the Pi exercised 47 continuous and choice parameters, Freeze, both oscillator octaves and the Stage mixer. It stored a patch, changed the filter and recalled the stored sound. A virtual keyboard then played that patch through the ARM64 engine into a measured stereo sink. The same private graph exercised the left/right output test, MIDI Learn and pickup, pad playback through a keyboard disconnect, recording and restart. The physical keyboard and speaker path remain a hands-on check.
+
 ## Beta 3 · landscape Stage
 
 An iPad Air 11-inch simulator running iPadOS 27 WebKit exercised the Stage with a saved pad and disconnected MIDI and stereo ports. At a 1024 × 768 CSS-pixel viewport, all six faders measured 393 pixels tall, up from 190. All twelve pad keys and Stop fit in the first view. At 1024 × 650, with space reserved for browser controls, the faders measured 275 pixels and Stop ended at 576. At 1180 × 700, the faders measured 325 pixels.

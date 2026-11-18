@@ -8,7 +8,29 @@ let sequence=0;const pending=new Map();
 ws.addEventListener('message',event=>{const message=JSON.parse(event.data);if(!pending.has(message.id))return;const call=pending.get(message.id);pending.delete(message.id);message.error?call.reject(Error(JSON.stringify(message.error))):call.resolve(message.result);});
 const call=(method,params={})=>new Promise((resolve,reject)=>{const id=++sequence;pending.set(id,{resolve,reject});ws.send(JSON.stringify({id,method,params}));});
 const evaluate=async expression=>{const result=await call('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true});if(result.exceptionDetails)throw Error(JSON.stringify(result.exceptionDetails));return result.result.value;};
+const inPage=(fn,...args)=>evaluate('('+fn.toString()+')(...'+JSON.stringify(args)+')');
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+const statusOfInstrument=async()=>await (await fetch('http://127.0.0.1:8768/status')).json();
+
+// Every publicly editable Sound parameter has a representative wire value.
+// The local controller is the same state owner that serves the instrument.
+const soundControls={
+  osc:{wave1:2,wave2:1,envelope_link:0,volume_link:0,attack1:720,decay1:880,sustain1:62,release1:594,
+    attack2:440,decay2:920,sustain2:71,release2:330,pan1:-.21,pan2:.24,detune:.15,spread:.62,
+    cutoff:3850,resonance:1.72,filter_slope:1,piano_filter:1,cutoff_min:75,cutoff_max:15800},
+  piano:{piano_tone:.65,piano_room:.32,piano_reverb:.19,piano_delay:.22,piano_room_size:.75,piano_room_damp:.43,piano_lowcut:115},
+  reverb:{reverb:2,wet:.51,shimmer:1,shimmer_mix:.24,osc1_reverb:.38,osc2_reverb:.57,reverb_decay:3.4,
+    reverb_damp:.48,reverb_predelay:37,reverb_lowcut:190,reverb_highcut:6900},
+  delay:{delay_wet:.36,delay_feedback:.47,delay_time:322,delay_lowcut:85,delay_highcut:7300,
+    bpm:118,delay_division:6}
+};
+async function waitFor(expression,description){
+  for(let i=0;i<80;i++){
+    if(await evaluate(expression))return;
+    await sleep(25);
+  }
+  assert.fail(description);
+}
 
 await call('Page.enable');
 await call('Emulation.setDeviceMetricsOverride',{width:1366,height:1024,deviceScaleFactor:1,mobile:false});
@@ -56,13 +78,212 @@ assert.ok(Math.abs(status.values.reverb_highcut-6400)<10);
 assert.equal(status.values.delay_time,417);
 assert.ok(Math.abs(status.values.delay_highcut-9200)<25);
 
-for(const [width,height] of [[1366,1024],[390,844]]){
-  await call('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:width<500});
-  for(const section of ['osc','piano','reverb','delay']){
-    await evaluate(`view('edit');soundSection('${section}');window.scrollTo(0,0)`);
-    assert.equal(await evaluate('document.documentElement.scrollWidth<=document.documentElement.clientWidth'),true);
+await inPage(()=>{
+  window.soundWrites=[];
+  const original=window.fetch.bind(window);
+  window.fetch=async(path,options)=>{
+    const reply=await original(path,options);
+    if(options?.method==='POST')soundWrites.push({path,data:JSON.parse(options.body),status:reply.status});
+    return reply;
+  };
+});
+async function openSound(section,advanced){
+  await inPage((section,advanced)=>{
+    document.getElementById('nav-edit').click();
+    document.getElementById('sound-tab-'+section).click();
+    const toggle=document.getElementById('sound-advanced');
+    if((toggle.getAttribute('aria-pressed')==='true')!==advanced)toggle.click();
+  },section,advanced);
+}
+async function editSound(panel,key,target){
+  const before=await evaluate('soundWrites.length');
+  const result=await inPage((panel,key,target)=>{
+    const label=document.querySelector(panel+' [data-control="'+key+'"], '+panel+' [data-map-key="'+key+'"]');
+    const input=label?.querySelector('select,input');
+    if(!input||!input.getBoundingClientRect().width||input.disabled)return null;
+    input.value=toSlider(key,target);
+    const value=fromSlider(key,input.value);
+    input.dispatchEvent(new Event(input.tagName==='SELECT'?'change':'input',{bubbles:true}));
+    return value;
+  },panel,key,target);
+  assert.notEqual(result,null,panel+' must contain an enabled visible '+key);
+  await waitFor('soundWrites.length>'+before,'Missing '+key+' request');
+  const writes=await inPage(index=>soundWrites.slice(index),before);
+  assert.deepEqual(writes,[{path:'/control',data:{key,value:result},status:202}],panel+' '+key+' sends one accepted edit');
+  assert.equal((await statusOfInstrument()).values[key],result,key+' acknowledged by controller');
+  await evaluate('poll()');
+  return result;
+}
+async function verifySoundLayout(width,height,section,advanced){
+  await openSound(section,advanced);
+  const issues=await inPage((section,landscape)=>{
+    const issues=[],root=document.getElementById('sound-'+section);
+    const rect=el=>el.getBoundingClientRect();
+    const textBox=el=>{
+      const range=new Range();range.selectNodeContents(el);return range.getBoundingClientRect();
+    };
+    const visible=el=>rect(el).width>0;
+    if(document.documentElement.scrollWidth>document.documentElement.clientWidth)issues.push('horizontal page overflow');
+    if(!visible(root))issues.push('missing selected section');
+    for(const input of root.querySelectorAll('label select,label input[type=range]')){
+      if(!visible(input))continue;
+      const label=input.closest('label'),key=label.dataset.control||label.dataset.mapKey;
+      const name=label.querySelector('.control-name'),dial=label.querySelector('.knob-dial');
+      if(!input.getAttribute('aria-label'))issues.push(key+' missing accessible name');
+      if(rect(input).width<43.9||rect(input).height<43.9)issues.push(key+' touch area below 44px');
+      if(!dial){
+        if(label.closest('.contour')){
+          const legend=textBox(name),box=rect(input);
+          if(!legend.height||legend.bottom>box.top-2)issues.push(key+' label touches selector');
+        }
+        continue;
+      }
+      const readout=label.querySelector('output'),bounds=rect(label),face=rect(dial),ink=textBox(name);
+      if(!ink.height||!rect(readout).height)issues.push(key+' missing visible name or value');
+      const separated=(a,b)=>a.bottom<=b.top-2||b.bottom<=a.top-2||a.right<=b.left-2||b.right<=a.left-2;
+      if(!separated(ink,face)||!separated(textBox(readout),face))issues.push(key+' text touches dial');
+      if(ink.left<bounds.left-.5||ink.right>bounds.right+.5)issues.push(key+' label escapes its column');
+      if(landscape&&label.closest('.contour')){
+        const r=new Range();r.selectNodeContents(name);
+        if(new Set([...r.getClientRects()].map(box=>Math.round(box.top))).size>1)issues.push(key+' wraps in shared filter');
+      }
+      input.scrollIntoView({block:'center',inline:'nearest'});
+      const box=rect(dial);
+      if(document.elementFromPoint(box.x+box.width/2,box.y+box.height/2)!==input)issues.push(key+' dial center misses its input');
+    }
+    if(landscape&&section==='osc'){
+      const [left,right]=[...document.querySelectorAll('#edit-link select')].map(rect);
+      if(Math.abs(left.top-right.top)>2||right.left-left.right<8)issues.push('link selectors need one row and a gap');
+      const filter=document.getElementById('edit-filter');
+      const cells=[...filter.querySelectorAll('label')].filter(visible).map(rect);
+      if(cells.length<2||cells.some(b=>Math.abs(b.top-cells[0].top)>1||Math.abs(b.width-cells[0].width)>2))
+        issues.push('shared filter controls need equal columns in one row');
+    }
+    return issues;
+  },section,width>=768&&width>height);
+  assert.deepEqual(issues,[],[width,height,section,advanced?'advanced':'normal'].join(' '));
+}
+await call('Accessibility.enable');
+for(const [width,height] of [[1024,650],[1180,820],[1366,1024],[390,844],[320,690]]){
+  await call('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:true});
+  for(const advanced of [false,true])for(const section of Object.keys(soundControls)){
+    await verifySoundLayout(width,height,section,advanced);
+    if(width===1024&&advanced){
+      const wanted=await inPage(section=>[...document.querySelectorAll('#sound-'+section+' label input,#sound-'+section+' label select')].filter(el=>el.getBoundingClientRect().width).map(el=>({
+        name:el.getAttribute('aria-label'),role:el.tagName==='SELECT'?'combobox':'slider',
+        value:el.tagName==='INPUT'?document.getElementById(el.getAttribute('aria-describedby')).textContent:null
+      })),section);
+      const tree=(await call('Accessibility.getFullAXTree')).nodes.filter(node=>!node.ignored);
+      for(const {name,role,value} of wanted){
+        const entry=tree.find(node=>node.role?.value===role&&node.name?.value===name);
+        assert.ok(entry,section+' '+name+' missing from browser accessibility tree');
+        if(value!==null)assert.ok(entry.description?.value.includes(value),name+' exposes its formatted readout');
+      }
+    }
   }
 }
+assert.deepEqual(await evaluate('soundWrites'),[],'navigation and Advanced never send edits');
+await inPage(()=>{
+  document.getElementById('nav-system').click();
+  document.getElementById('system-advanced').click();
+  document.getElementById('fine-controls').click();
+});
+assert.deepEqual(await evaluate("[localStorage.getItem('stave-show-advanced'),localStorage.getItem('stave-fine-controls'),document.getElementById('sound-advanced').getAttribute('aria-pressed')]"),['0','1','false']);
+await call('Emulation.setDeviceMetricsOverride',{width:1024,height:768,deviceScaleFactor:1,mobile:true});
+for(const [section,keys] of Object.entries(soundControls)){
+  await openSound(section,true);
+  const present=await inPage(section=>[...document.querySelectorAll('#sound-'+section+' label')].filter(label=>label.getBoundingClientRect().width&&label.querySelector('input,select')).map(label=>label.dataset.control||label.dataset.mapKey),section);
+  assert.deepEqual(present.filter(key=>key!=='freeze').sort(),Object.keys(keys).sort(),section+' control inventory');
+  for(const [key,target] of Object.entries(keys))await editSound('#sound-'+section,key,target);
+}
+await evaluate("view('stage')");
+for(const [section,panel,key,value] of [['osc','#mixer','cutoff',3150],['piano','#tone-controls','piano_tone',.71],['reverb','#mixer','wet',.62]]){
+  const wire=await editSound(panel,key,value);
+  const readouts=await inPage((section,key,expected)=>{
+    const f=document.querySelector('#sound-'+section+' label[data-control="'+key+'"]');
+    return [f.querySelector('output').textContent,fields[key].out.textContent,formatted(key,expected)];
+  },section,key,wire);
+  assert.equal(readouts[0],readouts[2],key+' Sound dial reflects Stage');
+  assert.equal(readouts[1],readouts[2],key+' Stage and Sound agree');
+}
+await openSound('osc',false);
+const attack2=(await statusOfInstrument()).values.attack2;
+await editSound('#sound-osc','attack1',930);
+assert.equal((await statusOfInstrument()).values.attack2,attack2,'independent envelope preserves the other voice');
+await editSound('#sound-osc','envelope_link',1);
+const linkedAttack=await editSound('#sound-osc','attack1',1230);
+assert.equal((await statusOfInstrument()).values.attack2,linkedAttack,'linked envelopes agree in the engine');
+assert.equal(await evaluate('fields.attack2.out.textContent'),await evaluate('fields.attack1.out.textContent'),'OSC 2 readout follows linked envelope edits');
+await evaluate("view('stage')");
+await editSound('#mixer','osc1',.35);
+await editSound('#mixer','osc2',.49);
+assert.equal((await statusOfInstrument()).values.osc1,.35,'OSC 2 edits preserve independent OSC 1');
+await openSound('osc',false);
+await editSound('#sound-osc','volume_link',1);
+await evaluate("view('stage')");
+await editSound('#mixer','osc1',.40);
+assert.ok(Math.abs((await statusOfInstrument()).values.osc2-.54)<1e-7,'linked OSC levels preserve the original offset');
+await openSound('osc',false);
+for(const key of ['octave1','octave2']){
+  const previous=(await statusOfInstrument()).values[key];
+  await inPage(key=>document.querySelector('#sound-osc [data-stepper="'+key+'"] button:last-child').click(),key);
+  await waitFor('!busy','octave update finished');
+  assert.equal((await statusOfInstrument()).values[key],previous+1);
+  await evaluate('poll()');
+  assert.ok(await inPage(key=>[...document.querySelectorAll('[data-stepper="'+key+'"] output')].every(el=>el.textContent===formatted(key,lastValues[key])),key),'Sound and Stage agree on '+key);
+}
+async function soundInputPoint(key){
+  return inPage(key=>{
+    const input=document.querySelector('#sound-osc label[data-control="'+key+'"] input,#sound-osc label[data-map-key="'+key+'"] input');
+    input.scrollIntoView({block:'center'});
+    const r=input.getBoundingClientRect();
+    return {x:r.x+r.width/2,y:r.y+r.height/2};
+  },key);
+}
+const cutoffPoint=await soundInputPoint('cutoff');
+const cutoffBefore=(await statusOfInstrument()).values.cutoff;
+await call('Input.dispatchMouseEvent',{type:'mousePressed',...cutoffPoint,button:'left',clickCount:1});
+await call('Input.dispatchMouseEvent',{type:'mouseMoved',x:cutoffPoint.x+30,y:cutoffPoint.y,button:'left',buttons:1});
+await call('Input.dispatchMouseEvent',{type:'mouseReleased',x:cutoffPoint.x+30,y:cutoffPoint.y,button:'left',clickCount:1});
+await waitFor('!busy','pointer cutoff committed');
+const cutoffDragged=(await statusOfInstrument()).values.cutoff;
+assert.ok(cutoffDragged>cutoffBefore,'dragging the dial right opens the actual filter');
+const beforeArrow=await evaluate('soundWrites.length');
+for(const type of ['keyDown','keyUp'])await call('Input.dispatchKeyEvent',{type,key:'ArrowLeft',code:'ArrowLeft',windowsVirtualKeyCode:37});
+await waitFor('!busy','keyboard cutoff committed');
+const cutoffKeyed=(await statusOfInstrument()).values.cutoff;
+assert.ok(cutoffKeyed<cutoffDragged,'keyboard fine adjustment closes the filter');
+assert.deepEqual(await inPage(index=>soundWrites.slice(index),beforeArrow),[{path:'/control',data:{key:'cutoff',value:cutoffKeyed},status:202}],'one keyboard adjustment submits once');
+await evaluate('poll()');
+assert.equal(await evaluate('lastValues.cutoff'),cutoffKeyed);
+assert.equal(await evaluate('fields.cutoff.out.textContent'),await evaluate("document.querySelector('#edit-filter [data-map-key=cutoff] output').textContent"),'Stage and Sound display the same cutoff');
+
+await openSound('delay',false);
+await click('tap-tempo');
+assert.match(await evaluate("document.getElementById('tap-readout').textContent"),/again/i);
+await sleep(500);
+await click('tap-tempo');
+await waitFor('!busy','tempo committed');
+const tapped=(await statusOfInstrument()).values.bpm;
+assert.ok(tapped>=100&&tapped<=125,'second physical tap sets tempo, got '+tapped);
+
+// Only the isolated preview's store is touched. Round-trip oscillator and
+// effects values from the Sound editor through the regular Stage preset UI.
+await evaluate("view('stage');poll()");
+await click('preset-store');
+await evaluate("document.getElementById('preset-name').value='Browser voice'");
+await click('preset-confirm');
+await waitFor("soundWrites.some(w=>w.path==='/preset-save'&&w.status===202)",'preset save');
+await evaluate('poll()');
+await openSound('osc',false);
+await editSound('#sound-osc','cutoff',800);
+await openSound('delay',false);
+await editSound('#sound-delay','bpm',87);
+await evaluate("view('stage');document.querySelector('[data-preset]').click()");
+await waitFor("soundWrites.some(w=>w.path==='/preset-load'&&w.status===202)",'preset recall');
+const recalled=await statusOfInstrument();
+assert.equal(recalled.values.cutoff,cutoffKeyed);
+assert.equal(recalled.values.bpm,tapped);
 // Verify the actual layout at phone and tablet sizes, all four work areas.
 await call('Accessibility.enable');
 for(const [width,height,phone] of [[320,844,true],[390,844,true],[768,1024,false],[844,390,true],[1024,768,false],[1366,1024,false]]){
@@ -106,6 +327,12 @@ window.fetch=async function(path,opts){
   Object.assign(d.runtime,{restoring:false,preparation:false,midi_source:'Keys:MIDI',audio_left:'USB:Left',audio_right:'USB:Right',
     devices:{midi:['Keys:MIDI'],audio:['USB:Left','USB:Right']},presets:[{name:'Verse'},{name:'Chorus'},null,null,null],active_preset:0});
   d.values.shimmer=1;d.values.freeze=1;d.values.transpose=window.stageTranspose??0;
+  if(window.mappedCutoff){
+    d.values.cutoff=window.mappedCutoff;
+    d.runtime.midi_maps={cutoff:74};
+    d.status.midi_mapped_serial=controlOrder.map(key=>key==='cutoff'?(window.mappedSerial||12):0);
+  }
+  if(window.haltAudio)d.stale=true;
   if(window.missingDevices){
     d.runtime.preparation=true;
     d.runtime.devices={midi:[],audio:[]};
@@ -180,9 +407,43 @@ assert.equal(await evaluate('midiTarget'),'volume_link');assert.deepEqual(await 
 await evaluate("document.getElementById('freeze-toggle').focus()");
 for(const type of ['keyDown','keyUp'])await call('Input.dispatchKeyEvent',{type,key:'Enter',code:'Enter',windowsVirtualKeyCode:13});
 await sleep(50);assert.equal(await evaluate('midiTarget'),'freeze');assert.deepEqual(await evaluate("posted.filter(([path])=>path!=='/midi-learn')"),[]);
+await openSound('osc',true);
+const learnPoint=await soundInputPoint('cutoff');
+await call('Input.dispatchMouseEvent',{type:'mousePressed',...learnPoint,button:'left',clickCount:1});
+await call('Input.dispatchMouseEvent',{type:'mouseReleased',...learnPoint,button:'left',clickCount:1});
+await waitFor("midiTarget==='cutoff'",'Learn picks the shared filter from its Sound dial');
+assert.deepEqual(await evaluate("posted.filter(([path])=>path!=='/midi-learn')"),[],'selecting a Sound target leaves its sound unchanged');
 await click('midi-map-done');
+await openSound('osc',true);
+const mappedCount=await evaluate('posted.length');
+await evaluate('window.mappedCutoff=3948;poll()');
+await waitFor("document.querySelector('#edit-filter [data-map-key=cutoff] output').textContent===formatted('cutoff',3948)",'mapped MIDI filter followed by the Sound dial');
+assert.equal(await evaluate("fields.cutoff.out.textContent"),await evaluate("formatted('cutoff',3948)"));
+assert.equal(await evaluate('posted.length'),mappedCount,'mapped MIDI updates are displayed without an echo write');
+const interrupted=await soundInputPoint('cutoff');
+await evaluate('window.mappedCutoff=2480;window.mappedSerial=13;poll()');
+await call('Input.dispatchMouseEvent',{type:'mousePressed',...interrupted,button:'left',clickCount:1});
+await sleep(100);
+await call('Input.dispatchMouseEvent',{type:'mouseReleased',...interrupted,button:'left',clickCount:1});
+await evaluate('window.mappedCutoff=1890;poll()');
+await waitFor("fields.cutoff.out.textContent===formatted('cutoff',1890)",'releasing a dial during a MIDI animation allows subsequent status changes to repaint');
+await openSound('reverb',true);
+await inPage(()=>{
+  const f=document.querySelector('#sound-reverb [data-control=freeze] select');
+  if(f.disabled)throw Error('Freeze should be enabled with routed audio');
+  f.value='0';f.dispatchEvent(new Event('change',{bubbles:true}));
+});
+await waitFor("posted.some(([path,data])=>path==='/control'&&data.key==='freeze'&&data.value===0)",'Freeze command');
+await evaluate('window.haltAudio=true;poll()');
+assert.ok(await evaluate("[...document.querySelectorAll('#edit-panel label input,#edit-panel label select,#edit-panel [data-stepper] button,#tap-tempo')].every(el=>el.disabled)"),'stale instrument disables every Sound edit');
+const idleCount=await evaluate('posted.length');
+await evaluate("document.querySelector('#sound-reverb [data-control=freeze] select').dispatchEvent(new Event('change'));document.getElementById('tap-tempo').click()");
+assert.equal(await evaluate('posted.length'),idleCount,'stale sound surface cannot send');
+await evaluate("window.haltAudio=false;window.mappedCutoff=null;view('stage');poll()");
+const beforeStore=await evaluate('posted.length');
 await click('preset-store');
 await evaluate("document.getElementById('preset-destination').value='1';document.getElementById('preset-destination').dispatchEvent(new Event('change'))");
-assert.deepEqual(await evaluate("posted.filter(([path])=>path!=='/midi-learn')"),[],'choosing the occupied store destination leaves the live sound alone');
-console.log('PASS: native Chrome controls, touch, calibrated soundcheck, four phone faders, six tablet faders, mobile Master, tabs, keyboard and pointer Learn, independent preset store');
+assert.equal(await evaluate('posted.length'),beforeStore,'choosing the occupied store destination leaves the live sound alone');
+const parameterCount=Object.values(soundControls).reduce((count,group)=>count+Object.keys(group).length,0);
+console.log('PASS: '+parameterCount+' state-backed Sound controls, both octave steppers, linked and independent edits, cutoff gestures and MIDI, tap tempo, preset round-trip, stale guards, 40 responsive Sound layouts; Stage, Soundcheck, System, Learn and preset store regressions.');
 ws.close();

@@ -6,12 +6,12 @@ Play a layered piano and two oscillators from a USB MIDI keyboard. A phone, tabl
 
 Use a Raspberry Pi 4 with **64-bit Raspberry Pi OS Trixie (Debian 13)**, internet access for the first install, and a regular login with sudo access. Use a dedicated instrument login. The installer sets that user’s PipeWire audio to 48 kHz and 512 frames, restarts its audio session on first setup, and enables the synth at boot.
 
-On the Pi, run these commands in a new directory. They fetch the ARM64 bundle and verify its download before installation. You can also download the same two files under **Assets** on the [Pi 4 beta 3 release page](https://github.com/codyvanscyoc/stave-synth/releases/tag/pi4-native-2026.11.18-beta.3).
+On the Pi, run these commands in a new directory. They fetch the ARM64 bundle and verify its download before installation. You can also download the same two files under **Assets** on the [Pi 4 beta 4 release page](https://github.com/codyvanscyoc/stave-synth/releases/tag/pi4-native-2026.11.18-beta.4).
 
 ```sh
 mkdir -p ~/Downloads/stave-pi4-beta
 cd ~/Downloads/stave-pi4-beta
-release=https://github.com/codyvanscyoc/stave-synth/releases/download/pi4-native-2026.11.18-beta.3
+release=https://github.com/codyvanscyoc/stave-synth/releases/download/pi4-native-2026.11.18-beta.4
 curl -fLO "$release/stave-synth-pi4-arm64.tar.gz"
 curl -fLO "$release/SHA256SUMS"
 sha256sum -c SHA256SUMS &&
@@ -37,7 +37,11 @@ Anyone who can reach the private-LAN UI can control the instrument. Use trusted 
 
 **Presets.** Tap a named slot to recall it. To store the sound you are playing, use **Store preset…**, choose a destination, enter a name and confirm. Selecting a destination keeps the current sound live. The Stage readout shows edits to the active preset and whether the sound differs from startup.
 
-**Sound and MIDI.** Shape the piano, oscillators and effects under **Sound**. In **Delay**, use **Tap tempo** or enter BPM manually. In **Soundcheck**, set a receive channel, minimum note velocity and hardware pickup. With pickup enabled, moving a mapped fader past its current value hands control to the hardware. To assign a control, open **MIDI MAP**, choose the target, move one knob or fader, then tap **Done**. Clear old assignments in **System → MIDI assignments**.
+**Sound.** In **Oscillators**, choose a waveform and octave for each voice. The four knobs below its envelope trace set attack, decay, sustain and release. **Link envelopes** applies an envelope edit to both voices. **Link OSC volumes → Preserve balance** moves their Stage faders together while keeping their level offset. The **Shared filter** shapes both oscillators. Turn on **Filter piano** to send the piano through it too. The cutoff knob and the Stage cutoff fader control the same filter.
+
+**Piano**, **Reverb** and **Delay** each have their own panel. Set piano brightness and room sound in Piano, and its sends to reverb and delay below. In Delay, choose **Free time** for a millisecond setting, or a note division to follow BPM or **Tap tempo**. **Show advanced** reveals filter sweep limits and effects or piano tone cuts.
+
+**MIDI.** In **Soundcheck**, set a receive channel, minimum note velocity and hardware pickup. With pickup enabled, moving a mapped fader past its current value hands control to the hardware. To assign a control, open **MIDI MAP**, choose the target, move one knob or fader, then tap **Done**. Clear old assignments in **System → MIDI assignments**.
 
 **Pads.** Open **PAD RECORD / SHAPE**, record up to 40 seconds, stop, choose a key and use **Save pad**. The display shows remaining bank time. Replacing a pad frees its old space. An accepted assignment restarts audio briefly, so save between songs. An oversized assignment leaves the current bank playing. If an existing bank cannot load, piano and oscillators remain available.
 
