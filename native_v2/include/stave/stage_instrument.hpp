@@ -65,7 +65,7 @@ public:
         if(!configure(config_)) throw std::runtime_error("Instrument initialization failed");
     }
     bool configure(const StageInstrumentConfig& p) noexcept {
-        if(!healthy()||!p.valid()) return false;
+        if(!healthy()||!p.valid()||!piano_voice_available(p.piano_voice)) return false;
         if(bed_&&!bed_->configure(p.bed)) { stop(); return false; }
         if(p.owned_motion&&(!motion_.configure(p.motion)||!filter_motion_.configure(p.filter_motion))) { stop(); return false; }
         if(!sources_.configure(p.source_patch(prepared_))||!room_.configure(p.buses.room)||
@@ -86,6 +86,18 @@ public:
         StageCommand event{action,note,value};
         if(action==StageAction::NoteOn&&value>0&&!config_.splits.weights(note,event.weights)) return false;
         return command(frame,event);
+    }
+    bool piano_voice_available(int voice) const noexcept { return sources_.piano_voice_available(voice); }
+    bool pitch_bend(unsigned value) noexcept { return healthy()&&sources_.pitch_bend(value); }
+    // Performance CCs can arrive many times in one block. This update touches
+    // only motion; render_block() consumes the new source patch on this block.
+    bool set_lfo(unsigned index,const MotionLfo& lfo) noexcept {
+        if(!config_.owned_motion||index>=config_.motion.lfo.size()||!healthy()) return false;
+        auto motion=config_.motion;
+        motion.lfo[index]=lfo;
+        if(!motion_.configure(motion)) return false;
+        config_.motion=motion;
+        return true;
     }
     bool reverb_control(ReverbControl c,double v) noexcept { return healthy()&&ambience_.reverb_control(c,v); }
     bool reverb_type(ReverbType t) noexcept { return healthy()&&ambience_.reverb_type(t); }

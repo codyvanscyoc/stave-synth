@@ -62,8 +62,18 @@ CONTROLS = {
     "midi_channel": (0, 16, 1, 0), "minimum_velocity": (1, 127, 1, 10),
     "midi_pickup": (0, 1, 1, 1), "test_tone": (0, 2, 1, 0),
     "output_mute": (0, 1, 1, 0), "panic": (0, 1, 1, 0),
+    "piano_voice": (0, 3, 1, 0),
+    "lfo1_rate": (.05, 20, .01, 1), "lfo1_depth": (0, 1, .01, 0),
+    "lfo1_shape": (0, 6, 1, 0), "lfo1_target": (0, 3, 1, 0),
+    "lfo1_division": (0, 8, 1, 0), "lfo1_key_sync": (0, 1, 1, 0),
+    "lfo2_rate": (.05, 20, .01, 1), "lfo2_depth": (0, 1, .01, 0),
+    "lfo2_shape": (0, 6, 1, 0), "lfo2_target": (0, 3, 1, 2),
+    "lfo2_division": (0, 8, 1, 0), "lfo2_key_sync": (0, 1, 1, 0),
+    "wheel_depth": (0, 1, .01, 0),
 }
-INTEGRAL = {"midi_channel", "minimum_velocity", "midi_pickup", "test_tone", "output_mute", "panic", "wave1", "wave2", "shimmer", "reverb", "freeze", "release_all", "bed_key", "bed_mellow", "bed_fade", "bed_release", "envelope_link", "volume_link", "master_lowcut", "record_start", "record_stop", "transpose", "piano_octave", "octave1", "octave2", "filter_slope", "piano_filter", "delay_division"}
+INTEGRAL = {"midi_channel", "minimum_velocity", "midi_pickup", "test_tone", "output_mute", "panic", "wave1", "wave2", "shimmer", "reverb", "freeze", "release_all", "bed_key", "bed_mellow", "bed_fade", "bed_release", "envelope_link", "volume_link", "master_lowcut", "record_start", "record_stop", "transpose", "piano_octave", "octave1", "octave2", "filter_slope", "piano_filter", "delay_division",
+            "piano_voice", "lfo1_shape", "lfo1_target", "lfo1_division", "lfo1_key_sync",
+            "lfo2_shape", "lfo2_target", "lfo2_division", "lfo2_key_sync"}
 MIDI_RESERVED = frozenset((64, 66, 120, 123))
 MIDI_UNMAPPABLE = frozenset(("midi_channel", "minimum_velocity", "midi_pickup", "test_tone", "output_mute", "panic", "release_all", "bed_key", "bed_fade", "bed_release", "record_start", "record_stop",
                              "reverb_lowcut", "reverb_highcut", "delay_lowcut", "delay_highcut",
@@ -86,6 +96,10 @@ def midi_value(key, raw, values=None):
     value = minimum + (maximum - minimum) * raw / 127
     value = min(maximum, max(minimum, minimum + math.floor((value - minimum) / step + .5) * step))
     return int(value) if key in INTEGRAL else round(value, 8)
+
+
+def piano_voice_available(status, voice):
+    return bool(status.get("piano_voice_mask", 15) & (1 << int(voice)))
 
 
 def validate_midi_mapping(data):
@@ -220,6 +234,8 @@ class Controller:
             mask = self.status.get("bed_mask", 0)
             for key, value in items:
                 validate_control_pair(effective, key, value)
+                if key == "piano_voice" and not piano_voice_available(self.status, value):
+                    raise ValueError("This piano voice is unavailable in the loaded SoundFont. Choose another voice.")
                 if key.startswith("bed_") and (not mask or (key == "bed_key" and not mask & (1 << int(value)))):
                     raise ValueError("No recording loaded for this pad/key")
                 effective_offset = apply_value(effective, key, value, effective_offset)

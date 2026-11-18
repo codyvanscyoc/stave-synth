@@ -9,7 +9,7 @@ namespace stave {
 struct StageCoreConfig {
     EnvelopeConfig env1{}, env2{};
     PianoChainConfig piano{};
-    int transpose{}, piano_octave{}, minimum_velocity{10};
+    int transpose{}, piano_octave{}, minimum_velocity{10}, piano_voice{};
     int wave1{}, wave2{1}, octave1{}, octave2{};
     double fader1{.6}, fader2{.4}, pan1{}, pan2{}, detune{.07}, spread{.85};
     double piano_velocity_curve{1}, osc_bend_semitones{};
@@ -21,7 +21,7 @@ struct StageCoreConfig {
     }
     StagePatch source_patch(const PreparedSourceMix& mix) const noexcept {
         StagePatch p;
-        p.env1=env1; p.env2=env2; p.piano=piano;
+        p.env1=env1; p.env2=env2; p.piano=piano; p.piano_voice=piano_voice;
         p.transpose=transpose; p.piano_octave=piano_octave; p.minimum_velocity=minimum_velocity;
         p.wave1=wave1; p.wave2=wave2; p.octave1=octave1; p.octave2=octave2;
         p.blend1=mix.amplitude1; p.blend2=mix.amplitude2; p.pan1=mix.pan1; p.pan2=mix.pan2;
@@ -43,7 +43,7 @@ public:
         if (!configure(config_)) throw std::runtime_error("Stage core initialization failed");
     }
     bool configure(const StageCoreConfig& config) noexcept {
-        if (!healthy() || !config.valid()) return false;
+        if (!healthy() || !config.valid() || !sources_.piano_voice_available(config.piano_voice)) return false;
         // All validation before mutation. Source configuration also applies
         // note routing/envelope edits BEFORE following boundary note events.
         if (!sources_.configure(config.source_patch(prepared_)) || !buses_.configure(config.buses) ||

@@ -18,7 +18,9 @@ const soundControls={
   osc:{wave1:2,wave2:1,envelope_link:0,volume_link:0,attack1:720,decay1:880,sustain1:62,release1:594,
     attack2:440,decay2:920,sustain2:71,release2:330,pan1:-.21,pan2:.24,detune:.15,spread:.62,
     cutoff:3850,resonance:1.72,filter_slope:1,piano_filter:1,cutoff_min:75,cutoff_max:15800},
-  piano:{piano_tone:.65,piano_room:.32,piano_reverb:.19,piano_delay:.22,piano_room_size:.75,piano_room_damp:.43,piano_lowcut:115},
+  piano:{piano_voice:2,piano_tone:.65,piano_room:.32,piano_reverb:.19,piano_delay:.22,piano_room_size:.75,piano_room_damp:.43,piano_lowcut:115},
+  lfo:{lfo1_shape:6,lfo1_target:3,lfo1_division:2,lfo1_key_sync:1,lfo1_rate:2.73,lfo1_depth:.28,wheel_depth:.38,
+    lfo2_shape:2,lfo2_target:1,lfo2_division:7,lfo2_key_sync:1,lfo2_rate:.47,lfo2_depth:.58},
   reverb:{reverb:2,wet:.51,shimmer:1,shimmer_mix:.24,osc1_reverb:.38,osc2_reverb:.57,reverb_decay:3.4,
     reverb_damp:.48,reverb_predelay:37,reverb_lowcut:190,reverb_highcut:6900},
   delay:{delay_wet:.36,delay_feedback:.47,delay_time:322,delay_lowcut:85,delay_highcut:7300,
@@ -38,6 +40,8 @@ await call('Page.navigate',{url:'http://127.0.0.1:8768'});
 for(let n=0;n<40&&!(await evaluate("document.getElementById('connection')?.textContent==='Connected'"));++n)await sleep(100);
 assert.equal(await evaluate('ready&&!audioReady'),true);
 assert.equal(await evaluate('activePage'),'check','an unconfigured instrument opens Soundcheck first');
+assert.deepEqual(await evaluate("[fields.piano_voice.input.value,fields.lfo1_depth.input.value,fields.lfo2_depth.input.value,fields.wheel_depth.input.value].map(Number)"),[0,0,0,0],'fresh instrument opens with Grand and no modulation');
+assert.deepEqual(await evaluate("Array.from(fields.piano_voice.input.options,o=>o.textContent)"),['Grand','Rhodes','Suitcase','Legend EP 2']);
 await evaluate("view('edit');soundSection('osc')");
 
 // A local knob event must retarget the plot synchronously, then animate rather
@@ -157,7 +161,7 @@ async function verifyEditorLayout(width,height,section,advanced){
       if(!input.getAttribute('aria-label'))issues.push(key+' missing accessible name');
       if(rect(input).width<43.9||rect(input).height<43.9)issues.push(key+' touch area below 44px');
       if(!dial){
-        if(label.closest('.contour')){
+        if(label.closest('.contour,.motion-module')){
           const legend=textBox(name),box=rect(input);
           if(!legend.height||legend.bottom>box.top-2)issues.push(key+' label touches selector');
         }
@@ -183,6 +187,16 @@ async function verifyEditorLayout(width,height,section,advanced){
       const cells=[...filter.querySelectorAll('label')].filter(visible).map(rect);
       if(cells.length<2||cells.some(b=>Math.abs(b.top-cells[0].top)>1||Math.abs(b.width-cells[0].width)>2))
         issues.push('shared filter controls need equal columns in one row');
+    }
+    if(section==='lfo'){
+      const [a,b]=Array.from(root.querySelectorAll('.motion-module'),rect);
+      if(landscape&&(a.top!==b.top||a.right+7>b.left))issues.push('independent LFOs need two separate columns');
+      if(!landscape&&a.bottom+7>b.top)issues.push('LFOs overlap on the phone');
+      for(const trace of root.querySelectorAll('.motion-trace path')){
+        if(trace.getTotalLength()<90)issues.push('waveform missing');
+      }
+      const tabs=Array.from(document.querySelectorAll('.sound-selector button'),rect);
+      if(tabs.some((tab,i)=>tab.width<44||tab.height<44||i>0&&tab.left<tabs[i-1].right+2))issues.push('Sound tab targets overlap');
     }
     return issues;
   },section,width>=768&&width>height);
@@ -264,6 +278,11 @@ for(const [section,keys] of Object.entries(soundControls)){
   assert.deepEqual(present.filter(key=>key!=='freeze').sort(),Object.keys(keys).sort(),section+' control inventory');
   for(const [key,target] of Object.entries(keys))await editSound('#sound-'+section,key,target);
 }
+await openSound('lfo',false);
+assert.ok(await evaluate("fields.lfo1_rate.out.textContent==='2.73 Hz'&&fields.wheel_depth.out.textContent==='38%'"));
+assert.ok(await evaluate("elem('lfo1-trace').getAttribute('d')===lfoTraces[6]&&elem('lfo2-trace').getAttribute('d')===lfoTraces[2]"),'each LFO has its own waveform preview');
+await click('lfo-tempo');
+assert.ok(await evaluate("document.activeElement===fields.bpm.input&&elem('sound-delay').dataset.open==='true'"),'shared tempo opens the editable delay clock');
 await evaluate("view('stage')");
 for(const [section,panel,key,value] of [['osc','#mixer','cutoff',3150],['piano','#tone-controls','piano_tone',.71],['reverb','#mixer','wet',.62]]){
   const wire=await editSound(panel,key,value);
@@ -347,11 +366,21 @@ await openSound('osc',false);
 await editSound('#sound-osc','cutoff',800);
 await openSound('delay',false);
 await editSound('#sound-delay','bpm',87);
+await openSound('piano',false);
+await editSound('#sound-piano','piano_voice',3);
+await openSound('lfo',false);
+await editSound('#sound-lfo','lfo1_shape',3);
+await editSound('#sound-lfo','lfo2_depth',0);
+await editSound('#sound-lfo','wheel_depth',0);
 await evaluate("view('stage');document.querySelector('[data-preset]').click()");
 await waitFor("soundWrites.some(w=>w.path==='/preset-load'&&w.status===202)",'preset recall');
 const recalled=await statusOfInstrument();
 assert.equal(recalled.values.cutoff,cutoffKeyed);
 assert.equal(recalled.values.bpm,tapped);
+assert.equal(recalled.values.piano_voice,2);
+for(const [key,value] of Object.entries(soundControls.lfo))assert.equal(recalled.values[key],value,'preset recalls '+key);
+await evaluate('poll()');
+assert.ok(await evaluate("fields.piano_voice.out.textContent==='Suitcase'&&elem('lfo1-trace').getAttribute('d')===lfoTraces[6]&&fields.lfo2_depth.out.textContent==='58%'"),'preset changes repaint panel controls');
 // Verify the actual layout at phone and tablet sizes, all four work areas.
 await call('Accessibility.enable');
 for(const [width,height,phone] of [[320,844,true],[390,844,true],[768,1024,false],[844,390,true],[1024,768,false],[1366,1024,false]]){
@@ -395,6 +424,7 @@ window.fetch=async function(path,opts){
   Object.assign(d.runtime,{restoring:false,preparation:false,midi_source:'Keys:MIDI',audio_left:'USB:Left',audio_right:'USB:Right',
     devices:{midi:['Keys:MIDI'],audio:['USB:Left','USB:Right']},presets:[{name:'Verse'},{name:'Chorus'},null,null,null],active_preset:0});
   d.values.shimmer=1;d.values.freeze=1;d.values.transpose=window.stageTranspose??0;
+  if(window.voiceMask!==undefined)d.status.piano_voice_mask=window.voiceMask;
   if(window.mappedCutoff){
     d.values.cutoff=window.mappedCutoff;
     d.runtime.midi_maps={cutoff:74};
@@ -405,6 +435,11 @@ window.fetch=async function(path,opts){
     d.runtime.midi_maps={master_mid:23};
     d.status.midi_mapped_serial=controlOrder.map(key=>key==='master_mid'?14:0);
     d.status.pickup_waiting=['master_mid'];d.status.pickup_directions={master_mid:'down'};
+  }
+  if(window.mappedModulation){
+    Object.assign(d.values,{piano_voice:1,lfo2_shape:4,wheel_depth:.76});
+    d.runtime.midi_maps={piano_voice:20,lfo2_shape:21,wheel_depth:22};
+    d.status.midi_mapped_serial=controlOrder.map(key=>Object.hasOwn(d.runtime.midi_maps,key)?15:0);
   }
   if(window.haltAudio)d.stale=true;
   if(window.missingDevices){
@@ -487,6 +522,14 @@ await call('Input.dispatchMouseEvent',{type:'mousePressed',...learnPoint,button:
 await call('Input.dispatchMouseEvent',{type:'mouseReleased',...learnPoint,button:'left',clickCount:1});
 await waitFor("midiTarget==='cutoff'",'Learn picks the shared filter from its Sound dial');
 assert.deepEqual(await evaluate("posted.filter(([path])=>path!=='/midi-learn')"),[],'selecting a Sound target leaves its sound unchanged');
+for(const [section,keys] of [['piano',['piano_voice']],['lfo',Object.keys(soundControls.lfo)]]){
+  await openSound(section,false);
+  for(const key of keys){
+    await inPage(key=>fields[key].input.click(),key);
+    await waitFor('midiTarget==='+JSON.stringify(key),'Learn can arm '+key);
+  }
+}
+assert.deepEqual(await evaluate("posted.filter(([path])=>path!=='/midi-learn')"),[],'piano and LFO Learn target selection leaves the sound unchanged');
 await click('midi-map-done');
 await openSound('osc',true);
 const mappedCount=await evaluate('posted.length');
@@ -512,6 +555,16 @@ const eqBadge=await inPage(()=>{
 assert.deepEqual(eqBadge,['23','true','static',true],'EQ pickup badge has a separate row');
 assert.equal(await evaluate('posted.length'),beforeMappedEq,'incoming System MIDI never echoes a write');
 await evaluate('window.mappedEq=false;poll()');
+const beforeMappedLfo=await evaluate('posted.length');
+await evaluate('window.voiceMask=5;poll()');
+assert.deepEqual(await evaluate('Array.from(fields.piano_voice.input.options,o=>[o.disabled,o.textContent])'),[[false,'Grand'],[true,'Rhodes · unavailable'],[false,'Suitcase'],[true,'Legend EP 2 · unavailable']],'live SoundFont inventory marks only missing voices');
+await evaluate('window.voiceMask=undefined;poll()');
+assert.ok(await evaluate('Array.from(fields.piano_voice.input.options).every(o=>!o.disabled)'), 'without inventory the piano control offers every model');
+await evaluate('window.mappedModulation=true;poll()');
+assert.deepEqual(await evaluate("[fields.piano_voice.input.value,fields.lfo2_shape.input.value,elem('lfo2-trace').getAttribute('d')===lfoTraces[4]]"),['1','4',true],'MIDI selects discrete models and waveforms immediately');
+await waitFor("fields.wheel_depth.out.textContent==='76%'",'wheel depth dial follows hardware');
+assert.equal(await evaluate('posted.length'),beforeMappedLfo,'incoming piano and LFO MIDI never echo writes');
+await evaluate('window.mappedModulation=false;poll()');
 await openSound('reverb',true);
 await inPage(()=>{
   const f=document.querySelector('#sound-reverb [data-control=freeze] select');
@@ -522,7 +575,7 @@ await waitFor("posted.some(([path,data])=>path==='/control'&&data.key==='freeze'
 await evaluate('window.haltAudio=true;poll()');
 assert.ok(await evaluate("[...document.querySelectorAll('#edit-panel label input,#edit-panel label select,#edit-panel [data-stepper] button,#tap-tempo')].every(el=>el.disabled)"),'stale instrument disables every Sound edit');
 const idleCount=await evaluate('posted.length');
-await evaluate("document.querySelector('#sound-reverb [data-control=freeze] select').dispatchEvent(new Event('change'));document.getElementById('tap-tempo').click()");
+await evaluate("fields.freeze.input.dispatchEvent(new Event('change'));fields.piano_voice.input.dispatchEvent(new Event('change'));fields.lfo1_depth.input.dispatchEvent(new Event('input'));elem('tap-tempo').click()");
 assert.equal(await evaluate('posted.length'),idleCount,'stale sound surface cannot send');
 await evaluate("window.haltAudio=false;window.mappedCutoff=null;view('stage');poll()");
 const beforeStore=await evaluate('posted.length');
@@ -530,5 +583,19 @@ await click('preset-store');
 await evaluate("document.getElementById('preset-destination').value='1';document.getElementById('preset-destination').dispatchEvent(new Event('change'))");
 assert.equal(await evaluate('posted.length'),beforeStore,'choosing the occupied store destination leaves the live sound alone');
 const parameterCount=Object.values(soundControls).reduce((count,group)=>count+Object.keys(group).length,0);
-console.log('PASS: '+parameterCount+' state-backed Sound controls, both octave steppers, linked and independent edits, cutoff gestures and MIDI, tap tempo, preset round-trip, stale guards, 40 responsive Sound layouts, enlarged ADSR traces and five responsive System EQ layouts; all five EQ inputs, Stage, Soundcheck, Learn and preset store regressions.');
+// Serve a beta-5 control inventory to this client and check discoverability.
+await call('Page.addScriptToEvaluateOnNewDocument',{source:`
+const fetchAllControls=window.fetch;
+window.fetch=async(path,options)=>{
+  const response=await fetchAllControls(path,options);
+  if(path!=='/controls'&&path!=='/status')return response;
+  const data=await response.json(),values=path==='/controls'?data:data.values;
+  for(const key of Object.keys(values))if(/^lfo[12]_/.test(key)||key==='wheel_depth'||key==='piano_voice')delete values[key];
+  return new Response(JSON.stringify(data));
+};`});
+await call('Page.reload');
+await waitFor("typeof ready!=='undefined'&&ready&&!fields.piano_voice",'legacy controller initializes');
+await openSound('piano',false);
+assert.ok(await evaluate("elem('sound-tab-lfo').hidden&&!elem('edit-piano-voice').getBoundingClientRect().width&&fields.piano_tone.input.disabled===false"),'legacy controller retains the original piano and Sound tabs');
+console.log('PASS: '+parameterCount+' state-backed Sound controls, 50 responsive Sound layouts, five System EQ layouts, piano/LFO MIDI Learn and hardware feedback, preset recall and legacy control inventory, Stage, Soundcheck, stale guards and pickup gestures.');
 ws.close();

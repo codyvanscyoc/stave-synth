@@ -1,6 +1,6 @@
 # Stave Synth for Raspberry Pi 4
 
-Play a layered piano and two oscillators from a USB MIDI keyboard. A phone, tablet, or laptop on the same Wi-Fi controls the mix, filters, effects, recorded pads, five sound presets and MIDI Learn. The Pi runs the audio engine, so the instrument keeps playing when the browser closes.
+Play Grand, Rhodes, Suitcase or Legend EP 2 alongside two oscillators from a USB MIDI keyboard. A phone, tablet, or laptop on the same Wi-Fi controls the mix, filters, effects, recorded pads, five sound presets and MIDI Learn. The Pi runs the audio engine, so the instrument keeps playing when the browser closes.
 
 ## Install the Pi 4 beta
 
@@ -8,10 +8,10 @@ Use a Raspberry Pi 4 with **64-bit Raspberry Pi OS Trixie (Debian 13)**, interne
 
 ### Download and install
 
-On the Pi, log in as the user who will play the instrument. Paste this block into a terminal. It downloads the Pi 4 Beta 5.1 installer and its checksum, verifies the archive, then starts setup. Both files are also available under **Assets** on the [Pi 4 release page](https://github.com/codyvanscyoc/stave-synth/releases/tag/pi4-native-2026.11.18-beta.5.1).
+On the Pi, log in as the user who will play the instrument. Paste this block into a terminal. It downloads the Pi 4 Beta 6 installer and its checksum, verifies the archive, then starts setup. Both files are also available under **Assets** on the [Pi 4 release page](https://github.com/codyvanscyoc/stave-synth/releases/tag/pi4-native-2026.11.18-beta.6).
 
 ```sh
-tag=pi4-native-2026.11.18-beta.5.1
+tag=pi4-native-2026.11.18-beta.6
 release="https://github.com/codyvanscyoc/stave-synth/releases/download/$tag"
 mkdir -p "$HOME/Downloads/stave-synth/$tag" &&
   cd "$HOME/Downloads/stave-synth/$tag" &&
@@ -42,19 +42,23 @@ Anyone who can reach the private-LAN UI can control the instrument. Use trusted 
 
 **Sound.** In **Oscillators**, choose a waveform and octave for each voice. Each voice has its own envelope graph. Drag the knobs below it to set how long the note takes to rise (Attack), how long it falls to the held level (Decay), the level while a key is held (Sustain), and how long it fades after key-up (Release). **Link envelopes** applies an envelope edit to both voices. **Link OSC volumes → Preserve balance** moves their Stage faders together while keeping their level offset. The **Shared filter** shapes both oscillators. Turn on **Filter piano** to send the piano through it too. The cutoff knob and the Stage cutoff fader control the same filter.
 
-**Piano**, **Reverb** and **Delay** each have their own panel. Set piano brightness and room sound in Piano, and its sends to reverb and delay below. In Delay, choose **Free time** for a millisecond setting, or a note division to follow BPM or **Tap tempo**. **Show advanced** reveals filter sweep limits and effects or piano tone cuts.
+**Sound → Piano.** Select **Grand** for the original acoustic piano, **Rhodes** for a dry tine sound, **Suitcase** for the same tines with stereo tremolo, or **Legend EP 2** for the second electric piano in the included GM bank. The selection applies to the next note. Notes already held by your fingers or sustain pedal keep their sound through release. Adjust brightness, room and effects sends in the same panel.
+
+**Sound → LFOs.** Each LFO has a waveform, destination and depth. Turn up **Depth** to hear it. **Free time** uses the rate knob in Hz. Pick a note division to follow the patch tempo, or use **Restart on key** to start the cycle with a new keypress. Filter, Amplitude and Pan shape the synth layers. **Bus duck** pulses the pad bus. For wheel-controlled tremolo, set LFO 1 to **Sine**, **Amplitude**, **Free time**, **5 Hz**, **Depth 0%**, and **Wheel depth 50%**. Play a sustained oscillator note and raise the mod wheel. The wheel adds modulation to LFO 1 and returns to the stored depth when lowered.
+
+**Sound → Reverb / Delay.** Set reverb type, sends and decay, or choose **Free time** in Delay for a millisecond setting. A note division follows BPM or **Tap tempo**. **Show advanced** reveals filter sweep limits and effects or piano tone cuts.
 
 **Global tone.** Open **System → Global tone** to adjust the final stereo mix. The Low (200 Hz), Mid (1 kHz) and High (5 kHz) dials each cut or boost by up to 6 dB. Set **Low cut** to **On** to roll off bass below the selected frequency (20–200 Hz). For a flat starting point, set the three bands to 0 dB and Low cut to Off.
 
 **Using the knobs.** On Sound and System, touch or click a knob and drag right to increase its value or left to decrease it. With a keyboard, Tab to the knob and use the arrow keys. For smaller changes over the same drag distance, tap **Normal knobs** in **System → Control surface** to select **Fine knobs**. This preference is saved in that browser.
 
-**MIDI.** In **Soundcheck**, set a receive channel, minimum note velocity and hardware pickup. With pickup enabled, moving a mapped fader past its current value hands control to the hardware. To assign a control, open **MIDI MAP**, choose the target, move one knob or fader, then tap **Done**. Clear old assignments in **System → MIDI assignments**.
+**MIDI.** In **Soundcheck**, set a receive channel, minimum note velocity and hardware pickup. With pickup enabled, moving a mapped fader past its current value hands control to the hardware. To assign a control, open **MIDI MAP**, choose the target, move one knob or fader, then tap **Done**. Clear old assignments in **System → MIDI assignments**. Pitch bend moves the oscillators and piano up or down two semitones. The mod wheel (CC1) follows **Wheel depth** unless you assign CC1 to a different control.
 
 **Pads.** Open **PAD RECORD / SHAPE**, record up to 40 seconds, stop, choose a key and use **Save pad**. The display shows remaining bank time. Replacing a pad frees its old space. An accepted assignment restarts audio briefly, so save between songs. An oversized assignment leaves the current bank playing. If an existing bank cannot load, piano and oscillators remain available.
 
 ## Update an existing installation
 
-If you installed an earlier Pi 4 bundle with this installer, use the same Pi login and run the download block above between songs. Open or refresh the browser after setup. For a Pi already running Beta 5, Beta 5.1 updates the guide and the installer’s final setup message. You can use the new guide immediately.
+If you installed an earlier Pi 4 bundle with this installer, use the same Pi login and run the download block above between songs. Open or refresh the browser after setup. Earlier presets and startup sounds open on Grand with both LFO depths and wheel depth at zero. To keep an edited sound across a normal installer restart, store it to a preset or use **Save startup** first.
 
 Settings, presets, MIDI assignments, recordings and pad samples live under `~/.local/share/stave-native/`. Back up that directory to keep your sounds. The runtime lives under `~/.local/opt/stave-pi4/`. If activation fails during the update, the installer restores the previous runtime and service configuration.
 

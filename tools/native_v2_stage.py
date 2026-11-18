@@ -313,8 +313,10 @@ class CandidateHub:
                 if mapped.get("map_pending"):
                     return
                 self.map_restored = True
+            missing_voice = not audition.piano_voice_available(data["status"], self.prepared.get("piano_voice", 0))
             if self.restore_sequence is None:
-                items = [(key, value) for key, value in audition.restore_items(self.prepared)
+                prepared = dict(self.prepared, piano_voice=0) if missing_voice else self.prepared
+                items = [(key, value) for key, value in audition.restore_items(prepared)
                          if not key.startswith("bed_") or data["status"].get("bed_mask")]
                 if self.output_muted:
                     items.insert(0, ("output_mute", 1))
@@ -323,7 +325,8 @@ class CandidateHub:
                 raise ValueError("Saved controls were rejected: " + data["error"])
             if not self.restore_sequence or data["status"].get("applied", 0) >= self.restore_sequence:
                 self.restoring = False
-                self.message = "Audio ready. Saved Master was restored last through the output ramp."
+                self.message = ("Audio ready with Grand. The loaded SoundFont lacks the saved piano voice."
+                                if missing_voice else "Audio ready. Saved Master was restored last through the output ramp.")
 
     @staticmethod
     def tone_differs(values, reference, include_keyboard=True):

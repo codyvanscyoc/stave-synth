@@ -48,7 +48,7 @@ void declare(void*, float*, const char*, const char*) {}
 }
 bool StagePatch::valid() const noexcept {
     if (!env1.valid() || !env2.valid() || !piano.valid() || transpose < -24 || transpose > 24 ||
-        piano_octave < -3 || piano_octave > 3 || minimum_velocity < 1 || minimum_velocity > 127 ||
+        piano_voice < 0 || piano_voice > 3 || piano_octave < -3 || piano_octave > 3 || minimum_velocity < 1 || minimum_velocity > 127 ||
         wave1 < 0 || wave1 > 4 || wave2 < 0 || wave2 > 4 || octave1 < -3 || octave1 > 3 ||
         octave2 < -3 || octave2 > 3 || !range(blend1, 0, 1) || !range(blend2, 0, 1) ||
         !range(detune, 0, 1) || !range(spread, 0, 1) || !range(pan1, -1, 1) || !range(pan2, -1, 1) ||
@@ -65,7 +65,21 @@ struct StageSources::Impl final : StageNoteSink, StageVoiceSink {
     KeyTrigger* trigger;
     StageVoices voices{*this};
     StageNotes notes{*this};
-    PianoChain chain;
+    PianoChain chain, suitcase_chain;
+    // MIDI channel modulo three selects the Fluid audio group. Grand and Legend
+    // share group 0. Rhodes and Suitcase each need gain before int16 acquisition.
+    static constexpr int rhodes=1, suitcase=2;
+    static constexpr double tine_gain=.7079457843841379; // -3 dB
+    std::array<bool,4> available{true,false,false,false};
+    // Track the owning program by physical key. Separate keys can land on the
+    // same sounding pitch across a live transpose or piano octave edit.
+    std::array<signed char,128> key_channel{};
+    std::array<std::array<float,512>,6> piano_groups{};
+    std::array<float*,6> group_ptrs{};
+    std::array<std::array<double,512>,2> suitcase_audio{};
+    bool tine_active{}, suitcase_active{};
+    unsigned bend_value{8192}, suitcase_tail{};
+    double bend_ratio{1.};
     StagePatch patch;
     StageSourceStats counters;
     std::array<std::array<float*, 9>, 12> slots{};
@@ -81,7 +95,7 @@ struct StageSources::Impl final : StageNoteSink, StageVoiceSink {
     bool fault{}, stopped{};
 
     Impl(const std::string& font, PhaseSource& source, std::uint32_t size, int program, KeyTrigger* key)
-        : phases(source), trigger(key), chain(48000, size), frames(size) {
+        : phases(source), trigger(key), chain(48000, size), suitcase_chain(48000,size), frames(size) {
         static_assert(sizeof(short) == 2, "Fluid int16 acquisition requires16-bit short");
         if ((size != 256 && size != 512) || font.empty() || program < 0 || program > 127)
             throw std::invalid_argument("Stage source needs explicit SF2, fixed256/512, valid program");
@@ -110,6 +124,8 @@ struct StageSources::Impl final : StageNoteSink, StageVoiceSink {
                 lfos[i][n++] = zones.require("lfo" + std::to_string(i + 1) + "_" + suffix);
         }
         for (unsigned i = 0; i < 5; ++i) osc_ptrs[i] = osc_audio[i].data();
+        key_channel.fill(-1);
+        for(unsigned i=0;i<group_ptrs.size();++i) group_ptrs[i]=piano_groups[i].data();
         settings.reset(new_fluid_settings());
         if (!settings) throw std::runtime_error("Fluid settings allocation failed");
         auto integer = [&](const char* name, int value) {
@@ -117,6 +133,7 @@ struct StageSources::Impl final : StageNoteSink, StageVoiceSink {
         };
         if (fluid_settings_setnum(settings.get(), "synth.sample-rate", 48000) != FLUID_OK ||
             fluid_settings_setnum(settings.get(), "synth.gain", 1) != FLUID_OK) throw std::runtime_error("Fluid settings failed");
+        integer("synth.audio-channels",3); integer("synth.audio-groups",3);
         integer("synth.polyphony", 32); integer("synth.dynamic-sample-loading", 0);
         integer("synth.reverb.active", 0); integer("synth.chorus.active", 0);
         integer("synth.cpu-cores", 1); integer("synth.lock-memory", 0);
@@ -125,11 +142,17 @@ struct StageSources::Impl final : StageNoteSink, StageVoiceSink {
         const int sfid = fluid_synth_sfload(piano.get(), font.c_str(), 0);
         if (sfid < 0 || fluid_synth_program_select(piano.get(), 0, sfid, 0, program) != FLUID_OK)
             throw std::runtime_error("Explicit piano asset/program unavailable");
+        auto* bank=fluid_synth_get_sfont_by_id(piano.get(),sfid);
+        for(int channel=1;channel<=3;++channel) {
+            const int preset=channel==3?5:4;
+            if(fluid_sfont_get_preset(bank,0,preset))
+                available[channel]=fluid_synth_program_select(piano.get(),channel,sfid,0,preset)==FLUID_OK;
+        }
         if (!configure(patch)) throw std::runtime_error("Initial stage patch failed");
     }
     void fluid_check(int status) noexcept { if (status != FLUID_OK) { ++counters.fluid_errors; fault = true; } }
     bool configure(const StagePatch& next) noexcept {
-        if (fault || stopped || !next.valid()) return false;
+        if (fault || stopped || !next.valid() || !available[next.piano_voice]) return false;
         // All validation precedes writes; numeric controls only, no asset load.
         voices.configure(next.env1, next.env2);
         notes.configure(next.transpose, next.piano_octave, next.minimum_velocity);
@@ -148,20 +171,42 @@ struct StageSources::Impl final : StageNoteSink, StageVoiceSink {
     }
     void osc_on(std::uint8_t n, double v, LayerWeights w) noexcept override { if (!voices.note_on(n, v, w)) fault = true; }
     void osc_off(std::uint8_t n) noexcept override { if (!voices.note_off(n)) fault = true; }
-    void piano_on(std::uint8_t n, double velocity) noexcept override {
+    void piano_on(std::uint8_t key,std::uint8_t n, double velocity) noexcept override {
         if (fault) return; // A failed oscillator phase handoff already stopped this command.
         const int value = std::clamp(static_cast<int>(std::pow(velocity, 1 / patch.piano_velocity_curve) * 127), 1, 127);
-        const int status = fluid_synth_noteon(piano.get(), 0, n, value);
+        const int channel=patch.piano_voice;
+        if(key_channel[key]>=0&&key_channel[key]!=channel) piano_off(key,n);
+        const int status = fluid_synth_noteon(piano.get(), channel, n, value);
         fluid_check(status);
-        if (status == FLUID_OK) velocity_tracker = .6 * velocity_tracker + .4 * velocity;
+        if (status == FLUID_OK) {
+            velocity_tracker = .6 * velocity_tracker + .4 * velocity;
+            key_channel[key]=static_cast<signed char>(channel);
+            if(channel==rhodes||channel==suitcase) tine_active=true;
+            if(channel==suitcase&&!suitcase_active) {
+                suitcase_chain.sync_smoothers(chain);
+                suitcase_active=true;
+            }
+        }
     }
-    void piano_off(std::uint8_t n) noexcept override {
-        if (fluid_synth_noteoff(piano.get(), 0, n) != FLUID_OK) ++counters.unmatched_piano_offs;
+    void piano_off(std::uint8_t key,std::uint8_t n) noexcept override {
+        const int channel=key_channel[key];
+        key_channel[key]=-1;
+        if(channel>=0 && fluid_synth_noteoff(piano.get(),channel,n)!=FLUID_OK) ++counters.unmatched_piano_offs;
     }
     void all_notes_off() noexcept override {
         if (!voices.release_all()) fault = true;
-        for (int cc : {64, 66, 123}) fluid_check(fluid_synth_cc(piano.get(), 0, cc, 0));
-        fluid_check(fluid_synth_pitch_bend(piano.get(), 0, 8192));
+        key_channel.fill(-1);
+        for(int channel=0;channel<4;++channel)
+            for (int cc : {64,66,123}) fluid_check(fluid_synth_cc(piano.get(),channel,cc,0));
+    }
+    bool pitch_bend(unsigned value) noexcept {
+        if(value>=16384||fault||stopped) return false;
+        if(value==bend_value) return true;
+        bend_value=value;
+        const double offset=int(value)-8192;
+        bend_ratio=std::exp2(2.*offset/(12.*(offset<0?8192.:8191.)));
+        for(int channel=0;channel<4;++channel) fluid_check(fluid_synth_pitch_bend(piano.get(),channel,int(value)));
+        return !fault;
     }
     void key_trigger() noexcept override { if(trigger) trigger->oscillator_key_trigger(); }
     void start_slot(unsigned slot) noexcept override {
@@ -175,7 +220,7 @@ struct StageSources::Impl final : StageNoteSink, StageVoiceSink {
     void gate(unsigned slot, std::uint8_t note, double a, double b, double shimmer) noexcept override {
         double hz = 440. * std::pow(2., (double(note) - 69) / 12);
         if (patch.osc_bend_semitones != 0) hz *= std::pow(2., patch.osc_bend_semitones / 12);
-        *slots[slot][0] = static_cast<float>(hz);
+        *slots[slot][0] = static_cast<float>(hz*bend_ratio);
         a = std::clamp(a, 0., 1.); b = std::clamp(b, 0., 1.);
         *slots[slot][1] = static_cast<float>(std::max(a, b));
         *slots[slot][2] = static_cast<float>(a); *slots[slot][3] = static_cast<float>(b);
@@ -184,10 +229,10 @@ struct StageSources::Impl final : StageNoteSink, StageVoiceSink {
     void stop() noexcept {
         if (!stopped) {
             stopped = true;
-            fluid_check(fluid_synth_all_sounds_off(piano.get(), 0));
+            fluid_check(fluid_synth_all_sounds_off(piano.get(), -1));
             instanceClearStaveOscBank(osc.get());
             for (unsigned i = 0; i < 12; ++i) clear_slot(i);
-            chain.clear();
+            chain.clear(); suitcase_chain.clear();
         }
         for (auto& s : stems) s.fill(0);
         raw.fill(0);
@@ -211,6 +256,60 @@ struct StageSources::Impl final : StageNoteSink, StageVoiceSink {
         if (fault) stop();
         return !fault;
     }
+    static short pcm16(double sample) noexcept {
+        return static_cast<short>(std::clamp(std::nearbyint(sample*32768.),-32768.,32767.));
+    }
+    static bool full_scale(int value) noexcept { return value==-32768||value==32767; }
+    void render_piano() noexcept {
+        if(tine_active) {
+            for(auto& group:piano_groups) std::fill_n(group.data(),frames,0.f);
+            fluid_check(fluid_synth_process(piano.get(),int(frames),0,nullptr,6,group_ptrs.data()));
+            for(unsigned ch=0;ch<2;++ch) for(unsigned i=0;i<frames;++i) {
+                const double dry=piano_groups[ch][i]+tine_gain*piano_groups[2+ch][i];
+                const double suitcase_sample=tine_gain*piano_groups[4+ch][i];
+                const auto plain=pcm16(dry);
+                const auto trem=suitcase_active?pcm16(suitcase_sample):0;
+                raw[2*i+ch]=static_cast<short>(std::clamp(int(plain)+trem,-32768,32767));
+                counters.full_scale_piano_samples+=full_scale(plain)||full_scale(trem)||full_scale(raw[2*i+ch]);
+                stems[5+ch][i]=plain/32768.;
+                suitcase_audio[ch][i]=trem/32768.;
+            }
+        } else {
+            fluid_check(fluid_synth_write_s16(piano.get(), frames, raw.data(), 0, 2, raw.data(), 1, 2));
+            for(unsigned ch=0;ch<2;++ch) for(unsigned i=0;i<frames;++i) {
+                const short value=raw[2*i+ch];
+                counters.full_scale_piano_samples+=full_scale(value);
+                stems[5+ch][i]=value/32768.;
+            }
+        }
+        auto p=patch.piano;
+        p.velocity_target=velocity_tracker;
+        if(!chain.configure(p)||!chain.process_block(stems[5].data(),stems[6].data(),
+                stems[5].data(),stems[6].data(),frames)) fault=true;
+        if(suitcase_active) {
+            p.tremolo_hz=5.5; p.tremolo_depth=.5;
+            if(!suitcase_chain.configure(p)||!suitcase_chain.process_block(suitcase_audio[0].data(),
+                    suitcase_audio[1].data(),suitcase_audio[0].data(),suitcase_audio[1].data(),frames)) fault=true;
+            for(unsigned ch=0;ch<2;++ch) for(unsigned i=0;i<frames;++i) stems[5+ch][i]+=suitcase_audio[ch][i];
+        }
+        if(tine_active) {
+            std::array<fluid_voice_t*,32> active{};
+            fluid_synth_get_voicelist(piano.get(),active.data(),int(active.size()),-1);
+            bool has_rhodes=false,has_suitcase=false;
+            for(auto* voice:active) {
+                if(!voice) break;
+                const int channel=fluid_voice_get_channel(voice);
+                has_rhodes|=channel==rhodes;
+                has_suitcase|=channel==suitcase;
+            }
+            // Allow the dedicated tone filters to ring out after Fluid's last sample.
+            if(has_suitcase) suitcase_tail=48000;
+            else if(suitcase_tail>frames) suitcase_tail-=frames;
+            else suitcase_tail=0;
+            suitcase_active=has_suitcase||suitcase_tail>0;
+            tine_active=has_rhodes||suitcase_active;
+        }
+    }
     bool render(bool render_oscillators) noexcept {
         if (fault || stopped) { stop(); return false; }
         if (frames > std::numeric_limits<std::uint64_t>::max() - position) { fault = true; stop(); return false; }
@@ -227,18 +326,8 @@ struct StageSources::Impl final : StageNoteSink, StageVoiceSink {
             computeStaveOscBank(osc.get(), frames, nullptr, osc_ptrs.data());
         } else for (auto& channel : osc_audio) channel.fill(0);
         if (!voices.end_block()) fault = true;
-        fluid_check(fluid_synth_write_s16(piano.get(), frames, raw.data(), 0, 2, raw.data(), 1, 2));
-        for (unsigned i = 0; i < frames; ++i) {
-            for (unsigned ch = 0; ch < 5; ++ch) stems[ch][i] = osc_audio[ch][i];
-            for (unsigned ch = 0; ch < 2; ++ch) {
-                const short value = raw[2 * i + ch];
-                counters.full_scale_piano_samples += value == -32768 || value == 32767;
-                stems[5 + ch][i] = value / 32768.;
-            }
-        }
-        auto p = patch.piano; p.velocity_target = velocity_tracker;
-        if (!chain.configure(p) || !chain.process_block(stems[5].data(), stems[6].data(),
-                stems[5].data(), stems[6].data(), frames)) fault = true;
+        for(unsigned ch=0;ch<5;++ch) std::copy_n(osc_audio[ch].data(),frames,stems[ch].data());
+        render_piano();
         for (auto& s : stems) for (unsigned i = 0; i < frames; ++i)
             if (!std::isfinite(s[i])) { ++counters.numeric_errors; fault = true; }
         if (fault) { stop(); return false; }
@@ -250,13 +339,18 @@ StageSources::StageSources(const std::string& font, PhaseSource& phases, std::ui
     : impl_(std::make_unique<Impl>(font, phases, frames, program, trigger)) {}
 StageSources::~StageSources() = default;
 bool StageSources::configure(const StagePatch& p) noexcept { return impl_->configure(p); }
+bool StageSources::piano_voice_available(int voice) const noexcept {
+    return voice>=0&&voice<4&&impl_->available[voice];
+}
+bool StageSources::pitch_bend(unsigned value) noexcept { return impl_->pitch_bend(value); }
 bool StageSources::command(std::uint64_t b, const StageCommand& e) noexcept { return impl_->command(b, e); }
 bool StageSources::render_block(bool render_oscillators) noexcept { return impl_->render(render_oscillators); }
 void StageSources::panic() noexcept {
     impl_->notes.all_notes_off();
     impl_->voices.silence_all();
-    impl_->fluid_check(fluid_synth_all_sounds_off(impl_->piano.get(),0));
-    impl_->chain.clear();
+    impl_->fluid_check(fluid_synth_all_sounds_off(impl_->piano.get(),-1));
+    impl_->pitch_bend(8192); impl_->tine_active=impl_->suitcase_active=false; impl_->suitcase_tail=0;
+    impl_->chain.clear(); impl_->suitcase_chain.clear();
 }
 void StageSources::stop() noexcept { impl_->stop(); }
 bool StageSources::healthy() const noexcept { return !impl_->fault && !impl_->stopped; }

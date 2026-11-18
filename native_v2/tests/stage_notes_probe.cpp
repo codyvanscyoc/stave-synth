@@ -12,8 +12,8 @@ struct Sink final : stave::StageNoteSink {
     std::vector<Event> events;
     void osc_on(std::uint8_t n, double v, stave::LayerWeights) noexcept override { events.push_back({0, 1, n, v}); }
     void osc_off(std::uint8_t n) noexcept override { events.push_back({0, 0, n, 0}); }
-    void piano_on(std::uint8_t n, double v) noexcept override { events.push_back({1, 1, n, v}); }
-    void piano_off(std::uint8_t n) noexcept override { events.push_back({1, 0, n, 0}); }
+    void piano_on(std::uint8_t, std::uint8_t n, double v) noexcept override { events.push_back({1, 1, n, v}); }
+    void piano_off(std::uint8_t, std::uint8_t n) noexcept override { events.push_back({1, 0, n, 0}); }
     void all_notes_off() noexcept override { events.push_back({2, 0, 0, 0}); }
 };
 

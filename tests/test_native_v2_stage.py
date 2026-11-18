@@ -401,6 +401,80 @@ class NativeStageTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.hub.dispatch('/control', dict(key=key, value=value), self.hub.epoch)
 
+    def test_piano_voice_and_both_lfos_round_trip_and_legacy_preset_resets_motion(self):
+        patch = dict(piano_voice=2, lfo1_rate=.29, lfo1_depth=.72, lfo1_shape=6, lfo1_target=0,
+                     lfo1_division=3, lfo1_key_sync=1, lfo2_rate=7.81, lfo2_depth=.85,
+                     lfo2_shape=2, lfo2_target=3, lfo2_division=8, lfo2_key_sync=1, wheel_depth=.64)
+        self.hub.presets.save_slot(0, 'Old piano', dict(piano=.46))
+        for key, value in patch.items():
+            self.hub.dispatch('/control', dict(key=key, value=value), self.hub.epoch)
+        self.hub.dispatch('/preset-save', dict(slot=1, name='Moving suitcase'), self.hub.epoch)
+        self.hub.dispatch('/save', {}, self.hub.epoch)
+        for saved in (self.store.load(), self.hub.presets.controls_for(1)):
+            self.assertEqual({k: saved[k] for k in patch}, patch)
+        owner = self.attached()
+        self.hub.reconcile()
+        def acknowledge(block):
+            while not owner.outgoing.empty():
+                owner.outgoing.get_nowait()
+            owner.receive(dict(type='status', instance='native-v2-stage', blocks=block,
+                               applied=owner.sequence, routed=True, fault=0))
+            self.hub.reconcile()
+        acknowledge(2)
+        self.assertEqual({k: owner.values[k] for k in patch}, patch)
+        self.hub.dispatch('/preset-load', dict(slot=0), self.hub.epoch)
+        acknowledge(3)
+        self.assertEqual(owner.values['piano'], .46)
+        self.assertEqual({k: owner.values[k] for k in patch},
+                         {k: stage.audition.CONTROLS[k][3] for k in patch})
+        self.hub.dispatch('/preset-load', dict(slot=1), self.hub.epoch)
+        acknowledge(4)
+        self.assertEqual({k: owner.values[k] for k in patch}, patch)
+
+    def test_missing_optional_soundfont_voice_restores_grand_and_refuses_partial_preset(self):
+        self.store.save(dict(piano_voice=2, master=.59))
+        self.hub = stage.CandidateHub(self.store, ROUTES)
+        self.hub.presets.save_slot(1, 'Legend', dict(osc1=.7, piano_voice=3))
+        owner = self.attached()
+        def status(block):
+            owner.receive(dict(type='status', instance='native-v2-stage', blocks=block, bed_mask=0,
+                               piano_voice_mask=1, applied=owner.sequence, routed=True, fault=0))
+            self.hub.reconcile()
+        status(2)
+        self.assertIn(('piano_voice', 0), owner.pending.values())
+        self.assertIn(('master', .59), owner.pending.values())
+        status(3)
+        self.assertFalse(self.hub.restoring)
+        self.assertIn('Grand', self.hub.message)
+        self.assertEqual(self.store.load()['piano_voice'], 2)
+        before = owner.sequence
+        for path, payload in (('/preset-load', dict(slot=1)), ('/control', dict(key='piano_voice', value=1))):
+            with self.assertRaisesRegex(ValueError, 'SoundFont'):
+                self.hub.dispatch(path, payload, self.hub.epoch)
+        self.assertEqual(owner.sequence, before)
+        self.assertEqual(owner.pending, {})
+
+    def test_full_muted_startup_with_all_pad_settings_fits_one_control_batch(self):
+        full = {k: spec[3] for k, spec in stage.audition.CONTROLS.items()
+                if k not in stage.storage.TRANSIENT}
+        full.update(master=.65, piano_voice=3, lfo1_depth=1, lfo2_depth=1, wheel_depth=1)
+        saved = self.store.save(full)
+        self.hub = stage.CandidateHub(self.store, ROUTES)
+        self.hub.output_muted = True
+        owner = self.attached()
+        owner.receive(dict(type='status', instance='native-v2-stage', blocks=2, bed_mask=4095,
+                           applied=0, routed=True, fault=0))
+        self.hub.reconcile()
+        batch = list(owner.pending.values())
+        self.assertEqual(batch[0], ('output_mute', 1))
+        self.assertEqual(batch[-1], ('master', .65))
+        self.assertTrue(set(saved.items()).issubset(batch))
+        owner.receive(dict(type='status', instance='native-v2-stage', blocks=3, bed_mask=4095,
+                           applied=owner.sequence, routed=True, fault=0))
+        self.hub.reconcile()
+        self.assertFalse(self.hub.restoring)
+        self.assertEqual({k: owner.values[k] for k in saved}, saved)
+
     def test_device_loss_keeps_acknowledged_unsaved_tone_not_actions_or_pending(self):
         control = self.attached()
         self.hub.reconcile()

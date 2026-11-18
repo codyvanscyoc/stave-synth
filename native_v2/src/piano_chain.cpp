@@ -226,6 +226,11 @@ void PianoChain::clear() noexcept {
     impl_->brightness_l.tune(18000, impl_->sample_rate); impl_->brightness_r.tune(18000, impl_->sample_rate);
     // Numeric faults remain terminal; clear is not permission to hide one.
 }
+void PianoChain::sync_smoothers(const PianoChain& playing) noexcept {
+    impl_->volume_cur=playing.impl_->volume_cur;
+    impl_->highcut_cur=playing.impl_->highcut_cur;
+    impl_->velocity_cur=playing.impl_->velocity_cur;
+}
 bool PianoChain::healthy() const noexcept { return !impl_->fault; }
 double PianoChain::current_highcut_hz() const noexcept { return impl_->highcut_cur; }
 std::array<double, 6> PianoChain::state() const noexcept {

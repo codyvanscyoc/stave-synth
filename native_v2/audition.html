@@ -311,6 +311,18 @@ body:has(#stage-panel:not([hidden])) main, #stage-panel:not([hidden]), .performa
 }
 #edit-panel .synth-switches {padding-bottom:14px; margin-bottom:13px; border-bottom:1px solid var(--edge)}
 #edit-panel .synth-switches label {display:grid; gap:5px}
+.piano-picker:empty {display:none}
+.piano-picker {padding-bottom:13px; margin-bottom:13px; border-bottom:1px solid var(--edge)}
+.piano-picker label.control {display:grid; grid-template-columns:auto minmax(0,260px); align-items:center; gap:12px}
+.motion-module .synth-switches {grid-auto-flow:row; grid-template-columns:repeat(2,minmax(0,1fr))}
+.motion-module .synth-switches .choice-control {grid-column:auto}
+.motion-module .synth-bank {grid-template-columns:none; grid-auto-flow:column}
+.motion-module h3::after {order:1}
+.motion-trace {order:2; width:96px; height:22px; color:var(--accent); background:#10140f; border:1px solid var(--edge); border-radius:2px}
+.motion-trace path {fill:none; stroke:currentColor; stroke-width:1.5; stroke-linejoin:round}
+.motion-foot {display:flex; align-items:center; flex-wrap:wrap; gap:8px 16px}
+.motion-foot button {width:auto; min-height:44px; margin:0; padding:6px 14px}
+.motion-foot p {margin:0; font-size:12px; color:var(--muted)}
 #edit-panel .tuning-bank {padding-top:11px; margin-top:10px; border-top:1px dashed var(--edge)}
 body:not(.show-advanced) #edit-panel .tuning-bank {display:none}
 .tap-control {display:flex; flex-direction:column; align-items:center; justify-content:center; align-self:center; gap:4px; order:1}
@@ -414,6 +426,7 @@ body:not(.show-advanced) #edit-panel .tuning-bank {display:none}
     <div class="sound-selector" role="group" aria-label="Sound sections">
       <button id="sound-tab-osc" aria-controls="sound-osc" aria-pressed="true">Oscillators</button>
       <button id="sound-tab-piano" aria-controls="sound-piano" aria-pressed="false">Piano</button>
+      <button id="sound-tab-lfo" aria-controls="sound-lfo" aria-pressed="false" hidden>LFOs</button>
       <button id="sound-tab-reverb" aria-controls="sound-reverb" aria-pressed="false">Reverb</button>
       <button id="sound-tab-delay" aria-controls="sound-delay" aria-pressed="false">Delay</button>
     </div>
@@ -459,10 +472,27 @@ body:not(.show-advanced) #edit-panel .tuning-bank {display:none}
   </section>
   <section id="sound-piano" class="sound-scene" data-group="piano" aria-label="Piano">
     <section class="synth-module" aria-labelledby="piano-title"><h3 id="piano-title">Piano &amp; room</h3>
+      <div id="edit-piano-voice" class="piano-picker"></div>
       <div id="edit-piano" class="synth-bank"></div>
       <div id="edit-piano-tone" class="synth-bank tuning-bank"></div>
     </section>
     <section class="synth-module" aria-labelledby="piano-sends-title"><h3 id="piano-sends-title">Piano effects sends</h3><div id="edit-piano-sends" class="synth-bank"></div></section>
+  </section>
+  <section id="sound-lfo" class="sound-scene" data-group="lfo" aria-label="Low-frequency oscillators">
+    <div class="voice-pair">
+      <section class="synth-module motion-module" aria-labelledby="lfo1-title">
+        <h3 id="lfo1-title">LFO 1 <svg class="motion-trace" viewBox="0 0 96 22" aria-hidden="true"><path id="lfo1-trace"/></svg></h3>
+        <div id="edit-lfo1-routing" class="synth-switches"></div>
+        <div id="edit-lfo1" class="synth-bank"></div>
+      </section>
+      <section class="synth-module motion-module" aria-labelledby="lfo2-title">
+        <h3 id="lfo2-title">LFO 2 <svg class="motion-trace" viewBox="0 0 96 22" aria-hidden="true"><path id="lfo2-trace"/></svg></h3>
+        <div id="edit-lfo2-routing" class="synth-switches"></div>
+        <div id="edit-lfo2" class="synth-bank"></div>
+      </section>
+    </div>
+    <div class="motion-foot"><button id="lfo-tempo" title="Edit shared tempo in Delay">Shared tempo · <span id="lfo-bpm"></span></button>
+      <p>Select Free time to use the rate knob. The mod wheel adds depth to LFO 1.</p></div>
   </section>
   <section id="sound-reverb" class="sound-scene" data-group="reverb" aria-label="Reverb">
     <section class="synth-module" aria-labelledby="reverb-title"><h3 id="reverb-title">Reverb &amp; shimmer</h3>
@@ -552,6 +582,7 @@ const soundBanks={
   filter:['cutoff','resonance','filter_slope','piano_filter'],
   'filter-bounds':['cutoff_min','cutoff_max'],
   stereo:['pan1','pan2','detune','spread'],
+  'piano-voice':['piano_voice'],
   piano:['piano_tone','piano_room','piano_room_size','piano_room_damp'],
   'piano-tone':['piano_lowcut'],'piano-sends':['piano_reverb','piano_delay'],
   'reverb-mode':['reverb','shimmer','freeze'],
@@ -579,6 +610,30 @@ Object.assign(labels,{piano_room_size:'Room size',piano_room_damp:'Room warmth',
 choices.envelope_link=['Independent','Linked edits'];choices.volume_link=['Independent','Preserve balance'];choices.master_lowcut=['Off','On'];
 choices.filter_slope=['12 dB / octave','24 dB / octave'];choices.piano_filter=['Off','On'];
 choices.delay_division=['Free time','1/2','Dotted 1/4','1/4','1/4 triplet','Dotted 1/8','1/8','1/8 triplet','1/16'];
+labels.piano_voice='Piano voice';
+labels.wheel_depth='LFO 1 mod wheel depth';
+shortLegends.wheel_depth='Wheel depth';
+choices.piano_voice=['Grand','Rhodes','Suitcase','Legend EP 2'];
+const lfoTraces=[
+  'M0 11 C6 0 18 0 24 11 S42 22 48 11 S66 0 72 11 S90 22 96 11',
+  'M0 3 L24 19 48 3 72 19 96 3','M0 3 H24 V19 H48 V3 H72 V19 H96',
+  'M0 19 L48 3 V19 L96 3','M0 3 L48 19 V3 L96 19','M0 19 L10 3 48 19 58 3 96 19',
+  'M0 13 H16 V4 H32 V16 H48 V8 H64 V19 H80 V11 H96'
+];
+for(const n of [1,2]){
+  const lfo='lfo'+n;
+  const names={shape:'Waveform',target:'Destination',division:'Tempo sync',key_sync:'Key trigger',rate:'Free rate',depth:'Depth'};
+  for(const [part,name] of Object.entries(names)){
+    shortLegends[lfo+'_'+part]=name;labels[lfo+'_'+part]='LFO '+n+' '+name.toLowerCase();
+  }
+  choices[lfo+'_shape']=['Sine','Triangle','Square','Saw','Ramp','Peak','Sample & hold'];
+  choices[lfo+'_target']=['Filter','Amplitude','Pan','Bus duck'];
+  choices[lfo+'_division']=choices.delay_division;
+  choices[lfo+'_key_sync']=['Free running','Restart on key'];
+  soundBanks[lfo+'-routing']=['shape','target','division','key_sync'].map(part=>lfo+'_'+part);
+  soundBanks[lfo]=[lfo+'_rate',lfo+'_depth'];
+}
+soundBanks.lfo1.push('wheel_depth');
 const knobKeys=new Set();
 for(const [bank,keys] of Object.entries(soundBanks))for(const key of keys){
   editGroups[key]=bank;
@@ -680,6 +735,8 @@ function paint(key,value){
     paintField(key,mirror,value);
   }
   paintField(key,field,value);
+  if(key==='bpm')elem('lfo-bpm').textContent=formatted(key,value);
+  if(key==='lfo1_shape'||key==='lfo2_shape')elem(key.slice(0,4)+'-trace').setAttribute('d',lfoTraces[value]);
   if(/^(attack|decay|sustain|release)[12]$/.test(key))drawEnvelopes(visibleEnvelopeValues(key,value));
 }
 function previewControl(key,value){
@@ -691,10 +748,23 @@ function previewControl(key,value){
   return value;
 }
 function animateMidiField(key,target){
+  if(choices[key]&&fields[key]){fields[key].input.value=target;paint(key,target);return;}
   const f=fields[key],start=Number(displayValues[key]);target=Number(target);if(!f||!Number.isFinite(start)||!Number.isFinite(target)||start===target||typeof window.requestAnimationFrame!=='function'){if(f){f.input.value=toSlider(key,target);paint(key,target);}return;}
   const token={};midiAnimations.set(key,token);const began=performance.now(),duration=420;
   const frame=now=>{if(midiAnimations.get(key)!==token||gestures.has(key))return;const t=Math.min(1,(now-began)/duration),eased=1-Math.pow(1-t,3),value=start+(target-start)*eased;f.input.value=toSlider(key,value);paint(key,value);if(t<1)window.requestAnimationFrame(frame);else midiAnimations.delete(key);};
   window.requestAnimationFrame(frame);
+}
+function updatePianoChoices(mask){
+  const input=fields.piano_voice?.input;
+  if(!input)return;
+  const available=Number.isInteger(mask)?mask:15;
+  if(input.dataset.voiceMask===String(available))return;
+  input.dataset.voiceMask=String(available);
+  for(const option of input.options){
+    const voice=Number(option.value);
+    option.disabled=(available&(1<<voice))===0;
+    option.textContent=choices.piano_voice[voice]+(option.disabled?' · unavailable':'');
+  }
 }
 function previewCutoffBound(key,value){
   const other=key==='cutoff_min'?'cutoff_max':'cutoff_min',otherValue=Number(displayValues[other]??lastValues[other]??(other==='cutoff_min'?20:20000));
@@ -810,10 +880,20 @@ function bank(name){
   elem('bank-fx').setAttribute('aria-pressed',String(name==='effects'));
 }
 elem('bank-mix').onclick=()=>bank('mix');elem('bank-fx').onclick=()=>bank('effects');
-function soundSection(name){cancelGestures();for(const tab of ['osc','piano','reverb','delay']){document.getElementById('sound-'+tab).setAttribute('data-open',String(tab===name));document.getElementById('sound-tab-'+tab).setAttribute('aria-pressed',String(tab===name));}}
-for(const tab of ['osc','piano','reverb','delay'])document.getElementById('sound-tab-'+tab).onclick=()=>soundSection(tab);
+const soundSections=['osc','piano','lfo','reverb','delay'];
+function soundSection(name){
+  cancelGestures();
+  elem('sound-advanced').hidden=name==='lfo';
+  for(const tab of soundSections){
+    elem('sound-'+tab).setAttribute('data-open',String(tab===name));
+    elem('sound-tab-'+tab).setAttribute('aria-pressed',String(tab===name));
+  }
+}
+for(const tab of soundSections)elem('sound-tab-'+tab).onclick=()=>soundSection(tab);
+elem('lfo-tempo').onclick=()=>{soundSection('delay');fields.bpm.input.focus();};
 function formatted(key,value){
   if(choices[key])return choices[key][Number(value)]||String(value);
+  if(key==='lfo1_rate'||key==='lfo2_rate')return Number(value).toFixed(2)+' Hz';
   if(['cutoff','cutoff_min','cutoff_max','piano_lowcut','bed_rise_cutoff','bed_mellow_cutoff','master_lowcut_hz','reverb_lowcut','reverb_highcut','delay_lowcut','delay_highcut'].includes(key))return value>=1000?(value/1000).toFixed(1)+' kHz':Math.round(value)+' Hz';
   if(['attack','release'].includes(key)||envelopeTimes[key])return value>=1000?(value/1000).toFixed(2)+' s':Math.round(value)+' ms';
   if(key==='sustain1'||key==='sustain2')return Number(value).toFixed(1)+'%';
@@ -927,6 +1007,7 @@ async function setup(){
   try{const response=await fetch('/controls',{signal:AbortSignal.timeout(2000)});if(!response.ok)throw Error('Controls unavailable');definitions=await response.json();}
   catch(e){notice.textContent='Connecting to Stave… retrying control definitions.';setTimeout(setup,2000);return;}
   controlOrder=Object.keys(definitions);
+  elem('sound-tab-lfo').hidden=!Object.hasOwn(definitions,'lfo1_depth');
   const skip=new Set([...additionalActions,'release_all','bed_key','bed_fade','bed_release','record_start','record_stop','attack','release','transpose','piano_octave','octave1','octave2']);
   for(const key of new Set([...performanceKeys,'piano_tone',...controlOrder])){
     if(!(key in definitions)||skip.has(key))continue;
@@ -1161,6 +1242,7 @@ async function poll(){
     const d=await r.json(),s=d.status;lastRuntime=d.runtime||{};lastValues=d.values;lastStatus=s;lastStatusAt=Date.now();
     if(epoch!==null&&d.epoch!==epoch)clearSession();epoch=d.epoch||null;
     audioReady=!d.stale&&d.exited===null&&s.fault===0&&s.routed===true&&!lastRuntime.restoring;
+    updatePianoChoices(audioReady?s.piano_voice_mask:null);
     const preparing=lastRuntime.preparation===true;
     ready=audioReady||preparing;
     if(firstStatus){firstStatus=false;if(!visitedPage&&lastRuntime.devices&&!lastRuntime.midi_source)view('check',false);}

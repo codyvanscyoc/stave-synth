@@ -87,6 +87,7 @@ struct Host {
             <<",\"midi_cc_serial\":"<<session.midi_cc_serial()<<",\"midi_cc\":"<<session.midi_cc()<<",\"midi_cc_value\":"<<session.midi_cc_value()
             <<",\"midi_apply_serial\":"<<session.midi_apply_serial()<<",\"midi_apply_control\":"<<session.midi_apply_control()<<",\"midi_apply_value\":"<<session.midi_apply_value()
             <<",\"piano_full_scale\":"<<session.piano_full_scale()<<",\"xruns\":"<<xruns.load()
+            <<",\"piano_voice_mask\":"<<session.piano_voice_mask()
             <<",\"bed_mask\":"<<session.bed_mask()<<",\"active_beds\":"<<session.active_beds()<<",\"bed_key\":"<<session.bed_key()
             <<",\"capture_end\":"<<unsigned(session.capture_end())<<",\"capture_frames\":"<<session.capture_frames()
             <<",\"writer_state\":"<<unsigned(writer?writer->state():stave::WriterState::Idle)

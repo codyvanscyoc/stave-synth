@@ -73,7 +73,7 @@ SSH host-key verification, systemd, the active launcher, listening sockets and t
 
 ## Remaining hardware checks
 
-The original Pi’s saved Yamaha MIDI and stereo ports were absent during this review. Its controller was healthy and in preparation mode. Physical key-to-speaker latency, unplug/replug during a performance, sustained worst-case playing, and a clean-card install and boot on a second Pi still need testing. The native instrument accepts note, sustain and mapped CC messages at block boundaries. Pitch bend, channel aftertouch and program change are outside this release’s implemented MIDI controls.
+The original Pi’s saved Yamaha MIDI and stereo ports were absent during this review. Its controller was healthy and in preparation mode. Physical key-to-speaker latency, unplug/replug during a performance, sustained worst-case playing, and a clean-card install and boot on a second Pi still need testing. The native instrument accepts note, sustain and mapped CC messages at block boundaries. That initial release did not implement pitch bend, channel aftertouch or program change. Beta 6 adds pitch bend.
 
 An earlier high-gain reference comparison measured a peak difference of 0.000002795 at 512 frames against a strict threshold of 0.000001. Ordinary fixtures passed. That comparison remains open and is separate from runtime reliability. [Native instrument comparison](https://github.com/codyvanscyoc/stave-synth/blob/5965e5ba3563cb7d2c2a7871866854f9bfbb126b/docs/pi4/NATIVE_V2_INSTRUMENT.md)
 

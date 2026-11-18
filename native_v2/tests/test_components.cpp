@@ -21,8 +21,8 @@ struct Sink final : stave::StageNoteSink {
     double velocity{};
     void osc_on(std::uint8_t, double, stave::LayerWeights) noexcept override { ++osc_ons; }
     void osc_off(std::uint8_t) noexcept override { ++osc_offs; }
-    void piano_on(std::uint8_t, double value) noexcept override { ++piano_ons; velocity = value; }
-    void piano_off(std::uint8_t) noexcept override { ++piano_offs; }
+    void piano_on(std::uint8_t, std::uint8_t, double value) noexcept override { ++piano_ons; velocity = value; }
+    void piano_off(std::uint8_t, std::uint8_t) noexcept override { ++piano_offs; }
     void all_notes_off() noexcept override { ++resets; }
 };
 struct VoiceSink final : stave::StageVoiceSink {

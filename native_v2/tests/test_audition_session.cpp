@@ -64,6 +64,40 @@ int main(int argc,char** argv) {
                 if(block==80) { send(C::MasterHigh,-3.1); p.master.eq[2].gain=-3.1; }
                 if(block==85) { send(C::MasterLowcutHz,43); p.master.cutoff=43; }
                 if(block==90) { send(C::MasterLowcut,1); p.master.highpass=true; }
+                if(block==12) {
+                    send(C::Lfo1Rate,11.37); p.motion.lfo[0].rate=11.37;
+                    send(C::Lfo1Shape,6); p.motion.lfo[0].shape=stave::MotionShape::SampleHold;
+                    send(C::Lfo1Depth,.57); p.motion.lfo[0].depth=.7*.57;
+                    send(C::Lfo1KeySync,1); p.motion.lfo[0].key_sync=true;
+                    send(C::Lfo2Rate,3.65); p.motion.lfo[1].rate=3.65;
+                    send(C::Lfo2Shape,2); p.motion.lfo[1].shape=stave::MotionShape::Square;
+                    send(C::Lfo2Depth,.26); p.motion.lfo[1].depth=.7*.26;
+                    send(C::Lfo2KeySync,1); p.motion.lfo[1].key_sync=true;
+                }
+                if(block==40) {
+                    send(C::Lfo1Target,1); p.motion.lfo[0].target=stave::MotionTarget::Amp;
+                    send(C::Lfo2Target,3); p.motion.lfo[1].target=stave::MotionTarget::Bus;
+                    send(C::Lfo2Division,8); p.motion.lfo[1].division=stave::DelayDivision::Sixteenth;
+                }
+                if(block==78) {
+                    send(C::Lfo1Target,2); p.motion.lfo[0].target=stave::MotionTarget::Pan;
+                    send(C::Lfo2Target,0); p.motion.lfo[1].target=stave::MotionTarget::Filter;
+                    send(C::Lfo1Division,3); p.motion.lfo[0].division=stave::DelayDivision::Quarter;
+                    send(C::Lfo2Rate,.45); p.motion.lfo[1].rate=.45;
+                }
+                if(block==108) {
+                    send(C::Lfo2Division,0); p.motion.lfo[1].division=stave::DelayDivision::Free;
+                }
+                if(block==16) send(C::WheelDepth,.6);
+                if(block==17) p.motion.lfo[0].depth=.7*std::min(1.,.57+.6*58./127.);
+                if(block==18||block==23) p.motion.lfo[0].depth=.7;
+                if(block==19||block==24) p.motion.lfo[0].depth=.7*.57;
+                if(block==24) owner.set_learning(true);
+                if(block==26) owner.set_learning(false);
+                if(block==40) { send(C::PianoVoice,2); p.piano_voice=2; }
+                if(block==98) { send(C::PianoVoice,3); p.piano_voice=3; }
+                if(block==114) { send(C::PianoVoice,1); p.piano_voice=1; }
+                if(block==126) { send(C::PianoVoice,0); p.piano_voice=0; }
                 if(block==91) { send(C::PianoLowcut,48); p.piano.lowcut_hz=48; }
                 if(block==92) { send(C::PianoVelocity,1.7); p.piano_velocity_curve=1.7; }
                 if(block==93) { send(C::Osc1Reverb,.74); p.buses.pad.send1=.74; }
@@ -86,14 +120,33 @@ int main(int argc,char** argv) {
                 check(b.configure(p));
                 stave::AuditionMidi e{0,3,{0x90,60,100}}; unsigned count=0;
                 if(block==0||block==95) { count=1; check(b.key_command(b.frame_position(),stave::StageAction::NoteOn,60,100)); }
+                if(block==17||block==18||block==23||block==25) {
+                    e.bytes={0xb0,1,std::uint8_t(block==17?58:127)}; count=1;
+                }
+                if(block==19) { e.bytes={0xb0,121,0}; count=1; }
+                if(block==32||block==36||block==42) {
+                    const unsigned bend=block==32?16383:block==36?129:8192;
+                    e.bytes={0xe0,std::uint8_t(bend&127),std::uint8_t(bend>>7)};
+                    count=1; check(b.pitch_bend(bend));
+                }
+                if(block==113||block==116||block==127) {
+                    e.bytes={0x90,64,101}; count=1; check(b.key_command(b.frame_position(),stave::StageAction::NoteOn,64,101));
+                }
                 if(block==100) { e.bytes={0xb0,64,127}; count=1; check(b.key_command(b.frame_position(),stave::StageAction::Sustain,0,1)); }
                 if(block==105) { e.bytes={0x80,60,0}; count=1; check(b.key_command(b.frame_position(),stave::StageAction::NoteOff,60,0)); }
                 if(block==110) { e.bytes={0xb0,64,0}; count=1; check(b.key_command(b.frame_position(),stave::StageAction::Sustain,0,0)); }
                 check(owner.process(left.data(),right.data(),frames,count?&e:nullptr,count));
                 check(b.render_block());
+                for(unsigned j=0;j<2;++j) {
+                    const auto actual=a.motion_state(j), expected=b.motion_state(j);
+                    check(actual.phase==expected.phase&&actual.last_a==expected.last_a);
+                }
                 for(unsigned i=0;i<frames;++i) check(left[i]==b.pcm(0)[i]&&right[i]==b.pcm(1)[i]);
             }
             check(owner.applied()==id);
+            check(owner.unsupported_midi()==0);
+            check(owner.control_snapshot().values[unsigned(C::Lfo1Depth)]==.57);
+            check(!owner.enqueue({id+1,C::PianoVoice,4}));
             check(!owner.enqueue({id+1,C::Sustain1,101}));
             check(!owner.enqueue({id+1,C::MasterLow,6.1}));
             check(!owner.enqueue({id+1,C::EnvelopeLink,.5}));
@@ -392,7 +445,7 @@ int main(int argc,char** argv) {
             if(mode==1) { e.offset=frames; check(!midi.process(l.data(),r.data(),frames,&e,1)); check(midi.fault()==F::InvalidMidi); }
             if(mode==2) { check(!midi.process(l.data(),r.data(),frames,nullptr,257)); check(midi.fault()==F::MidiOverflow); }
             if(mode==3) { e.bytes={0xb0,120,0}; check(midi.process(l.data(),r.data(),frames,&e,1)); check(midi.fault()==F::None&&midi.control_snapshot().values[unsigned(C::OutputMute)]==1); }
-            if(mode==4) { e.bytes={0xe0,0,64}; check(midi.process(l.data(),r.data(),frames,&e,1)); check(midi.unsupported_midi()==1); }
+            if(mode==4) { e.bytes={0xe0,0,64}; check(midi.process(l.data(),r.data(),frames,&e,1)); check(midi.unsupported_midi()==0); }
             if(mode==5) { e.size=1; e.bytes={0xf8,0,0}; check(midi.process(l.data(),r.data(),frames,&e,1)); check(midi.unsupported_midi()==0); }
             for(unsigned i=0;i<frames;++i) check(l[i]==0&&r[i]==0);
         }

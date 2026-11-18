@@ -20,8 +20,8 @@ public:
     virtual ~StageNoteSink() = default;
     virtual void osc_on(std::uint8_t note, double velocity, LayerWeights weights) noexcept = 0;
     virtual void osc_off(std::uint8_t note) noexcept = 0;
-    virtual void piano_on(std::uint8_t note, double velocity) noexcept = 0;
-    virtual void piano_off(std::uint8_t note) noexcept = 0;
+    virtual void piano_on(std::uint8_t key, std::uint8_t note, double velocity) noexcept = 0;
+    virtual void piano_off(std::uint8_t key, std::uint8_t note) noexcept = 0;
     virtual void all_notes_off() noexcept = 0;
 };
 
@@ -52,7 +52,7 @@ public:
         const auto piano = static_cast<std::uint8_t>(std::clamp(int(osc) + piano_octave_ * 12, 0, 127));
         if (key.mapped) {
             if (key.osc_note != osc) sink_.osc_off(key.osc_note);
-            if (key.piano_note != piano) sink_.piano_off(key.piano_note);
+            if (key.piano_note != piano) sink_.piano_off(static_cast<std::uint8_t>(raw),key.piano_note);
         }
         key.mapped = key.physical = true;
         key.sustained = false;
@@ -60,7 +60,7 @@ public:
         const double normalized = std::min(1.0, velocity / 127.0);
         if (weights.osc1 > 0 || weights.osc2 > 0 || weights.shimmer > 0)
             sink_.osc_on(osc, normalized, weights);
-        if (weights.piano > 0) sink_.piano_on(piano, normalized * weights.piano);
+        if (weights.piano > 0) sink_.piano_on(static_cast<std::uint8_t>(raw),piano, normalized * weights.piano);
         return true;
     }
     bool note_off(int raw) noexcept {
@@ -106,7 +106,8 @@ public:
     bool sostenuto_down() const noexcept { return sostenuto_; }
 private:
     void release(Key& key) noexcept {
-        sink_.osc_off(key.osc_note); sink_.piano_off(key.piano_note);
+        sink_.osc_off(key.osc_note);
+        sink_.piano_off(static_cast<std::uint8_t>(&key-keys_.data()),key.piano_note);
         key.mapped = false;
         // Preserve raw physical/captured bits until their own release paths.
     }

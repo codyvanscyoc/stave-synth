@@ -23,7 +23,7 @@ struct PolyLfo { bool active{}; double rate{1}, depth{}; int shape{}; };
 struct StagePatch {
     EnvelopeConfig env1{}, env2{};
     PianoChainConfig piano{};
-    int transpose{}, piano_octave{}, minimum_velocity{10};
+    int transpose{}, piano_octave{}, minimum_velocity{10}, piano_voice{};
     int wave1{}, wave2{1}, octave1{}, octave2{};
     // Prepared LINEAR Faust amplitudes, NOT browser fader positions. A stage
     // adapter must apply v1's5ms blend smoothing and -24dB fader curve first.
@@ -52,7 +52,7 @@ struct StageSourceStats {
 // Piano compressor and envelopes run once per complete block. A later sample-
 // positioned adapter must explicitly resolve this contract, not call per slice.
 // Output stems: OSC1 L/R, OSC2 L/R, shimmer mono, processed piano L/R.
-// Fixed3-copy unison. NO master mixing/limiter, room, piano pitch bend,
+// Fixed3-copy unison. NO master mixing/limiter, room,
 // global modulation, drift or worship FX/bed. piano.velocity_target is owned
 // by note activity here (the nested patch value is not a separate control).
 class StageSources final {
@@ -63,6 +63,8 @@ public:
     StageSources(const StageSources&) = delete;
     StageSources& operator=(const StageSources&) = delete;
     bool configure(const StagePatch&) noexcept;
+    bool piano_voice_available(int voice) const noexcept;
+    bool pitch_bend(unsigned value) noexcept;
     bool command(std::uint64_t boundary, const StageCommand&) noexcept;
     // All-muted stage blocks advance envelopes/piano but freeze oscillator DSP.
     bool render_block(bool render_oscillators = true) noexcept;

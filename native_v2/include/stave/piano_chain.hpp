@@ -43,6 +43,8 @@ public:
                        double* out_l, double* out_r, std::uint32_t frames) noexcept;
     // Explicit hard clear, not tail-preserving all-notes-off.
     void clear() noexcept;
+    // A newly audible piano lane starts at the live fader and cutoff trajectory.
+    void sync_smoothers(const PianoChain& playing) noexcept;
     bool healthy() const noexcept;
     // Owner-only diagnostic state, for differential tests; no concurrent UI.
     std::array<double, 6> state() const noexcept;
