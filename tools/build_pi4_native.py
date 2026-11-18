@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Build the stage JACK host from source without connecting to any devices."""
 import argparse
+import hashlib
+import json
 import os
 from pathlib import Path
+import platform
 import shlex
 import shutil
 import subprocess
@@ -28,7 +31,17 @@ def run(*command):
     subprocess.run(command, check=True)
 
 
+def source_hashes():
+    inputs = [Path(__file__).resolve(), ROOT / "faust/faust_cprelude.h"]
+    inputs.extend(ROOT / "faust" / (name + ".dsp") for name, _, _ in MODULES)
+    for directory in ("native_v2/include", "native_v2/src"):
+        inputs.extend(path for path in (ROOT / directory).rglob("*") if path.suffix in {".hpp", ".cpp"})
+    return {path.relative_to(ROOT).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(inputs)}
+
+
 def build(output):
+    sources = source_hashes()
     faust = shutil.which("faust")
     if not faust:
         raise SystemExit("Install Faust to build the native engine.")
@@ -60,7 +73,20 @@ def build(output):
             "-I", ROOT / "native_v2/include",
             *(ROOT / "native_v2/src" / (name + ".cpp") for name in SOURCES),
             ROOT / "native_v2/src/audition_jack.cpp", *objects, *deps, "-o", work / "audition-jack")
-        os.replace(work / "audition-jack", output)
+        if sources != source_hashes():
+            raise RuntimeError("Native build inputs changed during compilation")
+        engine = work / "audition-jack"
+        versions = {name: subprocess.check_output(cmd, text=True).strip().splitlines()[0]
+                    for name, cmd in (("cc", ["cc", "--version"]), ("c++", ["c++", "--version"]),
+                                      ("faust", [faust, "--version"]),
+                                      ("fluidsynth", ["pkg-config", "--modversion", "fluidsynth"]),
+                                      ("jack", ["pkg-config", "--modversion", "jack"]))}
+        receipt = {"format": 1, "machine": platform.machine(), "toolchain": versions,
+                   "binary_sha256": hashlib.sha256(engine.read_bytes()).hexdigest(),
+                   "source_sha256": sources}
+        (work / "build.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+        os.replace(engine, output)
+        os.replace(work / "build.json", output.with_name(output.name + ".build.json"))
 
 
 if __name__ == "__main__":

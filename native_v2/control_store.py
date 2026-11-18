@@ -15,7 +15,9 @@ ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("stave_atomic_state", ROOT / "stave_synth/state_store.py")
 atomic = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(atomic)
-TRANSIENT = frozenset(("freeze", "release_all", "bed_key", "bed_fade", "bed_release", "record_start", "record_stop"))
+TRANSIENT = frozenset(("freeze", "release_all", "bed_key", "bed_fade", "bed_release", "record_start", "record_stop",
+                       "test_tone", "output_mute", "panic"))
+KEYBOARD_CONTROLS = frozenset(("midi_channel", "minimum_velocity", "midi_pickup"))
 
 
 class ControlStore:
@@ -167,11 +169,8 @@ class MidiMapStore:
         self.mappings = self.validated(data["mappings"])
         return self.mappings
 
-    def assign(self, key, cc):
-        key, cc = self.validate_mapping({"key": key, "cc": cc})
-        next_map = {old_key: old_cc for old_key, old_cc in self.mappings.items() if old_key != key and old_cc != cc}
-        next_map[key] = cc
-        next_map = self.validated(next_map)
+    def save(self, mappings):
+        next_map = self.validated(mappings)
         with self.lock:
             if self.path.is_symlink():
                 raise ValueError("Symlink MIDI-map destination refused")

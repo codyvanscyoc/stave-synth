@@ -106,6 +106,7 @@ public:
     double current_wet() const noexcept { return wet_cur_; }
     double current_cutoff() const noexcept { return pad_.state()[0]; }
     unsigned block_frames() const noexcept { return frames_; }
+    void panic() noexcept { pad_.clear(); delay_.clear(); reverb_.panic(); }
     void stop() noexcept { stopped_=true; delay_.stop(); reverb_.stop(); for(auto& c:output_) c.fill(0); }
 private:
     bool acceptable(const double* p) const noexcept {

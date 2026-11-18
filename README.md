@@ -6,12 +6,12 @@ Play a layered piano and two oscillators from a USB MIDI keyboard. A phone, tabl
 
 Use a Raspberry Pi 4 with **64-bit Raspberry Pi OS Trixie (Debian 13)**, internet access for the first install, and a regular login with sudo access. Use a dedicated instrument login. The installer sets that user’s PipeWire audio to 48 kHz and 512 frames, restarts its audio session on first setup, and enables the synth at boot.
 
-On the Pi, run these commands in a new directory. They fetch the ARM64 bundle and verify its download before installation.
+On the Pi, run these commands in a new directory. They fetch the ARM64 bundle and verify its download before installation. You can also download the same two files under **Assets** on the [Pi 4 beta 2 release page](https://github.com/codyvanscyoc/stave-synth/releases/tag/pi4-native-2026.11.18-beta.2).
 
 ```sh
 mkdir -p ~/Downloads/stave-pi4-beta
 cd ~/Downloads/stave-pi4-beta
-release=https://github.com/codyvanscyoc/stave-synth/releases/download/pi4-native-2026.11.18-beta.1
+release=https://github.com/codyvanscyoc/stave-synth/releases/download/pi4-native-2026.11.18-beta.2
 curl -fLO "$release/stave-synth-pi4-arm64.tar.gz"
 curl -fLO "$release/SHA256SUMS"
 sha256sum -c SHA256SUMS &&
@@ -25,16 +25,23 @@ Run the installer as your normal user. It uses sudo for system packages, audio d
 
 1. Connect a USB MIDI keyboard and a stereo audio interface or the Pi’s enabled onboard audio. Set your speaker or headphone volume low.
 2. Open `http://<your-pi-hostname>.local:8082` on the same trusted network. For a Pi named `raspberrypi`, use `http://raspberrypi.local:8082`. If the name does not resolve, run `hostname -I` on the Pi and open its LAN IPv4 address with port `8082`.
-3. Open **System → Connections**. Choose the keyboard’s MIDI capture port and distinct left/right playback ports for the output you want. Click **Apply connections**. With the hardware unplugged, you can still edit sounds in the browser.
-4. In **Stage**, bring up **Piano** and slowly raise **Master** while playing. A fresh installation starts at zero master gain. **Save sound** stores the startup mix, including Master, which restores after the selected ports reconnect. For the Pi’s analog jack, also check **System → Pi headphone output**.
+3. On first use, **Soundcheck** opens. Choose your keyboard and stereo output, then tap **Apply connections**. For separate left and right ports, expand **Individual output ports**. Press a key and look for its note, velocity and channel.
+4. Master starts at zero. Raise it slowly with the speakers turned down, then use **Test left** and **Test right** to verify the wiring. The meters show the output after Master. For the Pi’s analog jack, check **System → Pi headphone output**.
+5. Tap **Open Stage**, bring up **Piano**, and play. **Save startup** remembers the power-on sound, including the Master level. It returns when the selected audio route is ready.
 
 Anyone who can reach the private-LAN UI can control the instrument. Use trusted Wi-Fi or Ethernet. The default service listens on loopback and the private IPv4 addresses of `wlan0` and `eth0`.
 
 ## Sounds, recordings and maintenance
 
-**Stage** holds the live mix. **Edit** adjusts the oscillators, piano, filters and effects. **MIDI MAP** assigns controls to a keyboard’s CC messages. Recorded-pad slots start empty. Use **PAD RECORD / SHAPE** to record a take, choose a key and save it. Each take holds up to 40 seconds. Saving a pad restarts the audio engine to load it, so do this between songs. Use **System** to select new hardware when you change keyboards or interfaces.
+**Stage.** On phones, **Layers** puts both oscillators, Piano and Master together. **Filter / FX** opens the other mix controls. Master and Mute stay within reach. Mute silences the output while keeping the mix level. Panic releases notes, pedals, freeze and pads and mutes the output. Check Master before unmuting.
 
-Settings, presets, MIDI assignments, recordings and pad samples live under `~/.local/share/stave-native/`. Back up that directory to keep your sounds. The runtime lives under `~/.local/opt/stave-pi4/`. Run the new bundle’s installer to update an installation made by this installer.
+**Presets.** Tap a named slot to recall it. To store the sound you are playing, use **Store preset…**, choose a destination, enter a name and confirm. Selecting a destination keeps the current sound live. The Stage readout shows edits to the active preset and whether the sound differs from startup.
+
+**Sound and MIDI.** Shape the piano, oscillators and effects under **Sound**. In **Delay**, use **Tap tempo** or enter BPM manually. In **Soundcheck**, set a receive channel, minimum note velocity and hardware pickup. With pickup enabled, moving a mapped fader past its current value hands control to the hardware. To assign a control, open **MIDI MAP**, choose the target, move one knob or fader, then tap **Done**. Clear old assignments in **System → MIDI assignments**.
+
+**Pads.** Open **PAD RECORD / SHAPE**, record up to 40 seconds, stop, choose a key and use **Save pad**. The display shows remaining bank time. Replacing a pad frees its old space. An accepted assignment restarts audio briefly, so save between songs. An oversized assignment leaves the current bank playing. If an existing bank cannot load, piano and oscillators remain available.
+
+Settings, presets, MIDI assignments, recordings and pad samples live under `~/.local/share/stave-native/`. Back up that directory to keep your sounds. The runtime lives under `~/.local/opt/stave-pi4/`. Run the new bundle’s installer to update an installation made by this installer. If activation fails during the update, the installer restores the previous runtime and service configuration.
 
 ```sh
 systemctl --user status stave-native.service

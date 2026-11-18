@@ -157,6 +157,13 @@ public:
         in_block_ = false;
         return true;
     }
+    void silence_all() noexcept {
+        while(count_) {
+            const unsigned slot=order_[--count_];
+            voices_[slot].env1.clear(); voices_[slot].env2.clear();
+            sink_.clear_slot(slot); free_[free_count_++]=slot;
+        }
+    }
     unsigned size() const noexcept { return count_; }
     unsigned slot_at(unsigned index) const noexcept { return index < count_ ? order_[index] : capacity; }
     const Voice* voice_at(unsigned index) const noexcept {

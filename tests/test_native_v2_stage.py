@@ -1,14 +1,17 @@
 """Device-free native candidate contracts. Fake child, temporary state, loopback only."""
+import configparser
 import http.client
 import importlib.util
 import json
 import os
+import shlex
 import socket
 from pathlib import Path
 import tempfile
 import threading
 import time
 import unittest
+import wave
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +29,12 @@ Interface:right
     properties: input,physical,terminal,
     32 bit float mono audio
 """
+
+
+def write_take(path, frames=512, sample=0):
+    with wave.open(str(path), "wb") as writer:
+        writer.setparams((1, 2, 48000, 0, "NONE", "not compressed"))
+        writer.writeframes(sample.to_bytes(2, "little") * frames)
 
 
 class NativeStageTests(unittest.TestCase):
@@ -105,6 +114,10 @@ class NativeStageTests(unittest.TestCase):
 
     def test_midi_map_is_unique_persistent_and_restored_before_controls(self):
         control = self.attached(); self.hub.reconcile()
+        # Acknowledge each outbound mapping exactly as the native reader would.
+        def acknowledge(seq):
+            control.receive(dict(type='mapped', id=seq, ok=True))
+        control.wait_mapping = acknowledge
         result = self.hub.dispatch('/midi-map', dict(key='osc1', cc=21), self.hub.epoch)
         self.assertEqual(result['midi_maps'], {'osc1': 21})
         control.receive(dict(type='mapped', id=result['queued'], ok=True))
@@ -124,6 +137,82 @@ class NativeStageTests(unittest.TestCase):
         restored.receive(dict(type='mapped', id=1, ok=True)); self.hub.reconcile()
         self.assertFalse(self.hub.restoring)
         self.assertEqual(self.hub.snapshot()['runtime']['midi_maps'], {'piano': 21})
+
+    def test_assignment_clear_and_durable_rollback(self):
+        control = self.attached()
+        self.hub.reconcile()
+        def acknowledge(seq):
+            control.receive(dict(type='mapped', id=seq, ok=True))
+        control.wait_mapping = acknowledge
+        self.hub.dispatch('/midi-map', dict(key='osc1', cc=21), self.hub.epoch)
+        with mock.patch.object(self.hub.midi_map, 'save', side_effect=OSError('disk full')):
+            with self.assertRaises(OSError):
+                self.hub.dispatch('/midi-map', dict(key='master', cc=21), self.hub.epoch)
+        self.assertEqual(self.hub.midi_map.mappings, {'osc1': 21})
+        commands = list(control.outgoing.queue)
+        self.assertEqual(commands[-1][-2:], (21, 'osc1'))
+        cleared = self.hub.dispatch('/midi-unmap', dict(key='osc1'), self.hub.epoch)
+        self.assertEqual(cleared['midi_maps'], {})
+        self.assertEqual(self.hub.midi_map.load(), {})
+
+    def test_learn_exclusive_renewal_baseline_and_expired_session(self):
+        control = self.attached()
+        self.hub.reconcile()
+        first, second = "first-panel-token", "second-panel-token"
+        def learn(who, active=True, **extra):
+            return self.hub.dispatch('/midi-learn', dict(active=active, owner=who, **extra), self.hub.epoch)
+        def ack(seq):
+            control.receive(dict(type='mapped', id=seq, ok=True, midi_cc_serial=19))
+            return 19
+        control.wait_mapping = ack
+        with self.assertRaises(ValueError):
+            learn(first, renew=True)
+        self.assertEqual(learn(first)['serial'], 19)
+        self.assertEqual(learn(first, renew=True)['serial'], 19)
+        for enable in (True, False):
+            with self.assertRaisesRegex(ValueError, 'Another panel'):
+                learn(second, enable)
+        with self.assertRaisesRegex(ValueError, 'ownership'):
+            self.hub.dispatch('/midi-map', dict(key='master', cc=22, owner=second), self.hub.epoch)
+        self.hub.dispatch('/midi-map', dict(key='master', cc=22, owner=first), self.hub.epoch)
+        self.hub.learn_until = 0
+        with self.assertRaisesRegex(ValueError, 'expired'):
+            learn(first, renew=True)
+        with self.assertRaisesRegex(ValueError, 'ownership'):
+            self.hub.dispatch('/midi-map', dict(key='piano', cc=22, owner=first), self.hub.epoch)
+        learn(second)
+        learn(second, False)
+        self.assertIsNone(self.hub.learn_owner)
+        self.assertEqual(self.hub.midi_map.mappings, {'master': 22})
+
+    def test_dirty_flags_and_keyboard_setup_are_independent_of_slot(self):
+        status = lambda: self.hub.snapshot()['runtime']
+        self.assertFalse(status()['startup_dirty'])
+        self.hub.dispatch('/control', dict(key='piano', value=.81), self.hub.epoch)
+        self.assertTrue(status()['startup_dirty'])
+        self.hub.dispatch('/preset-save', {'slot': 3, 'name': 'Warm piano'}, self.hub.epoch)
+        self.assertEqual(status()['active_preset'], 3)
+        self.assertFalse(status()['preset_dirty'])
+        self.hub.dispatch('/control', dict(key='midi_channel', value=3), self.hub.epoch)
+        self.assertFalse(status()['preset_dirty'])
+        self.hub.dispatch('/control', dict(key='piano', value=.2), self.hub.epoch)
+        self.assertTrue(status()['preset_dirty'])
+        self.hub.dispatch('/preset-load', {'slot': 3}, self.hub.epoch)
+        self.assertEqual(self.hub.prepared['midi_channel'], 3)
+        self.assertFalse(status()['preset_dirty'])
+        self.hub.dispatch('/save', {}, self.hub.epoch)
+        self.assertFalse(status()['startup_dirty'])
+
+    def test_acknowledged_output_mute_survives_child_replacement(self):
+        first = self.attached()
+        self.hub.reconcile()
+        self.hub.dispatch('/control', dict(key='output_mute', value=1), self.hub.epoch)
+        self.hub.detached('replacing')
+        self.assertTrue(self.hub.output_muted)
+        new = self.attached()
+        self.hub.reconcile()
+        self.assertEqual(next(iter(new.pending.values())), ('output_mute', 1))
+        self.assertNotIn('output_mute', self.store.load())
 
     def test_malformed_oversized_and_symlink_state_never_loaded(self):
         for data in (b"broken", b" "*16385, b'[]', b'{"schema":true,"controls":{}}',
@@ -307,7 +396,7 @@ class NativeStageTests(unittest.TestCase):
         restored = dict(items)
         self.assertEqual(restored['delay_time'], 417)
         self.assertLess(items.index(('delay_time', 417)), items.index(('delay_division', 5)))
-        for key, value in [('piano_lowcut', 501), ('piano_velocity', .9),
+        for key, value in [('piano_lowcut', 501), ('piano_velocity', .49),
                            ('filter_slope', .5), ('bpm', 39), ('delay_division', 9)]:
             with self.assertRaises(ValueError):
                 self.hub.dispatch('/control', dict(key=key, value=value), self.hub.epoch)
@@ -359,20 +448,94 @@ class NativeStageTests(unittest.TestCase):
         root = Path(self.temp.name); recordings = root/'recordings'; pads = root/'pads'
         recordings.mkdir(); pads.mkdir()
         self.hub = stage.CandidateHub(self.store, ROUTES, recordings, pads)
-        take = recordings/'take-test.wav'; take.write_bytes(b'R'*58)
-        old = pads/'pad_C.wav'; old.write_bytes(b'O'*58)
+        take = recordings/'take-test.wav'; write_take(take, sample=1)
+        old = pads/'pad_C.wav'; write_take(old); original = old.read_bytes()
         child = mock.Mock(); child.poll.return_value = None
         control = self.hub.attach(child, take)
         control.receive(dict(type='status', instance='native-v2-stage', blocks=1, applied=0,
                              routed=True, fault=0, writer_state=2, capture_end=5, writer_frames=512))
         self.hub.reconcile(); epoch = self.hub.epoch
         result = self.hub.dispatch('/record-assign', {'slot': 0}, epoch)
-        self.assertEqual(old.read_bytes(), b'R'*58)
+        self.assertEqual(old.read_bytes(), take.read_bytes())
+        self.addCleanup(self.hub.next_bank.cleanup)
+        self.assertEqual(self.hub.snapshot()['runtime']['pad_bank']['used_bytes'], 512 * 16)
         undo = list(pads.glob('undo-pad_C-*.wav'))
-        self.assertEqual(len(undo), 1); self.assertEqual(undo[0].read_bytes(), b'O'*58)
+        self.assertEqual(len(undo), 1); self.assertEqual(undo[0].read_bytes(), original)
         self.assertTrue(self.hub.restart); self.assertTrue(self.hub.restoring)
         self.assertIn('restarting muted', result['message'])
         self.assertNotEqual(epoch, self.hub.epoch)
+
+    def test_fifth_40_second_take_leaves_playing_bank_and_owner_untouched(self):
+        root = Path(self.temp.name); pads = root / "pads"; pads.mkdir()
+        take = root / "take.wav"; write_take(take, 40 * 48000)
+        for name in stage.assets.FILENAMES[:4]:
+            os.link(take, pads / name)
+        self.hub = stage.CandidateHub(self.store, ROUTES, pad_library=pads)
+        prior = self.hub.prepare_current_bank(); self.addCleanup(prior.cleanup)
+        control = self.attached(); self.hub.recording_take = take
+        control.receive(dict(type="status", instance="native-v2-stage", blocks=2, applied=0, routed=True,
+                             fault=0, writer_state=2, capture_end=5))
+        self.hub.reconcile(); epoch = self.hub.epoch
+        with self.assertRaisesRegex(ValueError, "budget"):
+            self.hub.dispatch("/record-assign", {"slot": 4}, epoch)
+        self.assertIs(self.hub.active, control)
+        self.assertEqual(self.hub.epoch, epoch)
+        self.assertFalse(self.hub.take_restart())
+        self.assertEqual(sorted(p.name for p in pads.iterdir()), sorted(stage.assets.FILENAMES[:4]))
+        status = self.hub.snapshot()["runtime"]["pad_bank"]
+        self.assertEqual(status["used_bytes"], 4 * 40 * 48000 * 16)
+        self.assertAlmostEqual(status["remaining_seconds"], 14.7626667, places=5)
+        self.assertEqual(status["slot_seconds"][:5], [40, 40, 40, 40, 0])
+
+    def test_invalid_existing_bank_allows_padless_piano_and_reports_bad_key(self):
+        pads = Path(self.temp.name) / "pads"; pads.mkdir()
+        (pads / "pad_D.wav").write_bytes(b"invalid")
+        self.hub = stage.CandidateHub(self.store, ROUTES, pad_library=pads)
+        self.assertIsNone(self.hub.prepare_current_bank())
+        self.assertIn("pad_D.wav", self.hub.snapshot()["runtime"]["pad_bank"]["warning"])
+        self.assertEqual((pads / "pad_D.wav").read_bytes(), b"invalid")
+
+    def test_supervisor_launches_audio_without_invalid_beds(self):
+        root = Path(self.temp.name)
+        pads = root / "pads"
+        pads.mkdir()
+        (pads / "pad_D.wav").write_bytes(b"invalid")
+        binary, font = root / "engine", root / "keys.sf2"
+        binary.touch()
+        font.touch()
+        args = ["stage", "--listen", "127.0.0.1", "--port", "8089", "--allow-stage-candidate",
+                "--binary", str(binary), "--soundfont", str(font), "--state-dir", str(root / "state"),
+                "--pad-library", str(pads), "--midi-source", ROUTES["midi_source"],
+                "--audio-left", ROUTES["audio_left"], "--audio-right", ROUTES["audio_right"]]
+        with mock.patch("sys.argv", args), mock.patch.object(stage, "BoundedHTTPServer"), \
+                mock.patch.object(stage.lifecycle.Listeners, "poll", side_effect=lambda: time.sleep(.001)), \
+                mock.patch.object(stage.subprocess, "run", return_value=mock.Mock(stdout=INVENTORY, returncode=0)), \
+                mock.patch.object(stage.subprocess, "Popen", side_effect=RuntimeError("fixture launch")) as launch:
+            with self.assertRaisesRegex(RuntimeError, "fixture launch"):
+                stage.main()
+        command = launch.call_args.args[0]
+        self.assertEqual(command[1:3], [str(binary.resolve()), str(font.resolve())])
+        self.assertNotIn("--bed-bank", command)
+
+    def test_assignment_checks_epoch_again_before_slot_commit(self):
+        pads = Path(self.temp.name) / "pads"; pads.mkdir()
+        take = Path(self.temp.name) / "take.wav"; write_take(take)
+        self.hub = stage.CandidateHub(self.store, ROUTES, pad_library=pads)
+        control = self.attached(); self.hub.recording_take = take
+        control.receive(dict(type="status", instance="native-v2-stage", blocks=2, applied=0, routed=True,
+                             fault=0, writer_state=2, capture_end=2))
+        self.hub.reconcile(); epoch = self.hub.epoch
+        real_prepare = stage.assets.prepare_bank
+        def concurrent_changes(*args, **kwargs):
+            with self.assertRaisesRegex(ValueError, "Another pad assignment"):
+                self.hub.dispatch("/record-assign", {"slot": 0}, epoch)
+            self.hub.dispatch("/restart-audio", {}, epoch)
+            return real_prepare(*args, **kwargs)
+        with mock.patch.object(stage.assets, "prepare_bank", side_effect=concurrent_changes):
+            with self.assertRaisesRegex(ValueError, "session changed"):
+                self.hub.dispatch("/record-assign", {"slot": 0}, epoch)
+        self.assertEqual(list(pads.iterdir()), [])
+        self.assertFalse(self.hub.assigning)
 
     def test_take_assignment_rejects_incomplete_and_symlink_target(self):
         root = Path(self.temp.name); recordings = root/'recordings'; pads = root/'pads'
@@ -474,12 +637,57 @@ class NativeStageTests(unittest.TestCase):
             stage.lifecycle.notify('STOPPING=1')  # missing manager is bounded
 
     def test_boot_unit_has_watchdog_no_legacy_auto_start_and_fixed_audio(self):
-        unit = (ROOT/'systemd/stave-native.service').read_text()
+        # Verify both the historical Pi4 unit and the unit the public installer copies.
+        units = [(ROOT / "systemd" / name).read_text() for name in
+                 ("stave-native.service", "stave-pi4-share.service")]
+        self.assertIn("systemd/stave-pi4-share.service", (ROOT / "install-pi4.sh").read_text())
         for required in ('Type=notify', 'WatchdogSec=30', 'WatchdogSignal=SIGKILL', 'LimitCORE=0', 'KillMode=control-group', 'Restart=always',
                          'WantedBy=default.target', '--listen auto', '--port 8082', '--state-dir %h/.local/share/stave-native'):
-            self.assertIn(required, unit)
-        self.assertNotIn('ExecStopPost=', unit)
-        self.assertNotIn('256', unit)
+            for unit in units:
+                self.assertIn(required, unit)
+        for unit in units:
+            self.assertNotIn('ExecStopPost=', unit)
+            self.assertNotIn('256', unit)
+        self.assertIn("--hostname %l.local", units[1])
+        self.assertIn("WorkingDirectory=%h/.local/opt/stave-pi4/current", units[1])
+        self.assertNotIn("--midi-source", units[1])
+
+    def test_distributed_unit_command_reads_fresh_layout_and_announces_ready(self):
+        root = Path(self.temp.name)
+        parsed = configparser.ConfigParser(interpolation=None)
+        parsed.read(ROOT / "systemd/stave-pi4-share.service")
+        service = parsed["Service"]
+        workdir = Path(service["WorkingDirectory"].replace("%h", str(root)))
+        workdir.mkdir(parents=True)
+        for rel in ("tools/native_v2_stage.py", "bin/audition-jack"):
+            path = workdir / rel
+            path.parent.mkdir(exist_ok=True)
+            path.touch()
+        font = root / "FluidR3_GM.sf2"
+        font.touch()
+        argv = shlex.split(service["ExecStart"].replace("%h", str(root)).replace("%l", "test-instrument"))
+        self.assertEqual(argv[:3], ["/usr/bin/python3", "-B", "tools/native_v2_stage.py"])
+        self.assertIn("test-instrument.local", argv)
+        self.assertIn("/usr/share/sounds/sf2/FluidR3_GM.sf2", argv)
+        argv[argv.index("--soundfont") + 1] = str(font)
+        def ready(message):
+            if message.startswith("READY=1"):
+                raise RuntimeError("fixture observed READY")
+        previous = Path.cwd()
+        try:
+            os.chdir(workdir)
+            with mock.patch("sys.argv", argv[2:]), mock.patch.object(stage, "BoundedHTTPServer"), \
+                    mock.patch.object(stage.lifecycle, "notify", side_effect=ready), \
+                    mock.patch.object(stage.subprocess, "Popen") as child:
+                with self.assertRaisesRegex(RuntimeError, "fixture observed READY"):
+                    stage.main()
+                child.assert_not_called()
+        finally:
+            os.chdir(previous)
+        state = root / ".local/share/stave-native"
+        self.assertTrue((state / "recordings").is_dir())
+        self.assertTrue((state / "pad_samples").is_dir())
+        self.assertFalse((state / "native_routes.json").exists())
 
     def test_multiple_listeners_share_global_http_worker_budget(self):
         slots = threading.BoundedSemaphore(4)
@@ -494,9 +702,14 @@ class NativeStageTests(unittest.TestCase):
                        {**ROUTES, "midi_source": "StaveSynth:midi"},
                        {**ROUTES, "audio_left": "missing"}, {**ROUTES, "midi_source": ROUTES["audio_left"]}):
             with self.assertRaises(ValueError): self.hub.dispatch("/routes", routes, self.hub.epoch)
-        self.hub.dispatch("/routes", ROUTES, self.hub.epoch)
-        self.assertTrue(self.hub.take_restart())
-        self.assertEqual(stage.CandidateHub(self.store, ROUTES).routes, ROUTES)
+        epoch = self.hub.epoch
+        self.hub.dispatch("/routes", ROUTES, epoch)
+        self.assertFalse(self.hub.take_restart())
+        self.assertEqual(self.hub.epoch, epoch)
+        self.hub.inventory({})
+        self.assertEqual(self.hub.snapshot()["runtime"]["missing_routes"], ROUTES)
+        with self.assertRaisesRegex(ValueError, "Keyboard:midi"):
+            stage.validate_routes(ROUTES, {})
         with self.assertRaises(ValueError): stage.parse_ports("x"*262145)
 
     def test_fresh_install_requires_explicit_routes_and_keeps_them_after_restart(self):
@@ -516,6 +729,81 @@ class NativeStageTests(unittest.TestCase):
         self.assertEqual(recovered.routes, ROUTES)
         self.assertTrue(recovered.state_warning)
         self.assertEqual(recovered.snapshot()["values"]["master"], 0)
+
+    @staticmethod
+    def report_master(control, blocks, master):
+        keys = list(stage.audition.CONTROLS)
+        index = keys.index("master")
+        values = [stage.audition.CONTROLS[key][3] for key in keys]
+        values[index] = master
+        raw, serial = [-1] * len(keys), [0] * len(keys)
+        raw[index], serial[index] = round(master * 127), blocks
+        control.receive(dict(type="status", instance="native-v2-stage", blocks=blocks, applied=0,
+                             routed=True, fault=0, control_values=values, linked_offset=0,
+                             midi_mapped_raw=raw, midi_mapped_serial=serial))
+
+    def test_live_saves_capture_fader_move_between_periodic_snapshots(self):
+        control = self.attached()
+        self.hub.reconcile()
+        for index, (path, data) in enumerate((("/save", {}), ("/preset-save", {"slot": 2, "name": "After fade"}))):
+            blocks = 2 + index * 2
+            self.report_master(control, blocks, .2)
+            epoch = self.hub.epoch
+            waiting, result, errors = threading.Event(), [], []
+            wait_for_snapshot = control.wait_for_save_snapshot
+            def wait(baseline):
+                self.assertEqual(baseline, blocks)
+                waiting.set()
+                wait_for_snapshot(baseline)
+            def save():
+                try:
+                    result.append(self.hub.dispatch(path, data, epoch))
+                except Exception as error:
+                    errors.append(error)
+            with mock.patch.object(control, "wait_for_save_snapshot", side_effect=wait):
+                worker = threading.Thread(target=save)
+                worker.start()
+                try:
+                    self.assertTrue(waiting.wait(1))
+                    self.assertTrue(self.hub.lock.acquire(timeout=.2), "Save blocked concurrent stage requests")
+                    self.hub.lock.release()
+                    self.assertTrue(worker.is_alive())
+                    # The physical move is already applied; its next telemetry arrives after Save.
+                    self.report_master(control, blocks + 1, .87)
+                finally:
+                    worker.join(3)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(errors, [])
+            self.assertTrue(result)
+            stored = self.store.load() if path == "/save" else self.hub.presets.controls_for(2)
+            self.assertEqual(stored["master"], .87)
+
+    def test_live_save_aborts_if_child_replaced_during_snapshot_wait(self):
+        control = self.attached()
+        self.hub.reconcile()
+        self.report_master(control, 2, .2)
+        def replace(_baseline):
+            self.hub.detached("Device changed")
+            self.report_master(control, 3, .87)
+        with mock.patch.object(control, "wait_for_save_snapshot", side_effect=replace):
+            with self.assertRaisesRegex(ValueError, "session changed"):
+                self.hub.dispatch("/preset-save", {"slot": 0, "name": "Old session"}, self.hub.epoch)
+        self.assertIsNone(self.hub.presets.summary()[0])
+
+    def test_snapshot_wait_rejects_timeout_stalled_report_pending_or_lost_child(self):
+        control = self.attached()
+        self.report_master(control, 2, .2)
+        self.report_master(control, 2, .87)
+        with self.assertRaisesRegex(ValueError, "in time"):
+            control.wait_for_save_snapshot(2, timeout=.001)
+        control.submit({"key": "master", "value": .6})
+        with self.assertRaisesRegex(ValueError, "acknowledged"):
+            control.wait_for_save_snapshot(2, timeout=.001)
+        control.pending.clear()
+        control.child.poll.return_value = 1
+        with self.assertRaisesRegex(ValueError, "acknowledged"):
+            control.wait_for_save_snapshot(2, timeout=.001)
+        self.assertFalse(self.store.path.exists())
 
     def test_save_refuses_pending_stale_unrouted_or_exited(self):
         c = self.attached(); self.hub.reconcile()

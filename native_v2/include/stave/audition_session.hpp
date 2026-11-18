@@ -18,7 +18,7 @@ enum class AuditionControl : unsigned {
     DelayTime, DelayLowcut, DelayHighcut, RecordStart, RecordStop,
     Transpose, PianoOctave, Octave1, Octave2, Pan1, Pan2, Detune, Spread,
     PianoLowcut, PianoVelocity, Osc1Reverb, Osc2Reverb, PianoDelay,
-    FilterSlope, PianoFilter, Bpm, DelayDivision, Count
+    FilterSlope, PianoFilter, Bpm, DelayDivision, MidiChannel, MinimumVelocity, MidiPickup, TestTone, OutputMute, Panic, Count
 };
 inline constexpr std::array<const char*,unsigned(AuditionControl::Count)> audition_names{
     "piano","osc1","osc2","cutoff","cutoff_min","cutoff_max","wet","master","wave1","wave2","attack","release",
@@ -31,7 +31,29 @@ inline constexpr std::array<const char*,unsigned(AuditionControl::Count)> auditi
     "delay_time","delay_lowcut","delay_highcut","record_start","record_stop",
     "transpose","piano_octave","octave1","octave2","pan1","pan2","detune","spread",
     "piano_lowcut","piano_velocity","osc1_reverb","osc2_reverb","piano_delay",
-    "filter_slope","piano_filter","bpm","delay_division"};
+    "filter_slope","piano_filter","bpm","delay_division","midi_channel","minimum_velocity",
+    "midi_pickup","test_tone","output_mute","panic"};
+using ControlValues = std::array<double, unsigned(AuditionControl::Count)>;
+// Initial public parameter targets in audition_names order, verified against /controls.
+inline constexpr ControlValues initial_controls{
+    0.5, 0, 0, 8000, 20, 20000, 0.75, 0,
+    0, 1, 200, 500, 0.707, 0.4, 0, 0,
+    0.35, 0, 0.5, 0, 0, 0, 1, 1,
+    -1, 0, 3000, 0, 400, 0, 0, 200,
+    1500, 80, 500, 200, 1500, 80, 500, 0,
+    0, 0, 0, 0, 0, 80, 0.5, 0.6,
+    6, 25, 80, 7000, 0.5, 500, 20, 18000,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0.07, 0.85, 20, 1, 1, 1, 0, 0,
+    0, 120, 3, 0, 10, 1, 0, 0,
+    0,
+};
+struct ControlSnapshot {
+    ControlValues values;
+    double linked_offset{};
+    std::uint64_t applied{};
+};
+
 inline bool audition_value_valid(AuditionControl c,double v) noexcept {
     if(!std::isfinite(v)) return false;
     switch(c) {
@@ -60,7 +82,11 @@ inline bool audition_value_valid(AuditionControl c,double v) noexcept {
         return v>=-3&&v<=3&&v==std::floor(v);
     case AuditionControl::Pan1: case AuditionControl::Pan2: return v>=-1&&v<=1;
     case AuditionControl::PianoLowcut: return v>=20&&v<=500;
-    case AuditionControl::PianoVelocity: return v>=1&&v<=4;
+    case AuditionControl::PianoVelocity: return v>=.5&&v<=4;
+    case AuditionControl::MidiChannel: return v>=0&&v<=16&&v==std::floor(v);
+    case AuditionControl::MinimumVelocity: return v>=1&&v<=127&&v==std::floor(v);
+    case AuditionControl::TestTone: return v>=0&&v<=2&&v==std::floor(v);
+    case AuditionControl::OutputMute: case AuditionControl::Panic: case AuditionControl::MidiPickup: return v==0||v==1;
     case AuditionControl::Bpm: return v>=40&&v<=240;
     case AuditionControl::DelayDivision: return v>=0&&v<=8&&v==std::floor(v);
     case AuditionControl::Reverb: return v>=0&&v<=6&&v==std::floor(v);
@@ -81,7 +107,7 @@ inline bool audition_mappable(AuditionControl c) noexcept {
            c!=C::RecordStart&&c!=C::RecordStop&&c!=C::ReverbLowcut&&c!=C::ReverbHighcut&&
            c!=C::DelayLowcut&&c!=C::DelayHighcut&&c!=C::PianoLowcut&&
            c!=C::PianoVelocity&&c!=C::FilterSlope&&c!=C::PianoFilter&&
-           c!=C::CutoffMin&&c!=C::CutoffMax&&c!=C::Count;
+           c!=C::CutoffMin&&c!=C::CutoffMax&&c<C::MidiChannel;
 }
 inline double audition_midi_value(AuditionControl c,unsigned raw) noexcept {
     using C=AuditionControl; double lo=0,hi=1,step=.01;
@@ -108,9 +134,10 @@ inline double audition_midi_value(AuditionControl c,unsigned raw) noexcept {
     case C::DelayHighcut: lo=500; hi=20000; step=1; break;
     case C::Transpose: lo=-24; hi=24; step=1; break;
     case C::PianoOctave: case C::Octave1: case C::Octave2: lo=-3; hi=3; step=1; break;
+    case C::Detune: case C::Spread: step=.001; break;
     case C::Pan1: case C::Pan2: lo=-1; hi=1; step=.01; break;
     case C::PianoLowcut: lo=20; hi=500; step=1; break;
-    case C::PianoVelocity: lo=1; hi=4; step=.01; break;
+    case C::PianoVelocity: lo=.5; hi=4; step=.01; break;
     case C::Bpm: lo=40; hi=240; step=1; break;
     case C::DelayDivision: lo=0; hi=8; step=1; break;
     case C::Shimmer: case C::Freeze: case C::EnvelopeLink: case C::VolumeLink: case C::MasterLowcut: case C::BedMellow:
@@ -144,6 +171,11 @@ public:
         config_.fader1=config_.fader2=0; // start piano-only; no saved patch imported
         config_.output.volume=0; // always silent until explicitly raised
         config_.piano.highcut_smoothing_ms=80;
+        config_.delay.milliseconds=500;
+        last_cc_.fill(-1);
+        for(auto& raw:physical_cc_) raw.store(-1,std::memory_order_relaxed);
+        for(auto& armed:pickup_armed_) armed.store(true,std::memory_order_relaxed);
+        publish_controls();
         if((capture_&&capture_->block_frames()!=graph_.block_frames())||!graph_.configure(config_)) request_stop(AuditionFault::Engine);
     }
     // One non-audio producer. Full/invalid controls are rejected, never
@@ -151,8 +183,6 @@ public:
     bool enqueue(AuditionCommand c) noexcept {
         if(fault()!=AuditionFault::None||!c.id||c.id<=previous_id_||!audition_value_valid(c.control,c.value)) return false;
         if((c.control==AuditionControl::RecordStart||c.control==AuditionControl::RecordStop)&&!capture_) return false;
-        if(c.control==AuditionControl::RecordStart&&capture_->end()!=CaptureEnd::Idle) return false;
-        if(c.control==AuditionControl::RecordStop&&capture_->end()!=CaptureEnd::Open) return false;
         if(c.control>=AuditionControl::BedLevel&&c.control<=AuditionControl::BedRelease&&(!bed_mask_||
            (c.control==AuditionControl::BedKey&&!(bed_mask_&(1u<<unsigned(c.value)))))) return false;
         const auto h=head_.load(std::memory_order_relaxed),t=tail_.load(std::memory_order_acquire);
@@ -183,10 +213,21 @@ public:
     std::uint64_t midi_mapped_serial(unsigned control) const noexcept {
         return control<unsigned(AuditionControl::Count)?mapped_serial_[control].load(std::memory_order_acquire):0;
     }
+    void request_midi_release() noexcept { midi_release_.store(true,std::memory_order_release); }
+    bool unmap(AuditionControl control) noexcept {
+        if(!audition_mappable(control)) return false;
+        for(auto& mapped:cc_map_) if(mapped.load(std::memory_order_relaxed)==int(control))
+            mapped.store(-1,std::memory_order_release);
+        mapped_raw_[unsigned(control)].store(-1,std::memory_order_relaxed);
+        mapped_serial_[unsigned(control)].store(0,std::memory_order_release);
+        return true;
+    }
     bool map_cc(unsigned cc,AuditionControl control) noexcept {
         if(cc>=128||cc==64||cc==66||cc==120||cc==123||!audition_mappable(control)) return false;
         for(auto& mapped:cc_map_) if(mapped.load(std::memory_order_relaxed)==int(control))
             mapped.store(-1,std::memory_order_release);
+        pickup_armed_[unsigned(control)].store(true,std::memory_order_release);
+        cc_generation_[cc].fetch_add(1,std::memory_order_release);
         const int old=cc_map_[cc].exchange(int(control),std::memory_order_acq_rel);
         if(old>=0&&old<int(AuditionControl::Count)) {
             mapped_raw_[unsigned(old)].store(-1,std::memory_order_relaxed);
@@ -195,6 +236,52 @@ public:
         mapped_raw_[unsigned(control)].store(-1,std::memory_order_relaxed);
         mapped_serial_[unsigned(control)].store(0,std::memory_order_release); return true;
     }
+    ControlSnapshot control_snapshot() const noexcept {
+        // This reader runs on the status thread only. The audio owner never waits.
+        ControlSnapshot out{};
+        for(;;) {
+            const auto version=published_version_.load();
+            if(version&1) continue;
+            for(unsigned i=0;i<out.values.size();++i) out.values[i]=published_values_[i].load();
+            out.linked_offset=published_offset_.load();
+            out.applied=published_applied_.load();
+            if(version==published_version_.load()) return out;
+        }
+    }
+    bool awaiting_pickup(unsigned control) const noexcept {
+        if(!pickup_armed_[control].load()||!published_values_[unsigned(AuditionControl::MidiPickup)].load()) return false;
+        for(const auto& cc:cc_map_) if(cc.load()==int(control)) return true;
+        return false;
+    }
+    // Only suppress assigned controls while learning. Notes, safety messages
+    // and physical CC telemetry remain live. A lost browser cannot hold a lease.
+    void set_learning(bool enable) noexcept {
+        const auto frames=graph_.block_frames();
+        const auto lease_blocks=(6u*48000u+frames-1)/frames;
+        learn_until_.store(enable?blocks()+lease_blocks:0,std::memory_order_release);
+    }
+    bool learning() const noexcept { return blocks()<learn_until_.load(std::memory_order_acquire); }
+    int pickup_raw(unsigned control) const noexcept {
+        for(unsigned cc=0;cc<cc_map_.size();++cc)
+            if(cc_map_[cc].load()==int(control)) return physical_cc_[cc].load();
+        return -1;
+    }
+    static const char* pickup_direction(AuditionControl control,int raw,const ControlValues& values) noexcept {
+        if(raw<0) return "move";
+        const double physical=control==AuditionControl::Cutoff?
+            values[unsigned(AuditionControl::CutoffMin)]+
+            (values[unsigned(AuditionControl::CutoffMax)]-values[unsigned(AuditionControl::CutoffMin)])*raw/127.:
+            audition_midi_value(control,unsigned(raw));
+        const double target=values[unsigned(control)];
+        if(std::abs(physical-target)<1e-8) return "move";
+        return physical<target?"up":"down";
+    }
+    std::uint64_t midi_activity() const noexcept { return midi_activity_.load(); }
+    int last_midi_channel() const noexcept { return last_channel_.load(); }
+    int last_note() const noexcept { return last_note_.load(); }
+    int last_velocity() const noexcept { return last_velocity_.load(); }
+    float output_peak(unsigned channel) noexcept { return peaks_[channel].load(); }
+    void reset_meter_window() noexcept { meter_reset_.store(true); }
     unsigned bed_mask() const noexcept { return bed_mask_; } // immutable before publication
     unsigned active_beds() const noexcept { return active_beds_.load(std::memory_order_relaxed); }
     int bed_key() const noexcept { return bed_key_.load(std::memory_order_relaxed); }
@@ -217,43 +304,81 @@ public:
             if(!valid_midi(e,frames)||e.offset<previous) { request_stop(AuditionFault::InvalidMidi); return silence(l,r,frames); }
             previous=e.offset;
         }
+        if(midi_release_.exchange(false,std::memory_order_acquire)) {
+            graph_.key_command(graph_.frame_position(),StageAction::ReleaseAll,0,0);
+            for(auto& armed:pickup_armed_) armed.store(true,std::memory_order_relaxed);
+            last_cc_.fill(-1);
+            for(auto& raw:physical_cc_) raw.store(-1,std::memory_order_relaxed);
+        }
         const auto h=head_.load(std::memory_order_acquire);
         auto t=tail_.load(std::memory_order_relaxed);
+        bool changed=t!=h;
         for(unsigned n=0;t!=h&&n<controls_per_block;++n) {
             const auto c=commands_[t%capacity];
-            if(!apply(c)) { request_stop(AuditionFault::Engine); return silence(l,r,frames); }
+            if(!apply_and_track(c,false)) { request_stop(AuditionFault::Engine); return silence(l,r,frames); }
             ++t; tail_.store(t,std::memory_order_release);
             applied_.store(c.id,std::memory_order_release);
         }
-        std::array<double,unsigned(AuditionControl::Count)> mapped_values{};
-        std::array<bool,unsigned(AuditionControl::Count)> mapped_seen{};
+        // Collapse neighboring moves of the same knob. Flush before another
+        // control, pedal or note so linked values follow MIDI arrival order.
+        int pending_control=-1;
+        double pending_value=0;
+        auto flush_mapped=[&]() {
+            if(pending_control<0) return true;
+            const auto control=static_cast<AuditionControl>(pending_control);
+            pending_control=-1;
+            changed=true;
+            return apply_and_track({0,control,pending_value},true);
+        };
         for(unsigned i=0;i<count;++i) {
             const auto& event=events[i];
-            if((event.bytes[0]&0xf0)==0xb0) {
+            const unsigned kind=event.bytes[0]&0xf0;
+            if(kind!=0xf0) {
+                const int channel=(event.bytes[0]&15)+1;
+                last_channel_.store(channel,std::memory_order_relaxed);
+                midi_activity_.fetch_add(1,std::memory_order_relaxed);
+                if(kind==0x90&&event.bytes[2]) {
+                    last_note_.store(event.bytes[1],std::memory_order_relaxed);
+                    last_velocity_.store(event.bytes[2],std::memory_order_relaxed);
+                }
+                if(receive_channel_&&channel!=receive_channel_) continue;
+            }
+            const int mapped=kind==0xb0?cc_map_[event.bytes[1]].load(std::memory_order_acquire):-1;
+            if(pending_control!=mapped&&!flush_mapped()) {
+                request_stop(AuditionFault::Engine); return silence(l,r,frames);
+            }
+            if(kind==0xb0) {
                 const unsigned cc=event.bytes[1],raw=event.bytes[2];
+                physical_cc_[cc].store(int(raw),std::memory_order_relaxed);
                 midi_cc_.store(cc,std::memory_order_relaxed); midi_cc_value_.store(raw,std::memory_order_relaxed);
                 midi_cc_serial_.fetch_add(1,std::memory_order_release);
-                const int mapped=cc_map_[cc].load(std::memory_order_acquire);
                 if(mapped>=0&&mapped<int(AuditionControl::Count)) {
                     const auto control=static_cast<AuditionControl>(mapped);
+                    if(learning()) {
+                        pickup_armed_[unsigned(control)].store(true,std::memory_order_relaxed);
+                        last_cc_[cc]=int(raw);
+                        continue;
+                    }
+                    if(!pickup(cc,control,raw)) continue;
                     if(control==AuditionControl::Cutoff) {
                         const auto value=cutoff_min_+(cutoff_max_-cutoff_min_)*std::min(raw,127u)/127.;
-                        mapped_values[unsigned(control)]=std::clamp(std::round(value),cutoff_min_,cutoff_max_);
-                    } else mapped_values[unsigned(control)]=audition_midi_value(control,raw);
-                    mapped_seen[unsigned(control)]=true;
+                        pending_value=std::clamp(std::round(value),cutoff_min_,cutoff_max_);
+                    } else pending_value=audition_midi_value(control,raw);
+                    pending_control=mapped;
                     mapped_raw_[unsigned(control)].store(int(raw),std::memory_order_relaxed);
                     midi_apply_control_.store(mapped,std::memory_order_relaxed); midi_apply_value_.store(raw,std::memory_order_relaxed);
                     const auto serial=midi_apply_serial_.fetch_add(1,std::memory_order_relaxed)+1;
                     mapped_serial_[unsigned(control)].store(serial,std::memory_order_release);
                 }
             }
+            if(kind==0xb0&&event.bytes[1]==120) changed=true;
             if(!midi(events[i])) { request_stop(AuditionFault::Engine); return silence(l,r,frames); }
             if(events[i].offset) quantized_.fetch_add(1,std::memory_order_relaxed);
         }
-        for(unsigned c=0;c<unsigned(AuditionControl::Count);++c) if(mapped_seen[c]&&
-           !apply({0,static_cast<AuditionControl>(c),mapped_values[c]})) {
+        if(!flush_mapped()) {
             request_stop(AuditionFault::Engine); return silence(l,r,frames);
         }
+        if(changed) publish_controls();
         if(fault()!=AuditionFault::None||!graph_.render_block()) {
             request_stop(AuditionFault::Engine); return silence(l,r,frames);
         }
@@ -268,7 +393,7 @@ public:
         // Legacy output smoothing starts at .85; setting its target to zero
         // is not an immediate mute. Separate startup gate prevents even dither
         // escaping before the player's first explicit nonzero master command.
-        if(!audition_unmuted_) { std::fill_n(l,frames,0); std::fill_n(r,frames,0); }
+        finish_output(l,r,frames);
         if(fault()!=AuditionFault::None) return silence(l,r,frames);
         blocks_.fetch_add(1,std::memory_order_relaxed); return true;
     }
@@ -290,8 +415,8 @@ private:
         if(type==0xb0) {
             if(note==64||note==66) return send(note==64?StageAction::Sustain:StageAction::Sostenuto,0,v>=64);
             if(note==123) return send(StageAction::ReleaseAll,0,0);
-            if(note==120) { request_stop(); return true; }
-            // Learned CCs were coalesced and applied earlier in this callback.
+            if(note==120) return panic();
+            // Learned CCs are handled by the ordered control path.
             if(cc_map_[unsigned(note)].load(std::memory_order_acquire)>=0) return true;
         }
         unsupported_.fetch_add(1,std::memory_order_relaxed); return true;
@@ -370,8 +495,26 @@ private:
         case C::DelayTime: config_.delay.division=DelayDivision::Free; config_.delay.milliseconds=v; break;
         case C::DelayLowcut: config_.delay.lowcut=v; break;
         case C::DelayHighcut: config_.delay.highcut=v; break;
-        case C::RecordStart: return v==0||capture_->start();
-        case C::RecordStop: if(v!=0) capture_->request_stop(); return true;
+        case C::RecordStart:
+            if(v!=0&&capture_->end()==CaptureEnd::Idle) capture_->start();
+            return true;
+        case C::RecordStop:
+            if(v!=0&&capture_->active()) capture_->request_stop();
+            return true;
+        case C::MidiChannel:
+            if(receive_channel_!=int(v)&&!graph_.key_command(graph_.frame_position(),StageAction::ReleaseAll,0,0)) return false;
+            receive_channel_=int(v); return true;
+        case C::MinimumVelocity: config_.minimum_velocity=int(v); break;
+        case C::MidiPickup:
+            pickup_enabled_=v!=0;
+            for(auto& armed:pickup_armed_) armed.store(true,std::memory_order_relaxed);
+            return true;
+        case C::OutputMute: muted_=v!=0; if(muted_) tone_remaining_=0; return true;
+        case C::TestTone:
+            tone_channel_=unsigned(v);
+            tone_remaining_=v&&!muted_&&config_.output.volume>0?24000:0;
+            return true;
+        case C::Panic: return v==0||panic();
         case C::Transpose: config_.transpose=int(v); break;
         case C::PianoOctave: config_.piano_octave=int(v); break;
         case C::Octave1: config_.octave1=int(v); break;
@@ -400,6 +543,88 @@ private:
         }
         return graph_.configure(config_);
     }
+    bool panic() noexcept {
+        muted_=true;
+        tone_remaining_=0;
+        graph_.panic();
+        bed_key_.store(-1,std::memory_order_relaxed);
+        values_[unsigned(AuditionControl::BedKey)]=-1;
+        values_[unsigned(AuditionControl::Freeze)]=0;
+        values_[unsigned(AuditionControl::OutputMute)]=1;
+        return graph_.healthy();
+    }
+    bool pickup(unsigned cc,AuditionControl control,unsigned raw) noexcept {
+        const unsigned index=unsigned(control);
+        const unsigned generation=cc_generation_[cc].load(std::memory_order_acquire);
+        const int previous=cc_seen_[cc]==generation?last_cc_[cc]:-1;
+        cc_seen_[cc]=generation;
+        last_cc_[cc]=int(raw);
+        if(!pickup_enabled_||!pickup_armed_[index].load(std::memory_order_relaxed)) return true;
+        const auto decode=[&](unsigned n) {
+            return control==AuditionControl::Cutoff?cutoff_min_+(cutoff_max_-cutoff_min_)*n/127.:
+                audition_midi_value(control,n);
+        };
+        const double target=values_[index], value=decode(raw);
+        const double tolerance=(decode(127)-decode(0))/127.+1e-8;
+        const bool crossed=previous>=0&&(decode(unsigned(previous))-target)*(value-target)<=0;
+        if(!crossed&&std::abs(value-target)>tolerance) return false;
+        pickup_armed_[index].store(false,std::memory_order_relaxed); return true;
+    }
+    bool apply_and_track(const AuditionCommand& cmd,bool from_midi) noexcept {
+        using C=AuditionControl;
+        const auto key=cmd.control;
+        const double value=cmd.value, old=values_[unsigned(key)];
+        if(!apply(cmd)) return false;
+        auto set=[&](C c,double v) {
+            const unsigned i=unsigned(c);
+            if((c==key&&!from_midi)||(c!=key&&values_[i]!=v)) pickup_armed_[i].store(true,std::memory_order_relaxed);
+            values_[i]=v;
+        };
+        set(key,value);
+        if(key==C::Cutoff||key==C::CutoffMin||key==C::CutoffMax) set(C::Cutoff,config_.buses.pad.cutoff);
+        if(key==C::Osc1||key==C::Osc2) {
+            set(C::Osc1,config_.fader1); set(C::Osc2,config_.fader2);
+        }
+        if(key==C::Attack||key==C::Release||(key>=C::Attack1&&key<=C::Release2)) {
+            set(C::Attack1,config_.env1.attack_ms); set(C::Attack2,config_.env2.attack_ms);
+            set(C::Decay1,config_.env1.decay_ms); set(C::Decay2,config_.env2.decay_ms);
+            set(C::Sustain1,config_.env1.sustain_percent); set(C::Sustain2,config_.env2.sustain_percent);
+            set(C::Release1,config_.env1.release_ms); set(C::Release2,config_.env2.release_ms);
+        }
+        if(key==C::DelayTime) set(C::DelayDivision,0);
+        if(key==C::Reverb&&old!=value) {
+            const auto recipe=reverb_recipe(ReverbType(unsigned(value)));
+            set(C::ReverbDecay,recipe[0]); set(C::ReverbPredelay,recipe[1]);
+            set(C::ReverbLowcut,recipe[2]); set(C::ReverbHighcut,recipe[3]); set(C::ReverbDamp,recipe[4]);
+        }
+        if(key==C::BedRelease&&value) set(C::BedKey,-1);
+        if(key==C::Panic&&value) set(C::OutputMute,1);
+        return true;
+    }
+    void publish_controls() noexcept {
+        published_version_.fetch_add(1);
+        for(unsigned i=0;i<values_.size();++i) published_values_[i].store(values_[i],std::memory_order_release);
+        published_offset_.store(volume_link_offset_,std::memory_order_release);
+        published_applied_.store(applied_.load(std::memory_order_relaxed),std::memory_order_release);
+        published_version_.fetch_add(1);
+    }
+    void finish_output(float* l,float* r,unsigned n) noexcept {
+        if(!audition_unmuted_||muted_) { std::fill_n(l,n,0);std::fill_n(r,n,0); }
+        const bool reset=meter_reset_.exchange(false,std::memory_order_relaxed);
+        float left=reset?0:peaks_[0].load(std::memory_order_relaxed);
+        float right=reset?0:peaks_[1].load(std::memory_order_relaxed);
+        for(unsigned i=0;i<n;++i) {
+            if(tone_remaining_) {
+                const unsigned elapsed=24000-tone_remaining_;
+                const double edge=std::min({1.,elapsed/240.,(tone_remaining_-1)/240.});
+                const float sample=float(.0316227*config_.output.volume*edge*std::sin(elapsed*(440.*6.283185307179586/48000.)));
+                auto& out=tone_channel_==1?l[i]:r[i];
+                out=std::clamp(out+sample,-1.f,1.f); --tone_remaining_;
+            }
+            left=std::max(left,std::abs(l[i]));right=std::max(right,std::abs(r[i]));
+        }
+        peaks_[0].store(left,std::memory_order_relaxed); peaks_[1].store(right,std::memory_order_relaxed);
+    }
     bool silence(float* l,float* r,unsigned n) noexcept {
         if(capture_&&capture_->active()) capture_->finish(CaptureEnd::EngineStopped);
         active_beds_.store(0,std::memory_order_relaxed); bed_key_.store(-1,std::memory_order_relaxed);
@@ -407,6 +632,24 @@ private:
     }
     static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
     static_assert(std::atomic<AuditionFault>::is_always_lock_free);
+    static_assert(std::atomic<double>::is_always_lock_free);
+    static_assert(std::atomic<float>::is_always_lock_free);
+    ControlValues values_=initial_controls;
+    std::atomic<std::uint64_t> published_version_{0},published_applied_{0},midi_activity_{0};
+    std::atomic<double> published_offset_{0};
+    std::array<std::atomic<double>,unsigned(AuditionControl::Count)> published_values_{};
+    std::array<std::atomic<bool>,unsigned(AuditionControl::Count)> pickup_armed_{};
+    std::array<std::atomic<unsigned>,128> cc_generation_{};
+    std::array<std::atomic<int>,128> physical_cc_{};
+    std::atomic<std::uint64_t> learn_until_{0};
+    std::array<unsigned,128> cc_seen_{};
+    std::array<int,128> last_cc_{};
+    std::atomic<bool> midi_release_{false},meter_reset_{false};
+    std::array<std::atomic<float>,2> peaks_{};
+    std::atomic<int> last_note_{-1},last_velocity_{0},last_channel_{0};
+    int receive_channel_{};
+    bool pickup_enabled_{true},muted_{};
+    unsigned tone_channel_{},tone_remaining_{};
     StageInstrument& graph_;
     RecordingCapture<>* capture_{};
     unsigned bed_mask_{};

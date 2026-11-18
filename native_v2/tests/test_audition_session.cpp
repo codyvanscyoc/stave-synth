@@ -102,7 +102,7 @@ int main(int argc,char** argv) {
             check(!owner.enqueue({id+1,C::DelayHighcut,499}));
             check(!owner.enqueue({id+1,C::ReverbPredelay,151}));
             check(!owner.enqueue({id+1,C::PianoLowcut,501}));
-            check(!owner.enqueue({id+1,C::PianoVelocity,.99}));
+            check(!owner.enqueue({id+1,C::PianoVelocity,.49}));
             check(!owner.enqueue({id+1,C::Bpm,39}));
             check(!owner.enqueue({id+1,C::DelayDivision,2.5}));
             check(!owner.enqueue({id+1,C::RecordStart,1}));
@@ -181,16 +181,18 @@ int main(int argc,char** argv) {
         }
         {
             // One-shot recording transport is armed and stopped only by
-            // acknowledged audio-boundary commands; invalid order is refused.
+            // acknowledged audio boundaries; repeated edges are harmless.
             Random random; stave::StageInstrument graph(argv[1],random,frames,0,&random);
             stave::RecordingCapture<> capture(frames,frames*4,false);
             stave::AuditionSession session(graph,&capture); std::array<float,512> l{},r{};
-            check(!session.enqueue({1,C::RecordStop,1}));
-            check(session.enqueue({1,C::RecordStart,1})); check(session.process(l.data(),r.data(),frames,nullptr,0));
-            check(capture.end()==stave::CaptureEnd::Open&&capture.frames_written()==frames);
-            check(!session.enqueue({2,C::RecordStart,1}));
-            check(session.enqueue({2,C::RecordStop,1})); check(session.process(l.data(),r.data(),frames,nullptr,0));
-            check(capture.end()==stave::CaptureEnd::Complete&&capture.frames_written()==frames&&session.applied()==2);
+            check(session.enqueue({1,C::RecordStop,1}));
+            check(session.enqueue({2,C::RecordStart,1}));
+            check(session.enqueue({3,C::RecordStart,1}));
+            check(session.process(l.data(),r.data(),frames,nullptr,0));
+            check(graph.healthy()&&session.applied()==3&&capture.end()==stave::CaptureEnd::Open&&capture.frames_written()==frames);
+            check(session.enqueue({4,C::RecordStop,1})); check(session.enqueue({5,C::RecordStop,1}));
+            check(session.process(l.data(),r.data(),frames,nullptr,0));
+            check(capture.end()==stave::CaptureEnd::Complete&&capture.frames_written()==frames&&session.applied()==5);
         }
         Random a,b; stave::StageInstrument actual(argv[1],a,frames,0,&a),expected(argv[1],b,frames,0,&b);
         stave::AuditionSession s(actual);
@@ -265,9 +267,7 @@ int main(int argc,char** argv) {
         while(!done.load(std::memory_order_acquire)||controls.applied()!=first+1999)
             check(controls.process(l.data(),r.data(),frames,nullptr,0));
         producer.join(); controls.request_stop(); check(!controls.process(l.data(),r.data(),frames,nullptr,0));
-        // Learned MIDI stays inside the audio owner: one CC is coalesced per
-        // control/block, safety pedals remain reserved, and telemetry is
-        // versioned so a later browser edit is not overwritten by stale data.
+        // Pickup protects recalled targets and is rearmed on MIDI reconnect.
         {
             Random d; stave::StageInstrument g2(argv[1],d,frames,0,&d); stave::AuditionSession learned(g2);
             check(!learned.map_cc(64,C::Master)&&!learned.map_cc(120,C::Master));
@@ -275,15 +275,114 @@ int main(int argc,char** argv) {
             stave::AuditionMidi e{0,3,{0xb0,21,127}};
             check(learned.process(l.data(),r.data(),frames,&e,1));
             check(learned.midi_cc()==21&&learned.midi_cc_value()==127&&learned.midi_cc_serial()==1);
-            check(learned.midi_apply_control()==int(C::Master)&&learned.midi_apply_value()==127&&learned.midi_apply_serial()==1);
-            check(learned.midi_mapped_raw(unsigned(C::Master))==127&&learned.midi_mapped_serial(unsigned(C::Master))==1);
+            check(learned.awaiting_pickup(unsigned(C::Master))&&learned.midi_apply_serial()==0);
+            e.bytes[2]=0; check(learned.process(l.data(),r.data(),frames,&e,1));
+            e.bytes[2]=127; check(learned.process(l.data(),r.data(),frames,&e,1));
+            check(learned.midi_apply_control()==int(C::Master)&&learned.midi_apply_value()==127&&learned.midi_apply_serial()==2);
+            check(learned.midi_mapped_raw(unsigned(C::Master))==127&&learned.midi_mapped_serial(unsigned(C::Master))==2);
             check(learned.unsupported_midi()==0);
             check(learned.map_cc(21,C::Cutoff));
             check(!learned.map_cc(22,C::CutoffMin)&&!learned.map_cc(22,C::CutoffMax));
             check(learned.midi_mapped_raw(unsigned(C::Master))==-1&&learned.midi_mapped_serial(unsigned(C::Master))==0);
             e.bytes={0xb0,21,0}; check(learned.process(l.data(),r.data(),frames,&e,1));
-            check(learned.midi_mapped_raw(unsigned(C::Cutoff))==0&&learned.midi_mapped_serial(unsigned(C::Cutoff))==2);
+            check(learned.midi_mapped_serial(unsigned(C::Cutoff))==0);
+            e.bytes[2]=127; check(learned.process(l.data(),r.data(),frames,&e,1));
+            check(learned.midi_mapped_raw(unsigned(C::Cutoff))==127&&learned.midi_mapped_serial(unsigned(C::Cutoff))==3);
+            check(learned.enqueue({1,C::Cutoff,1000}));
+            check(learned.process(l.data(),r.data(),frames,nullptr,0));
+            check(learned.awaiting_pickup(unsigned(C::Cutoff)));
+            const auto snapshot=learned.control_snapshot();
+            check(snapshot.values[unsigned(C::Cutoff)]==1000&&snapshot.applied==1);
+            check(learned.unmap(C::Cutoff)&&!learned.awaiting_pickup(unsigned(C::Cutoff)));
             check(stave::audition_midi_value(C::Cutoff,0)==20&&stave::audition_midi_value(C::Cutoff,127)==20000);
+            check(learned.map_cc(18,C::Master));
+            e.bytes={0xb0,18,127};check(learned.process(l.data(),r.data(),frames,&e,1));
+            check(!learned.awaiting_pickup(unsigned(C::Master)));
+            learned.request_midi_release();
+            e.bytes[2]=0;check(learned.process(l.data(),r.data(),frames,&e,1));
+            check(learned.awaiting_pickup(unsigned(C::Master))&&learned.control_snapshot().values[unsigned(C::Master)]==1);
+        }
+        // Moving an already assigned Master fader while learning is harmless.
+        // Notes/CC observations remain live, a lost lease expires, and cutoff
+        // pickup directions follow the current saved sweep range.
+        {
+            Random d; stave::StageInstrument g2(argv[1],d,frames,0,&d);
+            stave::AuditionSession owner(g2);
+            const unsigned master=unsigned(C::Master);
+            check(owner.enqueue({1,C::Master,.3})&&owner.enqueue({2,C::MidiPickup,0}));
+            check(owner.map_cc(16,C::Master));
+            std::array<stave::AuditionMidi,2> events{{{0,3,{0xb0,16,127}},{0,3,{0x90,55,100}}}};
+            owner.set_learning(true);
+            check(owner.learning()&&owner.process(l.data(),r.data(),frames,events.data(),events.size()));
+            check(owner.midi_cc()==16&&owner.midi_cc_value()==127&&owner.midi_cc_serial()==1&&owner.notes()==1);
+            check(owner.control_snapshot().values[master]==.3&&owner.midi_apply_serial()==0);
+            check(owner.pickup_raw(master)==127);
+            check(std::string(owner.pickup_direction(C::Master,127,owner.control_snapshot().values))=="down");
+            for(unsigned i=0;i<6u*48000/frames+1;++i)check(owner.process(l.data(),r.data(),frames,nullptr,0));
+            check(!owner.learning());
+            check(owner.process(l.data(),r.data(),frames,events.data(),1)&&owner.control_snapshot().values[master]==1);
+            owner.set_learning(true);owner.set_learning(false);check(!owner.learning());
+            check(owner.map_cc(18,C::Cutoff));
+            check(owner.enqueue({3,C::CutoffMin,400})&&owner.enqueue({4,C::CutoffMax,800})&&owner.enqueue({5,C::Cutoff,600}));
+            check(owner.process(l.data(),r.data(),frames,nullptr,0));
+            auto values=owner.control_snapshot().values;
+            check(std::string(owner.pickup_direction(C::Cutoff,40,values))=="up");
+            check(std::string(owner.pickup_direction(C::Cutoff,80,values))=="down");
+            check(std::string(owner.pickup_direction(C::Cutoff,-1,values))=="move");
+        }
+        // The same block can contain a browser recall and multiple physical
+        // faders. The last accepted edit wins in the order the player sent it.
+        {
+            Random d; stave::StageInstrument g2(argv[1],d,frames,0,&d);
+            stave::AuditionSession owner(g2);
+            std::uint64_t seq=0;
+            auto set=[&](C key,double value) {check(owner.enqueue({++seq,key,value}));};
+            set(C::MidiPickup,0);set(C::Master,.2);
+            set(C::Osc1,.3);set(C::Osc2,.2);set(C::VolumeLink,1);set(C::EnvelopeLink,1);
+            check(owner.map_cc(21,C::Osc1)&&owner.map_cc(22,C::Osc2)&&owner.map_cc(23,C::Master));
+            check(owner.map_cc(24,C::Attack2)&&owner.map_cc(25,C::Attack));
+            std::array<stave::AuditionMidi,5> moves{{{0,3,{0xb0,22,17}},{0,3,{0xb0,21,100}},
+                    {0,3,{0xb0,23,127}},{0,3,{0xb0,24,12}},{0,3,{0xb0,25,55}}}};
+            check(owner.process(l.data(),r.data(),frames,moves.data(),moves.size()));
+            auto targets=owner.control_snapshot();
+            check(targets.applied==seq&&targets.values[unsigned(C::Master)]==1);
+            check(std::abs(targets.linked_offset-.1)<1e-12);
+            check(std::abs(targets.values[unsigned(C::Osc1)]-.79)<1e-12&&std::abs(targets.values[unsigned(C::Osc2)]-.69)<1e-12);
+            check(targets.values[unsigned(C::Attack1)]==stave::audition_midi_value(C::Attack,55));
+            check(targets.values[unsigned(C::Attack2)]==targets.values[unsigned(C::Attack1)]);
+            set(C::Master,0);check(owner.process(l.data(),r.data(),frames,nullptr,0));
+            targets=owner.control_snapshot();check(targets.applied==seq&&targets.values[unsigned(C::Master)]==0);
+        }
+        // Channel calibration, MIDI disconnection, muted stereo soundcheck and panic.
+        {
+            Random d; stave::StageInstrument g2(argv[1],d,frames,0,&d,test_bank()); stave::AuditionSession owner(g2);
+            std::uint64_t seq=0;
+            auto set=[&](C key,double value){ check(owner.enqueue({++seq,key,value})); };
+            set(C::MidiChannel,3); set(C::MinimumVelocity,1); set(C::PianoVelocity,.5);
+            set(C::BedKey,7);
+            stave::AuditionMidi note{0,3,{0x91,60,7}};
+            check(owner.process(l.data(),r.data(),frames,&note,1));
+            check(owner.notes()==0&&owner.midi_activity()==1&&owner.last_midi_channel()==2&&owner.last_note()==60&&owner.last_velocity()==7);
+            note.bytes[0]=0x92;check(owner.process(l.data(),r.data(),frames,&note,1));
+            check(owner.notes()==1&&g2.active_voices()>0);
+            owner.request_midi_release();check(owner.process(l.data(),r.data(),frames,nullptr,0));
+            check(owner.bed_key()==7&&owner.active_beds()==1&&owner.fault()==F::None);
+            set(C::Master,.6);set(C::Panic,1);
+            check(owner.process(l.data(),r.data(),frames,nullptr,0));
+            check(owner.bed_key()==-1&&owner.active_beds()==0&&g2.active_voices()==0);
+            check(owner.control_snapshot().values[unsigned(C::Master)]==.6);
+            check(owner.control_snapshot().values[unsigned(C::OutputMute)]==1);
+            set(C::TestTone,1);owner.reset_meter_window();
+            check(owner.process(l.data(),r.data(),frames,nullptr,0)&&owner.output_peak(0)==0&&owner.output_peak(1)==0);
+            set(C::OutputMute,0);set(C::TestTone,2);
+            check(owner.process(l.data(),r.data(),frames,nullptr,0));
+            check(owner.output_peak(1)>.005&&owner.output_peak(1)<.021&&owner.output_peak(0)<.001);
+            set(C::TestTone,1);owner.reset_meter_window();
+            check(owner.process(l.data(),r.data(),frames,nullptr,0));
+            check(owner.output_peak(0)>.005&&owner.output_peak(1)<.001);
+            for(unsigned i=0;i<25000/frames+1;++i)check(owner.process(l.data(),r.data(),frames,nullptr,0));
+            owner.reset_meter_window();check(owner.process(l.data(),r.data(),frames,nullptr,0));
+            check(owner.output_peak(0)<.001&&owner.output_peak(1)<.001);
         }
         // MIDI edge/fault paths on fresh instances.
         for(unsigned mode=0;mode<6;++mode) {
@@ -292,7 +391,7 @@ int main(int argc,char** argv) {
             if(mode==0) { e.size=2; check(!midi.process(l.data(),r.data(),frames,&e,1)); check(midi.fault()==F::InvalidMidi); }
             if(mode==1) { e.offset=frames; check(!midi.process(l.data(),r.data(),frames,&e,1)); check(midi.fault()==F::InvalidMidi); }
             if(mode==2) { check(!midi.process(l.data(),r.data(),frames,nullptr,257)); check(midi.fault()==F::MidiOverflow); }
-            if(mode==3) { e.bytes={0xb0,120,0}; check(!midi.process(l.data(),r.data(),frames,&e,1)); check(midi.fault()==F::Stop); }
+            if(mode==3) { e.bytes={0xb0,120,0}; check(midi.process(l.data(),r.data(),frames,&e,1)); check(midi.fault()==F::None&&midi.control_snapshot().values[unsigned(C::OutputMute)]==1); }
             if(mode==4) { e.bytes={0xe0,0,64}; check(midi.process(l.data(),r.data(),frames,&e,1)); check(midi.unsupported_midi()==1); }
             if(mode==5) { e.size=1; e.bytes={0xf8,0,0}; check(midi.process(l.data(),r.data(),frames,&e,1)); check(midi.unsupported_midi()==0); }
             for(unsigned i=0;i<frames;++i) check(l[i]==0&&r[i]==0);

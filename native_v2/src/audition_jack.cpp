@@ -9,6 +9,7 @@
 #include <csignal>
 #include <cstdio>
 #include <iostream>
+#include <iomanip>
 #include <poll.h>
 #include <sstream>
 #include <unistd.h>
@@ -77,10 +78,11 @@ struct Host {
         return 0;
     }
     static void shutdown(void* p) noexcept { static_cast<Host*>(p)->session.request_stop(stave::AuditionFault::GraphContract); }
-    void status(bool routed) const {
+    void status(bool routed,bool midi_connected=true) const {
+        const auto controls=session.control_snapshot();
         std::cout<<"{\"type\":\"status\",\"instance\":\""<<instance<<"\",\"frames\":"<<frames
             <<",\"routed\":"<<(routed?"true":"false")<<",\"fault\":"<<unsigned(session.fault())
-            <<",\"applied\":"<<session.applied()<<",\"blocks\":"<<session.blocks()<<",\"notes\":"<<session.notes()
+            <<",\"applied\":"<<controls.applied<<",\"blocks\":"<<session.blocks()<<",\"notes\":"<<session.notes()
             <<",\"unsupported_midi\":"<<session.unsupported_midi()<<",\"quantized_midi\":"<<session.quantized_midi()
             <<",\"midi_cc_serial\":"<<session.midi_cc_serial()<<",\"midi_cc\":"<<session.midi_cc()<<",\"midi_cc_value\":"<<session.midi_cc_value()
             <<",\"midi_apply_serial\":"<<session.midi_apply_serial()<<",\"midi_apply_control\":"<<session.midi_apply_control()<<",\"midi_apply_value\":"<<session.midi_apply_value()
@@ -97,7 +99,31 @@ struct Host {
         // serial with an older raw value.
         std::cout<<"],\"midi_mapped_raw\":[";
         for(unsigned c=0;c<unsigned(stave::AuditionControl::Count);++c) std::cout<<(c?",":"")<<session.midi_mapped_raw(c);
-        std::cout<<"]}"<<std::endl;
+        std::cout<<"],\"control_values\":["<<std::setprecision(17);
+        for(unsigned c=0;c<controls.values.size();++c) std::cout<<(c?",":"")<<controls.values[c];
+        std::cout<<"],\"linked_offset\":"<<controls.linked_offset
+            <<",\"midi_connected\":"<<(midi_connected?"true":"false")
+            <<",\"midi_activity\":"<<session.midi_activity()<<",\"last_midi_channel\":"<<session.last_midi_channel()
+            <<",\"last_note\":"<<session.last_note()<<",\"last_velocity\":"<<session.last_velocity()
+            <<",\"output_peak_l\":"<<session.output_peak(0)<<",\"output_peak_r\":"<<session.output_peak(1)
+            <<",\"output_mute\":"<<controls.values[unsigned(stave::AuditionControl::OutputMute)]<<",\"pickup_waiting\":[";
+        bool comma=false;
+        for(unsigned c=0;c<controls.values.size();++c) if(session.awaiting_pickup(c)) {
+            std::cout<<(comma?",":"")<<'"'<<stave::audition_names[c]<<'"'; comma=true;
+        }
+        std::cout<<"],\"pickup_directions\":{";
+        comma=false;
+        for(unsigned c=0;c<controls.values.size();++c) if(session.awaiting_pickup(c)) {
+            const auto direction=session.pickup_direction(static_cast<stave::AuditionControl>(c),session.pickup_raw(c),controls.values);
+            std::cout<<(comma?",":"")<<'"'<<stave::audition_names[c]<<"\":\""<<direction<<'"'; comma=true;
+        }
+        std::cout<<"},\"pickup_raw\":{";
+        comma=false;
+        for(unsigned c=0;c<controls.values.size();++c) if(session.awaiting_pickup(c)) {
+            std::cout<<(comma?",":"")<<'"'<<stave::audition_names[c]<<"\":"<<session.pickup_raw(c); comma=true;
+        }
+        std::cout<<"},\"midi_learning\":"<<(session.learning()?"true":"false")<<"}"<<std::endl;
+        session.reset_meter_window();
     }
 };
 void require(bool ok,const char* message) { if(!ok) throw std::runtime_error(message); }
@@ -165,15 +191,28 @@ int main(int argc,char** argv) {
         const auto start=std::chrono::steady_clock::now(); auto next_status=start;
         auto last_progress=start; std::uint64_t previous_blocks=0;
         std::string line; line.reserve(256);
-        bool routed=true,quit=false;
+        bool routed=true, midi_connected=true, quit=false;
+        auto next_midi_retry=start;
         while(!interrupted&&!quit&&session.fault()==stave::AuditionFault::None&&(candidate||std::chrono::steady_clock::now()-start<std::chrono::seconds(seconds))) {
             const auto now=std::chrono::steady_clock::now();
             const auto blocks=session.blocks();
             if(blocks!=previous_blocks) { previous_blocks=blocks; last_progress=now; }
             if(now-last_progress>std::chrono::seconds(3)) { session.request_stop(stave::AuditionFault::GraphContract); break; }
-            routed=jack_port_connected_to(host.left,argv[5])&&jack_port_connected_to(host.right,argv[6])&&jack_port_connected_to(host.midi,argv[4]);
+            routed=jack_port_connected_to(host.left,argv[5])&&jack_port_connected_to(host.right,argv[6]);
             if(!routed) { session.request_stop(stave::AuditionFault::GraphContract); break; }
-            if(now>=next_status) { host.status(routed); next_status=now+std::chrono::seconds(1); }
+            const bool keyboard_present=jack_port_connected_to(host.midi,argv[4]);
+            if(midi_connected&&!keyboard_present) session.request_midi_release();
+            midi_connected=keyboard_present;
+            if(!midi_connected&&now>=next_midi_retry) {
+                // Only reconnect the selected keyboard. Loss of MIDI releases
+                // its held notes while the stereo bed and effect tails continue.
+                auto* keyboard=jack_port_by_name(client.value,argv[4]);
+                if(keyboard&&(jack_port_flags(keyboard)&JackPortIsOutput)&&
+                   std::string(jack_port_type(keyboard))==JACK_DEFAULT_MIDI_TYPE)
+                    jack_connect(client.value,argv[4],jack_port_name(host.midi));
+                next_midi_retry=now+std::chrono::seconds(1);
+            }
+            if(now>=next_status) { host.status(routed,midi_connected); next_status=now+std::chrono::seconds(1); }
             pollfd input{STDIN_FILENO,POLLIN,0}; const int ready=poll(&input,1,100);
             if(ready<0) { if(interrupted) break; throw std::runtime_error("Control poll failed"); }
             if(input.revents&POLLNVAL) throw std::runtime_error("Control descriptor unavailable");
@@ -186,10 +225,25 @@ int main(int argc,char** argv) {
                     std::istringstream parser(line); std::uint64_t id{},cc{}; std::string first,id_text,key,extra; double value{};
                     bool accepted=false;
                     parser>>first;
-                    if(first=="map"&&parser>>id_text>>cc>>key&&!(parser>>extra)&&unsigned_text(id_text,id)&&cc<128) {
-                        for(unsigned c=0;c<stave::audition_names.size();++c) if(key==stave::audition_names[c])
-                            accepted=session.map_cc(unsigned(cc),static_cast<stave::AuditionControl>(c));
-                        std::cout<<"{\"type\":\"mapped\",\"id\":"<<id<<",\"ok\":"<<(accepted?"true":"false")<<"}"<<std::endl;
+                    if(first=="map"||first=="unmap"||first=="learn") {
+                        std::uint64_t baseline{};
+                        if(first=="learn") {
+                            std::string enabled;
+                            if(parser>>id_text>>enabled&&!(parser>>extra)&&unsigned_text(id_text,id)&&(enabled=="1"||enabled=="0")) {
+                                session.set_learning(enabled=="1");
+                                baseline=session.midi_cc_serial();
+                                accepted=true;
+                            }
+                        } else if(parser>>id_text&&unsigned_text(id_text,id)&&(first=="unmap"||bool(parser>>cc))&&
+                           parser>>key&&!(parser>>extra)&&cc<128) {
+                            for(unsigned c=0;c<stave::audition_names.size();++c) if(key==stave::audition_names[c]) {
+                                const auto control=static_cast<stave::AuditionControl>(c);
+                                accepted=first=="map"?session.map_cc(unsigned(cc),control):session.unmap(control);
+                            }
+                        }
+                        std::cout<<"{\"type\":\"mapped\",\"id\":"<<id<<",\"ok\":"<<(accepted?"true":"false");
+                        if(first=="learn"&&accepted) std::cout<<",\"midi_cc_serial\":"<<baseline;
+                        std::cout<<"}"<<std::endl;
                         line.clear(); continue;
                     }
                     parser.clear(); parser.str(line);
@@ -204,7 +258,7 @@ int main(int argc,char** argv) {
         }
         session.request_stop(); host.armed.store(false,std::memory_order_release);
         require(!jack_deactivate(client.value),"JACK deactivation failed"); client.active=false;
-        graph.stop(); host.status(routed);
+        graph.stop(); host.status(routed,midi_connected);
         return session.fault()==stave::AuditionFault::Stop?0:1;
     } catch(const std::exception& e) { std::cerr<<"Audition refused/stopped: "<<e.what()<<std::endl; return 1; }
 }

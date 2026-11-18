@@ -30,7 +30,7 @@ const document={activeElement:null,body:{classList:{toggle(name,on){if(on)bodyCl
 },getElementById:id=>{
   if(!nodes.has(id))nodes.set(id,new Element());return nodes.get(id);
 }};
-for(let i=0;i<3;i++)document.getElementById('transpose-stepper').append(new Element());
+for(const id of ['transpose-stepper','phone-octave1','phone-octave2','phone-piano_octave'])for(let i=0;i<3;i++)document.getElementById(id).append(new Element());
 const controls={piano:[0,1,.01,.5],piano_tone:[0,1,.01,1],master:[0,1,.01,0],
   osc1:[0,1,.01,.13],osc2:[0,1,.01,.1],cutoff:[20,20000,1,487],cutoff_min:[20,20000,1,20],cutoff_max:[20,20000,1,20000],wet:[0,1,.01,.74],
   shimmer:[0,1,1,0],wave1:[0,4,1,0],wave2:[0,4,1,2],attack:[0,10000,10,530],release:[0,30000,10,530],resonance:[.5,10,.01,.7],
@@ -43,21 +43,23 @@ Object.assign(controls,{piano_room_size:[0,1,.01,.5],piano_room_damp:[0,.99,.01,
 Object.assign(controls,{transpose:[-24,24,1,0],piano_octave:[-3,3,1,0],octave1:[-3,3,1,0],octave2:[-3,3,1,0],record_start:[0,1,1,0],record_stop:[0,1,1,0],release_all:[0,1,1,0]});
 Object.assign(controls,{pan1:[-1,1,.01,0],pan2:[-1,1,.01,0],detune:[0,1,.001,.07],spread:[0,1,.001,.85]});
 Object.assign(controls,{piano_lowcut:[20,500,1,20],piano_velocity:[1,4,.01,1],osc1_reverb:[0,1,.01,1],osc2_reverb:[0,1,.01,1],piano_delay:[0,1,.01,0],filter_slope:[0,1,1,0],piano_filter:[0,1,1,0],bpm:[40,240,1,120],delay_division:[0,8,1,3]});
-let state={stale:false,exited:null,pending:0,error:null,values:Object.fromEntries(Object.entries(controls).map(([k,v])=>[k,v[3]])),
+Object.assign(controls,{midi_channel:[0,16,1,0],minimum_velocity:[1,127,1,10],midi_pickup:[0,1,1,1],output_mute:[0,1,1,0],panic:[0,1,1,0],test_tone:[0,2,1,0]});
+let state={epoch:'initial',stale:false,exited:null,pending:0,error:null,values:Object.fromEntries(Object.entries(controls).map(([k,v])=>[k,v[3]])),
   status:{fault:0,routed:true,frames:512,blocks:100,bed_mask:129,bed_key:7,active_beds:1}};
 const sent=[];
 const actions=[];
 let rejectHeadphoneChange=false;
 const fetch=async(url,args)=>({ok:!(url==='/headphones'&&args?.method==='POST'&&rejectHeadphoneChange),json:async()=>{
   if(url==='/controls')return controls;
-  if(url==='/status')return state;
+  if(url==='/status'){if(state.disconnected)throw Error('fixture offline');return state;}
+  if(url==='/midi-learn'){actions.push({url,body:JSON.parse(args.body)});return {ok:true,serial:state.status.midi_cc_serial||0,lease_seconds:6};}
   if(url==='/headphones')return args?.method==='POST'&&rejectHeadphoneChange?{error:'Mixer change failed'}:{available:true,muted:false,volume:40};
   if(url!=='/control'){actions.push({url,body:JSON.parse(args.body),epoch:args.headers['X-Stave-Epoch']});return {message:'Accepted'};}
   sent.push(JSON.parse(args.body));return {queued:sent.length};
 }});
 const html=fs.readFileSync(path.join(__dirname,'../native_v2/audition.html'),'utf8');
 const script=html.match(/<script>([\s\S]*?)<\/script>/)[1];
-const context=vm.createContext({document,window:{addEventListener(){}},fetch,AbortSignal,confirm:()=>true,prompt:()=>null,setTimeout:()=>{}});
+const context=vm.createContext({crypto:require('node:crypto').webcrypto,document,window:{addEventListener(){}},fetch,AbortSignal,confirm:()=>true,prompt:()=>null,setTimeout:()=>{}});
 vm.runInContext(script,context);
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 (async()=>{
@@ -121,7 +123,7 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
   assert.deepEqual(sent.at(-1),{key:'osc1',value:.23},'one acknowledged control moves the linked pair');
   osc1Fader.listeners.pointerup({pointerId:22});
   assert.equal(nodes.get('edit-global').children.length,5);
-  assert.deepEqual(nodes.get('edit-piano').children.slice(-5).map(x=>x.attributes['data-control']),['piano_room_size','piano_room_damp','piano_lowcut','piano_velocity','piano_delay']);
+  assert.deepEqual(nodes.get('edit-piano').children.slice(-4).map(x=>x.attributes['data-control']),['piano_room_size','piano_room_damp','piano_lowcut','piano_delay']);
   assert.deepEqual(nodes.get('edit-reverb').children.slice(-5).map(x=>x.attributes['data-control']),['reverb_decay','reverb_predelay','reverb_lowcut','reverb_highcut','reverb_damp']);
   assert.deepEqual(nodes.get('edit-delay').children.slice(-5).map(x=>x.attributes['data-control']),['delay_time','delay_lowcut','delay_highcut','bpm','delay_division']);
   for(const [key,values] of Object.entries({reverb_lowcut:[20,80,1000,20000],reverb_highcut:[20,7000,20000],delay_lowcut:[20,100,1000],delay_highcut:[500,18000,20000]}))for(const value of values)assert.equal(vm.runInContext(`fromSlider('${key}',toSlider('${key}',${value}))`,context),value);
@@ -158,7 +160,7 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
   nodes.get('nav-system').onclick();assert.equal(nodes.get('system-panel').hidden,false);assert.equal(nodes.get('stage-panel').hidden,true);
   state={...state,epoch:'first-boot',runtime:{preparation:true,can_restart:true,restoring:true,devices:{midi:['Keys:midi'],audio:['USB:l','USB:r']}}};
   await vm.runInContext('poll()',context);
-  assert.match(nodes.get('notice').textContent,/Open System/);
+  assert.match(nodes.get('notice').textContent,/Choose your keyboard/);
   assert.equal(nodes.get('route-midi').value,'');
   assert.equal(nodes.get('apply-routes').disabled,true);
   nodes.get('route-midi').value='Keys:midi';nodes.get('route-left').value='USB:l';nodes.get('route-right').value='USB:l';
@@ -176,20 +178,27 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
   assert.match(nodes.get('headphone-status').textContent,/current mixer level refreshed/);
   rejectHeadphoneChange=false;
   assert.equal(nodes.get('midi-map').disabled,false);
-  nodes.get('midi-map').onclick();assert.ok(bodyClasses.has('midi-map-mode'));assert.equal(nodes.get('midi-map-banner').hidden,false);
+  await nodes.get('midi-map').onclick();assert.ok(bodyClasses.has('midi-map-mode'));assert.equal(nodes.get('midi-map-banner').hidden,false);
   const osc1=nodes.get('mixer').children[0];
-  documentListeners.pointerdown({target:osc1,preventDefault(){},stopImmediatePropagation(){}});
-  assert.equal(osc1.attributes['data-midi-selected'],'true');
-  state={...state,status:{...state.status,midi_cc_serial:1,midi_cc:23,midi_cc_value:99}};
+  state.status.midi_cc_serial=7;state.status.midi_cc=81;
+  const armOwner=vm.runInContext('learnOwner',context);assert.match(armOwner,/^[a-f0-9]{32}$/);
+  assert.equal(actions.at(-1).url,'/midi-learn');assert.equal(actions.at(-1).body.active,true);
+  documentListeners.pointerdown({type:'pointerdown',target:osc1,preventDefault(){},stopImmediatePropagation(){}});
+  await flush();assert.equal(osc1.attributes['data-midi-selected'],'true');
+  assert.equal(actions.at(-1).body.renew,true,'selecting a target snapshots the current native CC serial');
+  let mapsBefore=actions.filter(a=>a.url==='/midi-map').length;
+  await vm.runInContext('poll()',context);
+  assert.equal(actions.filter(a=>a.url==='/midi-map').length,mapsBefore,'a pre-selection CC is never assigned');
+  state={...state,status:{...state.status,midi_cc_serial:8,midi_cc:23,midi_cc_value:99}};
   await vm.runInContext('poll()',context);await flush();
-  assert.deepEqual(actions.at(-1).body,{key:'osc1',cc:23});assert.equal(actions.at(-1).url,'/midi-map');
+  assert.deepEqual(actions.at(-1).body,{key:'osc1',cc:23,owner:vm.runInContext('learnOwner',context)});assert.equal(actions.at(-1).url,'/midi-map');
   const mappedRaw=Array(Object.keys(controls).length).fill(-1),mappedSerial=Array(Object.keys(controls).length).fill(0),osc1Index=Object.keys(controls).indexOf('osc1');
   mappedRaw[osc1Index]=112;mappedSerial[osc1Index]=1;state={...state,values:{...state.values,osc1:.88},status:{...state.status,midi_mapped_raw:mappedRaw,midi_mapped_serial:mappedSerial},runtime:{...state.runtime,midi_maps:{osc1:23}}};
   await vm.runInContext('poll()',context);assert.equal(Number(osc1Fader.value),.88,'mapped hardware telemetry repaints the authoritative value');
   assert.equal(osc1.attributes['data-midi-cc'],'23');assert.equal(nodes.get('midi-map-list').children.length,1,'system view summarizes saved hardware mappings');
-  nodes.get('midi-map-done').onclick();assert.ok(!bodyClasses.has('midi-map-mode'));assert.equal(nodes.get('midi-map-banner').hidden,true);
+  nodes.get('midi-map-done').onclick();await flush();assert.ok(!bodyClasses.has('midi-map-mode'));assert.equal(nodes.get('midi-map-banner').hidden,true);
   nodes.get('save').onclick();await flush();assert.equal(actions.at(-1).url,'/save');assert.equal(actions.at(-1).epoch,'session-a');
-  nodes.get('apply-routes').onclick();await flush();assert.deepEqual(actions.at(-1).body,{midi_source:'Keys:midi',audio_left:'USB:l',audio_right:'USB:r'});
+  assert.equal(nodes.get('apply-routes').disabled,true,'unchanged routes cannot restart the instrument');
   state={...state,epoch:'session-b',runtime:{...state.runtime,restoring:true}};
   await vm.runInContext('poll()',context);assert.equal(nodes.get('mute').disabled,true);assert.equal(nodes.get('save').disabled,true);
   const actionCount=actions.length;
@@ -214,5 +223,45 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
   nodes.get('save').onclick();await flush();assert.equal(actions.at(-1).url,'/save');
   state={...state,runtime:{...state.runtime,preparation:false}};
   await vm.runInContext('poll()',context);assert.equal(fx.disabled,true,'restore transition temporarily gates edits');
+  state={...state,stale:false,epoch:'music',runtime:{...state.runtime,restoring:false,preparation:false,
+    active_preset:0,preset_dirty:true,startup_dirty:true,presets:[{name:'Verse'},{name:'Chorus'},null,null,null],
+    pad_bank:{used_bytes:1048576,limit_bytes:134217728,slots:2,remaining_seconds:5,slot_seconds:Array(12).fill(1)},
+    midi_maps:{osc1:23}},status:{routed:true,fault:0,blocks:300,midi_activity:18,last_note:60,last_velocity:91,last_midi_channel:3,
+    output_peak_l:.5,output_peak_r:.25,pickup_waiting:['osc1']},values:{...state.values,master:.3,output_mute:0}};
+  await vm.runInContext('poll()',context);
+  assert.match(nodes.get('sound-state').textContent,/Verse · edited · differs from startup/);
+  assert.match(nodes.get('check-midi').textContent,/channel 3 · last note C4 · velocity 91/);
+  assert.equal(nodes.get('stage-db-l').textContent,'-6.0 dB');
+  assert.equal(nodes.get('check-db-r').textContent,'-12.0 dB');
+  assert.equal(osc1.attributes['data-pickup'],'true');
+  assert.match(nodes.get('pad-capacity').textContent,/2\/12 pads · 1.0 \/ 128 MiB · 6 s/);
+  nodes.get('mute').onclick();await flush();assert.deepEqual(sent.at(-1),{key:'output_mute',value:1});
+  state.values.output_mute=1;await vm.runInContext('poll()',context);
+  assert.equal(nodes.get('mobile-mute').textContent,'Unmute');assert.ok(nodes.get('test-left').disabled);
+  nodes.get('mobile-mute').onclick();await flush();assert.deepEqual(sent.at(-1),{key:'output_mute',value:0});
+  state.values.output_mute=0;await vm.runInContext('poll()',context);
+  nodes.get('panic').onclick();await flush();assert.deepEqual(sent.at(-1),{key:'panic',value:1});
+  nodes.get('test-right').onclick();await flush();assert.deepEqual(sent.at(-1),{key:'test_tone',value:2});
+  nodes.get('bank-fx').onclick();assert.equal(nodes.get('mixer').attributes['data-bank'],'effects');
+  const initialActionCount=actions.length;
+  nodes.get('preset-store').onclick();nodes.get('preset-destination').value='1';nodes.get('preset-destination').onchange();
+  assert.equal(actions.length,initialActionCount,'choosing an occupied store destination never recalls it');
+  nodes.get('preset-name').value='Bridge';await nodes.get('preset-confirm').onclick();
+  assert.deepEqual(actions.at(-1).body,{slot:1,name:'Bridge'});assert.equal(actions.at(-1).url,'/preset-save');
+  const clearMap=nodes.get('midi-map-list').children[0].children.at(-1);clearMap.onclick();await flush();assert.equal(actions.at(-1).url,'/midi-unmap');
+  state.status.midi_connected=false;await vm.runInContext('poll()',context);
+  assert.match(nodes.get('check-summary').textContent,/Missing keyboard.*audio and pads continue/);assert.ok(nodes.get('midi-map').disabled);
+  state.status.midi_connected=true;await vm.runInContext('poll()',context);
+  await nodes.get('midi-map').onclick();
+  await vm.runInContext('learnLeaseAt=Date.now()-6000;poll()',context);await flush();
+  assert.equal(nodes.get('midi-map-banner').hidden,true);assert.match(nodes.get('notice').textContent,/timed out/);
+  await vm.runInContext('tapTimes=[Date.now()-500]',context);nodes.get('tap-tempo').onclick();await flush();
+  assert.equal(sent.at(-1).key,'bpm');assert.ok(Math.abs(sent.at(-1).value-120)<=1);
+  state.disconnected=true;await vm.runInContext('poll()',context);
+  const sentBefore=actions.length+sent.length;
+  assert.ok(presetNodes.every(b=>b.disabled));assert.ok(nodes.get('preset-store').disabled);
+  presetNodes[0].onclick();nodes.get('headphone-mute').listeners.click();nodes.get('panic').onclick();
+  await vm.runInContext("action('/routes',{});send('master',.3)",context);await flush();
+  assert.equal(actions.length+sent.length,sentBefore,'failed poll invalidates every mutation');
   console.log('PASS: relative pickup, gesture cancellation, state reconciliation, grouped controls, shimmer, bed actions, save/routes and recovery');
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -59,8 +59,68 @@ for(const [width,height] of [[1366,1024],[390,844]]){
   await call('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:width<500});
   for(const section of ['osc','piano','reverb','delay']){
     await evaluate(`view('edit');soundSection('${section}');window.scrollTo(0,0)`);
-    assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'),true);
+    assert.equal(await evaluate('document.documentElement.scrollWidth<=document.documentElement.clientWidth'),true);
   }
 }
-console.log('PASS: real Chrome smooth immediate envelopes, released touch highlight, device-free musical controls, tablet/phone overflow');
+// Verify the actual layout at phone and tablet sizes, all four work areas.
+await call('Accessibility.enable');
+for(const [width,height,phone] of [[320,844,true],[390,844,true],[768,1024,false],[844,390,true],[1024,768,false],[1366,1024,false]]){
+  await call('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:phone});
+  for(const tab of ['stage','check','edit','system']){
+    await evaluate(`view('${tab}');window.scrollTo(0,0)`);
+    assert.equal(await evaluate('document.documentElement.scrollWidth<=document.documentElement.clientWidth'),true,`${width} ${tab} horizontal overflow`);
+  }
+  await evaluate("view('stage');bank('mix')");
+  const visible=()=>evaluate("Array.from(document.querySelectorAll('#mixer label.performance')).filter(n=>n.getBoundingClientRect().width).map(n=>n.dataset.control)");
+  const undersized=await evaluate(`[...document.querySelectorAll('nav button,.header-actions button,#stage-panel button,#mixer input,#tone-controls input,#mobile-master input,#mobile-master button')].filter(el=>{
+    const b=el.getBoundingClientRect();return b.width>0&&(b.width<43.9||b.height<43.9);
+  }).map(el=>el.id||el.getAttribute('aria-label')||el.textContent)`);
+  assert.deepEqual(undersized,[],`${width}×${height} Stage touch targets`);
+  if(phone){
+    assert.deepEqual(await visible(),['osc1','osc2','piano','master']);
+    await evaluate("document.getElementById('bank-fx').click()");
+    assert.deepEqual(await visible(),['piano','cutoff','wet','master']);
+    assert.ok(await evaluate("document.getElementById('mobile-mute').getBoundingClientRect().height>=44"));
+    await evaluate("window.scrollTo(0,document.body.scrollHeight)");
+    assert.ok(await evaluate("document.getElementById('mobile-mute').getBoundingClientRect().bottom<=visualViewport.height+1"));
+  }else assert.equal((await visible()).length,6);
+  await evaluate("window.scrollTo(0,0)");
+  const tree=(await call('Accessibility.getFullAXTree')).nodes.filter(node=>!node.ignored);
+  const ax=(role,name)=>tree.find(node=>node.role?.value===role&&node.name?.value===name);
+  for(const tab of ['Stage','Sound','Soundcheck','System'])assert.ok(ax('button',tab),tab+' missing in AX tree');
+  const property=(node,key)=>node?.properties?.find(p=>p.name===key)?.value.value;
+  const cutoff=ax('slider','Synth filter cutoff · Hz'),master=ax('slider','Master');
+  assert.match(cutoff.description?.value,/Hz$/);assert.equal(cutoff.value.value,await evaluate('lastValues.cutoff'));assert.equal(property(cutoff,'orientation'),'vertical');
+  assert.match(master.description?.value,/%$/);assert.equal(master.value.value,await evaluate('Math.round(lastValues.master*100)'));
+  if(phone)assert.match(ax('slider','Master volume').description?.value,/%$/);
+  assert.ok(ax('button','Mute'),'Mute missing in AX tree');
+}
+// Synthetic status, local only. Capture interactions without a MIDI/audio device.
+await call('Page.addScriptToEvaluateOnNewDocument',{source:`
+window.posted=[];const rawFetch=window.fetch.bind(window);
+window.fetch=async function(path,opts){
+  if(opts?.method==='POST'){window.posted.push([path,JSON.parse(opts.body)]);return new Response(JSON.stringify(path==='/midi-learn'?{ok:true,serial:0,lease_seconds:6}:{queued:1}));}
+  const r=await rawFetch(path,opts);if(path!=='/status')return r;
+  const d=await r.json();d.stale=false;d.exited=null;d.status={routed:true,blocks:500,fault:0,midi_connected:true};
+  Object.assign(d.runtime,{restoring:false,preparation:false,midi_source:'Keys:MIDI',audio_left:'USB:Left',audio_right:'USB:Right',
+    devices:{midi:['Keys:MIDI'],audio:['USB:Left','USB:Right']},presets:[{name:'Verse'},{name:'Chorus'},null,null,null],active_preset:0});
+  return new Response(JSON.stringify(d));
+};`});
+await call('Page.reload');
+for(let i=0;i<50&&!(await evaluate("document.getElementById('audio-status')?.textContent==='AUDIO on'"));++i)await sleep(100);
+async function click(id){
+  const p=await evaluate(`(()=>{const el=document.getElementById(${JSON.stringify(id)});el.scrollIntoView({block:'center'});const b=el.getBoundingClientRect();return {x:b.x+b.width/2,y:b.y+b.height/2};})()`);
+  await call('Input.dispatchMouseEvent',{type:'mousePressed',...p,button:'left',clickCount:1});
+  await call('Input.dispatchMouseEvent',{type:'mouseReleased',...p,button:'left',clickCount:1});
+}
+await click('midi-map');await sleep(50);await click('volume-link-stage');await sleep(60);
+assert.equal(await evaluate('midiTarget'),'volume_link');assert.deepEqual(await evaluate("posted.filter(([path])=>path!=='/midi-learn')"),[],'learning a switch does not change the sound');
+await evaluate("document.getElementById('freeze-toggle').focus()");
+for(const type of ['keyDown','keyUp'])await call('Input.dispatchKeyEvent',{type,key:'Enter',code:'Enter',windowsVirtualKeyCode:13});
+await sleep(50);assert.equal(await evaluate('midiTarget'),'freeze');assert.deepEqual(await evaluate("posted.filter(([path])=>path!=='/midi-learn')"),[]);
+await click('midi-map-done');
+await click('preset-store');
+await evaluate("document.getElementById('preset-destination').value='1';document.getElementById('preset-destination').dispatchEvent(new Event('change'))");
+assert.deepEqual(await evaluate("posted.filter(([path])=>path!=='/midi-learn')"),[],'choosing the occupied store destination leaves the live sound alone');
+console.log('PASS: native Chrome controls, touch, calibrated soundcheck, four phone faders, six tablet faders, mobile Master, tabs, keyboard and pointer Learn, independent preset store');
 ws.close();

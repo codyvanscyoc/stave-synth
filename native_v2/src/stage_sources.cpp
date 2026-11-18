@@ -52,7 +52,7 @@ bool StagePatch::valid() const noexcept {
         wave1 < 0 || wave1 > 4 || wave2 < 0 || wave2 > 4 || octave1 < -3 || octave1 > 3 ||
         octave2 < -3 || octave2 > 3 || !range(blend1, 0, 1) || !range(blend2, 0, 1) ||
         !range(detune, 0, 1) || !range(spread, 0, 1) || !range(pan1, -1, 1) || !range(pan2, -1, 1) ||
-        !range(piano_velocity_curve, 1, 4) || !range(osc_bend_semitones, -2, 2)) return false;
+        !range(piano_velocity_curve, .5, 4) || !range(osc_bend_semitones, -2, 2)) return false;
     for (const auto& lfo : poly_lfo)
         if (!range(lfo.rate, .05, 20) || !range(lfo.depth, 0, .7) || lfo.shape < 0 || lfo.shape > 6) return false;
     return true;
@@ -150,7 +150,7 @@ struct StageSources::Impl final : StageNoteSink, StageVoiceSink {
     void osc_off(std::uint8_t n) noexcept override { if (!voices.note_off(n)) fault = true; }
     void piano_on(std::uint8_t n, double velocity) noexcept override {
         if (fault) return; // A failed oscillator phase handoff already stopped this command.
-        const int value = std::clamp(static_cast<int>(std::pow(velocity, 1 / std::max(1., patch.piano_velocity_curve)) * 127), 1, 127);
+        const int value = std::clamp(static_cast<int>(std::pow(velocity, 1 / patch.piano_velocity_curve) * 127), 1, 127);
         const int status = fluid_synth_noteon(piano.get(), 0, n, value);
         fluid_check(status);
         if (status == FLUID_OK) velocity_tracker = .6 * velocity_tracker + .4 * velocity;
@@ -252,6 +252,12 @@ StageSources::~StageSources() = default;
 bool StageSources::configure(const StagePatch& p) noexcept { return impl_->configure(p); }
 bool StageSources::command(std::uint64_t b, const StageCommand& e) noexcept { return impl_->command(b, e); }
 bool StageSources::render_block(bool render_oscillators) noexcept { return impl_->render(render_oscillators); }
+void StageSources::panic() noexcept {
+    impl_->notes.all_notes_off();
+    impl_->voices.silence_all();
+    impl_->fluid_check(fluid_synth_all_sounds_off(impl_->piano.get(),0));
+    impl_->chain.clear();
+}
 void StageSources::stop() noexcept { impl_->stop(); }
 bool StageSources::healthy() const noexcept { return !impl_->fault && !impl_->stopped; }
 std::uint64_t StageSources::frame_position() const noexcept { return impl_->position; }

@@ -46,8 +46,11 @@ fragment=$(systemctl --user show stave-native.service -p FragmentPath --value ||
 if [[ -n $fragment && $fragment != "$unit" ]]; then
     fail "A different stave-native.service is already installed at $fragment."
 fi
-if [[ -L $unit ]] || { [[ -e $unit ]] && ! cmp -s "$unit" "$base/current/service.unit"; }; then
-    fail "Existing $unit belongs to another installation."
+if [[ -e $unit || -L $unit ]]; then
+    [[ -f "$base/.managed" && ! -L $unit ]] || fail "Existing $unit belongs to another installation."
+    if ! cmp -s "$unit" "$base/current/service.unit" && ! cmp -s "$unit" "$unit_src"; then
+        fail "Existing $unit belongs to another installation."
+    fi
 fi
 drop_ins=$(systemctl --user show stave-native.service -p DropInPaths --value || true)
 if [[ -n $drop_ins || -d "$unit.d" ]]; then
@@ -97,17 +100,45 @@ if "$build"; then
     /usr/bin/python3 "$root/tools/build_pi4_native.py" "$stage/bin/audition-jack"
 else
     install -m 755 "$prebuilt" "$stage/bin/audition-jack"
+    install -m 644 "$prebuilt.build.json" "$stage/bin/audition-jack.build.json"
 fi
+/usr/bin/python3 - "$stage/bin/audition-jack" <<'PYTHON'
+import hashlib, json, sys
+from pathlib import Path
+engine = Path(sys.argv[1])
+record = json.loads(engine.with_name(engine.name + ".build.json").read_bytes())
+if record.get("format") != 1 or record.get("binary_sha256") != hashlib.sha256(engine.read_bytes()).hexdigest():
+    raise SystemExit("Stave binary does not match its build receipt.")
+PYTHON
 linkage=$(ldd "$stage/bin/audition-jack") || fail "Native binary is incompatible. Try --build."
 [[ $linkage != *"not found"* ]] || fail "Missing native libraries: $linkage"
 # Exercise the actual import graph before switching any installed files.
 /usr/bin/python3 -B "$stage/tools/native_v2_stage.py" --help >/dev/null
 
 install -m 644 "$unit_src" "$stage/service.unit"
-release_id=$(cd "$stage" && sha256sum service.unit bin/audition-jack "${files[@]}" | sha256sum | cut -d' ' -f1)
+expected_files=(service.unit bin/audition-jack bin/audition-jack.build.json "${files[@]}")
+digest_runtime() {
+    local rel
+    [[ -x "$1/bin/audition-jack" ]] || return 1
+    for rel in "${expected_files[@]}"; do
+        [[ -f "$1/$rel" && ! -L "$1/$rel" ]] || return 1
+    done
+    (cd "$1" && sha256sum "${expected_files[@]}" | sha256sum | cut -d' ' -f1)
+}
+release_id=$(digest_runtime "$stage")
 release="$base/releases/$release_id"
-if [[ ! -d $release ]]; then mv -- "$stage" "$release"; fi
 old_release=$(readlink "$base/current" || true)
+# A damaged release may still be running. Stage its repair in a fresh
+# directory so the current process retains its files until the atomic switch.
+if [[ -n $old_release && $old_release == "$base/releases/"* && -d $old_release ]] &&
+        [[ $(digest_runtime "$old_release" 2>/dev/null || true) == "$release_id" ]]; then
+    release=$old_release
+elif [[ ! -d $release ]]; then
+    mv -- "$stage" "$release"
+elif [[ $(digest_runtime "$release" 2>/dev/null || true) != "$release_id" ]]; then
+    release=$(mktemp -d "$base/releases/$release_id.repair.XXXXXXXX")
+    mv -T -- "$stage" "$release"
+fi
 # Headless boots need both a lingering user manager and device access.
 change_group=false
 if ! id -nG | tr ' ' '\n' | grep -Fxq audio; then
@@ -179,8 +210,8 @@ activate() {
         systemctl --user start stave-native.service || return 1
     fi
     for attempt in {1..20}; do
-        if curl -fs --noproxy '*' --max-time 2 http://127.0.0.1:8082/status |
-            /usr/bin/python3 -c 'import json,sys; s=json.load(sys.stdin); assert s.get("instance")=="native-v2-stage" and "127.0.0.1" in s["runtime"]["network"]["addresses"]' 2>/dev/null; then
+        if curl -fs --noproxy '*' --max-time 2 http://127.0.0.1:8082/status > "$temp/status.json" &&
+            /usr/bin/python3 -c 'import json,sys; s=json.load(sys.stdin); assert s.get("instance")=="native-v2-stage" and "127.0.0.1" in s["runtime"]["network"]["addresses"]' < "$temp/status.json" 2>/dev/null; then
             return 0
         fi
         sleep 1
@@ -190,7 +221,23 @@ activate() {
 if ! activate; then
     fail "Startup check failed. See journalctl --user -u stave-native.service -n 40."
 fi
-printf 'Stave is running at http://%s.local:8082\n' "$(hostname -s)"
+/usr/bin/python3 - "$temp/status.json" "$(hostname -s)" <<'PYTHON'
+import ipaddress, json, sys
+with open(sys.argv[1]) as stream:
+    network = json.load(stream)["runtime"]["network"]
+lan = [address for address in network["addresses"] if not ipaddress.ip_address(address).is_loopback]
+if lan:
+    for address in lan:
+        print(f"Open http://{address}:8082 on the same LAN.")
+    print(f"Bonjour address: http://{sys.argv[2]}.local:8082")
+else:
+    print("Stave is running on http://127.0.0.1:8082 on the Pi.")
+    print("For another device, connect wlan0 or eth0 to a network with a private IPv4 address.")
+if network.get("discovery_error"):
+    print("Network discovery:", network["discovery_error"])
+for address, error in network.get("errors", {}).items():
+    print(f"Listener {address}: {error}")
+PYTHON
 echo "In System, select one MIDI input and the left and right audio outputs."
 if "$change_group"; then
     echo "Reboot the Pi once to give the instrument user access to headless audio devices."

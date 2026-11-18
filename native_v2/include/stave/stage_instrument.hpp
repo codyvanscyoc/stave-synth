@@ -97,6 +97,10 @@ public:
         return healthy()&&bed_&&bed_->trigger(slot,rise,cutoff);
     }
     bool fade_bed(bool out,double seconds=5) noexcept { return healthy()&&bed_&&bed_->fade(out,seconds); }
+    void panic() noexcept {
+        if(bed_) bed_->silence_all();
+        sources_.panic(); room_.clear(); ambience_.panic(); master_.reset_limiter();
+    }
     void release_bed() noexcept { if(bed_) bed_->release(); }
     bool render_block() noexcept {
         if(!healthy()) { stop(); return false; }

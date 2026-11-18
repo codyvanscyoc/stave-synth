@@ -82,6 +82,7 @@ SAFE_TESTS = (
     "test_native_bed_assets.py",
     "test_native_v2_stage.py",
     "test_headphone_output.py",
+    "test_pi4_release.py",
 )
 
 
@@ -100,7 +101,7 @@ def main() -> int:
     for name in python_files:
         ast.parse((ROOT / name).read_text(encoding="utf-8"), filename=name)
     print(f"Parsed {len(python_files)} Python files (no application imports).", flush=True)
-    for name in ("stave-synth.sh", "install.sh", "faust/build.sh"):
+    for name in ("stave-synth.sh", "install.sh", "install-pi4.sh", "faust/build.sh"):
         subprocess.run(["bash", "-n", str(ROOT / name)], check=True, cwd=ROOT)
     subprocess.run(["node", "--check", str(ROOT / "ui/script.js")], check=True, cwd=ROOT)
 

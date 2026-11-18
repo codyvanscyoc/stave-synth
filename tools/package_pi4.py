@@ -4,6 +4,7 @@ import argparse
 import gzip
 import hashlib
 import io
+import json
 from pathlib import Path
 import subprocess
 import tarfile
@@ -44,6 +45,17 @@ def package(revision, binary, output):
     for path in paths:
         if not any(name == path or name.startswith(path + "/") for name in manifest):
             raise ValueError(f"Missing release input {path} at {commit}")
+    receipt_file = binary.with_name(binary.name + ".build.json")
+    receipt_data = receipt_file.read_bytes()
+    receipt = json.loads(receipt_data)
+    if receipt.get("format") != 1 or receipt.get("binary_sha256") != hashlib.sha256(engine).hexdigest():
+        raise ValueError("ARM64 executable does not match its build receipt")
+    native_paths = [p for p in manifest if p.startswith("faust/") or
+                    p == "tools/build_pi4_native.py" or
+                    (p.startswith(("native_v2/include/", "native_v2/src/")) and p.endswith((".hpp", ".cpp")))]
+    expected = {p: hashlib.sha256(git("show", f"{commit}:{p}")).hexdigest() for p in native_paths}
+    if receipt.get("source_sha256") != expected:
+        raise ValueError(f"Native build sources do not match release revision {commit}")
     output.mkdir(parents=True, exist_ok=False)
     artifact = output / "stave-synth-pi4-arm64.tar.gz"
     with artifact.open("wb") as raw, gzip.GzipFile(filename="", fileobj=raw, mode="wb", mtime=0) as gz:
@@ -52,6 +64,7 @@ def package(revision, binary, output):
                 add(archive, name, git("show", f"{commit}:{name}"),
                     0o755 if name == "install-pi4.sh" else 0o644, timestamp)
             add(archive, "bin/audition-jack", engine, 0o755, timestamp)
+            add(archive, "bin/audition-jack.build.json", receipt_data, 0o644, timestamp)
             add(archive, "SOURCE_COMMIT", (commit + "\n").encode(), 0o644, timestamp)
     digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
     (output / "SHA256SUMS").write_text(f"{digest}  {artifact.name}\n")

@@ -24,6 +24,10 @@ constexpr std::array<Preset,7> presets{{
 double plate_decay(double seconds) noexcept { return std::clamp(.35+seconds*.08,0.,.97); }
 double drone_decay(double seconds) noexcept { return seconds<=.05?0:std::min(std::pow(10.,-3/(seconds*110)),.999); }
 }
+std::array<double,5> reverb_recipe(ReverbType type) noexcept {
+    const auto& p=presets[unsigned(type)];
+    return {p.decay,p.predelay,p.low,p.high,p.damp};
+}
 bool DelayConfig::valid() const noexcept {
     return division_valid(division)&&division_valid(reverse_division)&&range(bpm,20,300)&&
         range(milliseconds,1,1000)&&range(offset_ms,-200,200)&&range(rate,-10,10)&&rate!=0&&

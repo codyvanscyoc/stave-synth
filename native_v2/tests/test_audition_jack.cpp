@@ -112,7 +112,20 @@ int main(int argc,char** argv) {
     args[3]="stave-v2-stage-fake"; args[7]="0"; args[8]="--allow-stage-candidate";
     for(unsigned i=0;i<9;++i) pointers[i]=args[i].data();
     open_count=close_count=activate_count=deactivate_count=connect_count=registrations=0;
+    check(pipe(pipe_fds)==0&&dup2(pipe_fds[0],STDIN_FILENO)>=0);
+    close(pipe_fds[0]);
+    const std::string commands="learn 1 1\nmap 2 21 master\nunmap 3 master\nlearn 4 0\nlearn 5 9\nstop\n";
+    check(write(pipe_fds[1],commands.data(),commands.size())==ssize_t(commands.size()));
+    close(pipe_fds[1]);
+    std::ostringstream replies; auto* previous_stdout=std::cout.rdbuf(replies.rdbuf());
     check(audition_main(9,pointers.data())==0&&open_count==1&&close_count==1);
+    std::cout.rdbuf(previous_stdout);
+    const auto text=replies.str();
+    check(text.find("{\"type\":\"mapped\",\"id\":1,\"ok\":true,\"midi_cc_serial\":0}")!=std::string::npos);
+    check(text.find("{\"type\":\"mapped\",\"id\":2,\"ok\":true}")!=std::string::npos);
+    check(text.find("{\"type\":\"mapped\",\"id\":3,\"ok\":true}")!=std::string::npos);
+    check(text.find("{\"type\":\"mapped\",\"id\":4,\"ok\":true,\"midi_cc_serial\":0}")!=std::string::npos);
+    check(text.find("{\"type\":\"mapped\",\"id\":5,\"ok\":false}")!=std::string::npos);
     args[2]="256"; pointers[2]=args[2].data(); open_count=0;
     check(audition_main(9,pointers.data())==1&&open_count==0); //candidate stays512
     check(dup2(saved_stdin,STDIN_FILENO)>=0); close(saved_stdin);

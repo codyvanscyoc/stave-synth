@@ -31,6 +31,7 @@ public:
     bool trigger(unsigned slot,double rise=0,double cutoff=3000) noexcept {
         return healthy()&&bank_->trigger(slot,rise,cutoff);
     }
+    void silence_all() noexcept { bank_->stop(); }
     void release() noexcept { bank_->release_all(); }
     bool fade(bool out,double seconds=5) noexcept {
         if(!healthy()||!std::isfinite(seconds)||seconds<.02||seconds>30) return false;

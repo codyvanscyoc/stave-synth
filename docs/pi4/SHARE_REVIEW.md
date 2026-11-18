@@ -1,5 +1,25 @@
 # Raspberry Pi 4 native release review
 
+## Beta 2 · performance and usability fixes
+
+The release targets Raspberry Pi 4 and 64-bit Raspberry Pi OS Trixie. The following checks used the native source and the ARM64 engine built on the 2 GB Pi 4. SHA-256 for the engine is `80f5fb9f845d24936a6b86c91588cd02f615d62c8f81f2a4b9c5e0304794e193`. The download contains its build receipt, source revision and installer. The release build checks the receipt against every native input in the selected Git revision.
+
+| Area | Behavior verified |
+| --- | --- |
+| Audio continuity | A fifth 40-second stereo pad that exceeds the bank limit is refused before any slot is changed. A damaged bank starts piano and oscillators with a pad warning. Two Record commands in one block leave playback healthy. |
+| State and presets | The engine reports the mix it actually rendered after hardware and browser changes. Mute preserves Master. Panic releases playing state and mutes output. Reconnecting a browser discards old actions. Storing to an occupied slot keeps the edited sound live until confirmed. |
+| MIDI and setup | The Soundcheck view guides keyboard and stereo selection, displays note, velocity and channel, provides output meters, and has separate timed left/right tones. Applying an unchanged route leaves audio running. Hardware pickup protects recalled values. Learn temporarily suspends mapped CC changes while a control is being assigned. |
+| Stage and Sound | A compact mobile mixer has a separate filter/effects view and persistent Master and Mute. The wider Stage layout retains six faders. Tap tempo, keyboard-accessible MIDI Learn, formatted slider values and visible preset/startup edit indicators are included. |
+| Update and recovery | A Pi-side installer fixture exercised installation, repeat installation, corrupted-file repair and rollback, with system service changes simulated. The distributed service command was exercised against a fresh state directory. |
+
+The offline suite passed **642 Python tests** and both JavaScript suites. Native fixtures checked 256- and 512-frame rendering, linked-control order, duplicate recording commands and 7,552 native/Python conversions covering all 128 CC positions for every mappable control. Chromium exercised six viewport sizes, including 844 × 390 phone landscape and 1024 × 768 tablet landscape. Visible Stage, header and navigation controls measured at least 44 × 44 CSS pixels. The accessibility tree exposed frequency in Hz and gain in percent. Interaction checks covered touch, keyboard Learn and an occupied preset destination.
+
+On a private 48 kHz, 512-frame PipeWire graph on the Pi, a virtual keyboard played middle C into a measured stereo sink. The short left/right test tones peaked at about 0.01265 on their assigned channel and below 0.000002 on the other. During a virtual keyboard disconnect, a recorded pad continued to sound on both channels. Reconnecting the selected MIDI port kept the same engine session. In that run the engine reported zero faults, xruns and over-budget callbacks. The same graph exercised CC reassignment with Master protected, preset recall, recording, Panic and audio restart. Immediately after two hardware fader moves, startup and preset saves independently captured the new Master values on disk.
+
+**Physical checks still open.** The original Yamaha keyboard and interface were unplugged. Physical key-to-speaker latency, a real iPad with VoiceOver, rehearsal-length playing and a fresh-card install and reboot on a second Raspberry Pi still require the actual equipment.
+
+## Beta 1 · original release baseline
+
 Reviewed November 18, 2026 for the first downloadable Pi 4 native beta. The release targets a Raspberry Pi 4 running 64-bit Raspberry Pi OS Trixie. The test instrument was a Pi 4 Model B Rev 1.5 with about 2 GB RAM and a Debian 13.6 ARM64 userland.
 
 ## Matching the stage instrument

@@ -38,6 +38,7 @@ private:
 };
 
 enum class ReverbType { Wash, Hall, Room, Plate, Bloom, Drone, Ghost };
+std::array<double,5> reverb_recipe(ReverbType type) noexcept;
 enum class ReverbControl { Decay, LowCut, HighCut, Damp, Shimmer, Noise, Predelay };
 // Wet-only original three-backend dispatcher. Controls are ordered operations:
 // set_type applies its preset only on a type change, then explicit setters can

@@ -168,6 +168,9 @@ class AuditionControlTests(unittest.TestCase):
         self.assertEqual(audition.midi_value("cutoff", 127), 20000)
         self.assertEqual(audition.midi_value("cutoff", 0, {"cutoff_min": 200, "cutoff_max": 5000}), 200)
         self.assertEqual(audition.midi_value("cutoff", 127, {"cutoff_min": 200, "cutoff_max": 5000}), 5000)
+        fractional = {"cutoff_min": 400.5, "cutoff_max": 800.5}
+        self.assertEqual(audition.midi_value("cutoff", 0, fractional), 401)
+        self.assertEqual(audition.midi_value("cutoff", 127, fractional), 800.5)
         c = self.controller()
         sequence = c.map_cc({"key": "osc1", "cc": 21})
         self.assertEqual(c.outgoing.get_nowait(), ("map", sequence, 21, "osc1"))
@@ -182,6 +185,95 @@ class AuditionControlTests(unittest.TestCase):
         c.receive({"type": "status", "instance": "native-v2-audition", "fault": 0, "applied": change,
                    "routed": True, "blocks": 3, "midi_mapped_raw": raw, "midi_mapped_serial": serials})
         self.assertEqual(c.snapshot()["values"]["osc1"], .2, "old MIDI telemetry must not overwrite a newer UI edit")
+
+    def test_mapping_receipts_correlate_rejections_timeouts_and_disconnect(self):
+        c = self.controller()
+        first = c.clear_mapping("master")
+        second = c.map_cc({"key": "osc1", "cc": 21})
+        self.assertEqual(c.outgoing.get_nowait(), ("unmap", first, None, "master"))
+        c.receive({"type": "mapped", "id": second, "ok": True})
+        c.receive({"type": "mapped", "id": first, "ok": False})
+        c.wait_mapping(second)
+        with self.assertRaises(ValueError):
+            c.wait_mapping(first)
+        expired = c.clear_mapping("master")
+        with self.assertRaises(ValueError):
+            c.wait_mapping(expired, timeout=0)
+        c.receive({"type": "mapped", "id": expired, "ok": True})
+        self.assertNotIn(expired, c.map_receipts)
+        lost = c.clear_mapping("osc2")
+        c.child.poll.return_value = 1
+        with self.assertRaises(ValueError):
+            c.wait_mapping(lost)
+        self.assertEqual(c.snapshot()["map_pending"], 0)
+
+    def test_learning_ack_returns_the_native_cc_baseline(self):
+        c = self.controller()
+        for enabled in (True, False):
+            seq = c.set_learning(enabled)
+            self.assertEqual(c.outgoing.get_nowait(), ("learn", seq, int(enabled), None))
+            c.receive({"type": "mapped", "id": seq, "ok": True, "midi_cc_serial": 27})
+            self.assertEqual(c.wait_mapping(seq), 27)
+        seq = c.set_learning(True)
+        c.receive({"type": "mapped", "id": seq, "ok": True})
+        with self.assertRaises(ValueError):
+            c.wait_mapping(seq)
+
+    def test_every_native_control_name_default_and_midi_value_matches_python(self):
+        fixture = r"""
+#include "stave/audition_session.hpp"
+#include <iomanip>
+#include <iostream>
+int main() {
+    std::cout << std::setprecision(17);
+    for (unsigned i=0; i<stave::audition_names.size(); ++i) {
+        auto c=static_cast<stave::AuditionControl>(i);
+        double low, high, inside;
+        if (!(std::cin >> low >> high >> inside)) return 2;
+        std::cout<<stave::audition_names[i]<<" "<<stave::initial_controls[i]
+                 <<" "<<stave::audition_value_valid(c,low)<<" "<<stave::audition_value_valid(c,high)
+                 <<" "<<stave::audition_value_valid(c,low-.001)<<" "<<stave::audition_value_valid(c,high+.001)
+                 <<" "<<stave::audition_value_valid(c,inside);
+        if (stave::audition_mappable(c)) for(unsigned raw=0; raw<128; ++raw)
+            std::cout<<" "<<stave::audition_midi_value(c,raw);
+        std::cout<<"\n";
+    }
+}
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, binary = root / "controls.cpp", root / "controls"
+            source.write_text(fixture)
+            subprocess.run(["c++", "-std=c++17", "-I", str(ROOT / "native_v2/include"),
+                            str(source), "-o", str(binary)], check=True, capture_output=True)
+            bounds = "".join(f"{lo} {hi} {lo + .125}\n" for lo, hi, _, _ in audition.CONTROLS.values())
+            rows = subprocess.check_output([str(binary)], input=bounds, text=True).splitlines()
+        self.assertEqual(len(rows), len(audition.CONTROLS))
+        for row, (key, definition) in zip(rows, audition.CONTROLS.items()):
+            name, initial, low_ok, high_ok, below_ok, above_ok, fractional_ok, *mapped = row.split()
+            self.assertEqual((low_ok, high_ok, below_ok, above_ok), ("1", "1", "0", "0"), key)
+            self.assertEqual(fractional_ok, "0" if key in audition.INTEGRAL else "1", key)
+            self.assertEqual(name, key)
+            self.assertEqual(float(initial), definition[3], key)
+            self.assertEqual(len(mapped), 128 if key in audition.MIDI_MAPPABLE else 0, key)
+            for raw, native in enumerate(mapped):
+                self.assertAlmostEqual(float(native), audition.midi_value(key, raw), places=7, msg=f"{key} CC {raw}")
+
+    def test_native_snapshot_precedes_saving_earlier_midi_later_mute(self):
+        c = self.controller()
+        seq = c.submit({"key":"master", "value":0})
+        values = [entry[3] for entry in audition.CONTROLS.values()]
+        raw = [-1]*len(values); serials = [0]*len(values)
+        master = list(audition.CONTROLS).index("master")
+        raw[master], serials[master] = 127, 1
+        report = dict(type="status", instance=c.instance, blocks=10, applied=seq, routed=True,
+                      fault=0, control_values=values, linked_offset=0, midi_mapped_raw=raw,
+                      midi_mapped_serial=serials)
+        c.receive(report)
+        self.assertEqual(c.snapshot()["values"]["master"], 0)
+        values[master] = 1
+        c.receive(dict(report, blocks=11, control_values=values))
+        self.assertEqual(c.snapshot()["values"]["master"], 1)
 
     def test_same_origin_and_host_guards(self):
         c = self.controller()
@@ -209,7 +301,7 @@ class AuditionControlTests(unittest.TestCase):
         subprocess.run(["node", "--check", "-"], input=javascript, text=True, capture_output=True, check=True)
         self.assertIn("Tap an outlined Stave control, then move one hardware knob", html)
         self.assertIn("data-midi-selected", html)
-        self.assertIn("512 is the accepted listening profile", html)
+        self.assertIn("48 kHz with 512-frame buffers", html)
         self.assertIn("pending.clear()", html)
 
     def test_native_control_names_match_and_no_service_mutation(self):

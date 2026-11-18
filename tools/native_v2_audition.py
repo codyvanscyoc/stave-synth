@@ -54,15 +54,18 @@ CONTROLS = {
     "octave1": (-3, 3, 1, 0), "octave2": (-3, 3, 1, 0),
     "pan1": (-1, 1, .01, 0), "pan2": (-1, 1, .01, 0),
     "detune": (0, 1, .001, .07), "spread": (0, 1, .001, .85),
-    "piano_lowcut": (20, 500, 1, 20), "piano_velocity": (1, 4, .01, 1),
+    "piano_lowcut": (20, 500, 1, 20), "piano_velocity": (.5, 4, .01, 1),
     "osc1_reverb": (0, 1, .01, 1), "osc2_reverb": (0, 1, .01, 1),
     "piano_delay": (0, 1, .01, 0), "filter_slope": (0, 1, 1, 0),
     "piano_filter": (0, 1, 1, 0), "bpm": (40, 240, 1, 120),
     "delay_division": (0, 8, 1, 3),
+    "midi_channel": (0, 16, 1, 0), "minimum_velocity": (1, 127, 1, 10),
+    "midi_pickup": (0, 1, 1, 1), "test_tone": (0, 2, 1, 0),
+    "output_mute": (0, 1, 1, 0), "panic": (0, 1, 1, 0),
 }
-INTEGRAL = {"wave1", "wave2", "shimmer", "reverb", "freeze", "release_all", "bed_key", "bed_mellow", "bed_fade", "bed_release", "envelope_link", "volume_link", "master_lowcut", "record_start", "record_stop", "transpose", "piano_octave", "octave1", "octave2", "filter_slope", "piano_filter", "delay_division"}
+INTEGRAL = {"midi_channel", "minimum_velocity", "midi_pickup", "test_tone", "output_mute", "panic", "wave1", "wave2", "shimmer", "reverb", "freeze", "release_all", "bed_key", "bed_mellow", "bed_fade", "bed_release", "envelope_link", "volume_link", "master_lowcut", "record_start", "record_stop", "transpose", "piano_octave", "octave1", "octave2", "filter_slope", "piano_filter", "delay_division"}
 MIDI_RESERVED = frozenset((64, 66, 120, 123))
-MIDI_UNMAPPABLE = frozenset(("release_all", "bed_key", "bed_fade", "bed_release", "record_start", "record_stop",
+MIDI_UNMAPPABLE = frozenset(("midi_channel", "minimum_velocity", "midi_pickup", "test_tone", "output_mute", "panic", "release_all", "bed_key", "bed_fade", "bed_release", "record_start", "record_stop",
                              "reverb_lowcut", "reverb_highcut", "delay_lowcut", "delay_highcut",
                              "piano_lowcut", "piano_velocity", "filter_slope", "piano_filter",
                              "cutoff_min", "cutoff_max"))
@@ -73,18 +76,21 @@ def midi_value(key, raw, values=None):
     if key not in MIDI_MAPPABLE or type(raw) is not int or not 0 <= raw <= 127:
         raise ValueError("Invalid MIDI mapping value")
     minimum, maximum, step, _ = CONTROLS[key]
+    if key in ("attack", "release"):
+        step = 1  # Legacy MIDI mappings use milliseconds independently of the browser grid.
     if key == "cutoff" and values is not None:
         minimum = values.get("cutoff_min", minimum)
         maximum = values.get("cutoff_max", maximum)
         value = minimum + (maximum - minimum) * raw / 127
-    else:
-        value = minimum + (maximum - minimum) * raw / 127
+        return min(maximum, max(minimum, math.floor(value + .5)))
+    value = minimum + (maximum - minimum) * raw / 127
     value = min(maximum, max(minimum, minimum + math.floor((value - minimum) / step + .5) * step))
     return int(value) if key in INTEGRAL else round(value, 8)
 
 
 def validate_midi_mapping(data):
-    if (not isinstance(data, dict) or set(data) != {"key", "cc"} or data["key"] not in MIDI_MAPPABLE or
+    if (not isinstance(data, dict) or set(data) != {"key", "cc"} or
+            not isinstance(data["key"], str) or data["key"] not in MIDI_MAPPABLE or
             type(data["cc"]) is not int or not 0 <= data["cc"] < 128 or data["cc"] in MIDI_RESERVED):
         raise ValueError("Choose a mappable control and a non-reserved MIDI CC")
     return data["key"], data["cc"]
@@ -181,11 +187,15 @@ class Controller:
         self.sequence = 0
         self.pending = {}
         self.map_pending = {}
+        self.map_receipts = {}
+        self.map_condition = threading.Condition(self.lock)
+        self.status_condition = threading.Condition(self.lock)
         self.mapped_serials = [0] * len(CONTROLS)
         self.values = {k: v[3] for k, v in CONTROLS.items()}
         self.status = {}
         self.last_status = 0
         self.last_progress = 0
+        self.resolved_blocks = 0
         self.error = None
         self.volume_link_offset = None
 
@@ -221,6 +231,19 @@ class Controller:
 
     def map_cc(self, data):
         key, cc = validate_midi_mapping(data)
+        return self._mapping("map", key, cc)
+
+    def clear_mapping(self, key):
+        if not isinstance(key, str) or key not in MIDI_MAPPABLE:
+            raise ValueError("Unknown MIDI assignment")
+        return self._mapping("unmap", key, None)
+
+    def set_learning(self, enabled):
+        if type(enabled) is not bool:
+            raise ValueError("Expected MIDI Learn on or off")
+        return self._mapping("learn", None, int(enabled))
+
+    def _mapping(self, action, key, cc):
         with self.lock:
             if (self.child.poll() is not None or self.status.get("fault", 1) or not self.status.get("routed") or
                     time.monotonic() - self.last_status > 3 or time.monotonic() - self.last_progress > 3):
@@ -229,8 +252,40 @@ class Controller:
                 raise ValueError("Control backlog full; wait for acknowledgment")
             self.sequence += 1
             self.map_pending[self.sequence] = (key, cc)
-            self.outgoing.put_nowait(("map", self.sequence, cc, key))
+            self.outgoing.put_nowait((action, self.sequence, cc, key))
             return self.sequence
+
+    def wait_mapping(self, seq, timeout=1.5):
+        deadline = time.monotonic() + timeout
+        with self.map_condition:
+            while seq in self.map_pending and self.child.poll() is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self.map_condition.wait(min(remaining, .1))
+            self.map_pending.pop(seq, None)
+            ok, baseline = self.map_receipts.pop(seq, (False, None))
+            if not ok:
+                raise ValueError("MIDI assignment was not acknowledged")
+            return baseline
+
+    def wait_for_save_snapshot(self, after_blocks, timeout=2.25):
+        """Wait beyond the status visible when Save was pressed, or refuse the write."""
+        deadline = time.monotonic() + timeout
+        with self.status_condition:
+            while True:
+                now = time.monotonic()
+                if (self.child.poll() is not None or self.pending or self.map_pending or
+                        self.status.get("fault", 1) or not self.status.get("routed") or
+                        "control_values" not in self.status or now - self.last_progress > 3):
+                    raise ValueError("Wait for healthy acknowledged controls before saving")
+                if self.resolved_blocks > after_blocks:
+                    return
+                remaining = deadline - now
+                if remaining <= 0:
+                    raise ValueError("The audio engine did not confirm current sound controls in time")
+                # Detect a lost child even when the status reader gets no final line.
+                self.status_condition.wait(min(remaining, .1))
 
     def receive(self, message):
         with self.lock:
@@ -241,7 +296,16 @@ class Controller:
                     self.error = f"Native owner rejected control {seq}"
             elif message.get("type") == "mapped":
                 seq = message.get("id")
-                self.map_pending.pop(seq, None)
+                pending = self.map_pending.pop(seq, None)
+                if pending is not None:
+                    baseline = message.get("midi_cc_serial")
+                    ok = message.get("ok") is True
+                    if pending[0] is None and (type(baseline) is not int or baseline < 0):
+                        ok = False
+                    self.map_receipts[seq] = (ok, baseline)
+                    if len(self.map_receipts) > 96:
+                        del self.map_receipts[next(iter(self.map_receipts))]
+                    self.map_condition.notify_all()
                 if not message.get("ok"):
                     self.error = f"Native owner rejected MIDI mapping {seq}"
             elif message.get("type") == "status" and message.get("instance") == self.instance:
@@ -249,6 +313,18 @@ class Controller:
                     self.last_progress = time.monotonic()
                 self.status = message
                 self.last_status = time.monotonic()
+                resolved = message.get("control_values")
+                if resolved is not None:
+                    if (not isinstance(resolved, list) or len(resolved) != len(CONTROLS) or
+                            any(type(v) not in (float, int) or not math.isfinite(v) for v in resolved)):
+                        raise ValueError("Invalid native control snapshot")
+                    self.values = dict(zip(CONTROLS, resolved))
+                    self.volume_link_offset = message["linked_offset"] if self.values["volume_link"] else None
+                    self.pending = {seq: item for seq, item in self.pending.items() if seq > message["applied"]}
+                    self.resolved_blocks = message.get("blocks", 0)
+                    self.status_condition.notify_all()
+                    return
+                # Older audition binaries did not publish resolved native targets.
                 for seq in sorted(list(self.pending)):
                     if seq <= message.get("applied", 0):
                         key, value = self.pending.pop(seq)
@@ -275,10 +351,10 @@ class Controller:
     def read(self):
         try:
             while True:
-                line = self.child.stdout.readline(4097)
+                line = self.child.stdout.readline(16385)
                 if not line:
                     break
-                if len(line) > 4096:
+                if len(line) > 16384:
                     raise ValueError("Oversized native telemetry")
                 self.receive(json.loads(line))
         except (OSError, ValueError, TypeError) as error:
@@ -292,7 +368,13 @@ class Controller:
                     item = self.outgoing.get(timeout=.2)
                 except queue.Empty:
                     continue
-                if item[0] == "map":
+                if item[0] == "learn":
+                    _, seq, enabled, _ = item
+                    self.child.stdin.write(f"learn {seq} {enabled}\n")
+                elif item[0] == "unmap":
+                    _, seq, _, key = item
+                    self.child.stdin.write(f"unmap {seq} {key}\n")
+                elif item[0] == "map":
                     _, seq, cc, key = item
                     self.child.stdin.write(f"map {seq} {cc} {key}\n")
                 else:
@@ -353,7 +435,7 @@ def handler_for(controller, authority):
 
         def do_POST(self):
             host = self.headers.get("Host", "").lower()
-            if (self.path not in ("/headphones", "/control", "/save", "/restart-audio", "/routes", "/record-assign", "/preset-save", "/preset-load", "/midi-map") or host not in authorities or
+            if (self.path not in ("/headphones", "/control", "/save", "/restart-audio", "/routes", "/record-assign", "/preset-save", "/preset-load", "/midi-map", "/midi-unmap", "/midi-learn") or host not in authorities or
                     self.headers.get("Origin", "").lower() != "http://" + host or
                     self.headers.get("Content-Type") != "application/json" or self.headers.get("Transfer-Encoding")):
                 return self.reply(403, {"error": "Same-origin JSON control required"})

@@ -11,7 +11,6 @@ from pathlib import Path
 import stat
 import struct
 
-import numpy as np
 
 FILENAMES = tuple(f"pad_{key}.wav" for key in ("C", "Cs", "D", "Ds", "E", "F", "Fs", "G", "Gs", "A", "As", "B"))
 SLOT_BYTES = 32 * 1024 * 1024
@@ -26,6 +25,7 @@ def signature(info):
 
 def decode_wave(path, available=SLOT_BYTES):
     """Return immutable native48k stereo arrays, checking limits before decode."""
+    import numpy as np
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "rb") as stream:
         info = os.fstat(stream.fileno())
@@ -128,16 +128,29 @@ def decode_wave(path, available=SLOT_BYTES):
     return left, right
 
 
-def prepare_bank(directory, destination):
+def inventory(directory):
+    """Notice edits, removals and replacements of any of the twelve pad files."""
+    result = {}
+    for filename in FILENAMES:
+        try:
+            result[filename] = signature((directory / filename).lstat())
+        except FileNotFoundError:
+            pass
+    return result
+
+
+def prepare_bank(directory, destination, *, replacement=None):
     """Create an exclusive private bundle; absent slots stay absent.
 
     Any invalid present asset aborts the entire new bank. Caller uses a private
     TemporaryDirectory and launches native audio only after success. This never
     writes the source library or replaces a running bank. No AST runtime imports.
     """
+    import numpy as np
     directory = Path(directory)
     if not directory.is_dir() or directory.is_symlink():
         raise ValueError("Explicit real pad-library directory required")
+    before = inventory(directory)
     loaded, resident = [], 0
     # Even if preparation fails, never mistake a partial bundle for ready:
     # caller receives no successful result and native validates complete length.
@@ -145,12 +158,15 @@ def prepare_bank(directory, destination):
     with os.fdopen(fd, "wb") as out:
         out.write(struct.pack("<8sII", b"STVPEND1", 48000, 0))
         for slot, filename in enumerate(FILENAMES):
-            path = directory / filename
+            path = replacement[1] if replacement and slot == replacement[0] else directory / filename
             try:
                 path.lstat()
             except FileNotFoundError:
                 continue
-            left, right = decode_wave(path, BANK_BYTES - resident)
+            try:
+                left, right = decode_wave(path, BANK_BYTES - resident)
+            except (ValueError, OSError) as error:
+                raise ValueError(f"{filename}: {error}") from error
             out.write(struct.pack("<IIQ", slot, 0, left.size))
             # Small fixed export chunks avoid an extra full interleaved copy.
             for start in range(0, left.size, 4096):
@@ -165,4 +181,6 @@ def prepare_bank(directory, destination):
         out.write(struct.pack("<8sII", b"STVBANK1", 48000, len(loaded)))
         out.flush()
         os.fsync(out.fileno())
+    if inventory(directory) != before:
+        raise ValueError("Pad library changed during validation. Try again.")
     return {"slots": loaded, "pcm_bytes": resident, "rate": 48000}

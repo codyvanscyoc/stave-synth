@@ -67,6 +67,7 @@ public:
     // All-muted stage blocks advance envelopes/piano but freeze oscillator DSP.
     bool render_block(bool render_oscillators = true) noexcept;
     // Owner-only terminal hard stop; cannot resume or be called concurrently.
+    void panic() noexcept;
     void stop() noexcept;
     bool healthy() const noexcept;
     std::uint64_t frame_position() const noexcept;
