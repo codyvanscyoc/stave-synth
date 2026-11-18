@@ -114,10 +114,11 @@ async function editSound(panel,key,target){
   await evaluate('poll()');
   return result;
 }
-async function verifySoundLayout(width,height,section,advanced){
-  await openSound(section,advanced);
+async function verifyEditorLayout(width,height,section,advanced){
+  if(section==='system')await evaluate("document.getElementById('nav-system').click()");
+  else await openSound(section,advanced);
   const issues=await inPage((section,landscape)=>{
-    const issues=[],root=document.getElementById('sound-'+section);
+    const issues=[],root=document.getElementById(section==='system'?'edit-global':'sound-'+section);
     const rect=el=>el.getBoundingClientRect();
     const textBox=el=>{
       const range=new Range();range.selectNodeContents(el);return range.getBoundingClientRect();
@@ -125,6 +126,30 @@ async function verifySoundLayout(width,height,section,advanced){
     const visible=el=>rect(el).width>0;
     if(document.documentElement.scrollWidth>document.documentElement.clientWidth)issues.push('horizontal page overflow');
     if(!visible(root))issues.push('missing selected section');
+    if(section==='osc'){
+      const plots=root.querySelectorAll('.envelope-plot');
+      if(plots.length!==2)issues.push('both oscillators need an envelope display');
+      for(const svg of plots){
+        const trace=svg.querySelector('polyline'),box=rect(svg);
+        const points=Array.from(trace.points,p=>p.matrixTransform(trace.getScreenCTM()));
+        if(points.length!==5||points.some((p,i)=>i>0&&p.x<=points[i-1].x)){
+          issues.push('envelope stages must progress from attack to release');continue;
+        }
+        const [start,peak,decay,sustain,end]=points;
+        if(box.height<70||start.y-peak.y<58)issues.push('too little room for the envelope contour');
+        if(Math.abs(start.y-end.y)>1||Math.abs(decay.y-sustain.y)>1||decay.y<peak.y-.5||decay.y>end.y+.5)
+          issues.push('envelope levels drift from their attack, sustain or release positions');
+        if(points.some(p=>p.x<box.left||p.x>box.right||p.y<box.top||p.y>box.bottom))
+          issues.push('envelope trace is clipped');
+      }
+    }
+    if(section==='system'){
+      const knobs=root.querySelectorAll('.knob-dial'),sound=document.querySelector('#edit-env1 .knob-dial');
+      if(knobs.length!==4)issues.push('Global Tone must include three EQ dials and the low-cut frequency dial');
+      const ticks=el=>getComputedStyle(el,'::before').backgroundImage;
+      if(!ticks(sound).includes('conic-gradient')||Array.from(knobs).some(dial=>ticks(dial)!==ticks(sound)))
+        issues.push('System and Sound should use the same graduated dial face');
+    }
     for(const input of root.querySelectorAll('label select,label input[type=range]')){
       if(!visible(input))continue;
       const label=input.closest('label'),key=label.dataset.control||label.dataset.mapKey;
@@ -167,7 +192,7 @@ await call('Accessibility.enable');
 for(const [width,height] of [[1024,650],[1180,820],[1366,1024],[390,844],[320,690]]){
   await call('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:true});
   for(const advanced of [false,true])for(const section of Object.keys(soundControls)){
-    await verifySoundLayout(width,height,section,advanced);
+    await verifyEditorLayout(width,height,section,advanced);
     if(width===1024&&advanced){
       const wanted=await inPage(section=>[...document.querySelectorAll('#sound-'+section+' label input,#sound-'+section+' label select')].filter(el=>el.getBoundingClientRect().width).map(el=>({
         name:el.getAttribute('aria-label'),role:el.tagName==='SELECT'?'combobox':'slider',
@@ -181,6 +206,7 @@ for(const [width,height] of [[1024,650],[1180,820],[1366,1024],[390,844],[320,69
       }
     }
   }
+  await verifyEditorLayout(width,height,'system',false);
 }
 assert.deepEqual(await evaluate('soundWrites'),[],'navigation and Advanced never send edits');
 await inPage(()=>{
@@ -190,6 +216,48 @@ await inPage(()=>{
 });
 assert.deepEqual(await evaluate("[localStorage.getItem('stave-show-advanced'),localStorage.getItem('stave-fine-controls'),document.getElementById('sound-advanced').getAttribute('aria-pressed')]"),['0','1','false']);
 await call('Emulation.setDeviceMetricsOverride',{width:1024,height:768,deviceScaleFactor:1,mobile:true});
+// Exercise the five Global Tone controls through the browser's keyboard handling.
+await click('nav-system');
+const eqEdits=[
+  ['master_low','ArrowRight',39,.1],['master_mid','ArrowLeft',37,-.1],
+  ['master_high','ArrowRight',39,.1],['master_lowcut','ArrowDown',40,1],
+  ['master_lowcut_hz','ArrowRight',39,81]
+];
+for(const [key,direction,keyCode,expected] of eqEdits){
+  const before=await evaluate('soundWrites.length');
+  await inPage(key=>{
+    const input=document.querySelector('#edit-global [data-control="'+key+'"] input,#edit-global [data-control="'+key+'"] select');
+    input.scrollIntoView({block:'center'});input.focus();
+  },key);
+  for(const type of ['keyDown','keyUp']){
+    await call('Input.dispatchKeyEvent',{type,key:direction,code:direction,windowsVirtualKeyCode:keyCode});
+  }
+  await waitFor('soundWrites.length>'+before,key+' keyboard edit');
+  assert.deepEqual(await inPage(i=>soundWrites.slice(i),before),[{path:'/control',data:{key,value:expected},status:202}]);
+  assert.equal((await statusOfInstrument()).values[key],expected,key+' controller value');
+  await evaluate('poll()');
+  if(key!=='master_lowcut'){
+    assert.ok(await inPage((key,expected)=>{
+      const field=fields[key];
+      const position=(Number(field.input.value)-Number(field.input.min))/(Number(field.input.max)-Number(field.input.min));
+      return field.out.textContent===formatted(key,expected)&&field.input.getAttribute('aria-valuetext')===field.out.textContent&&
+        Math.abs(parseFloat(field.dial.style.getPropertyValue('--knob-turn'))-(270*position-135))<.01;
+    },key,expected),key+' readout, accessible value and pointer follow the input');
+  }
+}
+const eqPoint=await inPage(()=>{
+  const input=fields.master_mid.input;input.scrollIntoView({block:'center'});
+  const r=input.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};
+});
+const beforeTouch=await evaluate('soundWrites.length');
+await call('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{...eqPoint,id:1}]});
+assert.equal(await evaluate("fields.master_mid.input.closest('label').dataset.active"),'true');
+await call('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:eqPoint.x+64,y:eqPoint.y,id:1}]});
+await call('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+await waitFor('soundWrites.length>'+beforeTouch,'System mid EQ touch adjustment');
+assert.ok((await statusOfInstrument()).values.master_mid>0,'drag to boost the mid band');
+assert.equal(await evaluate("fields.master_mid.input.closest('label').dataset.active"),'false');
+
 for(const [section,keys] of Object.entries(soundControls)){
   await openSound(section,true);
   const present=await inPage(section=>[...document.querySelectorAll('#sound-'+section+' label')].filter(label=>label.getBoundingClientRect().width&&label.querySelector('input,select')).map(label=>label.dataset.control||label.dataset.mapKey),section);
@@ -332,6 +400,12 @@ window.fetch=async function(path,opts){
     d.runtime.midi_maps={cutoff:74};
     d.status.midi_mapped_serial=controlOrder.map(key=>key==='cutoff'?(window.mappedSerial||12):0);
   }
+  if(window.mappedEq){
+    d.values.master_mid=2.3;
+    d.runtime.midi_maps={master_mid:23};
+    d.status.midi_mapped_serial=controlOrder.map(key=>key==='master_mid'?14:0);
+    d.status.pickup_waiting=['master_mid'];d.status.pickup_directions={master_mid:'down'};
+  }
   if(window.haltAudio)d.stale=true;
   if(window.missingDevices){
     d.runtime.preparation=true;
@@ -427,6 +501,17 @@ await sleep(100);
 await call('Input.dispatchMouseEvent',{type:'mouseReleased',...interrupted,button:'left',clickCount:1});
 await evaluate('window.mappedCutoff=1890;poll()');
 await waitFor("fields.cutoff.out.textContent===formatted('cutoff',1890)",'releasing a dial during a MIDI animation allows subsequent status changes to repaint');
+await click('nav-system');
+const beforeMappedEq=await evaluate('posted.length');
+await evaluate('window.mappedCutoff=null;window.mappedEq=true;poll()');
+await waitFor("fields.master_mid.out.textContent==='+2.3 dB'",'System dial follows a mapped MIDI EQ move');
+const eqBadge=await inPage(()=>{
+  const label=fields.master_mid.input.closest('label'),style=getComputedStyle(label,'::after');
+  return [label.dataset.midiCc,label.dataset.pickup,style.position,style.content.includes('23')];
+});
+assert.deepEqual(eqBadge,['23','true','static',true],'EQ pickup badge has a separate row');
+assert.equal(await evaluate('posted.length'),beforeMappedEq,'incoming System MIDI never echoes a write');
+await evaluate('window.mappedEq=false;poll()');
 await openSound('reverb',true);
 await inPage(()=>{
   const f=document.querySelector('#sound-reverb [data-control=freeze] select');
@@ -445,5 +530,5 @@ await click('preset-store');
 await evaluate("document.getElementById('preset-destination').value='1';document.getElementById('preset-destination').dispatchEvent(new Event('change'))");
 assert.equal(await evaluate('posted.length'),beforeStore,'choosing the occupied store destination leaves the live sound alone');
 const parameterCount=Object.values(soundControls).reduce((count,group)=>count+Object.keys(group).length,0);
-console.log('PASS: '+parameterCount+' state-backed Sound controls, both octave steppers, linked and independent edits, cutoff gestures and MIDI, tap tempo, preset round-trip, stale guards, 40 responsive Sound layouts; Stage, Soundcheck, System, Learn and preset store regressions.');
+console.log('PASS: '+parameterCount+' state-backed Sound controls, both octave steppers, linked and independent edits, cutoff gestures and MIDI, tap tempo, preset round-trip, stale guards, 40 responsive Sound layouts, enlarged ADSR traces and five responsive System EQ layouts; all five EQ inputs, Stage, Soundcheck, Learn and preset store regressions.');
 ws.close();

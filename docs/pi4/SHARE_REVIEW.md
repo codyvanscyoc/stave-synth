@@ -1,5 +1,11 @@
 # Raspberry Pi 4 native release review
 
+## Beta 5 · Global Tone and oscillator envelopes
+
+The four rotary controls in **System → Global Tone** use the same graduated dial, pointer and unit readouts as Sound. Low, Mid and High keep their dB scale. The low-cut selector and frequency control sit beside them on a tablet. Chromium checked all five EQ inputs against the local controller, including keyboard changes, a touch drag on Mid and MIDI pickup. The browser suite also checked all four Sound sections in basic and advanced modes.
+
+Both oscillator envelope plots now scale from 72 to 104 CSS pixels tall. At 1024 × 650 the plot grew from 25 to 72 pixels and both envelopes and the shared filter remain visible. The animation still follows each oscillator’s attack, decay, sustain and release.
+
 ## Beta 4 · analog Sound editor
 
 The Sound view now places each oscillator’s waveform, octave and amplitude envelope together. The shared filter and stereo controls follow the voices. Cutoff, piano brightness, oscillator octaves and reverb mix update across their Stage and Sound controls. Existing presets use the same parameters and units.

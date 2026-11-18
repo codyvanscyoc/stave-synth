@@ -6,12 +6,12 @@ Play a layered piano and two oscillators from a USB MIDI keyboard. A phone, tabl
 
 Use a Raspberry Pi 4 with **64-bit Raspberry Pi OS Trixie (Debian 13)**, internet access for the first install, and a regular login with sudo access. Use a dedicated instrument login. The installer sets that user’s PipeWire audio to 48 kHz and 512 frames, restarts its audio session on first setup, and enables the synth at boot.
 
-On the Pi, run these commands in a new directory. They fetch the ARM64 bundle and verify its download before installation. You can also download the same two files under **Assets** on the [Pi 4 beta 4 release page](https://github.com/codyvanscyoc/stave-synth/releases/tag/pi4-native-2026.11.18-beta.4).
+On the Pi, run these commands in a new directory. They fetch the ARM64 bundle and verify its download before installation. You can also download the same two files under **Assets** on the [Pi 4 beta 5 release page](https://github.com/codyvanscyoc/stave-synth/releases/tag/pi4-native-2026.11.18-beta.5).
 
 ```sh
 mkdir -p ~/Downloads/stave-pi4-beta
 cd ~/Downloads/stave-pi4-beta
-release=https://github.com/codyvanscyoc/stave-synth/releases/download/pi4-native-2026.11.18-beta.4
+release=https://github.com/codyvanscyoc/stave-synth/releases/download/pi4-native-2026.11.18-beta.5
 curl -fLO "$release/stave-synth-pi4-arm64.tar.gz"
 curl -fLO "$release/SHA256SUMS"
 sha256sum -c SHA256SUMS &&

@@ -55,28 +55,19 @@ nav{border-bottom:0;margin:0;padding:0;gap:8px}nav button{min-width:92px;border-
 #bed-keys{gap:8px}#bed-keys button{min-height:64px;background:color-mix(in srgb,var(--key-color) 53%,var(--bg));color:#d5e4dd;border:1px solid transparent;font-size:17px;font-weight:bold}#bed-keys button:disabled{background:transparent;border-color:var(--line);color:var(--muted)}#bed-keys button[aria-pressed=true]{color:var(--bg);border-color:white}
 .bed-actions{justify-content:flex-end}.bed-actions button{flex:0 1 auto;min-width:125px;font-size:12px}
 .record-pad{margin-top:14px;padding-top:14px;border-top:1px solid var(--line);display:flex;align-items:center;gap:10px;flex-wrap:wrap}.record-pad select{min-width:90px;padding:10px}.record-pad button{min-height:44px}.record-pad #record-status{flex:1 1 220px;font-size:12px;color:var(--muted)}
-.edit-group{padding:18px;border:1px solid var(--line);min-width:0}.edit-group h2{font-size:14px;text-transform:uppercase;letter-spacing:.16em}.edit-group>p{font-size:12px;margin:7px 0 16px}.edit-group .control-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.edit-group label.control{padding:12px;border-color:#253229}.edit-group output{float:none;display:block;margin-top:4px}#edit{display:none}
+#edit{display:none}
 input[type=range]{touch-action:pan-y}#mixer input[type=range]{touch-action:none}input[type=range]:disabled{cursor:default}.footer-note{font-size:10px;margin-top:22px}
-@media(max-width:700px){body{padding:14px 14px 24px}header{flex-wrap:wrap;gap:12px}.brand{font-size:23px}.header-actions{margin-left:auto}.header-actions button{min-width:85px;padding:8px}nav{width:100%;order:3}nav button{flex:1}.statusbar{font-size:11px;gap:8px}#mixer{grid-template-columns:repeat(3,minmax(0,1fr));gap:20px 18px}#mixer input[type=range]{height:180px}.performance-actions{display:grid;grid-template-columns:1fr 1fr}.performance-actions button{min-width:0}#mute{margin-left:0}.edit-group{padding:14px}#bed-keys{grid-template-columns:repeat(6,minmax(0,1fr))}#bed-keys button{min-height:52px}.bed-actions button{min-width:90px;flex:1;padding:8px 4px}#tone-controls{max-width:none}}
+@media(max-width:700px){body{padding:14px 14px 24px}header{flex-wrap:wrap;gap:12px}.brand{font-size:23px}.header-actions{margin-left:auto}.header-actions button{min-width:85px;padding:8px}nav{width:100%;order:3}nav button{flex:1}.statusbar{font-size:11px;gap:8px}#mixer{grid-template-columns:repeat(3,minmax(0,1fr));gap:20px 18px}#mixer input[type=range]{height:180px}.performance-actions{display:grid;grid-template-columns:1fr 1fr}.performance-actions button{min-width:0}#mute{margin-left:0}#bed-keys{grid-template-columns:repeat(6,minmax(0,1fr))}#bed-keys button{min-height:52px}.bed-actions button{min-width:90px;flex:1;padding:8px 4px}#tone-controls{max-width:none}}
 @media(min-width:701px) and (max-height:650px){#mixer input[type=range]{height:200px}body{padding-top:12px}.performance-actions{margin:8px 0}#tone-controls{margin:8px auto}}
-/* Shared editor styles for the System master EQ. */
-
-.edit-group{display:none;padding:0;border:0}.edit-group[data-open=true]{display:block}.edit-group h2{font-size:17px;letter-spacing:.2em}.edit-group>p{max-width:780px;line-height:1.7;margin:8px 0 18px}.edit-group .control-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
-.edit-group label.control{border-color:#1e4932;min-height:116px;padding:14px;background:linear-gradient(135deg,#100c0c,#13110d)}.edit-group label.control .control-name{display:block;letter-spacing:.08em;font-size:12px;color:var(--mint)}.edit-group label.control output{color:var(--ink);font-size:12px}
-.edit-group label.control[data-control=wave1],.edit-group label.control[data-control=wave2],.edit-group label.control[data-control=reverb]{grid-column:span 1}.edit-group label.control select{margin-top:14px}
-.edit-group label.knob-control{display:flex;flex-direction:column;align-items:center;text-align:center;justify-content:flex-start;min-height:164px}.edit-group label.knob-control .control-name{min-height:32px}.edit-group label.knob-control output{order:3;margin-top:7px}.edit-group label.knob-control input[type=range]{appearance:none;-webkit-appearance:none;order:2;width:82px;height:82px;min-height:82px;margin:4px 0 0;border:2px solid var(--mint);border-radius:50%;background:conic-gradient(from 225deg,var(--mint) 0deg var(--knob-angle,0deg),#183524 var(--knob-angle,0deg) 270deg,transparent 270deg);cursor:ew-resize;touch-action:pan-y;box-shadow:inset 0 0 0 8px var(--bg),0 0 0 1px #0a120d}.edit-group label.knob-control input[type=range]::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;width:1px;height:1px;opacity:0}.edit-group label.knob-control input[type=range]::-moz-range-thumb{width:1px;height:1px;border:0;opacity:0}.edit-group label.knob-control input[type=range]:focus-visible{outline-offset:5px}
-
-@media(max-width:700px){.edit-group .control-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.edit-group label.knob-control{min-height:154px}.edit-group label.knob-control input[type=range]{width:76px;height:76px;min-height:76px}}
 /* Stage-first proportions from the original instrument surface. */
 body{max-width:1800px;padding:18px 28px 24px}.brand-lockup{display:flex;align-items:center;gap:14px}.retro-logo{display:block;width:58px;height:58px;border:1px solid var(--mint);padding:4px;object-fit:contain}.brand{font-size:22px;letter-spacing:.22em}.eyebrow{font-size:9px}
 header{margin-bottom:10px}.statusbar{gap:16px;font-size:11px;padding-top:8px}.device-state{color:var(--muted)}.device-state[data-connected=true]{color:var(--mint)}#notice:empty{display:none}#notice{min-height:0;margin:8px 0;color:var(--gold)}
 #mixer{gap:clamp(14px,2.8vw,44px)}#mixer input[type=range]{height:clamp(300px,calc(100svh - 480px),880px)}#mixer .control-name{font-size:15px;letter-spacing:.15em}#mixer output{font-size:14px}.performance-panel{margin-top:20px}
 #tone-controls{margin:10px auto}.performance-actions{margin:8px 0 14px}.performance-actions button{font-size:12px;min-height:44px}.bed-panel{padding-top:10px}.bed-panel .section-head p{display:none}#bed-status{font-size:11px;margin-bottom:8px}#bed-keys button{min-height:54px}.bed-actions{margin:8px 0 0}.bed-actions button{min-height:44px}.footer-note{margin-top:12px}
-.edit-group>p{margin:6px 0 16px}.edit-group label.control{background:transparent;border:0}.choice-control output{display:none!important}.edit-group label.knob-control{position:relative;min-height:166px;padding:12px 6px}.edit-group label.knob-control .control-name{min-height:32px}.edit-group label.knob-control input[type=range]{width:90px;height:90px;min-height:90px;opacity:0;margin-top:4px;box-shadow:none}.knob-dial{position:absolute;top:48px;left:calc(50% - 45px);width:90px;height:90px;border:2px solid var(--mint);border-radius:50%;pointer-events:none;background:var(--bg)}.knob-dial::after{content:'';position:absolute;top:9px;left:calc(50% - 1.5px);width:3px;height:23px;background:var(--mint);transform-origin:50% 34px;transform:rotate(var(--knob-turn,-135deg))}.knob-control[data-active=true] .knob-dial,.knob-control:has(input:focus-visible) .knob-dial{outline:2px solid var(--gold);outline-offset:5px}.knob-control:has(input:disabled) .knob-dial{opacity:.35}
-@media(max-width:700px){body{padding:12px 14px 24px}.brand-lockup{gap:10px}.retro-logo{width:46px;height:46px}.brand{font-size:20px}header{gap:10px}.statusbar{gap:8px 12px}.header-actions button{min-width:70px}#mixer{gap:18px 16px}#mixer input[type=range]{height:clamp(210px,34svh,360px)}#mixer .control-name{font-size:12px}#mixer output{font-size:12px}#tone-controls{margin:12px auto}.performance-actions{margin-top:12px}.edit-group label.knob-control input[type=range]{width:82px;height:82px;min-height:82px}.knob-dial{width:82px;height:82px;left:calc(50% - 41px)}.knob-dial::after{height:21px;transform-origin:50% 30px}.bed-actions button{min-width:90px}}
+.choice-control output{display:none!important}.knob-control[data-active=true] .knob-dial,.knob-control:has(input:focus-visible) .knob-dial{outline:2px solid var(--gold);outline-offset:5px}.knob-control:has(input:disabled) .knob-dial{opacity:.35}
+@media(max-width:700px){body{padding:12px 14px 24px}.brand-lockup{gap:10px}.retro-logo{width:46px;height:46px}.brand{font-size:20px}header{gap:10px}.statusbar{gap:8px 12px}.header-actions button{min-width:70px}#mixer{gap:18px 16px}#mixer input[type=range]{height:clamp(210px,34svh,360px)}#mixer .control-name{font-size:12px}#mixer output{font-size:12px}#tone-controls{margin:12px auto}.performance-actions{margin-top:12px}.bed-actions button{min-width:90px}}
 @media(min-width:701px) and (max-height:600px){#mixer input[type=range]{height:300px}}
 @media(min-width:701px){#tone-controls{max-width:640px}#tone-controls label{display:grid;grid-template-columns:auto minmax(140px,1fr) auto;gap:14px;align-items:center}#tone-controls .control-name{font-size:11px}#tone-controls input{order:1;min-height:36px;height:36px}#tone-controls output{order:2;font-size:12px}}
-.global-note{font-size:12px;color:var(--muted)}
 
 /* Stable stage chrome: status messages overlay instead of reflowing the
    instrument.  These controls send ordinary bounded control messages and do
@@ -92,15 +83,14 @@ header{position:relative}.header-actions{gap:7px}.header-actions button{min-widt
 .channel-foot{order:3;display:grid;grid-template-columns:32px 46px 32px;justify-content:center;align-items:center;gap:4px;height:30px;margin-top:-2px}.channel-foot button{width:32px;min-width:32px;min-height:30px;height:30px;padding:0;font-size:13px}.channel-foot output{float:none;text-align:center;font-size:10px;color:var(--muted)}.channel-foot.placeholder{visibility:hidden;pointer-events:none}
 .bed-actions{justify-content:flex-end}.bed-actions button{min-width:100px}.record-pad #record-status,#bed-status{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:18px}.record-pad{flex-wrap:nowrap}.record-pad label{display:flex;align-items:center;gap:7px;white-space:nowrap}.record-pad select{margin:0;width:75px}.record-pad button{width:auto;white-space:nowrap}
 .pad-edit{margin-top:5px}.pad-edit summary{min-height:32px;padding:4px 0;font-size:10px;letter-spacing:.12em}.pad-edit[open]{border-top:1px solid var(--line);margin-top:9px;padding-top:5px}
-.edit-group .control-grid{grid-template-columns:repeat(4,minmax(0,1fr))}.edit-group label.knob-control{min-height:135px}.edit-group label.knob-control input[type=range]{width:70px;height:70px;min-height:70px}.knob-dial{top:43px;width:70px;height:70px;left:calc(50% - 35px)}.knob-dial::after{height:17px;transform-origin:50% 25px}.edit-group>p{margin-bottom:9px}
 .surface-setting{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding:7px 0}.surface-setting button{width:auto;min-width:160px}.fine-controls #fine-controls{background:var(--gold);border-color:var(--gold);color:var(--bg)}
-@media(max-width:700px){.header-actions{order:2}.header-stack{grid-template-columns:1fr 1fr}.header-stack button{height:26px}.pitch-strip{justify-content:flex-start}.preset-strip{grid-template-columns:repeat(5,minmax(0,1fr))}.preset-strip #preset-store{grid-column:1/-1}.record-pad{flex-wrap:wrap}.edit-group .control-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:700px){.header-actions{order:2}.header-stack{grid-template-columns:1fr 1fr}.header-stack button{height:26px}.pitch-strip{justify-content:flex-start}.preset-strip{grid-template-columns:repeat(5,minmax(0,1fr))}.preset-strip #preset-store{grid-column:1/-1}.record-pad{flex-wrap:wrap}}
 @media(min-width:701px){body{padding-bottom:8px}#stage-panel{min-height:0}.performance-panel{margin:4px 0 2px}#mixer input[type=range]{height:clamp(190px,calc(100svh - 610px),650px)}#tone-controls{margin:4px auto}.preset-strip{margin:3px 0 5px}.bed-panel{padding-top:5px}.bed-panel .section-head{margin-bottom:2px}#bed-status{margin-bottom:3px}#bed-keys button{min-height:48px}.bed-actions{margin:3px 0 0}.bed-actions button{min-height:34px}.footer-note{display:none}}
 .meter-pair{display:grid;grid-template-columns:auto minmax(80px,1fr) auto;align-items:center;gap:5px 12px;max-width:550px}.meter-pair meter{width:100%;height:20px}.meter-pair output{min-width:58px;color:var(--mint);font-variant-numeric:tabular-nums}.check-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.check-grid .panel{margin:0;min-width:0}.check-grid p,.check-grid label{margin:.6em 0;display:block}.check-grid button{width:auto;margin:3px 5px 3px 0}.check-grid select{margin:0}.check-grid details{margin:.7em 0}.check-summary{margin:12px 0;color:var(--mint)}.check-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px}.meter-pair [data-clip=true],#panic{color:#ffadb4}.check-grid select,.check-grid p,.midi-map-list span{overflow-wrap:anywhere}.midi-map-list button{width:auto;min-height:44px;margin-left:8px;padding:4px 8px}.statusbar{overflow:visible;flex-wrap:wrap;white-space:normal}.statusbar button{width:auto;min-height:44px;padding:4px 8px}.statusbar button:empty{display:none}.header-actions button,.header-stack button,.stepper button,.channel-foot button,.preset-strip button,.layer-strip button,.pitch-strip button,.surface-actions button,#midi-map-done,.pad-edit summary{min-height:44px}.channel-foot,.stepper{grid-template-columns:44px minmax(24px,auto) 44px;height:auto}.channel-foot button{width:44px}.header-actions{flex-wrap:wrap}.preset-strip{align-items:center}#preset-editor{max-width:600px}#preset-editor label{display:block;margin:8px 0}#preset-name{background:var(--bg);color:var(--ink);border:1px solid var(--line);padding:6px}#mobile-master,.phone-bank{display:none}#midi-map-banner{top:auto;bottom:8px}#midi-map-banner span{min-width:0}#midi-map-done{min-width:64px}.input-readout{font-variant-numeric:tabular-nums}.mobile-octaves{display:none}.control[data-pickup=true]::after{content:attr(data-direction) " Pickup · CC " attr(data-midi-cc);color:var(--gold)}.mute-active{color:var(--gold)}#stage-meters{max-width:500px;margin:8px auto}#system-panel .system-grid{margin-top:14px}.statusbar>span{flex-shrink:1}.check-grid button:focus-visible,select:focus-visible{outline-offset:1px}
 @media(max-width:700px),(orientation:landscape) and (max-width:950px) and (max-height:500px){
 body{padding-bottom:105px}header{display:grid;grid-template-columns:minmax(0,1fr);gap:8px}nav,.header-actions{width:100%;min-width:0;margin:0}.header-actions{justify-content:flex-start}.header-stack{display:contents}.header-actions button{flex:1 1 23%;min-width:0;height:auto}#mute{display:none}nav button{padding:4px 2px;min-width:0;font-size:12px}nav{gap:4px}.header-actions button{font-size:11px}#connections{display:none}.check-grid{grid-template-columns:1fr}nav{order:1}.in-soundcheck .header-actions #midi-map,.in-soundcheck .header-stack,.in-soundcheck #panic:disabled{display:none}.in-soundcheck .header-actions #save{max-width:150px}.phone-bank{display:flex;gap:4px;margin:6px 0}.phone-bank button{min-height:44px}.phone-bank button[aria-pressed=true]{background:var(--mint);color:var(--bg)}
 #mixer{grid-template-columns:repeat(4,minmax(0,1fr));gap:7px}#mixer .control-name{font-size:11px;letter-spacing:.06em}#mixer input[type=range]{height:clamp(165px,29svh,290px)}#mixer .channel-foot{display:none}.mobile-octaves{display:block}.mobile-octaves>div{display:flex;justify-content:space-between;align-items:center;margin:5px 0}.mobile-octaves .stepper{display:grid;grid-template-columns:44px 62px 44px}#mixer:not([data-bank=effects]) [data-control=cutoff],#mixer:not([data-bank=effects]) [data-control=wet],#mixer[data-bank=effects] [data-control=osc1],#mixer[data-bank=effects] [data-control=osc2]{display:none}
-#mobile-master{display:flex;position:fixed;z-index:28;left:0;bottom:0;right:0;gap:8px;align-items:center;padding:6px 12px max(6px,env(safe-area-inset-bottom));background:var(--panel);border-top:1px solid var(--line)}#mobile-master label{flex:none;display:flex;align-items:center;gap:6px;font-size:12px}#mobile-master input{flex:1;width:0;min-width:0;touch-action:none;margin:0}#mobile-master button{width:auto;min-width:66px;padding:6px}#mobile-master output{min-width:32px;font-size:11px}#midi-map-banner{bottom:62px}.preset-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}.preset-strip #preset-store{grid-column:auto}.record-pad #record-status,#bed-status{white-space:normal}.statusbar{gap:6px}.channel-foot button{min-width:44px}.edit-group .control-name{line-height:1.2}
+#mobile-master{display:flex;position:fixed;z-index:28;left:0;bottom:0;right:0;gap:8px;align-items:center;padding:6px 12px max(6px,env(safe-area-inset-bottom));background:var(--panel);border-top:1px solid var(--line)}#mobile-master label{flex:none;display:flex;align-items:center;gap:6px;font-size:12px}#mobile-master input{flex:1;width:0;min-width:0;touch-action:none;margin:0}#mobile-master button{width:auto;min-width:66px;padding:6px}#mobile-master output{min-width:32px;font-size:11px}#midi-map-banner{bottom:62px}.preset-strip{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}.preset-strip #preset-store{grid-column:auto}.record-pad #record-status,#bed-status{white-space:normal}.statusbar{gap:6px}.channel-foot button{min-width:44px}
 }
 @media(orientation:landscape) and (max-width:950px) and (max-height:500px){
 header{grid-template-columns:auto minmax(0,1fr);gap:4px 14px}.brand-lockup .retro-logo{width:38px;height:38px}.brand-lockup .eyebrow{display:none}nav{grid-column:2}nav button{min-width:44px;min-height:44px;flex:1}.header-actions{grid-column:1/-1;flex-wrap:nowrap}.header-actions button{flex:1;min-width:0}
@@ -222,15 +212,15 @@ body:has(#stage-panel:not([hidden])) main, #stage-panel:not([hidden]), .performa
   .footer-note {display:none}
 }
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
-/* Sound faceplate. The control name, encoder and value occupy separate rows.
+/* Sound and System faceplates. The control name, encoder and value occupy separate rows.
    The native range overlaps the painted dial and retains keyboard/touch input. */
-#edit-panel {
+.synth-faceplate {
   --legend: #d5ddce;
   --shell: #161713;
   --edge: #354238;
   --dial-size: 54px;
-  margin-top: 12px;
 }
+#edit-panel {margin-top:12px}
 .sound-toolbar {display:flex; align-items:center; gap:18px; margin:0 0 12px}
 .sound-toolbar h1 {margin:0; color:var(--ink); font-size:17px}
 .sound-selector {display:flex; flex:1; max-width:540px; gap:3px}
@@ -248,19 +238,22 @@ body:has(#stage-panel:not([hidden])) main, #stage-panel:not([hidden]), .performa
   border-radius:4px; background:linear-gradient(166deg,#1b1c17 0%,var(--shell) 28%,#121410 100%);
   box-shadow:inset 0 1px 0 #ffffff08,0 2px 4px #0003;
 }
+.global-tone {margin-top:12px}
+.global-tone p {margin:0 0 14px; font-size:12px}
+#edit-global {grid-template-columns:repeat(4,minmax(0,1fr)) minmax(max-content,1fr)}
 .synth-module.contour {--accent:var(--gold)}
-.synth-module h3 {
+.synth-module h3,.global-tone h2 {
   display:flex; align-items:center; gap:12px; margin:0 0 9px;
   color:var(--accent); font-size:13px; line-height:1.25; font-weight:700;
   text-transform:uppercase; letter-spacing:.12em; white-space:nowrap;
 }
-.synth-module h3::after {content:""; height:1px; flex:1; background:var(--edge)}
-#edit-panel label.control {min-width:0; min-height:0; margin:0; padding:0; border:0; background:transparent}
-#edit-panel .control-name {
+.synth-module h3::after,.global-tone h2::after {content:""; height:1px; flex:1; background:var(--edge)}
+.synth-faceplate label.control {min-width:0; min-height:0; margin:0; padding:0; border:0; background:transparent}
+.synth-faceplate .control-name {
   display:block; min-height:0; color:var(--legend); font-size:12px; line-height:16px;
   letter-spacing:.025em; font-weight:500; white-space:nowrap;
 }
-#edit-panel select {
+.synth-faceplate select {
   display:block; width:100%; min-width:0; min-height:44px; margin:0; height:44px; padding:4px 29px 4px 8px;
   color:var(--ink); background-color:#10150f; background-position:calc(100% - 17px) 50%,calc(100% - 12px) 50%; border:1px solid #4a5748; border-radius:3px;
   font-size:13px; font-weight:500;
@@ -285,31 +278,31 @@ body:has(#stage-panel:not([hidden])) main, #stage-panel:not([hidden]), .performa
   background-size:100% 13px,8.33% 100%; box-shadow:inset 0 1px 4px #0007;
 }
 .envelope-display figcaption {font-size:10px; line-height:12px; letter-spacing:.09em; text-transform:uppercase; color:#a2b59f}
-.envelope-display .envelope-plot {display:block; width:100%; height:37px; margin:0; border:0; background:transparent}
-.envelope-display polyline {fill:none; stroke:var(--mint); stroke-width:1.65; vector-effect:non-scaling-stroke; stroke-linejoin:round; stroke-linecap:round}
+.envelope-display .envelope-plot {display:block; width:100%; height:clamp(72px,11vh,104px); margin:0; border:0; background:transparent}
+.envelope-display polyline {fill:var(--mint); fill-opacity:.08; stroke:var(--mint); stroke-width:1.65; vector-effect:non-scaling-stroke; stroke-linejoin:round; stroke-linecap:round}
 .synth-bank,.synth-switches {display:grid; grid-auto-columns:minmax(0,1fr); grid-auto-flow:column; align-items:start; gap:12px}
-#edit-panel .synth-bank label.control {
+.synth-faceplate .synth-bank label.control {
   display:grid; grid-template:16px var(--dial-size) 15px / minmax(0,1fr);
   row-gap:6px; place-items:center; text-align:center; position:relative;
 }
-#edit-panel .synth-bank .control-name {grid-area:1/1}
-#edit-panel .synth-bank output {grid-area:3/1; float:none; margin:0; color:#c9d7c5; font-size:12px; line-height:15px; font-variant-numeric:tabular-nums}
-#edit-panel .synth-bank select {grid-area:2/1; max-width:200px}
-#edit-panel .synth-bank .knob-dial,#edit-panel .synth-bank input[type=range] {
+.synth-faceplate .synth-bank .control-name {grid-area:1/1}
+.synth-faceplate .synth-bank output {grid-area:3/1; float:none; margin:0; color:#c9d7c5; font-size:12px; line-height:15px; font-variant-numeric:tabular-nums}
+.synth-faceplate .synth-bank select {grid-area:2/1; max-width:200px}
+.synth-faceplate .synth-bank .knob-dial,.synth-faceplate .synth-bank input[type=range] {
   grid-area:2/1; min-height:var(--dial-size); width:var(--dial-size); height:var(--dial-size); margin:0; border:0; border-radius:50%;
 }
-#edit-panel .synth-bank input[type=range] {z-index:1; opacity:0; touch-action:none; cursor:ew-resize}
-#edit-panel .synth-bank .knob-dial {
-  position:relative; top:auto; left:auto; pointer-events:none;
+.synth-faceplate .synth-bank input[type=range] {z-index:1; opacity:0; touch-action:none; cursor:ew-resize}
+.synth-faceplate .synth-bank .knob-dial {
+  position:relative; pointer-events:none;
   background:conic-gradient(from 135deg,transparent 0deg 90deg,#12140f 90deg 360deg);
 }
-#edit-panel .synth-bank .knob-dial::before {
+.synth-faceplate .synth-bank .knob-dial::before {
   content:""; position:absolute; inset:0; border-radius:50%;
   background:repeating-conic-gradient(from 224deg,#91a18b 0deg 2deg,transparent 2deg 27deg);
   -webkit-mask:conic-gradient(from 223deg,#000 0deg 274deg,transparent 274deg);
   mask:conic-gradient(from 223deg,#000 0deg 274deg,transparent 274deg);
 }
-#edit-panel .synth-bank .knob-dial::after {
+.synth-faceplate .synth-bank .knob-dial::after {
   content:""; position:absolute; inset:6px; width:auto; height:auto; border:1px solid #677160; border-radius:50%;
   transform-origin:center; transform:rotate(var(--knob-turn,-135deg));
   background:linear-gradient(var(--accent),var(--accent)) center 3px / 3px 35% no-repeat,
@@ -324,7 +317,7 @@ body:not(.show-advanced) #edit-panel .tuning-bank {display:none}
 #tap-tempo {width:auto; min-width:100px; min-height:44px; margin:0}
 #tap-readout {margin:0; color:var(--ink); font-size:12px}
 #tap-readout:empty {display:none}
-#edit-panel .control[data-midi-mapped=true]::after {
+.synth-faceplate .control[data-midi-mapped=true]::after {
   position:static; grid-column:1/-1; justify-self:center; color:var(--gold);
   font-size:9px; line-height:13px; text-align:center; white-space:normal;
 }
@@ -346,7 +339,8 @@ body:not(.show-advanced) #edit-panel .tuning-bank {display:none}
   .stereo-module h3 span {display:inline}
 }
 @media (min-width:701px) and (max-height:740px) {
-  #edit-panel {--dial-size:48px; margin-top:6px}
+  .synth-faceplate {--dial-size:48px}
+  #edit-panel {margin-top:6px}
   .sound-toolbar {margin-bottom:8px}
   .sound-scene[data-open=true],.voice-pair {gap:8px}
   .synth-module {padding:8px 12px 9px}
@@ -354,20 +348,20 @@ body:not(.show-advanced) #edit-panel .tuning-bank {display:none}
   #edit-panel #edit-link {padding-block:3px}
   .stereo-module h3 {margin-bottom:0}
   .envelope-display {margin:7px 0}
-  .envelope-display .envelope-plot {height:25px}
 }
 @media (min-width:950px) and (max-height:740px) {
   .voice-source label.control,.voice-pitch {grid-template-columns:auto minmax(0,1fr); align-items:center; gap:7px}
   .voice-source {gap:12px}
 }
-@media (min-width:850px) and (max-height:680px) {
+@media (min-width:850px) and (max-height:740px) {
+  .envelope-display {margin-block:5px}
   #edit-panel {margin-top:4px}
   .sound-toolbar {margin-bottom:6px}
   .sound-scene[data-open=true] {gap:6px}
   .synth-module {padding-block:7px}
 }
 @media (max-width:700px) {
-  #edit-panel {--dial-size:48px}
+  .synth-faceplate {--dial-size:48px}
   .sound-toolbar {flex-wrap:wrap; gap:7px}
   .sound-selector {order:1; flex:0 0 100%; max-width:none}
   .sound-selector button {padding:5px 4px; font-size:11px}
@@ -375,9 +369,12 @@ body:not(.show-advanced) #edit-panel .tuning-bank {display:none}
   .synth-module {padding:12px 10px}
   #edit-panel #edit-link {padding:8px; gap:10px}
   #edit-panel #edit-link label {grid-template-columns:minmax(0,1fr); gap:5px}
-  #edit-panel .control-name {font-size:11px}
-  #edit-panel select {font-size:12px}
+  .synth-faceplate .control-name {font-size:11px}
+  .synth-faceplate select {font-size:12px}
   .synth-bank,.synth-switches {grid-auto-flow:row; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px 8px}
+  #edit-global {grid-template-columns:repeat(6,minmax(0,1fr)); column-gap:6px}
+  #edit-global>label {grid-column:span 2}
+  #edit-global>[data-control=master_lowcut],#edit-global>[data-control=master_lowcut_hz] {grid-column:span 3}
   .envelope-controls {grid-template-columns:repeat(4,minmax(0,1fr)); column-gap:3px}
   .synth-switches .choice-control:first-child {grid-column:1/-1}
   .tap-control {order:0}
@@ -411,7 +408,7 @@ body:not(.show-advanced) #edit-panel .tuning-bank {display:none}
 <label>Destination<select id="preset-destination"></select></label><label>Name<input id="preset-name" maxlength="24" autocomplete="off"></label><p class="small" id="preset-replace"></p><div class="actions"><button id="preset-confirm" disabled>Store sound</button><button id="preset-cancel">Cancel</button></div></section>
 
 </section>
-<section id="edit-panel" aria-label="Shape sound" hidden>
+<section id="edit-panel" class="synth-faceplate" aria-label="Shape sound" hidden>
   <div class="sound-toolbar">
     <h1>Sound</h1>
     <div class="sound-selector" role="group" aria-label="Sound sections">
@@ -500,7 +497,9 @@ body:not(.show-advanced) #edit-panel .tuning-bank {display:none}
 <label>Master <output id="check-master-percent">0%</output><input id="check-master-level" aria-describedby="check-master-percent" aria-valuemin="0" aria-valuemax="100" aria-label="Soundcheck master volume" type="range" min="0" max="1" step=".01" disabled></label><p id="check-level"></p><div class="check-actions"><button id="test-left" disabled>Test left</button><button id="test-right" disabled>Test right</button></div></div>
 </div><button id="check-done">Open Stage</button></section>
 <section id="system-panel" aria-label="System" hidden>
-<section class="panel edit-group" data-open="true"><h2>GLOBAL TONE</h2><p class="global-note">Master EQ · gentle room correction. Flat EQ and low cut off preserve your original sound. Set low cut between songs.</p><div id="edit-global" class="control-grid"></div></section>
+<section class="synth-faceplate synth-module global-tone" aria-labelledby="global-tone-title">
+<h2 id="global-tone-title">Global tone</h2><p>Master EQ · gentle room correction. Flat EQ and low cut off preserve your original sound. Set low cut between songs.</p><div id="edit-global" class="synth-bank"></div>
+</section>
 <div class="system-grid">
 <div class="panel"><h2>Pi headphone output</h2><p class="small">Global level for the Pi’s 3.5 mm jack. Select the headphone output in Soundcheck to hear it. Saved automatically.</p><label for="headphone-volume">Output volume <output id="headphone-level">—</output></label><input id="headphone-volume" type="range" min="0" max="100" step="1" disabled style="width:100%;min-height:44px"><button id="headphone-mute" disabled aria-pressed="false">MUTE HEADPHONES</button><p id="headphone-status" class="small" role="status">Checking headphone output…</p></div>
 <div class="panel"><h2>Saved startup sound</h2><p id="save-status">Save your preferred power-on sound and Master level.</p><p class="small">The saved sound restores only after the selected devices and audio route are healthy. Notes, pads, and freeze never restart.</p><p class="small">MIDI MAP in the top bar learns hardware controls and saves every assignment automatically.</p></div>
