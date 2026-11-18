@@ -13,6 +13,7 @@ import importlib.util
 import ipaddress
 import json
 import os
+import re
 from pathlib import Path
 import signal
 import socketserver
@@ -76,12 +77,75 @@ def validate_routes(routes, ports=None):
     return dict(routes)
 
 
+class HeadphoneMixer:
+    """Non-audio-thread control of the Pi analogue mixer, never USB outputs."""
+    def __init__(self, path):
+        self.path = path
+        self.lock = threading.Lock()
+        self.warning = None
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, 'rb') as stream:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise ValueError('Invalid headphone state file')
+                raw = stream.read(1025)
+                if len(raw) > 1024:
+                    raise ValueError('Oversized headphone state file')
+            self.apply(json.loads(raw))
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, TypeError) as error:
+            self.warning = str(error)
+
+    def run(self, *args):
+        try:
+            result = subprocess.run(['/usr/bin/amixer', '-c', 'Headphones', *args],
+                                    capture_output=True, text=True, timeout=2)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise ValueError('Pi headphone mixer unavailable') from error
+        if result.returncode:
+            raise ValueError('Pi headphone mixer unavailable')
+        match = re.search(r'\[(\d+)%\].*?\[(on|off)\]', result.stdout)
+        if not match:
+            raise ValueError('Cannot read Pi headphone mixer')
+        return dict(volume=int(match[1]), muted=match[2] == 'off')
+
+    def get(self):
+        with self.lock:
+            try:
+                return dict(available=True, **self.run('sget', 'PCM'), warning=self.warning)
+            except ValueError as error:
+                return dict(available=False, error=str(error))
+
+    def apply(self, data):
+        if (not isinstance(data, dict) or set(data) != {'volume', 'muted'}
+                or type(data['volume']) is not int or not 0 <= data['volume'] <= 100
+                or type(data['muted']) is not bool):
+            raise ValueError('Headphone volume must be 0–100 with a boolean mute')
+        return self.run('sset', 'PCM', str(data['volume']) + '%',
+                        'mute' if data['muted'] else 'unmute')
+
+    def set(self, data):
+        with self.lock:
+            if self.path.is_symlink():
+                raise ValueError('Symlink headphone state destination refused')
+            actual = self.apply(data)
+            try:
+                storage.atomic.atomic_write_json(self.path, actual, max_bytes=1024)
+            except OSError:
+                self.warning = 'Headphone level changed, but saving the startup level failed. Check available storage and try again.'
+                return dict(available=True, **actual, warning=self.warning)
+            self.warning = None
+            return dict(available=True, **actual)
+
+
 class CandidateHub:
     def __init__(self, store, routes, recording_dir=None, pad_library=None):
         self.lock = threading.RLock()
         self.store = store
+        self.headphones = HeadphoneMixer(store.path.with_name("headphone_output.json"))
         self.route_file = store.path.with_name("native_routes.json")
-        self.routes = validate_routes(routes)
+        self.routes = {} if routes is None else validate_routes(routes)
         self.saved = {}
         self.presets = None
         self.midi_map = None
@@ -91,6 +155,10 @@ class CandidateHub:
             self.saved = store.load()
             if self.saved:
                 self.save_message = "Saved native sound loaded. Master restores last after healthy routing."
+        except (OSError, ValueError, TypeError) as error:
+            self.state_warning = "Saved-state warning: " + str(error)
+            self.save_message = self.state_warning + "; file preserved. Save only when the new sound is intentional."
+        try:
             if self.route_file.exists() or self.route_file.is_symlink():
                 fd = os.open(self.route_file, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
                 with os.fdopen(fd, "rb") as source:
@@ -104,8 +172,7 @@ class CandidateHub:
                     raise ValueError("Unsupported route schema")
                 self.routes = validate_routes(value["routes"])
         except (OSError, ValueError, TypeError) as error:
-            self.state_warning = "Saved-state warning: " + str(error)
-            self.save_message = self.state_warning + "; file preserved. Save only when the new sound is intentional."
+            self.state_warning = "Saved-route warning: " + str(error)
         try:
             self.presets = storage.PresetStore(store.path.with_name("native_presets.json"), store)
         except (OSError, ValueError, TypeError) as error:
@@ -125,8 +192,10 @@ class CandidateHub:
         self.restore_sequence = None
         self.map_restore_queued = False
         self.map_restored = False
-        self.restore_started = 0
-        self.message = "Waiting for selected devices."
+        self.startup_started = 0
+        self.restore_started = None
+        self.message = ("Waiting for selected devices." if self.routes else
+                        "Open System to choose a MIDI keyboard and stereo output.")
         self.restart = False
         self.ports = {}
         self.restarts = 0
@@ -149,7 +218,8 @@ class CandidateHub:
             self.restore_sequence = None
             self.map_restore_queued = False
             self.map_restored = False
-            self.restore_started = time.monotonic()
+            self.startup_started = time.monotonic()
+            self.restore_started = None
             self.message = "Starting audio and restoring the saved sound; Master restores last."
             self.restarts += 1
             return self.active
@@ -194,11 +264,19 @@ class CandidateHub:
                 if data['stale'] or data['exited'] is not None or data['status'].get('fault', 1) or not data['status'].get('routed'):
                     raise ValueError('Audio progress/route lost; restarting muted')
                 return
-            if time.monotonic() - self.restore_started > 10:
-                raise ValueError("Audio startup/saved-control acknowledgment timed out")
             data = self.active.snapshot()
+            now = time.monotonic()
+            # Loading FluidR3 from an SD card can take longer than the
+            # control acknowledgment budget. Start that clock at first audio.
+            if self.restore_started is None:
+                if now - self.startup_started > 60:
+                    raise ValueError("Audio startup timed out waiting for the selected route")
+            elif now - self.restore_started > 10:
+                raise ValueError("Saved-control acknowledgment timed out")
             if data["stale"] or data["status"].get("fault", 1) or not data["status"].get("routed"):
                 return
+            if self.restore_started is None:
+                self.restore_started = now
             if not self.map_restored:
                 if not self.map_restore_queued:
                     for key, cc in (self.midi_map.mappings.items() if self.midi_map else ()):
@@ -211,12 +289,9 @@ class CandidateHub:
                     return
                 self.map_restored = True
             if self.restore_sequence is None:
-                last = 0
-                for key, value in audition.restore_items(self.prepared):
-                    if key.startswith("bed_") and not data["status"].get("bed_mask"):
-                        continue
-                    last = self.active.submit({"key": key, "value": value})
-                self.restore_sequence = last
+                items = [(key, value) for key, value in audition.restore_items(self.prepared)
+                         if not key.startswith("bed_") or data["status"].get("bed_mask")]
+                self.restore_sequence = self.active.submit_batch(items) if items else 0
             if data["error"]:
                 raise ValueError("Saved controls were rejected: " + data["error"])
             if not self.restore_sequence or data["status"].get("applied", 0) >= self.restore_sequence:
@@ -246,6 +321,10 @@ class CandidateHub:
             return data
 
     def dispatch(self, path, data, epoch):
+        if path == "/headphones":
+            if epoch != self.epoch:
+                raise ValueError("Audio session changed; refresh status")
+            return self.headphones.set(data)
         with self.lock:
             if epoch != self.epoch:
                 raise ValueError("Audio session changed; refresh status. Old actions are never replayed.")
@@ -256,7 +335,7 @@ class CandidateHub:
                 self.restart = True
                 self.restoring = True
                 self.epoch = uuid.uuid4().hex
-                return {"message": "Restart requested; audio will return muted."}
+                return {"message": "Restart requested. Master returns to its previous level once routing and tone are ready."}
             if path == "/routes":
                 routes = validate_routes(data, self.ports)
                 if self.route_file.is_symlink():
@@ -267,7 +346,7 @@ class CandidateHub:
                 self.restart = True
                 self.restoring = True
                 self.epoch = uuid.uuid4().hex
-                return {"message": "Selected routes saved; audio restarting muted."}
+                return {"message": "Connections saved. Master returns to its previous level once the new route is ready."}
             if path == "/record-assign":
                 if (not isinstance(data, dict) or set(data) != {"slot"} or type(data["slot"]) is not int
                         or not 0 <= data["slot"] < 12):
@@ -275,7 +354,8 @@ class CandidateHub:
                 if not self.active or self.restoring:
                     raise ValueError("Audio must be ready before assigning a take")
                 status = self.active.snapshot()["status"]
-                if status.get("writer_state") != 2 or status.get("capture_end") != 2:
+                # WriterState::Complete plus a clean stop or duration cap.
+                if status.get("writer_state") != 2 or status.get("capture_end") not in (2, 5):
                     raise ValueError("Stop the recording and wait for Ready before assigning it")
                 if self.recording_take is None or self.pad_library is None:
                     raise ValueError("Recording library is not configured")
@@ -285,11 +365,15 @@ class CandidateHub:
                 self.restart = True
                 self.restoring = True
                 self.epoch = uuid.uuid4().hex
-                return {"message": f"Saved to {names[data['slot']]}; audio restarting muted with the new pad."}
+                return {"message": f"Saved to {names[data['slot']]}. Audio is restarting muted, then restoring the previous Master level."}
             if path == "/preset-load":
                 if not isinstance(data, dict) or set(data) != {"slot"} or not self.presets:
                     raise ValueError("Choose one native preset")
-                values = self.presets.controls_for(data["slot"])
+                # Device-free presets from earlier versions can omit controls
+                # that still had their default value when the preset was saved.
+                values = {k: setting[3] for k, setting in audition.CONTROLS.items()
+                          if k not in storage.TRANSIENT and k not in ("attack", "release")}
+                values.update(self.presets.controls_for(data["slot"]))
                 if self.active is None and not self.restart:
                     self.prepared = values
                     self.prepared_volume_link_offset = (values.get("osc1", 0) - values.get("osc2", 0)
@@ -298,17 +382,18 @@ class CandidateHub:
                 if not self.active or self.restoring:
                     raise ValueError("Audio is not ready for a preset change")
                 status = self.active.snapshot()["status"]
-                for key, value in audition.restore_items(values):
-                    if key.startswith("bed_") and not status.get("bed_mask"):
-                        self.prepared[key] = value
-                    else:
-                        self.active.submit({"key": key, "value": value})
+                items = audition.restore_items(values)
+                if status.get("bed_mask"):
+                    self.active.submit_batch(items)
+                else:
+                    self.active.submit_batch([(k, v) for k, v in items if not k.startswith("bed_")])
+                    self.prepared.update((k, v) for k, v in items if k.startswith("bed_"))
                 return {"message": "Preset queued with Master last."}
             if path == "/preset-save":
                 if not isinstance(data, dict) or set(data) != {"slot", "name"} or not self.presets:
                     raise ValueError("Choose one native preset slot and name")
                 if self.active is not None:
-                    snapshot = self.active.snapshot()
+                    snapshot = self.snapshot()
                     if self.restoring or snapshot["stale"] or snapshot["pending"] or snapshot["status"].get("fault", 1):
                         raise ValueError("Wait for healthy acknowledged controls before storing a preset")
                     values = {k: v for k, v in snapshot["values"].items() if k not in storage.TRANSIENT}
@@ -438,8 +523,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("binary", "soundfont", "state-dir"):
         parser.add_argument("--"+name, type=Path, required=True)
-    for name in ("listen", "midi-source", "audio-left", "audio-right"):
-        parser.add_argument("--"+name, required=True)
+    parser.add_argument("--listen", required=True)
+    for name in ("midi-source", "audio-left", "audio-right"):
+        parser.add_argument("--"+name, help="Optional initial route. Supply all three routes or select devices in System.")
     parser.add_argument("--port", type=int, default=8082)
     parser.add_argument("--hostname", action="append", default=[])
     parser.add_argument("--network-interface", action="append", default=[],
@@ -447,6 +533,14 @@ def main():
     parser.add_argument("--pad-library", type=Path)
     parser.add_argument("--allow-stage-candidate", action="store_true")
     args = parser.parse_args()
+    routes = {key: getattr(args, key) for key in ("midi_source", "audio_left", "audio_right")}
+    if all(value is None for value in routes.values()):
+        routes = None
+    else:
+        try:
+            validate_routes(routes)
+        except ValueError as error:
+            parser.error(str(error))
     automatic = args.listen == 'auto'
     address = ipaddress.ip_address('127.0.0.1' if automatic else args.listen)
     if (automatic and (not args.network_interface or any(n not in ('wlan0', 'eth0') for n in args.network_interface))):
@@ -474,7 +568,7 @@ def main():
     if args.pad_library is not None:
         args.pad_library.mkdir(mode=0o700, parents=True, exist_ok=True)
     hub = CandidateHub(storage.ControlStore(state_root/"native_controls.json", audition.validate_control),
-                       {k: getattr(args, k) for k in ("midi_source", "audio_left", "audio_right")},
+                       routes,
                        recording_root, args.pad_library)
     slots = threading.BoundedSemaphore(4)
     def listener(address):
@@ -538,7 +632,7 @@ def main():
                 except (OSError, ValueError, subprocess.TimeoutExpired):
                     hub.inventory({})
                 next_inventory = now + (5 if child else 1)
-            if child is None and now >= next_launch and not hub.restart:
+            if child is None and now >= next_launch and hub.routes and not hub.restart:
                 launching_bank = None
                 try:
                     with hub.lock:

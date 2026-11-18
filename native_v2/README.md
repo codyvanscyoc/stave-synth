@@ -1,4 +1,8 @@
-# Stave native-v2: opt-in native core candidate
+# Native Pi 4 engine
+
+Use the [Pi 4 installation guide](../README.md) for the packaged release. The implementation and validation history follows.
+
+## Original native core candidate
 
 This is an opt-in C++17 prototype on `pi4-native-engine-v2`. The working
 instrument is preserved separately as `pi4-v1.2-stage-snapshot-20260916` on the

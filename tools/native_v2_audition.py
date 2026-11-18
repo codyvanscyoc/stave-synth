@@ -121,30 +121,32 @@ def apply_value(values, key, value, volume_offset=None):
 
 
 def restore_items(values):
-    # A newly attached native owner starts unlinked. Legacy aliases first,
-    # explicit independent values next, LINK last: unequal linked patches
-    # remain unequal until the player's next linked edit.
     values = dict(values)
     result = []
-    # Cross linked cutoff pairs through their safe minimum so either endpoint
-    # can move past the old range without an invalid intermediate state.
-    for low in ("reverb_lowcut", "delay_lowcut", "cutoff_min"):
+    # Live preset recall can start with linked faders/envelopes. Set their
+    # independent values before restoring the requested editing behavior.
+    for key in ("envelope_link", "volume_link"):
+        if key in values:
+            result.append((key, 0))
+    # These aliases/presets change several controls at once.
+    for key in ("attack", "release", "reverb"):
+        if key in values:
+            result.append((key, values.pop(key)))
+    # Restore each pair without crossing either the old or new limits.
+    # Width changes must precede restoring the filter's actual cutoff.
+    for low, high in (("reverb_lowcut", "reverb_highcut"),
+                      ("delay_lowcut", "delay_highcut"), ("cutoff_min", "cutoff_max")):
         if low in values:
             result.append((low, CONTROLS[low][0]))
-    result.extend(sorted(((k, v) for k, v in values.items() if k not in
-                          ("reverb_lowcut", "delay_lowcut", "cutoff_min", "envelope_link", "volume_link", "master")),
-                         key=lambda item: (0 if item[0] in ("attack", "release", "reverb") else
-                                           1 if item[0] == "delay_time" else
-                                           3 if item[0] == "delay_division" else 2)))
-    for low in ("reverb_lowcut", "delay_lowcut", "cutoff_min"):
+        if high in values:
+            result.append((high, values.pop(high)))
         if low in values:
-            result.append((low, values[low]))
-    if "envelope_link" in values:
-        result.append(("envelope_link", values["envelope_link"]))
-    if "volume_link" in values:
-        result.append(("volume_link", values["volume_link"]))
-    if "master" in values:
-        result.append(("master", values["master"]))
+            result.append((low, values.pop(low)))
+    # Setting delay time selects free timing. Restore the division afterwards.
+    last = [(key, values.pop(key)) for key in ("delay_division", "envelope_link", "volume_link", "master")
+            if key in values]
+    result.extend(values.items())
+    result.extend(last)
     return result
 
 
@@ -188,25 +190,33 @@ class Controller:
         self.volume_link_offset = None
 
     def submit(self, data):
-        key, value = validate_control(data)
+        return self.submit_batch([validate_control(data)])
+
+    def submit_batch(self, items):
+        # Admit a complete preset or no portion of it. The writer only drains
+        # the queue; every producer holds this lock while reserving its space.
         with self.lock:
             if (self.child.poll() is not None or self.status.get("fault", 1) or
                     not self.status.get("routed") or time.monotonic() - self.last_status > 3 or
                     time.monotonic() - self.last_progress > 3):
                 raise ValueError("Audio owner is not ready; no control replay")
-            if len(self.pending) >= 96 or self.outgoing.full():
+            if (len(self.pending) + len(self.map_pending) + len(items) > 96 or
+                    self.outgoing.qsize() + len(items) > self.outgoing.maxsize):
                 raise ValueError("Control backlog full; wait for acknowledgment")
             effective = self.values.copy()
             effective_offset = self.volume_link_offset
-            for pending_key, pending_value in self.pending.values():
-                effective_offset = apply_value(effective, pending_key, pending_value, effective_offset)
-            validate_control_pair(effective, key, value)
+            for key, value in self.pending.values():
+                effective_offset = apply_value(effective, key, value, effective_offset)
             mask = self.status.get("bed_mask", 0)
-            if key.startswith("bed_") and (not mask or (key == "bed_key" and not mask & (1 << int(value)))):
-                raise ValueError("No recording loaded for this pad/key")
-            self.sequence += 1
-            self.pending[self.sequence] = (key, value)
-            self.outgoing.put_nowait((self.sequence, key, value))
+            for key, value in items:
+                validate_control_pair(effective, key, value)
+                if key.startswith("bed_") and (not mask or (key == "bed_key" and not mask & (1 << int(value)))):
+                    raise ValueError("No recording loaded for this pad/key")
+                effective_offset = apply_value(effective, key, value, effective_offset)
+            for key, value in items:
+                self.sequence += 1
+                self.pending[self.sequence] = (key, value)
+                self.outgoing.put_nowait((self.sequence, key, value))
             return self.sequence
 
     def map_cc(self, data):
@@ -335,13 +345,15 @@ def handler_for(controller, authority):
                 return self.reply(200, (ROOT / "ui/logo.png").read_bytes(), "image/png")
             if self.path == "/status":
                 return self.reply(200, controller.snapshot())
+            if self.path == "/headphones" and hasattr(controller, "headphones"):
+                return self.reply(200, controller.headphones.get())
             if self.path == "/controls":
                 return self.reply(200, CONTROLS)
             self.reply(404, {"error": "Unknown audition endpoint"})
 
         def do_POST(self):
             host = self.headers.get("Host", "").lower()
-            if (self.path not in ("/control", "/save", "/restart-audio", "/routes", "/record-assign", "/preset-save", "/preset-load", "/midi-map") or host not in authorities or
+            if (self.path not in ("/headphones", "/control", "/save", "/restart-audio", "/routes", "/record-assign", "/preset-save", "/preset-load", "/midi-map") or host not in authorities or
                     self.headers.get("Origin", "").lower() != "http://" + host or
                     self.headers.get("Content-Type") != "application/json" or self.headers.get("Transfer-Encoding")):
                 return self.reply(403, {"error": "Same-origin JSON control required"})

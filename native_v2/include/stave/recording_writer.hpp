@@ -74,7 +74,7 @@ private:
     void fail(std::FILE* out=nullptr) noexcept {
         capture_.writer_failed();
         if(out) std::fclose(out);
-        if(directory_>=0&&!partial_.empty()) ::unlinkat(directory_,partial_.c_str(),0);
+        if(owns_partial_) ::unlinkat(directory_,partial_.c_str(),0);
         state_.store(WriterState::Failed,std::memory_order_release);
     }
     void run() noexcept {
@@ -83,6 +83,7 @@ private:
         if(stop_.load(std::memory_order_acquire)) return;
         const int fd=::openat(directory_,partial_.c_str(),O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
         if(fd<0) { fail(); return; }
+        owns_partial_=true;
         std::FILE* out=::fdopen(fd,"w+b");
         if(!out) { ::close(fd); fail(); return; }
         if(!header(out,0)) { fail(out); return; }
@@ -98,13 +99,19 @@ private:
             }
             const auto end=capture_.end();
             if(end!=CaptureEnd::Idle&&end!=CaptureEnd::Open&&capture_.drained()) {
-                if(end!=CaptureEnd::Complete||!frames||capture_.writer_error()) { fail(out); return; }
+                // Reaching the configured duration ends a healthy, bounded take.
+                // Faults (including overflow) must still discard incomplete PCM.
+                if((end!=CaptureEnd::Complete&&end!=CaptureEnd::FrameLimit)||!frames||capture_.writer_error()) {
+                    fail(out); return;
+                }
                 if(!header(out,frames)||std::fflush(out)||::fsync(fd)) { fail(out); return; }
                 const int close_result=std::fclose(out);
                 out=nullptr;
                 if(close_result) { fail(); return; }
                 if(::linkat(directory_,partial_.c_str(),directory_,name_.c_str(),0)||
-                   ::unlinkat(directory_,partial_.c_str(),0)||::fsync(directory_)) { fail(); return; }
+                   ::unlinkat(directory_,partial_.c_str(),0)) { fail(); return; }
+                owns_partial_=false;
+                if(::fsync(directory_)) { fail(); return; }
                 state_.store(WriterState::Complete,std::memory_order_release); return;
             }
             if(stop_.load(std::memory_order_acquire)) { fail(out); return; }
@@ -114,6 +121,7 @@ private:
     RecordingCapture<>& capture_;
     unsigned frames_;
     int directory_{-1};
+    bool owns_partial_{false}; // accessed only by the file worker
     std::string name_,partial_;
     std::thread worker_;
     std::atomic<bool> stop_{false};

@@ -47,9 +47,11 @@ let state={stale:false,exited:null,pending:0,error:null,values:Object.fromEntrie
   status:{fault:0,routed:true,frames:512,blocks:100,bed_mask:129,bed_key:7,active_beds:1}};
 const sent=[];
 const actions=[];
-const fetch=async(url,args)=>({ok:true,json:async()=>{
+let rejectHeadphoneChange=false;
+const fetch=async(url,args)=>({ok:!(url==='/headphones'&&args?.method==='POST'&&rejectHeadphoneChange),json:async()=>{
   if(url==='/controls')return controls;
   if(url==='/status')return state;
+  if(url==='/headphones')return args?.method==='POST'&&rejectHeadphoneChange?{error:'Mixer change failed'}:{available:true,muted:false,volume:40};
   if(url!=='/control'){actions.push({url,body:JSON.parse(args.body),epoch:args.headers['X-Stave-Epoch']});return {message:'Accepted'};}
   sent.push(JSON.parse(args.body));return {queued:sent.length};
 }});
@@ -135,6 +137,13 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
   keys.forEach((button,key)=>assert.equal(button.disabled,![0,7].includes(key)));
   assert.equal(keys[7].attributes['aria-pressed'],'true');
   assert.match(nodes.get('bed-status').textContent,/G · playing/);
+  for(const [writer,capture,canSave] of [[1,5,false],[2,5,true],[2,2,true],[3,5,false],[2,3,false]]){
+    state={...state,runtime:{...state.runtime,recording:{writer,capture,frames:1920000}}};
+    await vm.runInContext('poll()',context);
+    assert.equal(nodes.get('record-assign').disabled,!canSave);
+    assert.equal(nodes.get('record-slot').disabled,!canSave);
+    if(canSave)assert.match(nodes.get('record-status').textContent,/Take ready · 40.0 s/);
+  }
   keys[0].onclick();await flush();assert.deepEqual(sent.at(-1),{key:'bed_key',value:0});
   nodes.get('bed-stop').onclick();await flush();assert.deepEqual(sent.at(-1),{key:'bed_release',value:1});
   state={...state,stale:true};await vm.runInContext('poll()',context);
@@ -147,9 +156,25 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
   assert.match(nodes.get('bed-status').textContent,/No pads loaded/);
   for(const label of nodes.get('bed-controls').children)assert.equal(label.children.at(-1).disabled,false,'bed shaping can be prepared before recordings exist');
   nodes.get('nav-system').onclick();assert.equal(nodes.get('system-panel').hidden,false);assert.equal(nodes.get('stage-panel').hidden,true);
+  state={...state,epoch:'first-boot',runtime:{preparation:true,can_restart:true,restoring:true,devices:{midi:['Keys:midi'],audio:['USB:l','USB:r']}}};
+  await vm.runInContext('poll()',context);
+  assert.match(nodes.get('notice').textContent,/Open System/);
+  assert.equal(nodes.get('route-midi').value,'');
+  assert.equal(nodes.get('apply-routes').disabled,true);
+  nodes.get('route-midi').value='Keys:midi';nodes.get('route-left').value='USB:l';nodes.get('route-right').value='USB:l';
+  nodes.get('route-right').onchange();
+  assert.equal(nodes.get('apply-routes').disabled,true);
+  nodes.get('route-right').value='USB:r';nodes.get('route-right').onchange();
+  assert.equal(nodes.get('apply-routes').disabled,false);
   state={...state,epoch:'session-a',runtime:{persistence:true,can_restart:true,restoring:false,devices:{midi:['Keys:midi'],audio:['USB:l','USB:r']},midi_source:'Keys:midi',audio_left:'USB:l',audio_right:'USB:r'}};
   await vm.runInContext('poll()',context);
   assert.equal(nodes.get('save').disabled,false);assert.equal(nodes.get('route-picker').hidden,false);
+  rejectHeadphoneChange=true;
+  await nodes.get('headphone-mute').listeners.click();
+  assert.equal(nodes.get('headphone-mute').disabled,false);
+  assert.equal(nodes.get('headphone-volume').value,40);
+  assert.match(nodes.get('headphone-status').textContent,/current mixer level refreshed/);
+  rejectHeadphoneChange=false;
   assert.equal(nodes.get('midi-map').disabled,false);
   nodes.get('midi-map').onclick();assert.ok(bodyClasses.has('midi-map-mode'));assert.equal(nodes.get('midi-map-banner').hidden,false);
   const osc1=nodes.get('mixer').children[0];

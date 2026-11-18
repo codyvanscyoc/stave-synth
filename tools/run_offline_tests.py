@@ -78,8 +78,10 @@ SAFE_TESTS = (
     "test_native_v2_live_probe.py",
     "test_native_sampled_bed.py",
     "test_native_recording_capture.py",
+    "test_native_recording_writer.py",
     "test_native_bed_assets.py",
     "test_native_v2_stage.py",
+    "test_headphone_output.py",
 )
 
 
@@ -115,6 +117,7 @@ def main() -> int:
         return 1
 
     subprocess.run(["node", str(ROOT / "tests/test_ui_connection.js")], check=True, cwd=ROOT)
+    subprocess.run(["node", str(ROOT / "tests/test_native_bed_ui.js")], check=True, cwd=ROOT)
     print("Offline regression suite passed. This is NOT Pi4 hardware/audio qualification.")
     return 0
 

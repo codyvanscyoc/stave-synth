@@ -1,0 +1,24 @@
+[Unit]
+Description=Stave Synth for Raspberry Pi 4
+Wants=pipewire.service wireplumber.service
+After=pipewire.service wireplumber.service
+Conflicts=stave-synth.service stave-native-v2-candidate.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+NotifyAccess=main
+WorkingDirectory=%h/.local/opt/stave-pi4/current
+ExecStart=/usr/bin/python3 -B tools/native_v2_stage.py --binary bin/audition-jack --soundfont /usr/share/sounds/sf2/FluidR3_GM.sf2 --listen auto --network-interface wlan0 --network-interface eth0 --port 8082 --hostname %l.local --state-dir %h/.local/share/stave-native --pad-library %h/.local/share/stave-native/pad_samples --allow-stage-candidate
+Environment=MALLOC_ARENA_MAX=2
+Restart=always
+RestartSec=5
+TimeoutStartSec=90
+TimeoutStopSec=20
+WatchdogSec=30
+WatchdogSignal=SIGKILL
+LimitCORE=0
+KillMode=control-group
+
+[Install]
+WantedBy=default.target

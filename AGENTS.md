@@ -1,5 +1,9 @@
 # Stave Synth Pi4 development
 
+For the `pi4-shareable-native` distribution, start with `README.md` and
+`docs/pi4/SHARE_REVIEW.md`. Use `install-pi4.sh` on a fresh instrument user.
+The historical stage deployment notes below describe the original performance Pi.
+
 Start resumed work with `docs/pi4/RESUME_HERE.md`; it records the latest saved
 operational state, evidence locations, user decisions and unresolved findings.
 

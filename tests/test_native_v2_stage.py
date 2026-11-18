@@ -65,6 +65,8 @@ class NativeStageTests(unittest.TestCase):
         self.hub.dispatch('/preset-load', dict(slot=2), self.hub.epoch)
         self.assertEqual(self.hub.snapshot()['values']['piano'], .72)
         control = self.attached(); self.hub.reconcile()
+        while not control.outgoing.empty():
+            control.outgoing.get_nowait()
         control.receive(dict(type='status', instance='native-v2-stage', blocks=2,
                              applied=control.sequence, routed=True, fault=0))
         self.hub.reconcile()
@@ -75,6 +77,31 @@ class NativeStageTests(unittest.TestCase):
         self.assertEqual(list(control.pending.values())[-1], ('master', .64))
         with self.assertRaises(ValueError):
             self.hub.dispatch('/preset-save', dict(slot=5, name='Bad'), self.hub.epoch)
+
+    def test_live_preset_recalls_independent_levels_filters_and_unedited_defaults(self):
+        self.hub.presets.save_slot(0, 'Piano', dict(osc1=.8, osc2=.2, attack1=50, attack2=700,
+            envelope_link=1, cutoff_min=10000, cutoff_max=18000, cutoff=15555,
+            reverb=1, reverb_lowcut=25, reverb_highcut=50))
+        control = self.attached()
+        self.hub.reconcile()
+        for key,value in [('volume_link', 1), ('envelope_link', 1), ('cutoff_max', 5000), ('wet', .1)]:
+            control.submit(dict(key=key, value=value))
+        self.hub.dispatch('/preset-load', {'slot': 0}, self.hub.epoch)
+        control.receive(dict(type='status', instance='native-v2-stage', blocks=2, applied=control.sequence, routed=True, fault=0))
+        for key,value in dict(osc1=.8, osc2=.2, attack1=50, attack2=700, envelope_link=1, cutoff=15555,
+                              reverb_lowcut=25, reverb_highcut=50, wet=.75).items():
+            self.assertEqual(control.values[key], value)
+
+    def test_overfull_preset_is_rejected_before_any_part_is_queued(self):
+        self.hub.presets.save_slot(0, 'Bright', {'piano_tone': .98})
+        control = self.attached()
+        self.hub.reconcile()
+        for _ in range(60):
+            control.submit({'key': 'piano', 'value': .5})
+        before = control.pending.copy()
+        with self.assertRaisesRegex(ValueError, 'backlog'):
+            self.hub.dispatch('/preset-load', {'slot': 0}, self.hub.epoch)
+        self.assertEqual(control.pending, before)
 
     def test_midi_map_is_unique_persistent_and_restored_before_controls(self):
         control = self.attached(); self.hub.reconcile()
@@ -337,7 +364,7 @@ class NativeStageTests(unittest.TestCase):
         child = mock.Mock(); child.poll.return_value = None
         control = self.hub.attach(child, take)
         control.receive(dict(type='status', instance='native-v2-stage', blocks=1, applied=0,
-                             routed=True, fault=0, writer_state=2, capture_end=2, writer_frames=512))
+                             routed=True, fault=0, writer_state=2, capture_end=5, writer_frames=512))
         self.hub.reconcile(); epoch = self.hub.epoch
         result = self.hub.dispatch('/record-assign', {'slot': 0}, epoch)
         self.assertEqual(old.read_bytes(), b'R'*58)
@@ -447,6 +474,24 @@ class NativeStageTests(unittest.TestCase):
         self.assertTrue(self.hub.take_restart())
         self.assertEqual(stage.CandidateHub(self.store, ROUTES).routes, ROUTES)
         with self.assertRaises(ValueError): stage.parse_ports("x"*262145)
+
+    def test_fresh_install_requires_explicit_routes_and_keeps_them_after_restart(self):
+        hub = stage.CandidateHub(self.store, None)
+        hub.inventory(stage.parse_ports(INVENTORY))
+        status = hub.snapshot()
+        self.assertTrue(status["runtime"]["preparation"])
+        self.assertEqual(status["values"]["master"], 0)
+        self.assertEqual(hub.routes, {})
+        self.assertIn(ROUTES["midi_source"], status["runtime"]["devices"]["midi"])
+        self.assertFalse(hub.take_restart())
+        hub.dispatch("/routes", ROUTES, hub.epoch)
+        self.assertTrue(hub.take_restart())
+        self.assertEqual(stage.CandidateHub(self.store, None).routes, ROUTES)
+        self.store.path.write_text("damaged")
+        recovered = stage.CandidateHub(self.store, None)
+        self.assertEqual(recovered.routes, ROUTES)
+        self.assertTrue(recovered.state_warning)
+        self.assertEqual(recovered.snapshot()["values"]["master"], 0)
 
     def test_save_refuses_pending_stale_unrouted_or_exited(self):
         c = self.attached(); self.hub.reconcile()
