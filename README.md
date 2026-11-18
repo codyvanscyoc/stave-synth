@@ -6,12 +6,12 @@ Play a layered piano and two oscillators from a USB MIDI keyboard. A phone, tabl
 
 Use a Raspberry Pi 4 with **64-bit Raspberry Pi OS Trixie (Debian 13)**, internet access for the first install, and a regular login with sudo access. Use a dedicated instrument login. The installer sets that user’s PipeWire audio to 48 kHz and 512 frames, restarts its audio session on first setup, and enables the synth at boot.
 
-On the Pi, run these commands in a new directory. They fetch the ARM64 bundle and verify its download before installation. You can also download the same two files under **Assets** on the [Pi 4 beta 2 release page](https://github.com/codyvanscyoc/stave-synth/releases/tag/pi4-native-2026.11.18-beta.2).
+On the Pi, run these commands in a new directory. They fetch the ARM64 bundle and verify its download before installation. You can also download the same two files under **Assets** on the [Pi 4 beta 3 release page](https://github.com/codyvanscyoc/stave-synth/releases/tag/pi4-native-2026.11.18-beta.3).
 
 ```sh
 mkdir -p ~/Downloads/stave-pi4-beta
 cd ~/Downloads/stave-pi4-beta
-release=https://github.com/codyvanscyoc/stave-synth/releases/download/pi4-native-2026.11.18-beta.2
+release=https://github.com/codyvanscyoc/stave-synth/releases/download/pi4-native-2026.11.18-beta.3
 curl -fLO "$release/stave-synth-pi4-arm64.tar.gz"
 curl -fLO "$release/SHA256SUMS"
 sha256sum -c SHA256SUMS &&
@@ -33,7 +33,7 @@ Anyone who can reach the private-LAN UI can control the instrument. Use trusted 
 
 ## Sounds, recordings and maintenance
 
-**Stage.** On phones, **Layers** puts both oscillators, Piano and Master together. **Filter / FX** opens the other mix controls. Master and Mute stay within reach. Mute silences the output while keeping the mix level. Panic releases notes, pedals, freeze and pads and mutes the output. Check Master before unmuting.
+**Stage.** In tablet landscape, the transpose and layer controls share a row above the faders. The twelve pad keys and Stop are on the same screen. Soundcheck shows the names of any disconnected devices. On phones, **Layers** puts both oscillators, Piano and Master together. **Filter / FX** opens the other mix controls. Master and Mute stay within reach. Mute silences the output while keeping the mix level. Panic releases notes, pedals, freeze and pads and mutes the output. Check Master before unmuting.
 
 **Presets.** Tap a named slot to recall it. To store the sound you are playing, use **Store preset…**, choose a destination, enter a name and confirm. Selecting a destination keeps the current sound live. The Stage readout shows edits to the active preset and whether the sound differs from startup.
 

@@ -15,6 +15,7 @@ await call('Emulation.setDeviceMetricsOverride',{width:1366,height:1024,deviceSc
 await call('Page.navigate',{url:'http://127.0.0.1:8768'});
 for(let n=0;n<40&&!(await evaluate("document.getElementById('connection')?.textContent==='Connected'"));++n)await sleep(100);
 assert.equal(await evaluate('ready&&!audioReady'),true);
+assert.equal(await evaluate('activePage'),'check','an unconfigured instrument opens Soundcheck first');
 await evaluate("view('edit');soundSection('osc')");
 
 // A local knob event must retarget the plot synchronously, then animate rather
@@ -104,6 +105,14 @@ window.fetch=async function(path,opts){
   const d=await r.json();d.stale=false;d.exited=null;d.status={routed:true,blocks:500,fault:0,midi_connected:true};
   Object.assign(d.runtime,{restoring:false,preparation:false,midi_source:'Keys:MIDI',audio_left:'USB:Left',audio_right:'USB:Right',
     devices:{midi:['Keys:MIDI'],audio:['USB:Left','USB:Right']},presets:[{name:'Verse'},{name:'Chorus'},null,null,null],active_preset:0});
+  d.values.shimmer=1;d.values.freeze=1;d.values.transpose=window.stageTranspose??0;
+  if(window.missingDevices){
+    d.runtime.preparation=true;
+    d.runtime.devices={midi:[],audio:[]};
+    d.runtime.missing_routes={midi_source:'Keys:MIDI',audio_left:'USB:Left',audio_right:'USB:Right'};
+    d.status={};
+    d.stale=true;
+  }
   return new Response(JSON.stringify(d));
 };`});
 await call('Page.reload');
@@ -113,6 +122,59 @@ async function click(id){
   await call('Input.dispatchMouseEvent',{type:'mousePressed',...p,button:'left',clickCount:1});
   await call('Input.dispatchMouseEvent',{type:'mouseReleased',...p,button:'left',clickCount:1});
 }
+// Keep the playable controls together even when Safari's bars reduce a tablet's usable height.
+async function verifyLandscapeStage(width,height){
+  await call('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:true});
+  await evaluate("view('stage');window.scrollTo(0,0)");
+  const layout=await evaluate(`(()=>{
+    const box=selector=>document.querySelector(selector).getBoundingClientRect();
+    const output=document.querySelector('#transpose-stepper output');
+    const ink=new Range();ink.selectNodeContents(output);
+    const inkRect=ink.getBoundingClientRect(),nav=box('nav'),shimmer=box('#shimmer-toggle'),freeze=box('#freeze-toggle');
+    const tracks=[...document.querySelectorAll('#mixer input[type=range]')].map(node=>node.getBoundingClientRect());
+    const readouts=[...document.querySelectorAll('#mixer label.performance > output')].map(node=>node.getBoundingClientRect());
+    const aligned=rects=>rects.length===6&&rects.every(r=>Math.abs(r.top-rects[0].top)<1&&Math.abs(r.bottom-rects[0].bottom)<1);
+    const pads=[...document.querySelectorAll('#bed-keys button'),document.getElementById('bed-stop')];
+    const reachable=pads.every(button=>{
+      const rect=button.getBoundingClientRect();
+      if(rect.width<43.9||rect.height<43.9||rect.top<0||rect.bottom>visualViewport.height+1)return false;
+      return document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2)===button;
+    });
+    return {
+      gapLeft:inkRect.left-box('#transpose-stepper button:first-of-type').right,
+      gapRight:box('#transpose-stepper button:last-of-type').left-inkRect.right,
+      fader:box('#mixer [data-control=osc1] input').height,
+      switchesAligned:Math.min(shimmer.top,freeze.top)>=nav.top-3&&Math.max(shimmer.bottom,freeze.bottom)<=nav.bottom+3,
+      reachable,pads:pads.length,channelsAligned:aligned(tracks)&&aligned(readouts)
+    };
+  })()`);
+  const screen=width+'×'+height;
+  assert.ok(layout.gapLeft>=7&&layout.gapRight>=7,screen+' transpose readout needs space on both sides');
+  assert.ok(layout.switchesAligned,screen+' Shimmer and Freeze protrude from the header');
+  assert.ok(layout.fader>(height>=768?220:190),screen+' fader travel');
+  assert.ok(layout.channelsAligned,screen+' the six fader rails and their readouts must line up');
+  assert.equal(layout.pads,13,screen+' should have all twelve keys and Stop');
+  assert.ok(layout.reachable,screen+' all twelve keys and Stop must be reachable without scrolling');
+}
+for(const [width,height] of [[1024,650],[1024,768],[1180,700],[1180,820],[1366,768]]){
+  await verifyLandscapeStage(width,height);
+}
+assert.equal(await evaluate("document.getElementById('shimmer-toggle').innerText"),'Shimmer on');
+assert.equal(await evaluate("document.getElementById('freeze-toggle').innerText"),'UNFREEZE');
+for(const transpose of [-24,24]){
+  await evaluate(`window.stageTranspose=${transpose};poll()`);
+  assert.equal(await evaluate("document.querySelector('#transpose-stepper output').innerText"),transpose>0?'+24 st':'-24 st');
+  await verifyLandscapeStage(1024,650);
+}
+await evaluate("window.missingDevices=true;poll()");
+await verifyLandscapeStage(1024,650);
+assert.equal(await evaluate("document.getElementById('notice').innerText"),'','missing devices do not cover the Stage');
+assert.equal(await evaluate("document.getElementById('midi-status').innerText"),'MIDI offline');
+assert.equal(await evaluate("document.getElementById('audio-status').innerText"),'AUDIO offline');
+await click('nav-check');
+assert.match(await evaluate("document.getElementById('check-summary').innerText"),/Missing keyboard.*Keys:MIDI.*USB:Left.*USB:Right/);
+await evaluate("window.missingDevices=false;poll()");
+await click('nav-stage');
 await click('midi-map');await sleep(50);await click('volume-link-stage');await sleep(60);
 assert.equal(await evaluate('midiTarget'),'volume_link');assert.deepEqual(await evaluate("posted.filter(([path])=>path!=='/midi-learn')"),[],'learning a switch does not change the sound');
 await evaluate("document.getElementById('freeze-toggle').focus()");

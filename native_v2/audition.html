@@ -86,7 +86,7 @@ header{margin-bottom:10px}.statusbar{gap:16px;font-size:11px;padding-top:8px}.de
    not alter the audio callback, buffer size, or DSP graph. */
 header{position:relative}.header-actions{gap:7px}.header-actions button{min-width:72px;min-height:42px;padding:5px 9px;font-size:11px}.header-stack{display:grid;gap:3px}.header-stack button{min-height:20px;height:20px;padding:0 7px;font-size:9px}#mute{margin-left:0;min-width:72px}#connections{min-width:62px}
 .statusbar{flex-wrap:nowrap;white-space:nowrap;overflow:hidden;min-height:27px}.statusbar>*{flex:none}#warning-count{cursor:pointer}
-#notice{position:fixed;z-index:40;top:78px;left:50%;transform:translateX(-50%);max-width:min(92vw,760px);margin:0;padding:6px 12px;background:#180f0d;border:1px solid var(--gold);color:var(--gold);box-shadow:0 5px 24px #000;pointer-events:none;text-align:center}#notice:empty{display:none}
+#notice{margin:4px 0;padding-left:8px;border-left:2px solid var(--gold);color:var(--gold);overflow-wrap:anywhere}
 #midi-map-banner{position:fixed;z-index:50;top:8px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:12px;width:min(94vw,850px);padding:9px 12px;background:#19120b;border:2px dashed var(--gold);box-shadow:0 6px 30px #000;color:var(--gold)}#midi-map-banner strong{white-space:nowrap;letter-spacing:.14em}#midi-map-banner span{flex:1;color:var(--ink)}#midi-map-done{width:auto;min-height:34px;padding:3px 12px}#midi-map[aria-pressed=true]{background:var(--gold);border-color:var(--gold);color:var(--bg)}.midi-map-mode [data-map-key]{outline:1px dashed color-mix(in srgb,var(--gold) 72%,transparent);outline-offset:3px;cursor:crosshair!important}.midi-map-mode [data-map-key][data-midi-selected=true]{outline:4px dashed var(--gold);background-color:color-mix(in srgb,var(--gold) 13%,transparent)}.midi-map-mode [data-map-key][data-midi-mapped=true]{box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--gold) 48%,transparent)}
 .control[data-midi-mapped=true]{position:relative}.control[data-midi-mapped=true]::after{content:'CC ' attr(data-midi-cc);position:absolute;top:4px;right:5px;color:var(--gold);font-size:8px;letter-spacing:.08em}.midi-map-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px;margin:12px 0}.midi-map-list span{border-bottom:1px solid var(--line);padding:4px 0;font-size:11px;color:var(--muted)}.midi-map-list strong{color:var(--mint);font-weight:normal}.midi-map-list .empty{grid-column:1/-1;border:0}.surface-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.surface-actions button{width:auto;min-width:145px}.surface-actions button[aria-pressed=true],#sound-advanced[aria-pressed=true]{background:var(--mint);color:var(--bg)}
 .pitch-strip{display:flex;align-items:center;justify-content:center;gap:8px;margin:3px 0 8px}.pitch-strip>span{color:var(--muted);font-size:10px;letter-spacing:.12em}.stepper{display:inline-grid;grid-template-columns:34px 48px 34px;align-items:center}.stepper button{min-height:32px;height:32px;padding:0}.stepper output{float:none;text-align:center;color:var(--ink)}
@@ -112,6 +112,118 @@ header{grid-template-columns:auto minmax(0,1fr);gap:4px 14px}.brand-lockup .retr
 @media(max-width:370px){#bed-keys{grid-template-columns:repeat(4,minmax(44px,1fr))}}
 @media(min-width:701px) and (max-width:950px) and (min-height:501px){.channel-foot{grid-template-columns:44px 44px;gap:2px}.channel-foot output{grid-row:1;grid-column:1/-1}.channel-foot button{grid-row:2}}
 #stage-panel .bed-actions button,#stage-panel button,#check-panel button,#tone-controls label input[type=range]{min-height:44px}
+/* Keep the live controls in the viewport; give spare height to fader travel. */
+header {
+  display:grid; grid-template-columns:auto minmax(max-content,1fr) auto;
+  align-items:center; gap:12px; margin-bottom:4px;
+}
+header nav {width:auto; justify-self:center; gap:4px; order:0}
+header nav button {min-width:44px; height:44px; min-height:44px; padding:4px 10px}
+.brand-lockup {gap:8px}
+.retro-logo {width:44px; height:44px}
+.header-actions {width:auto; flex-wrap:nowrap; gap:4px; order:0}
+.header-stack {display:contents}
+.header-actions button, .header-actions #mute {flex:none; min-width:44px; height:44px; min-height:44px; padding:3px 8px; white-space:nowrap}
+.header-stack button {position:relative; isolation:isolate; border:0; font-size:11px}
+.header-stack button::before {content:""; position:absolute; z-index:-1; inset:6px 0; border:1px solid var(--mint); border-radius:2px}
+#shimmer-toggle[aria-pressed=true], #freeze-toggle[aria-pressed=true] {background:transparent}
+#shimmer-toggle[aria-pressed=true]::before {background:var(--gold); border-color:var(--gold)}
+#freeze-toggle[aria-pressed=true]::before {background:var(--mint)}
+body:has(#stage-panel:not([hidden])) {
+  min-height:100svh; display:flex; flex-direction:column; padding:8px clamp(12px,2vw,28px);
+}
+body:has(#stage-panel:not([hidden])) main, #stage-panel:not([hidden]), .performance-panel {
+  display:flex; flex-direction:column; flex:1 0 auto;
+}
+#stage-panel:not([hidden]) {gap:4px}
+.stage-toolbar {display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-top:2px}
+.pitch-strip {flex:none; justify-content:flex-start; margin:0; gap:8px}
+#transpose-stepper {grid-template-columns:44px minmax(6ch,auto) 44px; gap:5px}
+#transpose-stepper output {margin:0; padding:0 4px; line-height:1; white-space:nowrap; font-variant-numeric:tabular-nums}
+.layer-strip {flex:1; max-width:none; margin:0; gap:4px}
+.performance-panel {margin:0; padding:0; gap:2px}
+#mixer {flex:1 0 auto; gap:clamp(8px,2vw,32px)}
+#mixer label.performance {gap:3px}
+#mixer .control-name, #mixer output {min-height:0; line-height:1.35}
+#mixer input[type=range] {flex:1 0 150px; min-height:150px; height:150px; max-height:900px}
+#mixer .channel-foot {margin-top:0; min-height:44px}
+#mixer .channel-foot output {order:0; font-size:11px; line-height:1.2}
+@media (min-width:701px) and (max-width:950px) and (min-height:501px) {
+  #mixer .channel-foot {height:60px; grid-template-rows:14px 44px}
+}
+.mix-utilities {display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.3fr); align-items:center; gap:clamp(12px,3vw,44px)}
+#stage-meters {display:grid; grid-template-columns:auto minmax(40px,1fr) auto auto minmax(40px,1fr) auto; gap:0 5px; width:100%; max-width:none; margin:0; align-items:center}
+#stage-meters output {float:none; min-width:0; margin:0; font-size:11px}
+#stage-meters span {font-size:11px}
+#tone-controls {width:100%; max-width:none; margin:0}
+#tone-controls label {display:grid; grid-template-columns:auto minmax(44px,1fr) auto; align-items:center; gap:8px}
+#tone-controls label input {order:1; margin:0}
+#tone-controls label output {order:2; margin:0; font-size:12px}
+#tone-controls .control-name {font-size:11px}
+.preset-strip {margin:0; gap:4px}
+#sound-state {font-size:11px; line-height:1.3}
+.bed-panel {display:grid; grid-template-columns:minmax(0,1fr) auto; gap:2px 8px; margin:0; padding:4px 0 0}
+.pad-heading {grid-column:1/-1; display:flex; align-items:baseline; gap:12px; min-width:0}
+#bed-status {margin:0; min-height:0}
+#bed-keys {grid-column:1; gap:4px}
+#bed-keys button {padding:2px; height:44px; min-height:44px}
+.bed-actions {grid-column:2; margin:0}
+.bed-actions button {min-width:70px; padding:3px 6px}
+.pad-edit {grid-column:1/-1; margin:0}
+.pad-edit summary {width:fit-content; display:list-item; align-content:center}
+#pad-capacity {margin:4px 0}
+@media (min-width:951px) {
+  /* The right three channels have no octave controls. Use their footer
+     for brightness and stereo output, leaving the six rails aligned. */
+  .performance-panel {
+    display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); column-gap:clamp(8px,2vw,32px);
+    grid-template-rows:minmax(min-content,1fr) 44px; row-gap:0;
+  }
+  #mixer {grid-column:1/-1; grid-row:1/3}
+  .mix-utilities {grid-column:4/-1; grid-row:2; z-index:1; grid-template-columns:minmax(0,1.9fr) minmax(95px,1fr); gap:12px}
+  #tone-controls {grid-column:1; grid-row:1}
+  #tone-controls label {grid-template-columns:minmax(70px,15ch) minmax(44px,1fr) auto; gap:5px}
+  #tone-controls .control-name {line-height:1.15}
+  #stage-meters {grid-column:2; grid-row:1; grid-template-columns:auto minmax(16px,1fr) auto; gap:0 5px}
+  #stage-meters meter {height:14px}
+}
+@media (min-width:900px) {
+  .bed-panel {grid-template-columns:minmax(0,1fr) auto auto}
+  .pad-edit:not([open]) {grid-column:3; grid-row:2}
+  .pad-edit:not([open]) summary {white-space:nowrap}
+}
+@media (min-width:701px) and (max-width:950px) {
+  header {grid-template-columns:auto minmax(0,1fr); gap:3px 10px}
+  header nav {justify-self:end}
+  .header-actions {grid-column:1/-1; justify-self:end}
+}
+@media (max-width:700px), (orientation:landscape) and (max-width:950px) and (max-height:500px) {
+  body:has(#stage-panel:not([hidden])) {padding-bottom:calc(62px + env(safe-area-inset-bottom))}
+  header {grid-template-columns:auto minmax(0,1fr); gap:2px 5px}
+  header .brand-lockup>div {display:none}
+  header .retro-logo {width:36px; height:36px}
+  header nav {grid-column:2; width:100%; margin:0}
+  header nav button {min-width:44px; padding:2px 4px}
+  .header-actions {grid-column:1/-1; width:100%; justify-content:flex-end; gap:3px}
+  .header-actions button, .header-actions #save {flex:1 1 auto; padding:2px 3px; font-size:10px; line-height:1.1; white-space:normal; min-width:44px}
+  .stage-toolbar {display:grid; grid-template-columns:auto minmax(0,1fr); gap:2px 6px}
+  .pitch-strip {gap:4px}
+  .pitch-strip>span {font-size:9px; letter-spacing:0}
+  #transpose-stepper {grid-template-columns:44px minmax(5ch,auto) 44px; gap:3px}
+  .stage-toolbar .phone-bank {grid-column:2; grid-row:1; margin:0; gap:3px}
+  .phone-bank button {font-size:10px; padding:2px}
+  .layer-strip {grid-column:1/-1; width:100%}
+  .mix-utilities {grid-template-columns:minmax(0,1fr) auto; gap:0 8px}
+  #stage-meters {grid-column:1; grid-template-columns:auto minmax(12px,1fr) auto auto minmax(12px,1fr) auto; gap:0 3px}
+  #tone-controls {grid-column:1/-1}
+  .mobile-octaves {grid-column:2; grid-row:1}
+  .mobile-octaves summary {font-size:11px; min-height:44px; padding:12px 0}
+  .mobile-octaves[open] {grid-column:1/-1; grid-row:2}
+  .pad-heading {grid-column:1; flex-wrap:wrap; gap:0 8px}
+  .bed-actions {grid-column:2; grid-row:1}
+  #bed-keys {grid-column:1/-1; grid-row:2}
+  .footer-note {display:none}
+}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
 </style>
 <header><div class="brand-lockup"><img class="retro-logo" src="/logo.png" alt="Stave"><div><div class="brand">STAVE</div><div class="eyebrow">PIANO + SYNTH</div></div></div>
@@ -122,19 +234,21 @@ header{grid-template-columns:auto minmax(0,1fr);gap:4px 14px}.brand-lockup .retr
 <div id="midi-map-banner" hidden><strong>MIDI MAP</strong><span id="midi-map-instruction">Tap an outlined Stave control, then move one hardware knob or fader.</span><button id="midi-map-done">DONE</button></div>
 <main>
 <section id="stage-panel" aria-label="Stage">
-<div class="pitch-strip"><span>TRANSPOSE</span><div id="transpose-stepper" class="stepper" data-stepper="transpose" data-map-key="transpose"><button aria-label="Transpose down">−</button><output>0 st</output><button aria-label="Transpose up">+</button></div></div>
-<div class="layer-strip"><button id="layer-osc1" aria-pressed="true">OSC 1</button><button id="layer-osc2" aria-pressed="true">OSC 2</button><button id="volume-link-stage" data-map-key="volume_link" aria-pressed="false">LINK VOL</button><button id="layer-piano" aria-pressed="true">PIANO</button></div>
-<div class="panel performance-panel"><div class="section-head"><div><h1>Live mix</h1><p>Touch to pick up. Drag to blend.</p></div></div><div class="phone-bank" aria-label="Stage fader bank"><button id="bank-mix" aria-pressed="true">Layers</button><button id="bank-fx" aria-pressed="false">Filter / FX</button></div><div id="mixer"></div><div class="meter-pair" id="stage-meters" aria-label="Stage output peak"><span>L</span><meter id="stage-l" min="0" max="1" aria-label="Left output peak"></meter><output id="stage-db-l">—</output><span>R</span><meter id="stage-r" min="0" max="1" aria-label="Right output peak"></meter><output id="stage-db-r">—</output></div><div id="tone-controls"></div></div>
-<details class="mobile-octaves"><summary>Layer octaves</summary><div>OSC 1 <span class="stepper" id="phone-octave1"><button aria-label="OSC 1 octave down">−</button><output>0 oct</output><button aria-label="OSC 1 octave up">+</button></span></div><div>OSC 2 <span class="stepper" id="phone-octave2"><button aria-label="OSC 2 octave down">−</button><output>0 oct</output><button aria-label="OSC 2 octave up">+</button></span></div><div>Piano <span class="stepper" id="phone-piano_octave"><button aria-label="Piano octave down">−</button><output>0 oct</output><button aria-label="Piano octave up">+</button></span></div></details>
+<div class="stage-toolbar"><div class="pitch-strip"><span>TRANSPOSE</span><div id="transpose-stepper" class="stepper" data-stepper="transpose" data-map-key="transpose"><button aria-label="Transpose down">−</button><output>0 st</output><button aria-label="Transpose up">+</button></div></div>
+<div class="phone-bank" aria-label="Stage fader bank"><button id="bank-mix" aria-pressed="true">Layers</button><button id="bank-fx" aria-pressed="false">Filter / FX</button></div>
+<div class="layer-strip"><button id="layer-osc1" aria-pressed="true">OSC 1</button><button id="layer-osc2" aria-pressed="true">OSC 2</button><button id="volume-link-stage" data-map-key="volume_link" aria-pressed="false">LINK VOL</button><button id="layer-piano" aria-pressed="true">PIANO</button></div></div>
+<div class="panel performance-panel"><div class="section-head"><div><h1>Live mix</h1><p>Touch to pick up. Drag to blend.</p></div></div><div id="mixer"></div><div class="mix-utilities"><div class="meter-pair" id="stage-meters" aria-label="Stage output peak"><span>L</span><meter id="stage-l" min="0" max="1" aria-label="Left output peak"></meter><output id="stage-db-l">—</output><span>R</span><meter id="stage-r" min="0" max="1" aria-label="Right output peak"></meter><output id="stage-db-r">—</output></div><details class="mobile-octaves"><summary>Layer octaves</summary><div>OSC 1 <span class="stepper" id="phone-octave1"><button aria-label="OSC 1 octave down">−</button><output>0 oct</output><button aria-label="OSC 1 octave up">+</button></span></div><div>OSC 2 <span class="stepper" id="phone-octave2"><button aria-label="OSC 2 octave down">−</button><output>0 oct</output><button aria-label="OSC 2 octave up">+</button></span></div><div>Piano <span class="stepper" id="phone-piano_octave"><button aria-label="Piano octave down">−</button><output>0 oct</output><button aria-label="Piano octave up">+</button></span></div></details>
+<div id="tone-controls"></div></div></div>
+<section class="panel bed-panel" aria-label="Recorded pad bed"><div class="pad-heading"><h2>Background pad</h2><p id="bed-status">Checking loaded recordings…</p></div>
+<div id="bed-keys"></div>
+<div class="actions bed-actions"><button id="bed-stop" disabled>STOP PAD</button></div>
+<details class="pad-edit"><summary>PAD RECORD / SHAPE</summary><p id="pad-capacity" class="small"></p><div class="record-pad"><button id="record-start" disabled>RECORD</button><button id="record-stop" disabled>STOP</button><label>KEY <select id="record-slot" aria-label="Recorded pad destination"></select></label><button id="record-assign" disabled>SAVE PAD</button><span id="record-status">Recorder idle.</span></div><div id="bed-controls"></div><p class="small">Tap a loaded key to fade it in. Tap it again to fade it out. Selecting a different key crossfades to the new pad.</p></details></section>
+
 <div class="preset-strip" aria-label="Sound presets"><button data-preset="0">1 · EMPTY</button><button data-preset="1">2 · EMPTY</button><button data-preset="2">3 · EMPTY</button><button data-preset="3">4 · EMPTY</button><button data-preset="4">5 · EMPTY</button><button id="preset-store" disabled>Store preset…</button></div>
 <p id="sound-state" class="small" aria-live="polite"></p>
 <section id="preset-editor" class="panel" hidden aria-label="Store current sound"><h2>Store current sound</h2>
 <label>Destination<select id="preset-destination"></select></label><label>Name<input id="preset-name" maxlength="24" autocomplete="off"></label><p class="small" id="preset-replace"></p><div class="actions"><button id="preset-confirm" disabled>Store sound</button><button id="preset-cancel">Cancel</button></div></section>
-<section class="panel bed-panel" aria-label="Recorded pad bed"><div class="section-head"><div><h2>Background pad</h2><p>Recorded ambience in the song’s key.</p></div></div>
-<p id="pad-capacity" class="small"></p><p id="bed-status">Checking loaded recordings…</p>
-<div id="bed-keys"></div>
-<div class="actions bed-actions"><button id="bed-stop" disabled>STOP PAD</button></div>
-<details class="pad-edit"><summary>PAD RECORD / SHAPE</summary><div class="record-pad"><button id="record-start" disabled>RECORD</button><button id="record-stop" disabled>STOP</button><label>KEY <select id="record-slot" aria-label="Recorded pad destination"></select></label><button id="record-assign" disabled>SAVE PAD</button><span id="record-status">Recorder idle.</span></div><div id="bed-controls"></div><p class="small">Tap a loaded key to fade it in. Tap it again to fade it out. Selecting a different key crossfades to the new pad.</p></details></section>
+
 </section>
 <section id="edit-panel" aria-label="Shape sound" hidden><div class="panel"><div class="section-head sound-heading"><div><h1>Sound</h1><p>Drag knobs sideways to adjust. These controls use the existing native engine.</p></div><div class="surface-actions"><button id="sound-advanced" aria-pressed="false">SHOW ADVANCED</button></div></div><div class="sound-tabs" role="group" aria-label="Sound sections"><button id="sound-tab-osc" aria-pressed="true">OSC</button><button id="sound-tab-piano" aria-pressed="false">PIANO</button><button id="sound-tab-reverb" aria-pressed="false">REVERB</button><button id="sound-tab-delay" aria-pressed="false">DELAY</button></div><p class="advanced-note">ADVANCED · calibration and routing controls already present in the engine</p><div class="edit-groups">
 <section id="sound-osc" class="edit-group" data-group="osc" data-open="true"><h2>OSCILLATORS</h2><div id="edit-link" class="control-grid"></div><div class="osc-layout"><div class="voice"><h3>OSC 1</h3><div id="edit-wave1" class="control-grid"></div><svg class="envelope-plot" viewBox="0 0 400 130" role="img" aria-label="OSC 1 envelope contour"><polyline id="envelope1" points="10,120 80,10 170,32 270,32 390,120"/></svg><div class="envelope-caption">ADSR · schematic</div><div id="edit-env1" class="control-grid envelope-controls"></div></div><div class="voice"><h3>OSC 2</h3><div id="edit-wave2" class="control-grid"></div><svg class="envelope-plot" viewBox="0 0 400 130" role="img" aria-label="OSC 2 envelope contour"><polyline id="envelope2" points="10,120 80,10 170,32 270,32 390,120"/></svg><div class="envelope-caption">ADSR · schematic</div><div id="edit-env2" class="control-grid envelope-controls"></div></div></div><div class="contour"><h3>SHARED FILTER</h3><div id="edit-osc" class="control-grid"></div></div></section>
@@ -484,7 +598,7 @@ headphoneMute.addEventListener('click',()=>writeHeadphones(!headphoneMuted));
 document.getElementById('nav-system').addEventListener('click',readHeadphones);
 readHeadphones();
 async function action(path,data={}){
-  if(path==='/save'&&(busy||pending.size)){notice.textContent='Wait for your last adjustment to finish, then save.';return null;}
+  if(path==='/save'&&(busy||pending.size)){announce('Wait for your last adjustment to finish, then save.');return null;}
   if(actionBusy||!canAct())return null;
   const version=sessionVersion;actionBusy=true;
   try{const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Stave-Epoch':epoch},body:JSON.stringify(data),signal:AbortSignal.timeout(path==='/record-assign'?120000:3000)});
@@ -759,9 +873,10 @@ async function poll(){
     if(midiMapMode&&!midiReady)setMidiMapMode(false);else keepLearnAlive();
     document.getElementById('connection').textContent='Connected';
     const midiPresent=s.midi_connected??Boolean(lastRuntime.devices?.midi?.includes(lastRuntime.midi_source));
-    document.getElementById('midi-status').textContent=midiPresent?'MIDI connected':'MIDI —';
+    document.getElementById('midi-status').textContent=midiPresent?'MIDI connected':lastRuntime.midi_source?'MIDI offline':'MIDI —';
     document.getElementById('midi-status').setAttribute('data-connected',String(midiPresent));
-    document.getElementById('audio-status').textContent=audioReady?'AUDIO on':'AUDIO —';
+    const missing=lastRuntime.missing_routes||{};
+    document.getElementById('audio-status').textContent=audioReady?'AUDIO on':(missing.audio_left||missing.audio_right)?'AUDIO offline':'AUDIO —';
     document.getElementById('audio-status').setAttribute('data-connected',String(audioReady));
     document.getElementById('profile').textContent=audioReady?((s.output_mute??d.values.output_mute)?'Muted':Number(d.values.master)>0?'':'Master 0%'):'';
     const warningParts=[];if(s.xruns)warningParts.push('XRUN '+s.xruns);if(s.over_budget)warningParts.push('LATE '+s.over_budget);
@@ -773,9 +888,10 @@ async function poll(){
       'Xruns '+(s.xruns||0)+' · over-budget callbacks '+(s.over_budget||0)+' · worst '+Number(s.max_callback_ms||0).toFixed(2)+' ms\n'+
       'Piano full-scale samples '+(s.piano_full_scale||0)+' · unsupported MIDI '+(s.unsupported_midi||0)+' · pending controls '+d.pending;
     if(Date.now()>=noticeExpires){
-    if(preparing)notice.textContent=lastRuntime.devices&&activePage!=='check'?readiness:'';
-    else if(d.error)notice.textContent=d.error;else if(!ready)notice.textContent=lastRuntime.message||'Control/audio connection is stale or stopped. No commands will be replayed.';
-    else notice.textContent=s.midi_connected===false?readiness:'';
+      // Named missing ports are always available in Soundcheck. The status
+      // strip keeps the player informed without covering the mix or pads.
+      const waitingForAudio=!ready&&!Object.keys(missing).length;
+      notice.textContent=d.error||(waitingForAudio?(lastRuntime.message||'Waiting for audio. Open Soundcheck for details.'):'');
     }
     if(!ready){pending.clear();cancelGestures();}
     const maps=lastRuntime.midi_maps||{},mappedUpdates=new Set(),mappedSerials=Array.isArray(s.midi_mapped_serial)?s.midi_mapped_serial:[];
@@ -839,10 +955,22 @@ async function poll(){
     elem('save-status').textContent=lastRuntime.state_warning||lastRuntime.save_message||(lastRuntime.persistence?'Save startup remembers your sound for the next power-on.':'Sound saving unavailable.');
     if(lastRuntime.scope)document.getElementById('runtime-scope').textContent=lastRuntime.scope;
     activeBed=Number(s.bed_key??-1);bedFaded=Boolean(d.values.bed_fade);
-    bedKeys.forEach((button,key)=>{const loaded=Boolean((s.bed_mask||0)&(1<<key));button.disabled=!audioReady||!loaded;button.title=loaded?'Toggle recorded '+keyNames[key]:'No recording for '+keyNames[key];button.style.opacity=loaded?'1':'.35';button.setAttribute('aria-pressed',String(activeBed===key&&!bedFaded));button.style.outline=activeBed===key?'3px solid '+(bedFaded?'#FF751F':'#70d9b0'):'';});
+    const bank=lastRuntime.pad_bank;
+    bedKeys.forEach((button,key)=>{
+      const playable=audioReady&&Boolean((s.bed_mask||0)&(1<<key));
+      const saved=preparing&&bank?.slot_seconds?.[key]>0;
+      const active=playable&&activeBed===key;
+      button.disabled=!playable;
+      button.title=playable?'Toggle recorded '+keyNames[key]:saved?'Recorded '+keyNames[key]+' · audio offline':'No recording for '+keyNames[key];
+      button.style.opacity=playable||saved?'1':'.35';
+      button.setAttribute('aria-pressed',String(active&&!bedFaded));
+      button.style.outline=active?'3px solid '+(bedFaded?'#FF751F':'#70d9b0'):'';
+    });
     for(const id of bedActions)document.getElementById(id).disabled=!audioReady||!s.bed_mask;
-    document.getElementById('bed-status').textContent=!s.bed_mask?'No pads loaded. Record one below.':
-      (activeBed>=0?keyNames[activeBed]+' · '+(bedFaded?'faded out · tap to return':'playing · tap to fade'):'Choose a loaded key');
+    let bedStatus='No pads loaded. Record one below.';
+    if(preparing&&bank?.slots>0)bedStatus=bank.slots+(bank.slots===1?' pad saved':' pads saved')+' · audio offline';
+    if(audioReady&&s.bed_mask)bedStatus=activeBed>=0?keyNames[activeBed]+' · '+(bedFaded?'faded out · tap to return':'playing · tap to fade'):'Choose a loaded key';
+    document.getElementById('bed-status').textContent=bedStatus;
     const recording=lastRuntime.recording||{},writer=Number(recording.writer||0),capture=Number(recording.capture||0),seconds=Number(recording.frames||0)/48000;
     document.getElementById('record-start').disabled=!audioReady||writer!==0||capture!==0;
     document.getElementById('record-stop').disabled=!audioReady||writer!==1||capture!==1;

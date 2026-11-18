@@ -1,5 +1,11 @@
 # Raspberry Pi 4 native release review
 
+## Beta 3 · landscape Stage
+
+An iPad Air 11-inch simulator running iPadOS 27 WebKit exercised the Stage with a saved pad and disconnected MIDI and stereo ports. At a 1024 × 768 CSS-pixel viewport, all six faders measured 393 pixels tall, up from 190. All twelve pad keys and Stop fit in the first view. At 1024 × 650, with space reserved for browser controls, the faders measured 275 pixels and Stop ended at 576. At 1180 × 700, the faders measured 325 pixels.
+
+Chromium also exercised the connected and disconnected layouts, active Shimmer and Freeze, and the transpose readout at −24, 0 and +24 semitones. The browser tests checked that all thirteen pad controls could be reached at their centers. The engine binary is the same build described under beta 2.
+
 ## Beta 2 · performance and usability fixes
 
 The release targets Raspberry Pi 4 and 64-bit Raspberry Pi OS Trixie. The following checks used the native source and the ARM64 engine built on the 2 GB Pi 4. SHA-256 for the engine is `80f5fb9f845d24936a6b86c91588cd02f615d62c8f81f2a4b9c5e0304794e193`. The download contains its build receipt, source revision and installer. The release build checks the receipt against every native input in the selected Git revision.
