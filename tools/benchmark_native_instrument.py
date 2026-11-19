@@ -34,6 +34,8 @@ def main():
     parser.add_argument("--soundfont",type=Path,required=True)
     parser.add_argument("--output-dir",type=Path,required=True)
     parser.add_argument("--blocks",type=int,default=400)
+    parser.add_argument("--piano-voice",type=int,choices=range(4),default=0,
+                        help="0 Grand, 1 Rhodes, 2 Suitcase, 3 Legend EP 2")
     parser.add_argument("--source-commit",required=True)
     parser.add_argument("--reuse-dsp-dir",type=Path,help="Prior private report directory; reuse only hash/version-matched DSP objects")
     parser.add_argument("--build-audition",action="store_true",help="Also build/test isolated audition adapter and compile JACK host; never start it")
@@ -145,7 +147,7 @@ def main():
         run([*common,ROOT/"native_v2/tests/benchmark_stage_instrument.cpp",*objects,*fluid,"-o",bench])
         for size in (512,256):
             for scenario in range(5):
-                before=temperature(); value=json.loads(run([bench,args.soundfont,size,scenario,args.blocks],timeout=90))
+                before=temperature(); value=json.loads(run([bench,args.soundfont,size,scenario,args.blocks,args.piano_voice],timeout=90))
                 value.update(temperature_before=before,temperature_after=temperature())
                 report["runs"].append(value); print(json.dumps(value),flush=True)
         if hashes()!=report["source_sha256"]: raise RuntimeError("Source changed during run")

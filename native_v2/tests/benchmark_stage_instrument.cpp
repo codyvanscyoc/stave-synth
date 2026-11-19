@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <string>
 #include <vector>
 #include <sys/resource.h>
 namespace {
@@ -30,7 +31,9 @@ void metrics(const char* name,std::vector<double> v,double budget) {
 }
 int main(int argc,char** argv) {
     try {
-        if(argc!=5) throw std::runtime_error("Usage: benchmark FONT FRAMES SCENARIO BLOCKS");
+        if(argc!=5 && argc!=6) throw std::runtime_error("Usage: benchmark FONT FRAMES SCENARIO BLOCKS [PIANO_VOICE_0_TO_3]");
+        const std::string voice=argc==6 ? argv[5] : "0";
+        if(voice.size()!=1 || voice[0]<'0' || voice[0]>'3') throw std::runtime_error("Invalid piano voice");
         const unsigned frames=std::stoul(argv[2]),scenario=std::stoul(argv[3]),blocks=std::stoul(argv[4]);
         if((frames!=256&&frames!=512)||scenario>4||blocks<100||blocks>2000) throw std::runtime_error("Invalid probe bounds");
         FixtureRandom random;
@@ -49,6 +52,7 @@ int main(int argc,char** argv) {
         }
         stave::StageInstrument g(argv[1],random,frames,0,&random,std::move(bank));
         stave::StageInstrumentConfig p;
+        p.piano_voice=voice[0]-'0';
         p.owned_motion=true; p.filter_motion={2,.1};
         p.piano.volume=.5; p.output.volume=.7;
         p.fader1=scenario==0?0:.6; p.fader2=scenario==0?0:.4;
@@ -105,6 +109,7 @@ int main(int argc,char** argv) {
         for(unsigned c=0;c<2;++c) for(unsigned i=0;i<frames;++i) require(g.pcm(c)[i]==0);
         rusage usage{}; require(getrusage(RUSAGE_SELF,&usage)==0);
         std::printf("{\"scenario\":%u,\"block_frames\":%u,\"blocks\":%u,\"warmup_blocks\":100,\"audio_seconds\":%.6f,\"block_budget_ms\":%.9f,",scenario,frames,blocks,blocks*frames/48000.,frames/48.);
+        std::printf("\"piano_voice\":%d,",p.piano_voice);
         metrics("wall",wall,frames/48.); std::printf(","); metrics("thread_cpu",cpu,frames/48.);
         std::printf(",\"peak_sample_beds\":%u,\"sample_bank_bytes\":%zu",bed_peak,bed_bytes);
         std::printf(",\"peak\":%.9f,\"rms\":%.9f,\"peak_oscillator_voices\":%u,\"raw_piano_full_scale_samples\":%llu,\"maxrss_platform_units\":%ld,\"terminal_silence\":true}\n",peak,std::sqrt(energy/(blocks*frames*2)),voice_peak,static_cast<unsigned long long>(stats.full_scale_piano_samples),usage.ru_maxrss);

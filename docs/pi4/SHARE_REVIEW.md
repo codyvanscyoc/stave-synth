@@ -1,5 +1,24 @@
 # Raspberry Pi 4 native release review
 
+## Beta 6 · Electric pianos, LFOs and keyboard expression
+
+The four piano selections share one resident FluidSynth instance and its 32-voice polyphony. Rhodes and Suitcase use the same tine samples with 3 dB of headroom before the 16-bit piano stage. Suitcase adds stereo tremolo on its own signal path. In a comparison against the previous engine, the default Grand produced the same raw piano samples and all seven source stems matched in the reference render.
+
+Native tests exercised sustained voice changes, repeated keys, pitch bend, channel filtering, mod-wheel depth, MIDI Learn and missing programs in a custom SoundFont. The local regression run passed 645 Python tests and both JavaScript suites. Chromium exercised 61 Sound controls, MIDI feedback and preset recall over 50 Sound layouts. Both LFOs and their controls fit on one iPad WebKit screen at 1024 × 650 and 1180 × 700, with touch targets of at least 44 points.
+
+The packaged engine ran on the Pi in a private PipeWire graph at 48 kHz and 512 frames. A browser changed the Sound controls, stored a patch and recalled it. At the stereo sink, an A4 oscillator measured 440.0 Hz at center, 493.9 Hz at full upward pitch bend and 392.0 Hz at full downward bend. The modulation wheel increased the ratio between loud and quiet portions of a held note from 1.02 to 3.22. The same run verified sustain across all four piano selections, MIDI unplug/replug, recording, mute and restart. Its status snapshots reported zero xruns, late callbacks or engine faults. A physical keyboard-to-speaker latency measurement and a rehearsal on the player's output device remain open.
+
+A separate Pi 4 timing test rendered 8,000 measured 512-frame blocks. Each selection played two runs of 1,000 blocks, after 100 warm-up blocks per run. The engine rendered 12 held oscillator voices, both LFOs, shimmer, reverb, delay and up to five simultaneous sampled pads while the patch changed. The audio block budget was 10.67 ms. Scenario 4 of `tools/benchmark_native_instrument.py` reproduces the workload with `--blocks 1000` and `--piano-voice 0` through `3`.
+
+| Piano | Higher 99th percentile across both runs | Slowest block | Blocks over budget |
+| --- | ---: | ---: | ---: |
+| Grand | 4.87 ms | 5.63 ms | 0 |
+| Rhodes | 4.86 ms | 5.84 ms | 0 |
+| Suitcase | 5.02 ms | 6.35 ms | 0 |
+| Legend EP 2 | 4.87 ms | 5.84 ms | 0 |
+
+The three electric piano selections had zero full-scale samples at the raw piano stage in these runs. The original Grand reached full scale on 12 raw samples per run under this load. The final stereo output stayed below full scale for every selection.
+
 ## Beta 5 · Global Tone and oscillator envelopes
 
 The four rotary controls in **System → Global Tone** use the same graduated dial, pointer and unit readouts as Sound. Low, Mid and High keep their dB scale. The low-cut selector and frequency control sit beside them on a tablet. Chromium checked all five EQ inputs against the local controller, including keyboard changes, a touch drag on Mid and MIDI pickup. The browser suite also checked all four Sound sections in basic and advanced modes.
